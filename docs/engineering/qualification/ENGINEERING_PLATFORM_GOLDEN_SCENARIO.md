@@ -20,3 +20,8 @@ qualification authority on the PR #1 candidate. The canonical source-level
 Golden qualification is the package-installed `EP-GOLDEN-001` scenario and its
 unit test; `Golden Smoke` runs for pull requests and `Golden Regression` runs
 for `main`, scheduled, and manually dispatched validation.
+
+The scenario never writes to the repository's `.engineering` path.  A caller
+that requires a retained JSON receipt may pass an explicit, separate evidence
+directory to `run`; ordinary local and CI qualification returns its bounded
+result in memory only.

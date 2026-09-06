@@ -88,6 +88,23 @@ class CapabilityPreflightTest(unittest.TestCase):
             status = provider_readiness.status(self.root)
         self.assertEqual(status["github"]["state"], "AUTH_REQUIRED")
 
+    def test_host_readiness_does_not_infer_repository_access_without_a_project(self) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        with patch("engineering_platform.provider_readiness.shutil.which", return_value="/usr/local/bin/gh"), patch(
+            "engineering_platform.provider_readiness.CodexCliProvider"
+        ) as codex, patch("engineering_platform.provider_readiness.LocalProcessProvider") as process:
+            codex.return_value.status.return_value.qualified = True
+            codex.return_value.command.return_value = completed(("codex",), 0, "Logged in\n", "")
+            process.return_value.execute.return_value = completed(("gh", "auth"), 0, "", "")
+
+            status = provider_readiness.host_status(self.root)
+
+        self.assertEqual(status["codex"]["state"], "READY")
+        self.assertEqual(status["github"]["state"], "READY")
+        process.return_value.execute.assert_called_once_with(
+            self.root, ("/usr/local/bin/gh", "auth", "status", "--hostname", "github.com"),
+        )
+
     def test_github_readiness_uses_rest_repository_access_after_authentication(self) -> None:
         completed = __import__("subprocess").CompletedProcess
         with patch("engineering_platform.provider_readiness.shutil.which", return_value="/usr/local/bin/gh"), patch(

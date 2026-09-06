@@ -74,8 +74,14 @@ def execute_qualification(
     checks: dict[str, bool] | None = None,
     *,
     ep_repository_root: Path | None = None,
+    evidence_root: Path | None = None,
 ) -> dict[str, object]:
-    """Execute all registered local scenarios and write immutable local evidence."""
+    """Execute all registered local scenarios and write immutable local evidence.
+
+    ``evidence_root`` is for read-only source checkouts such as the Golden
+    scenario.  It changes only where the receipt is stored, never the
+    repository whose contracts are being checked.
+    """
     started = time.monotonic()
     manifest = EngineeringPlatformManifest.load(
         package_path("ENGINEERING_PLATFORM_VERSION.json")
@@ -109,7 +115,7 @@ def execute_qualification(
         "failures": len(results) - passed,
         "blocked": 0,
     }
-    _write_report(root, report)
+    _write_report(evidence_root or root, report)
     return report
 
 
@@ -165,7 +171,7 @@ def _default_check(
         "Engineering Memory": source_file("execution_host.py"),
         "Capability-aware Reviewers": source_file("capability_review.py"),
         "Remote Status Model": source_file("status_model.py"),
-        "Private Dashboard": source_file("dashboard.py"),
+        "Private Dashboard": source_file("server.py") and source_file("console_presentation.py"),
         "Repository Handoff": source_file("repository_handoff.py"),
         "Remote Engineering Readiness": source_file("execution_readiness.py"),
         "Platform Identity": configuration_is_compatible(),
@@ -184,8 +190,8 @@ def _default_check(
         "Project Template": bool(ep_source and (ep_source / "templates" / "workspace-config.json").is_file()),
         "Workspace Provisioning": source_file("platform_bootstrap.py"),
         "Genesis Lifecycle": source_file("execution_host.py"),
-        "Strict Inbox Sequencing": source_file("inbox_watcher.py"),
-        "Local Engineering Evidence Storage": bool(ep_source and (ep_source / "ENGINEERING_INBOX_PROTOCOL.md").is_file()),
+        "Strict Inbox Sequencing": source_file("file_inbox.py"),
+        "Local Engineering Evidence Storage": source_file("file_inbox.py") and source_file("submission_intake.py"),
         "Component Logging and Read-only Advice": source_file("component_logging.py") and source_file("codex_chat.py"),
     }
     return contracts.get(capability, source_file("execution_host.py"))

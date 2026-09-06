@@ -1,0 +1,154 @@
+# P-TRANSPORT legacy runtime retirement register
+
+**Status:** re-audited 2026-09-05 — not technical-closure evidence.
+
+Earlier `RESOLVED` entries record a structural decision, not an exact-head
+installed/runtime approval. The integrated re-audit findings below take
+precedence whenever they conflict with an older completion claim.
+
+This register applies the consequence-closure rule to the standalone Server
+transition.  It is derived from the Phase-P standalone roadmap, ADR-0026,
+the P-CENTRAL-CORE authority map, the P-TRANSPORT authority map and the
+executable Console route matrix.  Historical ADRs, migration receipts and
+forensic evidence are outside this production-runtime inventory.
+
+## Authority transition map
+
+| Legacy responsibility | Previous owner | Current owner | Cutover | Supported old reads/writes | Classification |
+| --- | --- | --- | --- | --- | --- |
+| Dashboard HTTP route delegation and platform shell | checkout-root Dashboard | EP Server + explicit PLATFORM/PROJECT routes | active | no old route fallback is allowed | ACTIVE_CANONICAL successor; dashboard callers require audit |
+| Inbox scan, admission and durable transport disposition | Inbox watcher | Server-owned File Inbox | active | physical transport receipts only | ACTIVE_CANONICAL successor |
+| Submission queue, lifecycle, runs and retry truth | watcher/local root | CENTRAL operational store + Lifecycle Worker | active | no local authority | ACTIVE_CANONICAL successor |
+| Component identity, health, detail and log choice | Dashboard maps/aliases | `PLATFORM_COMPONENTS` | active | no selectable legacy identity | ACTIVE_CANONICAL successor |
+| Component-log persistence | root `.engineering/logs` | CENTRAL `engineering_component_logs` | active | bounded stderr only on persistence failure | ACTIVE_CANONICAL successor |
+
+`AMBIGUOUS_AUTHORITY_TRANSITIONS = 0` for the transition map above.  This
+does not yet assert that all old code is removed.
+
+## 2026-09-05 integrated re-audit findings
+
+This is a read-only audit of the source package and clean candidate test
+environment. It does not authorize a human UI review or Owner Authorization.
+
+| Area | Evidence | Current result | Required closure evidence |
+| --- | --- | --- | --- |
+| Installed ingress | `p_transport_installed_ingress_matrix.py` | **FAIL**: `DEPENDABOT_MULTI_PROJECT_BINDING_FAILED` | A clean exact-head candidate must pass the complete installed ingress matrix. |
+| Direct Dashboard retirement | `server.py` imports `server_console_services` and calls `_dashboard_html` at two Server document-rendering sites | **GAP** | Classify or extract remaining presentation helpers, then prove no supported runtime/import path retains historical direct-Dashboard authority. |
+| Historical configuration | `server_console_services` imports `historical_dashboard_configuration`; its update, Inbox-root update, and restore APIs write local metadata | **GAP** | Remove or make strictly forensic/read-only every supported caller; add a whole-package guard rather than a Server-snapshot-only assertion. |
+| Finder actions | The re-audit found two direct Finder helpers in `server_console_services`; they and their historical tests were then removed, with a permanent source-absence guard | **FIXED IN WORKTREE — uncommitted** | Keep the absence guard; exact-head qualification must confirm no remote Console route/action advertises it. |
+| Route/CENTRAL ownership | Central-core, central-console and console-route guards | **PASS** | Preserve root-bound routes 0, dashboard delegates 0, project delegation 0, checkout dependency 0, and ambiguous ownership 0. |
+| Component model | Component-model regression guard | **PASS, narrow scope** | Extend it to package-wide legacy alias/read/write/lifecycle/logging reachability before declaring LR-12 complete. |
+| Coverage | Clean candidate full run: 1,069 tests, aggregate 81.64% | **PARTIAL** | `providers.py` is 79.70%, below its protected 80.20% requirement; 26 production modules are below 80.20%. |
+
+The re-audit does not reopen implementation by itself. It records blockers
+that must be resolved before `P_TRANSPORT_SIX_LEGACY_ARCHITECTURE_POINTS =
+PASS` can be claimed.
+
+## Material discovery and reachability ledger
+
+| Legacy ID | Finding / reverse dependency | Classification | Required disposition |
+| --- | --- | --- | --- |
+| LR-01 | `inbox_watcher.py` retained local queue, preflight, retry, launch-agent and root-state implementation. Reverse-dependency analysis after the Dependabot migration found no production import: its only consumers were its historical test suite and the already-retired Dependabot-to-Inbox helper. The canonical lifecycle dispatcher owns run identity/admission evidence; Server-owned File Inbox owns physical transport. | RETIRE_AND_REMOVE | Repaired in this audit pass: the module and its historical runtime tests were deleted; the package/source authority guard now fails if it reappears. `legacy_inbox_migration.py` is the separate, read-only archive migration tool. |
+| LR-10 | `migrate_icloud_archives()` was reachable only through the retired watcher CLI. | MIGRATION_TOOLING_KEEP | Repaired in this audit pass: it now lives in `legacy_inbox_migration.py` with its own test. It moves archive evidence only and cannot admit, queue, dispatch or execute work. |
+| LR-02 | The historical direct Dashboard module, listener, request handler, bootstrap lifecycle, LaunchAgent wrapper and relay wrapper are physically removed. The Server owns Console HTTP and `server_console_services.py` retains the project projection helpers it invokes. The browser harness starts the Server `_HealthHandler` with an explicitly registered CENTRAL fixture project. | RESOLVED | Server Console behavior and P-TRANSPORT ingress remain qualified through Server route, browser-harness and source-absence guards. |
+| LR-03 | Host Admin Git/worktree mutation authority is isolated behind an explicit Server-owned opaque target registry. | RESOLVED | Targets are never inferred from project, CWD, remote, path, Finder or browser state. Containment and symlink escape checks are deterministic; inventory is registered-target-only; legacy worktree removal and Git-lock deletion return `UNSUPPORTED_REMOVED` after audit or reject unsafe requests. |
+| LR-04 | Local dataset and configuration authority is classified in `LOCAL_DATA_RETIREMENT_MATRIX.md` and `CONFIGURATION_MIGRATION_MATRIX.md`. | RESOLVED | The Server snapshot and event stream are CENTRAL-only. Root/check-out Dashboard configuration and Inbox overrides are historical-only and cannot be used as a supported runtime fallback. |
+| LR-08 | The generic qualification catalog and coverage contract still treated `inbox_watcher.py` as the inbox sequencing implementation. | RETIRE_AND_REMOVE | Repaired in this audit pass: the catalog, provider-boundary guard and coverage target now point to the Server-owned `file_inbox.py` transport adapter. |
+| LR-09 | The retired Dependabot admission capability requires its separately governed successor decision. Historical discovery, Inbox envelope and root-local admission evidence remain retired; no unrelated Dashboard, watcher, configuration, or logging authority is retained for this item. | UNRESOLVED — LEGACY_CAPABILITY_REPLACEMENT_REQUIRED | The structural isolation is qualified by the installed ingress matrix and transport-authority tests. This register does not authorize implementation or acceptance of an LR-09 successor. |
+| LR-11 | `workspace_inbox_api.py` and `human_text_ingress.py` wrote a root-selected iCloud Inbox, created repository-local submission evidence and named the watcher as lifecycle owner. | RETIRE_AND_REMOVE | Repaired in this audit pass: their only production caller was the retired watcher; the modules and their historical tests were removed. The supported successor is Server-owned `file_inbox.py` plus transport-neutral `submission_intake.py`, documented by `HUMAN_INTENT_FILE_INBOX.md` and qualified through the structured 3×2 and Human Intent 2× gates. `ENGINEERING_INBOX_PROTOCOL.md` and the historical pattern in `forensic_attribution.py` remain extraction/forensic evidence only; neither is package data or an executable runtime caller. |
+| LR-12 | The canonical component model is `PLATFORM_COMPONENTS`; historical `dashboard`, `inbox`, and watcher aliases have no supported component authority. | RESOLVED | Alias writes, selectable identities, lifecycle/restart ownership, and local logging fallbacks are retired. Historical references are forensic/migration input only; see `COMPONENT_COMPATIBILITY_MATRIX.md`. |
+| LR-13 | `ENGINEERING_PLATFORM_VERSION.json` still carries `watcher_version`, consumed by `platform_version.py` as part of the published manifest compatibility shape. It does not load, start, package or advertise a watcher runtime. | INTENTIONAL_COMPATIBILITY_KEEP | Keep the inert manifest field until a governed manifest-major compatibility change. Owner: platform manifest contract. Non-authority proof: no runtime import or component projection reads it. |
+| LR-14 | `_console_project_boundary()` injects the CENTRAL-selected project into the transitional dashboard JavaScript fetch/EventSource calls. | INTENTIONAL_COMPATIBILITY_KEEP | Owner: Server Console migration. Purpose: the shared dashboard asset has not yet gained a native CENTRAL project-scope client. Non-authority proof: it receives the selected project only from the Server-rendered document; every request is revalidated by the Server against CENTRAL registration, and it cannot inspect a checkout, CWD, selected local root or default project. Retirement condition: migrate the shared dashboard asset and browser fixture to a native Server Console client, then remove the request wrapper. |
+| LR-05 | `central_store_migration.py`, forensic attribution and ADR/receipt material mention watcher/database paths. | MIGRATION_TOOLING_KEEP / HISTORICAL_EVIDENCE_KEEP | Retain only as read-only migration/forensic evidence; exclude from installed runtime surface. |
+| LR-06 | `/diagnostics/topology` formerly served a second hard-coded Dashboard. | RETIRE_AND_REMOVE | Repaired in `75dd4b2`: now JSON-only transport diagnostic; the old helper is pending physical deletion. |
+| LR-07 | Browser log state held `inbox` and `dashboard` buffers after the one-table migration. | RETIRE_AND_REMOVE | Repaired in `5299831`; regression logic remains model-driven. |
+
+## Initial successor assumptions
+
+| Successor | Assumption produced by P-TRANSPORT | Evidence / state |
+| --- | --- | --- |
+| P-QUEUE | CENTRAL is the only submission queue and lifecycle authority. | `P_TRANSPORT_AUTHORITY_MAP.md`; installed ingress matrix. |
+| P-NEUTRAL | Transport adapters have no execution authority. | File Inbox internal-principal and durability qualification. |
+| P-INSTALLER | File Inbox is a Server child; no standalone File Inbox service is installed. | package-entrypoint and installed-wheel qualification remain to be re-run after retirement. |
+| P-RELEASE | one Server operational database and explicit route/component topology. | route guard and storage gate; exact-head reinstall remains required. |
+
+No removal is authorized from this register while its classification is
+`UNRESOLVED`.  The next audit pass must turn every material row into one of
+the permitted terminal classifications with exact callers and installed-wheel
+evidence.
+
+## Closure decisions: host boundary, data and configuration
+
+These decisions are normative for the remaining LR-02/LR-03/LR-04/LR-12
+work.  They prevent the direct wrapper from being retired by either silently
+retaining a checkout authority or deleting a useful host capability without a
+replacement decision.
+
+### Host Admin classification
+
+The following root-local capabilities are **not** Console, CENTRAL or Project
+authority.  They are classified pending a dedicated Server-installed Host
+Admin surface.  They have no supported direct-dashboard route or mutation
+until that surface, its authorization model and qualification exist.
+
+| Capability | Classification | Target owner | Removal rule |
+| --- | --- | --- | --- |
+| Git index-lock diagnosis and legacy repair | `HOST_ADMIN_DIAGNOSTIC` / `HOST_ADMIN_ACTION` | installation-owned Server Host Admin service | exact registered-target diagnosis; deletion is `UNSUPPORTED_REMOVED` |
+| Local worktree inventory and legacy removal | `HOST_ADMIN_DIAGNOSTIC` / `HOST_ADMIN_ACTION` | installation-owned Server Host Admin service | registered-target inventory; deletion is `UNSUPPORTED_REMOVED` |
+| Disk, runtime and Codex-installation diagnostics | `HOST_ADMIN_DIAGNOSTIC` | installation-owned Server Host Admin service | no checkout/CWD/default-project inference in the successor |
+| Local report, chat and workspace diagnostics | `HOST_ADMIN_DIAGNOSTIC` | installation-owned Server Host Admin service or `HISTORICAL_EVIDENCE_KEEP` per dataset | classify every input dataset before extraction/removal |
+
+`HOST_ADMIN_*` is deliberately not an execution authority: it cannot admit a
+submission, select a project/repository, access CENTRAL lifecycle state as a
+writer, or infer a project from a root, checkout, Git remote, directory name,
+selected project or default project.
+
+### Local dataset inventory
+
+| Dataset family | Classification | Authoritative owner / disposition |
+| --- | --- | --- |
+| `engineering.db`, component logs, submissions, Actions, runs, retries and lifecycle records | `SERVER` | installation-owned CENTRAL database; no repository-local fallback or second store |
+| File Inbox `incoming`, `processing`, `accepted`, `quarantine` and heartbeat | `INSTALLATION` | Server-owned transport durability evidence, not a queue or lifecycle store |
+| Server `server.json`, runtime identity/runtime files and relay binary | `INSTALLATION` | Server data root only |
+| Explicitly registered project/repository bindings and project reports/history | `PROJECT` | CENTRAL registration and project projection; never discovered from a local root |
+| Legacy root `.engineering` reports, chats, workspace snapshots and run JSON | `HISTORICAL` | read-only migration/forensic evidence until each reader is replaced or retired |
+| Git-lock, worktree, disk and installed-runtime observations | `INSTALLATION` | Host Admin diagnostic inputs; no implicit project scope |
+
+### Configuration ownership
+
+| Configuration family | Owner | Constraint |
+| --- | --- | --- |
+| listener host/port, managed Codex executable prefix, relay lifecycle and File Inbox location | `INSTALLATION` | Server data root; installation administration only |
+| scan, health, details and provider-readiness intervals; log level/retention; Codex capacity reserve | `SERVER` | stored in CENTRAL installation metadata; never root/dashboard preferences |
+| project/repository bindings and project execution policy | `PROJECT` | explicit CENTRAL registration only |
+| former root `dashboard_configuration.*` keys and legacy root configuration files | `HISTORICAL` | compatibility read only during wrapper extraction; no new root-local write authority |
+
+The names `dashboard` and `inbox` remain temporary read/route compatibility
+aliases solely for the direct-wrapper extraction.  They are neither selectable
+components nor log writers; their retirement condition is removal of that
+wrapper plus an installed-wheel absence check.
+
+## LR-02 direct-route consequence map
+
+The complete responsibility-to-successor worklist is maintained in
+[`P_TRANSPORT_DASHBOARD_RESPONSIBILITY_MATRIX.md`](P_TRANSPORT_DASHBOARD_RESPONSIBILITY_MATRIX.md).
+It deliberately distinguishes already Server-owned routes from still-present
+dashboard source code, so a route guard cannot be misread as physical legacy
+retirement.
+
+The historical direct handler is not a supported route owner.  The following
+map prevents a coverage repair from silently preserving it or deleting an
+unreplaced capability.
+
+| Historical route family | Canonical successor / disposition | State |
+| --- | --- | --- |
+| Provider login, provider logout, provider repair and execution-runtime repair | Server PLATFORM routes; direct mutations removed | RETIRED_FROM_DIRECT_HANDLER |
+| Component restart | Server PLATFORM route using `PLATFORM_COMPONENTS`; direct mutation removed | RETIRED_FROM_DIRECT_HANDLER |
+| Console HTML, assets, platform status, canonical component logs and Server settings | Server Console and explicit PLATFORM routes | SUCCESSOR_EXISTS; direct read wrapper pending removal |
+| Project runs, reports, details and chat history | Server selected-project routes backed by CENTRAL projections | SUCCESSOR_EXISTS; direct read wrapper pending removal |
+| Root-local telemetry, worktree, report, chat, Codex-update and workspace diagnostics | No canonical successor is yet established for each individual capability | DO_NOT_DELETE_UNTIL_CLASSIFIED |
+| Historical Dashboard LaunchAgent and its relay installer | Relay remains an access adapter, but its lifecycle must move to Server-owned installation infrastructure | SERVER_INFRASTRUCTURE_EXTRACTION_REQUIRED |
+
+The final two rows are explicitly not compatibility exemptions.  They are the
+remaining LR-02 consequence-closure work and must be resolved before the
+direct handler or its package/runtime surface can be declared retired.

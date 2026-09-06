@@ -68,8 +68,14 @@ def runtime_details(root: Path) -> dict[str, dict[str, str]]:
     }
 
 
-def status(root: Path, *, require_github: bool = True) -> dict[str, dict[str, str]]:
-    """Return provider readiness without session details, tokens, or diagnostics."""
+def host_status(root: Path, *, require_github: bool = True) -> dict[str, dict[str, str]]:
+    """Check host authentication without deriving any checkout authority.
+
+    This is the Server/CENTRAL projection used before a project is selected.
+    It deliberately asks GitHub only whether the local CLI has an active
+    account. Repository access belongs to project admission, where an actual
+    canonical repository identity is available.
+    """
     codex = CodexCliProvider()
     codex_installed = codex.status().qualified
     try:
@@ -79,6 +85,25 @@ def status(root: Path, *, require_github: bool = True) -> dict[str, dict[str, st
     result = {
         "codex": {"provider": "CODEX", "state": "UNAVAILABLE" if not codex_installed else _classify(codex_result)},
     }
+    if not require_github:
+        return result
+    github_path = shutil.which("gh")
+    if github_path is None:
+        result["github"] = {"provider": "GITHUB", "state": "UNAVAILABLE"}
+        return result
+    try:
+        github_result = LocalProcessProvider().execute(
+            root, (github_path, "auth", "status", "--hostname", "github.com"),
+        )
+    except OSError:
+        github_result = None
+    result["github"] = {"provider": "GITHUB", "state": _classify(github_result)}
+    return result
+
+
+def status(root: Path, *, require_github: bool = True) -> dict[str, dict[str, str]]:
+    """Return provider readiness without session details, tokens, or diagnostics."""
+    result = host_status(root, require_github=False)
     if not require_github:
         return result
     if shutil.which("gh") is None:

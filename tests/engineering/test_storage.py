@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from engineering_platform import storage
 from engineering_platform.storage import (
     DATABASE_FILENAME,
     ENGINEERING_STORAGE_SCHEMA_VERSION,
@@ -37,11 +38,84 @@ from engineering_platform.storage import (
     store_projection,
     verify_artifact_integrity,
 )
-from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.agent_state import StateError, StateStore, TransactionState
 from engineering_platform.platform_version import EngineeringPlatformManifest
 
 
 class EngineeringStorageTest(unittest.TestCase):
+    def test_storage_admission_context_is_complete_valid_and_root_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.dict(os.environ, {storage.ADMITTED_STORAGE_ROOT_ENVIRONMENT: str(root)}, clear=False):
+                with self.assertRaisesRegex(EngineeringStorageError, "admission context is incomplete"):
+                    storage._admitted_migration_ceiling(root)
+            with patch.dict(os.environ, {
+                storage.ADMITTED_STORAGE_ROOT_ENVIRONMENT: str(root),
+                storage.ADMITTED_STORAGE_SCHEMA_ENVIRONMENT: "not-a-number",
+            }, clear=False):
+                with self.assertRaisesRegex(EngineeringStorageError, "admission schema is invalid"):
+                    storage._admitted_migration_ceiling(root)
+            with patch.dict(os.environ, {
+                storage.ADMITTED_STORAGE_ROOT_ENVIRONMENT: str(root),
+                storage.ADMITTED_STORAGE_SCHEMA_ENVIRONMENT: "17",
+            }, clear=False):
+                self.assertEqual(storage._admitted_migration_ceiling(root), 17)
+                self.assertIsNone(storage._admitted_migration_ceiling(root / "other"))
+
+    def test_checkpoint_decode_rejects_corrupt_identity_admission_and_recovery_ledgers(self) -> None:
+        raw = TransactionState("safe-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT").to_dict()
+        cases = (
+            {**raw, "schema_version": 0},
+            {**raw, "run_id": "Unsafe Run"},
+            {**raw, "owner_authorized": "yes"},
+            {**raw, "admission_decision": "PASS", "admission_completed_at": None},
+            {**raw, "provider_recovery_attempts": ({"bad": "ledger"},)},
+            {**raw, "commit_evidence": ({"phase": "EXECUTE_AGENT"},)},
+        )
+        for checkpoint in cases:
+            with self.assertRaises(StateError):
+                TransactionState.from_dict(checkpoint)
+
+    def test_central_checkpoint_has_no_checkout_shadow_and_missing_database_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "central.db"
+            open_storage(root).backup(sqlite3.connect(database))
+            store = StateStore(root / ".engineering" / "engineering-runs", central_database=database)
+            state = TransactionState("central-safe-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT")
+            path = store.save(state)
+            self.assertFalse(path.exists())
+            self.assertEqual(store.load(state.run_id), state)
+            missing = StateStore(root / "other" / "runs", central_database=root / "missing.db")
+            with self.assertRaisesRegex(StateError, "canonical engineering storage is unavailable"):
+                missing.run_ids()
+
+    def test_checkpoint_store_removes_json_shadow_and_rejects_corrupt_durable_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = StateStore(root / ".engineering" / "engineering-runs")
+            state = TransactionState("remove-safe-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT")
+            path = store.save(state)
+            self.assertTrue(path.exists())
+            connection = open_storage(root)
+            connection.execute("UPDATE engineering_transactions SET payload='{' WHERE run_id=?", (state.run_id,))
+            connection.close()
+            with self.assertRaisesRegex(StateError, "canonical checkpoint is corrupt"):
+                store.load(state.run_id)
+            store.remove(state.run_id)
+            self.assertFalse(path.exists())
+            self.assertEqual(store.run_ids(), ())
+
+    def test_checkpoint_save_and_central_database_errors_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = TransactionState("save-error-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT")
+            with patch("engineering_platform.agent_state.open_storage", side_effect=OSError("disk unavailable")):
+                with self.assertRaisesRegex(StateError, "could not save checkpoint"):
+                    StateStore(root / ".engineering" / "engineering-runs").save(state)
+            corrupt = root / "corrupt-central.db"; corrupt.write_text("not a sqlite database", encoding="utf-8")
+            with self.assertRaisesRegex(StateError, "canonical engineering storage is unavailable"):
+                StateStore(root / "central-runs", central_database=corrupt).run_ids()
     def test_schema_39_adds_verifier_only_local_api_credential_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -106,6 +180,54 @@ class EngineeringStorageTest(unittest.TestCase):
                             "2026-08-30T00:00:00+00:00",
                         ),
                     )
+
+    def test_schema_7_backfills_safe_runtime_facts_and_rejects_report_path_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = database_path(root)
+            path.parent.mkdir(parents=True)
+            reports = path.parent / "reports"
+            reports.mkdir()
+            (reports / "valid.md").write_text(
+                "- Runtime Provider: `Codex`\n- AI Model: `gpt-5`\n"
+                "- Reasoning Profile: `high`\n- Configuration Profile: `safe`\n"
+                "- Submitted Prompt Characters: `42`\n",
+                encoding="utf-8",
+            )
+            connection = sqlite3.connect(path)
+            for version in range(1, 7):
+                MIGRATIONS[version](connection)
+            run_values = (
+                "historical-run", "2026-01-01", "now", "now", "now", 0.0, None,
+                "COMPLETE", None, None, None, "MANAGED", "workspace", "repository", "1.0",
+            )
+            connection.execute(
+                "INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                run_values,
+            )
+            connection.execute(
+                "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("historical-run", "COMPLETE", "historical", "now", None, "valid.md", "now"),
+            )
+            connection.execute(
+                "INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("escaped-run", *run_values[1:]),
+            )
+            connection.execute(
+                "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("escaped-run", "COMPLETE", "historical", "now", None, "../outside.md", "now"),
+            )
+            MIGRATIONS[7](connection)
+            backfill = connection.execute(
+                "SELECT prompt_characters,runtime_provider,runtime_model,reasoning_profile,configuration_profile FROM execution_runs WHERE run_id=?",
+                ("historical-run",),
+            ).fetchone()
+            escaped = connection.execute(
+                "SELECT prompt_characters,runtime_provider FROM execution_runs WHERE run_id=?", ("escaped-run",)
+            ).fetchone()
+            connection.close()
+        self.assertEqual(backfill, (42, "Codex", "gpt-5", "high", "safe"))
+        self.assertEqual(escaped, (None, None))
 
     def test_provider_recovery_schema_is_prospective_and_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -468,7 +590,7 @@ class EngineeringStorageTest(unittest.TestCase):
                         "UPDATE execution_run_qualification_snapshots SET payload='{}'"
                     )
 
-    def test_schema_four_imports_legacy_redacted_component_logs_once(self) -> None:
+    def test_schema_four_does_not_restore_legacy_component_log_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             logs = root / WORKSPACE_DIRECTORY / "logs"
@@ -478,18 +600,17 @@ class EngineeringStorageTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with activate_storage_schema(root) as connection:
-                self.assertEqual(
+                self.assertIsNone(
                     connection.execute(
                         "SELECT payload FROM engineering_component_logs WHERE component='inbox'"
-                    ).fetchone()[0],
-                    '{"event":"watcher_started","timestamp":"2026-08-02T12:00:00+00:00"}',
+                    ).fetchone()
                 )
             with open_storage(root) as connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT COUNT(*) FROM engineering_component_logs WHERE component='inbox'"
                     ).fetchone()[0],
-                    1,
+                    0,
                 )
 
     def test_refuses_unknown_non_versioned_database(self) -> None:
@@ -695,13 +816,9 @@ class EngineeringStorageTest(unittest.TestCase):
                     connection.execute(
                         "UPDATE engineering_transactions SET phase='COMPLETE' WHERE run_id='inbox-schema-activation'"
                     )
-                lock = root / WORKSPACE_DIRECTORY / "locks" / "dashboard.lock"
-                lock.parent.mkdir(parents=True)
-                with lock.open("a+", encoding="utf-8") as handle:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                    with self.assertRaisesRegex(EngineeringStorageError, "dashboard to stop first"):
-                        activate_storage_schema(root)
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                # Legacy Dashboard/Inbox watcher locks are no longer lifecycle
+                # authority and cannot block CENTRAL schema activation.
+                activate_storage_schema(root)
 
     def test_storage_activation_command_reports_the_activated_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

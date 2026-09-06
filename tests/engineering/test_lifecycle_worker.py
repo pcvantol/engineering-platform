@@ -156,10 +156,13 @@ class LifecycleWorkerTests(unittest.TestCase):
     def test_start_marks_worker_running(self) -> None:
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher, idle_seconds=0.01)
         worker.start()
-        import time
-        time.sleep(0.02)
+        self.assertTrue(worker.wait_until_running(0.2))
         self.assertEqual(worker.diagnostics().state, WORKER_RUNNING)
         worker.stop()
+
+    def test_wait_until_running_is_false_before_start(self) -> None:
+        worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
+        self.assertFalse(worker.wait_until_running(0.01))
 
     def test_slow_terminal_history_reconciliation_does_not_delay_worker_readiness(self) -> None:
         from threading import Event

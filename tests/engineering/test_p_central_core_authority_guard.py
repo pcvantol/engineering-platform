@@ -22,9 +22,6 @@ class PCentralCoreAuthorityGuardTest(unittest.TestCase):
             (package / "execution_host.py").write_text(
                 'raise SystemExit("CENTRAL_OPERATIONAL_DATABASE_REQUIRED")\n', encoding="utf-8"
             )
-            (package / "inbox_watcher.py").write_text(
-                'WATCHER_RETIRED_CENTRAL_LIFECYCLE_REQUIRED = True\n', encoding="utf-8"
-            )
             (package / "new_active_consumer.py").write_text(
                 'from engineering_platform.storage import open_storage\nopen_storage(repository_root)\n', encoding="utf-8"
             )
@@ -40,9 +37,6 @@ class PCentralCoreAuthorityGuardTest(unittest.TestCase):
             package.mkdir(parents=True)
             (package / "execution_host.py").write_text(
                 'raise SystemExit("CENTRAL_OPERATIONAL_DATABASE_REQUIRED")\n', encoding="utf-8"
-            )
-            (package / "inbox_watcher.py").write_text(
-                'WATCHER_RETIRED_CENTRAL_LIFECYCLE_REQUIRED = True\n', encoding="utf-8"
             )
             (package / "telemetry.py").write_text(
                 'from engineering_platform.storage import open_storage\nopen_storage(root)\n', encoding="utf-8"

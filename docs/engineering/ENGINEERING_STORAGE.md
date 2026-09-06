@@ -277,9 +277,11 @@ dashboard intentionally has no new timing UI in this increment.
 
 ## Component logging
 
-`engineering_component_logs` is the canonical store for redacted watcher and
-dashboard events. The dashboard reads its bounded log views from this table,
-and clearing a component log removes only that component's SQLite rows.
+`engineering_component_logs` is the canonical CENTRAL store for redacted
+Platform Component events. The Console reads one combined Platform projection
+from this table and filters it by canonical EP-component. Pre-canonical
+`inbox`, `dashboard`, and `execution-host` records remain readable through
+their canonical component mapping so an upgrade does not hide diagnostics.
 
 The table also records bounded, redacted dashboard user actions that have an
 operational effect or access local evidence: component restart requests,

@@ -10,6 +10,7 @@ engineering-platform-server init --data-root /secure/ep-server
 engineering-platform-server start --data-root /secure/ep-server
 engineering-platform-server health --data-root /secure/ep-server
 engineering-platform-server stop --data-root /secure/ep-server
+engineering-platform-server relay-install --data-root /secure/ep-server
 ```
 
 `init` creates a strict server configuration, a stable runtime instance ID and
@@ -37,6 +38,12 @@ installed-artifact authority and role contract.
 The existing Execution Host remains unchanged and retains its current execution
 authority. The server does not read a source checkout, `.engineering`, or any
 DJConnect state at runtime.
+
+`relay-install` is the optional, Server-owned installation boundary for the
+Dashboard Relay. It compiles the package-owned Tailnet-to-loopback adapter into
+the Server data root and installs its single canonical LaunchAgent. The relay
+forwards only to the Server Console; it owns no project, submission, File Inbox,
+Action, run or execution state.
 
 ## B6 convergence handoff
 

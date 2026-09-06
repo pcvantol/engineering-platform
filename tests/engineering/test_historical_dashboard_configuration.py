@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from engineering_platform.dashboard_configuration import DEFAULTS, get, inbox_root, update, update_inbox_root
+from engineering_platform.historical_dashboard_configuration import DashboardConfigurationConflict, DEFAULTS, get, inbox_root, restore_inbox_root, update, update_inbox_root
 from engineering_platform.component_logging import prune_component_logs
 from engineering_platform.storage import open_storage
 
@@ -101,6 +101,27 @@ class DashboardConfigurationTest(unittest.TestCase):
             (candidate / "Inbox").mkdir()
             event = update_inbox_root(root, str(candidate))
             self.assertEqual(event["value"], str(candidate.resolve()))
+            self.assertEqual(inbox_root(root), candidate.resolve())
+
+    def test_historical_values_fail_closed_and_restore_reverses_an_unconfirmed_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            connection = open_storage(root)
+            try:
+                connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?)", ("dashboard_configuration.log_level", "not-json"))
+                connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?)", ("dashboard_configuration.inbox_root", '"relative"'))
+            finally:
+                connection.close()
+            self.assertEqual(get(root)["log_level"], "INFO")
+            self.assertIsNone(inbox_root(root))
+            update(root, "log_level", "DEBUG")
+            with self.assertRaises(DashboardConfigurationConflict):
+                update(root, "log_level", "INFO", expected_previous="INFO")
+            candidate = root / "host"; (candidate / "Inbox").mkdir(parents=True)
+            update_inbox_root(root, str(candidate))
+            restore_inbox_root(root, None)
+            self.assertIsNone(inbox_root(root))
+            restore_inbox_root(root, candidate)
             self.assertEqual(inbox_root(root), candidate.resolve())
             event = update_inbox_root(root, str(candidate / "Inbox"))
             self.assertEqual(event["value"], str(candidate.resolve()))

@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
-from engineering_platform import dashboard, dashboard_state
+from engineering_platform import server_console_services as dashboard, dashboard_state
 from engineering_platform.agent_state import StateStore, TransactionState
 from engineering_platform.execution_lifecycle import projection as lifecycle_projection
 from engineering_platform.execution_models import AgentResult

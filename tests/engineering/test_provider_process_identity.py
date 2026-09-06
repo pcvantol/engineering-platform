@@ -5,8 +5,9 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
-from engineering_platform.provider_process_identity import capture_process_identity, verify_process_identity
+from engineering_platform.provider_process_identity import ProcessIdentity, capture_process_identity, verify_process_identity
 
 
 class ProviderProcessIdentityTests(unittest.TestCase):
@@ -25,3 +26,16 @@ class ProviderProcessIdentityTests(unittest.TestCase):
                 child.stdin.close()
             child.wait(timeout=5)
         self.assertEqual(verify_process_identity(identity), "NOT_ACTIVE")
+
+    def test_capture_rejects_pid_reuse_group_mismatch_and_malformed_ps_evidence(self) -> None:
+        self.assertIsNone(capture_process_identity(0))
+        with patch("engineering_platform.provider_process_identity.os.getpgid", return_value=9):
+            self.assertIsNone(capture_process_identity(3, 7))
+        result = type("Result", (), {"returncode": 0, "stdout": "not enough fields"})()
+        with patch("engineering_platform.provider_process_identity.os.getpgid", return_value=7), patch(
+            "engineering_platform.provider_process_identity.subprocess.run", return_value=result
+        ):
+            self.assertIsNone(capture_process_identity(3, 7))
+        expected = ProcessIdentity(3, 7, "birth-a", "/bin/a")
+        with patch("engineering_platform.provider_process_identity.capture_process_identity", return_value=ProcessIdentity(3, 7, "birth-b", "/bin/a")):
+            self.assertEqual(verify_process_identity(expected), "MISMATCH")

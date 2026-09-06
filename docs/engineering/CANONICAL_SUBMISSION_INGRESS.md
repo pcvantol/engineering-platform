@@ -33,17 +33,35 @@ boundary, so durable receipts distinguish HTTP and CLI without splitting their
 lifecycle. `--correlation-id`, `--mission-id`, `--engineering-action-id` and a
 JSON-object `--constraints-file` cover the remaining normalized request fields.
 
-The optional legacy-file compatibility adapter accepts only UTF-8 JSON:
+The Server-owned File Inbox child accepts structured UTF-8 JSON and human
+intent `.txt`/`.md` files from its configured installation `file-inbox/`
+directory. It is not an installed executable and cannot be started apart from
+EP Server:
 
 ```json
-{"project_id":"djconnect","submission":{"repository_id":"djconnect","producer":{"id":"legacy-file","type":"HUMAN"},"prompt":"..."}}
+{"project_id":"djconnect","submission":{"repository_id":"djconnect","producer":{"id":"file-inbox","type":"HUMAN"},"prompt":"..."}}
 ```
 
-There is no default project or current-directory inference. Its polling,
-stable-file detection, archival and quarantine behavior remain transport
-concerns; once decoded it calls the same service with transport `LEGACY_FILE`.
-An idempotency key only replays the same immutable normalized request; a
-different request using that key is rejected with `IDEMPOTENCY_CONFLICT`.
+There is no default project or current-directory inference. File Inbox is an
+explicit bounded internal principal (`FILE_INBOX`), not an impersonated
+project consumer: it bypasses only external bearer authentication and then
+calls the same canonical Submission Service as HTTP and CLI. Project and
+repository registration, mode/Genesis validation, idempotency, admission and
+lifecycle validation all remain mandatory. No File Inbox credential, project
+token map or internal HTTP endpoint exists.
+
+It moves one file
+through `incoming/`, `processing/`, `accepted/`, or `quarantine/`. The SHA-256
+of the physical file is its deterministic transport receipt/idempotency key,
+so a restart after CENTRAL acceptance replays the same canonical request and
+cannot create another Action. An accepted archive has a bounded receipt JSON;
+malformed or authorization-rejected files have a bounded quarantine reason.
+If CENTRAL is unavailable, the file remains in `processing/` for delivery
+retry only. No file transport database, StateStore, queue, retry lifecycle, or
+execution state exists.
+
+`LEGACY_FILE` remains an internal, unreachable provenance helper only. It is
+not an installed ingress or a supported watcher path.
 
 ## Canonical lifecycle contract
 
@@ -57,18 +75,14 @@ different request using that key is rejected with `IDEMPOTENCY_CONFLICT`.
 validates that the exact event sequence exists before returning a result or an
 idempotent replay. Transport is provenance, not execution authority.
 
-## Historical watcher semantic inventory
+## Retired watcher evidence
 
-The machine-checked [watcher semantic inventory](INBOX_WATCHER_SEMANTIC_INVENTORY.json)
-maps all 77 top-level watcher functions exactly once: 77 classified, 0
-unclassified and 0 ambiguous. It retains the six closed classifications used
-in the original receipt and captures the semantics that the future execution
-protocol must preserve.
-
-The old watcher is not CENTRAL execution authority. It is a source of
-transport-independent lifecycle semantics and, if enabled later, a file
-transport adapter. Schema 43 is a forward CENTRAL migration; no schema-40
-database is migrated or read.
+The historical Inbox watcher and its semantic inventory were retired after
+their transport, intake and lifecycle responsibilities moved to the
+Server-owned File Inbox, Submission Intake and CENTRAL Lifecycle Worker.
+Historical Git evidence records the prior implementation; it is not shipped,
+installed or executable in the supported product. Schema 43 is a forward
+CENTRAL migration; no schema-40 database is migrated or read.
 
 ## Post-merge installation plan
 
@@ -79,6 +93,6 @@ database is migrated or read.
 3. Start an isolated installed-package CENTRAL and perform an acceptance-only
    HTTP/CLI/file canary with a disposable project submission; confirm all three
    event boundaries end in `NOT_DISPATCHED`. Do not use the live B8 CENTRAL.
-4. Optionally enable the legacy file adapter with its explicit project JSON
-   envelope. B9 remains forbidden until B8C passes, B8D passes and the
+4. Start EP Server; its Server-owned File Inbox child recovers pending physical
+   delivery state. B9 remains forbidden until B8C passes, B8D passes and the
    execution protocol is explicitly ready.

@@ -15,9 +15,9 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import uuid
 from typing import Callable, Protocol
 
-from . import inbox_watcher
 from . import submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
@@ -28,8 +28,13 @@ from .platform_bootstrap import provision_runtime_workspace
 from .providers import CodexCliProvider, GitProvider
 from .execution_executor import CodexCliClient
 from .execution_reporting import generate_terminal_report
+from .host_preflight import execute as execute_host_preflight
+from .workspace_preflight import execute as execute_workspace_preflight
+from .capability_preflight import execute as execute_capability_preflight
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
+    ENGINEERING_STORAGE_SCHEMA_VERSION,
+    record_admission_decision,
     record_artifact,
     record_run_qualification_context,
     record_submission,
@@ -135,6 +140,55 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _allocate_run_id() -> str:
+    """Allocate a canonical CENTRAL lifecycle run identity."""
+    return f"inbox-{uuid.uuid4().hex}"
+
+
+def _record_provider_free_admission(
+    repository_root: Path,
+    *,
+    run_id: str,
+    submission_id: str,
+    execution_mode: str,
+    results: tuple[object, ...],
+) -> tuple[str, tuple[str, ...]]:
+    """Persist the deterministic pre-provider admission decision centrally.
+
+    This belongs to the lifecycle composition boundary.  It deliberately does
+    not claim a File Inbox item or depend on the retired watcher runtime.
+    """
+    gates: list[dict[str, object]] = []
+    failures: list[str] = []
+    for result in results:
+        timestamp = getattr(result, "timestamp", "unavailable")
+        stage = type(result).__name__.removesuffix("Result")
+        for check in getattr(result, "checks", ()):
+            identifier = str(getattr(check, "identifier", "unavailable"))
+            observed = str(getattr(check, "outcome", "UNAVAILABLE"))
+            gates.append({
+                "gate_id": identifier,
+                "stage": stage,
+                "expected": "PASS",
+                "observed": observed,
+                "verified_at": timestamp,
+            })
+            if observed == "FAIL":
+                failures.append(identifier)
+    decision = "FAIL" if failures else "PASS"
+    record_admission_decision(
+        repository_root,
+        run_id=run_id,
+        submission_id=submission_id,
+        execution_mode=execution_mode,
+        decision=decision,
+        failed_gate_ids=tuple(failures),
+        evidence=tuple(gates),
+        observed_at=_utcnow(),
+    )
+    return decision, tuple(failures)
+
+
 def _default_runner(repository_root: Path, *, central_database: Path | None = None) -> EngineeringRunner:
     """Construct the installed historical runner without a watcher or Agent."""
     remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
@@ -162,7 +216,7 @@ def _historical_admission_environment(repository_root: Path, data_root: Path):
         CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
     )
     previous = {key: os.environ.get(key) for key in keys}
-    os.environ[keys[0]] = str(inbox_watcher.ENGINEERING_STORAGE_SCHEMA_VERSION)
+    os.environ[keys[0]] = str(ENGINEERING_STORAGE_SCHEMA_VERSION)
     os.environ[keys[1]] = str(repository_root)
     os.environ[CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT] = str(data_root / "engineering.db")
     try:
@@ -200,6 +254,17 @@ class ParityLifecycleDispatcher:
                 (submission_id,),
             ).fetchone()
             if existing is not None:
+                provenance = connection.execute(
+                    """SELECT 1 FROM ep_receipt_run_provenance p
+                       JOIN engineering_metadata m ON m.key='installation.instance_id'
+                       WHERE p.submission_id=? AND p.run_id=?
+                         AND p.project_id=? AND p.repository_id=?
+                         AND p.installation_id=m.value""",
+                    (submission_id, str(existing[2]), str(existing[0]), str(existing[1])),
+                ).fetchone()
+                if provenance is None:
+                    connection.execute("ROLLBACK")
+                    raise ParityLifecycleDispatchError("PROVENANCE_REPLAY_INVALID")
                 context = project_context(connection, data_root=self.data_root, project_id=str(existing[0]), repository_id=str(existing[1]))
                 candidate = historical_candidate(connection, context=context, submission_id=submission_id)
                 connection.execute("COMMIT")
@@ -222,7 +287,7 @@ class ParityLifecycleDispatcher:
                 connection.execute("ROLLBACK")
                 raise ParityLifecycleDispatchError("PROJECT_RUN_ALREADY_ACTIVE")
             candidate = historical_candidate(connection, context=context, submission_id=submission_id)
-            run_id = inbox_watcher._allocate_run_id()
+            run_id = _allocate_run_id()
             prompt = self._prompt_path(context, run_id)
             now = _utcnow()
             connection.execute(
@@ -233,12 +298,20 @@ class ParityLifecycleDispatcher:
                 "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?, 'CLAIMED', ?,?,?)",
                 (submission_id, context.project_id, context.repository_id, run_id, str(prompt), now, now),
             )
+            installation = connection.execute("SELECT value FROM engineering_metadata WHERE key='installation.instance_id'").fetchone()
+            if installation is None:
+                connection.execute("ROLLBACK")
+                raise ParityLifecycleDispatchError("PROVENANCE_INSTALLATION_UNAVAILABLE")
+            connection.execute(
+                "INSERT INTO ep_receipt_run_provenance(submission_id,run_id,project_id,repository_id,installation_id,created_at) VALUES(?,?,?,?,?,?)",
+                (submission_id, run_id, context.project_id, context.repository_id, str(installation[0]), now),
+            )
             connection.execute("COMMIT")
             return context, candidate, run_id, prompt, False
 
     @staticmethod
     def _persist_historical_input(repository_root: Path, candidate: HistoricalCandidate, run_id: str, prompt: Path) -> None:
-        """Use the existing watcher-owned storage and admission primitives."""
+        """Persist canonical input and run the standalone admission checks."""
         # The preserved host preflight requires the standard runtime layout.
         # Reuse its product bootstrap rather than creating a P-A-specific one.
         provision_runtime_workspace(repository_root)
@@ -259,12 +332,10 @@ class ParityLifecycleDispatcher:
             repository_root, run_id=run_id, submission_id=candidate.submission_id,
             fresh_submission=True, retry_parent_run_id=None, resume_parent_run_id=None, recorded_at=now,
         )
-        # These are the exact admission primitives used by the former watcher;
-        # no CENTRAL scheduler or provider decision is introduced here.
-        host = inbox_watcher.execute_host_preflight(repository_root, run_id=run_id)
-        workspace = inbox_watcher.execute_workspace_preflight(repository_root, candidate.prompt, run_id=run_id)
-        capability = inbox_watcher.execute_capability_preflight(repository_root, candidate.prompt, run_id=run_id)
-        decision, _ = inbox_watcher._record_provider_free_admission(
+        host = execute_host_preflight(repository_root, run_id=run_id)
+        workspace = execute_workspace_preflight(repository_root, candidate.prompt, run_id=run_id)
+        capability = execute_capability_preflight(repository_root, candidate.prompt, run_id=run_id)
+        decision, _ = _record_provider_free_admission(
             repository_root, run_id=run_id, submission_id=candidate.submission_id,
             execution_mode=candidate.execution_mode, results=(host, workspace, capability),
         )
@@ -383,6 +454,12 @@ class ParityLifecycleDispatcher:
             raise ParityLifecycleDispatchError("LOCAL_BINDING_UNBOUND")
         repository_root = context.local_repository_root
         self._set_state(submission_id, run_id, "RUNNING")
+        # The installed ingress qualification deliberately stops only after
+        # CENTRAL has allocated and persisted the canonical dispatch/run. It
+        # exercises the real worker and dispatcher, while avoiding provider,
+        # checkout and PR side effects for six transport canaries.
+        if os.environ.get("EP_QUALIFICATION_INITIALIZE_ONLY") == "1":
+            return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, "RUNNING", duplicate)
         try:
             with _historical_admission_environment(repository_root, self.data_root):
                 if not duplicate:

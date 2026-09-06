@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import json
+import inspect
+import io
 import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 import socket
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import patch
+from contextlib import redirect_stdout
+from unittest.mock import call, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import local_repository_binding, project_topology, providers, server
+from engineering_platform import file_inbox, local_repository_binding, project_topology, providers, server
+from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
+from engineering_platform.providers import ProviderStatus
 
 
 class StandaloneServerFoundationTest(unittest.TestCase):
@@ -36,6 +45,91 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(report["operational_state"], "empty-valid")
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
+
+    def test_server_import_does_not_load_retired_inbox_watcher_runtime(self) -> None:
+        """The Server Console must not resurrect the retired watcher by import."""
+        repository = Path(__file__).resolve().parents[2]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository / "src")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; import engineering_platform.server; "
+                    "assert 'engineering_platform.inbox_watcher' not in sys.modules"
+                ),
+            ],
+            cwd=repository,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_project_console_event_stream_uses_central_not_root_local_configuration(self) -> None:
+        """A selected project cannot change the platform event-stream policy."""
+        source = inspect.getsource(server._HealthHandler._stream_console_events)
+        self.assertIn("central_database.console_interval_configuration", source)
+        self.assertNotIn("dashboard.dashboard_configuration", source)
+
+    def test_server_component_projection_is_exactly_the_canonical_model(self) -> None:
+        """Cards, details and logs cannot gain an independent component identity."""
+        server.initialize(self.root)
+        projection = server.status(self.root)
+        model = projection["component_model"]
+        self.assertEqual({item["id"] for item in model}, PLATFORM_COMPONENT_IDS)
+        self.assertEqual(set(projection["components"]), PLATFORM_COMPONENT_IDS)
+        self.assertTrue(all(item["id"] == item["log_component"] for item in model))
+        self.assertTrue(all({"name_key", "kind", "group", "restart_supported"} <= item.keys() for item in model))
+
+    def test_server_has_no_unlocalized_parallel_console_document(self) -> None:
+        """The installed Console has one localized document composition path."""
+        self.assertFalse(hasattr(server, "_operations_console_document"))
+
+    def test_host_admin_diagnostics_are_installation_scoped_not_project_scoped(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        try:
+            for headers in ({}, {"X-Engineering-Platform-Project": "unknown-project"}):
+                request = Request(f"http://127.0.0.1:{port}/api/host-admin/diagnostics", headers=headers)
+                with urlopen(request) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(response.headers["EP-Console-Route-Owner"], "HOST_ADMIN")
+                self.assertEqual(payload["scope"], "HOST_ADMIN")
+                self.assertFalse(payload["project_authority"])
+                self.assertFalse(payload["execution_authority"])
+        finally:
+            server.stop(self.root)
+
+    def test_console_document_has_one_central_log_table_and_no_legacy_inbox_configuration(self) -> None:
+        """Historical dashboard markup cannot re-enable retired Console controls."""
+        server.initialize(self.root)
+        document = server._no_project_console_document([], self.root)
+        component_logs = re.search(
+            br'<details class="technical-details" id="componentLogs">(.*?)</details>', document, re.DOTALL,
+        )
+        self.assertIsNotNone(component_logs)
+        self.assertEqual(component_logs.group(1).count(b'<table class="log-table"'), 1)  # type: ignore[union-attr]
+        self.assertIn(b'platformComponentLog', component_logs.group(1))  # type: ignore[union-attr]
+        self.assertNotIn(b'dashboardComponentLog', document)
+        self.assertNotIn(b'configurationInboxOpen', document)
+        self.assertNotIn(b'configurationInboxModal', document)
+
+    def test_server_console_uses_canonical_log_markup_without_a_runtime_transform(self) -> None:
+        """The one log table is authored once, not replaced after rendering."""
+        server.initialize(self.root)
+        self.assertFalse(hasattr(server, "_centralize_component_log_surface"))
+        no_project = server._no_project_console_document([], self.root)
+        selected = server._selected_project_console_document("project-a", [], self.root)
+        for document in (no_project, selected):
+            section = re.search(br'<details class="technical-details" id="componentLogs">(.*?)</details>', document, re.DOTALL)
+            self.assertIsNotNone(section)
+            self.assertEqual(section.group(1).count(b'<table class="log-table"'), 1)  # type: ignore[union-attr]
 
     def test_server_surfaces_missing_managed_runtime_without_degrading_central(self) -> None:
         identity = server.initialize(self.root)
@@ -169,7 +263,19 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(projection["installation_id"], identity.instance_id)
         self.assertEqual(projection["schema_version"], server.SERVER_STORE_SCHEMA_VERSION)
         self.assertEqual(projection["projects"], [])
-        self.assertIn(b"/v1/operations/projects", server._operations_console_document())
+
+    def test_topology_diagnostic_is_data_not_a_second_console(self) -> None:
+        """The installed Console owns UI; diagnostics expose only topology data."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        identity = server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        with urlopen(f"http://127.0.0.1:{port}/diagnostics/topology") as response:
+            self.assertEqual(response.headers.get_content_type(), "application/json")
+            projection = json.loads(response.read())
+        self.assertEqual(projection["installation_id"], identity.instance_id)
+        self.assertNotIn("html", projection)
 
     def test_no_project_console_never_resolves_a_checkout_for_shell_assets_or_platform_data(self) -> None:
         """`<geen>` is a real CENTRAL/platform projection, not first-root fallback."""
@@ -178,24 +284,218 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.initialize(self.root, bind_port=port)
         server.start(self.root)
 
-        for path in ("/", "/assets/dashboard.css", "/assets/dashboard.js", "/api/platform-status", "/api/configuration"):
+        for path in ("/", "/assets/dashboard.css", "/assets/dashboard.js", "/api/platform-status", "/api/configuration", "/api/logs/all"):
             with urlopen(f"http://127.0.0.1:{port}{path}") as response:
                 self.assertEqual(response.status, 200, path)
-                if path == "/api/platform-status":
-                    self.assertEqual(json.loads(response.read())["scope"], "PLATFORM")
+                if path in {"/api/platform-status", "/api/logs/all"}:
+                    projection = json.loads(response.read())
+                    self.assertEqual(projection["scope"], "PLATFORM")
         with urlopen(f"http://127.0.0.1:{port}/") as response:
             document = response.read().decode("utf-8")
         self.assertIn('data-project-id="none"', document)
         self.assertIn('id="noProjectSelected"', document)
+        self.assertIn('data-i18n="central.no_project_selected_title"', document)
+        self.assertIn('data-i18n="central.no_project_selected_body"', document)
+        self.assertNotIn('Geen project gekozen', document)
 
-    def test_console_workspace_identity_is_overridden_by_the_selected_central_project(self) -> None:
-        historical = (
-            b'<details id="workspaceCard"><span class="label" data-workspace-label="workspace.name" '
-            b'data-i18n="workspace.name"></span><span>djconnect</span></details>'
+    def test_central_log_route_filters_sorts_and_paginates_before_responding(self) -> None:
+        """The Console must receive a filtered CENTRAL page, never a sampled log tail."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            for event, level, diagnostic, created_at in (
+                ("zeta", "INFO", "unrelated", "2026-02-01T10:00:00+00:00"),
+                ("alpha", "WARNING", "needle one", "2026-02-02T10:00:00+00:00"),
+                ("beta", "ERROR", "needle two", "2026-02-03T10:00:00+00:00"),
+                ("gamma", "ERROR", "outside range", "2026-02-04T10:00:00+00:00"),
+            ):
+                connection.execute(
+                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                    ("operations_console", json.dumps({"event": event, "level": level, "diagnostic": diagnostic, "run_id": event}), created_at),
+                )
+        server.start(self.root)
+        query = (
+            "format=json&page=1&page_size=1&start=2026-02-02T00%3A00%3A00%2B00%3A00"
+            "&end=2026-02-04T00%3A00%3A00%2B00%3A00&level=WARNING&search=needle"
+            "&sort=event&direction=asc"
         )
-        projected = server._centralize_workspace_identity(historical, "alpha")
-        self.assertIn(b'<span>alpha</span>', projected)
-        self.assertNotIn(b'djconnect', projected)
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?{query}") as response:
+            filtered = json.loads(response.read())
+        self.assertEqual(filtered["total"], 2)
+        self.assertEqual(filtered["page"], 1)
+        self.assertEqual(filtered["page_size"], 1)
+        self.assertEqual([entry["event"] for entry in filtered["entries"]], ["alpha"])
+        self.assertEqual(filtered["entries"][0]["component"], "operations_console")
+        self.assertEqual(set(filtered["events"]), {"alpha", "beta"})
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?{query.replace('page=1', 'page=2', 1)}") as response:
+            second_page = json.loads(response.read())
+        self.assertEqual([entry["event"] for entry in second_page["entries"]], ["beta"])
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?format=ndjson&search=needle") as response:
+            exported = [json.loads(line) for line in response.read().decode().splitlines()]
+        self.assertEqual({entry["event"] for entry in exported}, {"alpha", "beta"})
+        for invalid in ("page=0", "page_size=201", "level=TRACE", "sort=component", "direction=sideways"):
+            with self.assertRaises(HTTPError) as error:
+                urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?{invalid}")
+            self.assertEqual(error.exception.code, 400)
+            self.assertEqual(json.loads(error.exception.read())["error"], "LOG_QUERY_INVALID")
+
+    @patch("engineering_platform.server._start_provider_login")
+    @patch("engineering_platform.server._central_provider_readiness")
+    def test_provider_login_repair_is_central_and_keeps_no_project_readiness(
+        self, readiness: object, start_login: object,
+    ) -> None:
+        """A host-wide sign-in cannot fall through to a checkout route."""
+        readiness.return_value = {
+            "codex": {"state": "AUTH_REQUIRED", "executable": "/managed/codex", "version": "1", "scope": "PLATFORM"},
+            "github": {"state": "AUTH_REQUIRED", "executable": "/managed/gh", "version": "1", "scope": "PLATFORM"},
+        }
+        server._central_provider_repair(self.root, {"provider": "CODEX", "action": "login"})
+        start_login.assert_called_once_with(self.root, "CODEX")
+        self.assertEqual(readiness()["codex"]["state"], "AUTH_REQUIRED")
+
+    @patch("engineering_platform.server._logout_provider")
+    @patch("engineering_platform.server._central_provider_readiness")
+    def test_provider_logout_is_central_and_never_requires_a_project(
+        self, readiness: object, logout: object,
+    ) -> None:
+        """A host-wide sign-out must work from the installed ``<geen>`` Console."""
+        readiness.return_value = {
+            "codex": {"state": "READY", "scope": "PLATFORM"},
+            "github": {"state": "READY", "scope": "PLATFORM"},
+        }
+        server._central_provider_logout(self.root, {"provider": "GITHUB"})
+        logout.assert_called_once_with(self.root, "GITHUB")
+        with self.assertRaises(ValueError):
+            server._central_provider_logout(self.root, {"provider": "INVALID"})
+
+    @patch("engineering_platform.server.provider_readiness.runtime_details")
+    @patch("engineering_platform.server.provider_readiness.host_status")
+    def test_central_provider_readiness_uses_host_authentication_not_repository_access(
+        self, host_status: object, runtime_details: object,
+    ) -> None:
+        host_status.return_value = {
+            "codex": {"provider": "CODEX", "state": "READY"},
+            "github": {"provider": "GITHUB", "state": "READY"},
+        }
+        runtime_details.return_value = {
+            "codex": {"executable": "/managed/codex", "version": "1"},
+            "github": {"executable": "/managed/gh", "version": "2"},
+        }
+
+        readiness = server._central_provider_readiness(self.root)
+
+        self.assertEqual(readiness["codex"], {
+            "provider": "CODEX", "state": "READY", "executable": "/managed/codex", "version": "1", "scope": "PLATFORM",
+        })
+        self.assertEqual(readiness["github"]["state"], "READY")
+        host_status.assert_called_once_with(self.root)
+        runtime_details.assert_called_once_with(self.root)
+
+    def test_transport_components_are_platform_scoped_and_secret_free(self) -> None:
+        server.initialize(self.root)
+        components = server.status(self.root)["components"]
+        self.assertEqual(set(components), {"ep_server", "platform_database", "lifecycle_worker", "operations_console", "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress", "dependabot_producer"})
+        self.assertEqual(components["ep_server"]["status_code"], "EP_SERVER_UNAVAILABLE")
+        self.assertEqual(components["platform_database"]["status_code"], "PLATFORM_DATABASE_HEALTHY")
+        self.assertEqual(components["http_ingress"]["status_code"], "HTTP_INGRESS_DOWN")
+        self.assertEqual(components["cli_ingress"]["status_code"], "CLI_INGRESS_DEGRADED")
+        self.assertEqual(components["file_inbox_ingress"]["status_code"], "FILE_INGRESS_STOPPED")
+        self.assertEqual(components["dependabot_producer"]["status_code"], "DEPENDABOT_DEGRADED")
+        self.assertNotIn("credential", repr(components).lower())
+
+    def test_dashboard_relay_requires_the_real_launch_agent_and_server(self) -> None:
+        server.initialize(self.root)
+        with patch("engineering_platform.server._runtime", return_value={"pid": 73}), patch(
+            "engineering_platform.server._alive", return_value=True
+        ), patch("engineering_platform.server.LaunchdProvider") as launchd:
+            launchd.return_value.runtime_status.return_value = ProviderStatus(
+                "launchd", "configured", True, "LaunchAgent process is active"
+            )
+            component = server.status(self.root)["components"]["dashboard_relay"]
+        self.assertTrue(component["healthy"])
+        self.assertEqual(component["status_code"], "DASHBOARD_RELAY_ACTIVE")
+        self.assertEqual(component["lifecycle_state"], "RUNNING")
+
+        with patch("engineering_platform.server._runtime", return_value={"pid": 73}), patch(
+            "engineering_platform.server._alive", return_value=True
+        ), patch("engineering_platform.server.LaunchdProvider") as launchd:
+            launchd.return_value.runtime_status.return_value = ProviderStatus(
+                "launchd", "configured", False, "LaunchAgent is not loaded"
+            )
+            component = server.status(self.root)["components"]["dashboard_relay"]
+        self.assertFalse(component["healthy"])
+        self.assertEqual(component["status_code"], "DASHBOARD_RELAY_UNAVAILABLE")
+
+    def test_only_the_canonical_relay_lifecycle_can_be_restarted(self) -> None:
+        server.initialize(self.root)
+        with patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
+            "engineering_platform.server.log_event"
+        ) as logged:
+            launchd.return_value.runtime_status.return_value = ProviderStatus(
+                "launchd", "configured", True, "LaunchAgent process is active"
+            )
+            result = server._restart_platform_component(self.root, "dashboard_relay")
+        launchd.return_value.restart.assert_called_once_with("com.djconnect.engineering-dashboard-relay")
+        launchd.return_value.runtime_status.assert_called_with("com.djconnect.engineering-dashboard-relay")
+        self.assertEqual(result, {
+            "restarting": "dashboard_relay", "scope": "PLATFORM",
+            "postcondition": "LIFECYCLE_OWNER_RUNNING",
+        })
+        self.assertEqual(
+            [call.args[2] for call in logged.call_args_list],
+            ["component_restart_requested", "component_restart_completed"],
+        )
+        for component in ("ep_server", "file_inbox_ingress", "unknown_component"):
+            with self.subTest(component=component), self.assertRaisesRegex(ValueError, "COMPONENT_RESTART_NOT_SUPPORTED"):
+                server._restart_platform_component(self.root, component)
+
+    def test_relay_restart_fails_closed_and_records_failure_when_owner_does_not_run(self) -> None:
+        server.initialize(self.root)
+        with patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
+            "engineering_platform.server.log_event"
+        ) as logged:
+            launchd.return_value.runtime_status.return_value = ProviderStatus(
+                "launchd", "configured", False, "LaunchAgent is loaded but has no active process"
+            )
+            with self.assertRaisesRegex(OSError, "COMPONENT_RESTART_POSTCONDITION_FAILED"):
+                server._restart_platform_component(self.root, "dashboard_relay")
+        launchd.return_value.restart.assert_called_once_with("com.djconnect.engineering-dashboard-relay")
+        launchd.return_value.runtime_status.assert_called_with("com.djconnect.engineering-dashboard-relay")
+        self.assertEqual(
+            [call.args[2] for call in logged.call_args_list],
+            ["component_restart_requested", "component_restart_failed"],
+        )
+
+    def test_server_cli_installs_relay_through_server_owned_lifecycle(self) -> None:
+        with patch("engineering_platform.server.server_relay.install", return_value={
+            "component": "dashboard_relay", "binary": "/installation/runtime/engineering-dashboard-relay",
+            "launch_agent": "/Library/LaunchAgents/com.djconnect.engineering-dashboard-relay.plist",
+        }) as install, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(server.main(["relay-install", "--data-root", str(self.root)]), 0)
+        install.assert_called_once_with(self.root)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["result"], "INSTALLED")
+        self.assertEqual(result["component"], "dashboard_relay")
+
+    def test_live_file_inbox_with_quarantine_is_degraded_without_execution_state(self) -> None:
+        server.initialize(self.root)
+        inbox = self.root / server.FILE_INBOX_DIRECTORY
+        inbox.mkdir(parents=True)
+        (inbox / file_inbox.HEARTBEAT_FILENAME).write_text(json.dumps({
+            "state": "READY", "readiness": "SUBMISSION_CAPABLE",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "watched_location": str(inbox), "delivery_retry": "NONE",
+            "quarantine_count": 1, "recent_error": "MALFORMED_FILE",
+        }), encoding="utf-8")
+        with patch("engineering_platform.server._runtime", return_value={"pid": 1}), patch(
+            "engineering_platform.server._alive", return_value=True,
+        ):
+            component = server.status(self.root)["components"]["file_inbox_ingress"]
+        self.assertEqual(component["status_code"], "FILE_INGRESS_DEGRADED")
+        self.assertEqual(component["detail_code"], "FILE_INBOX_HEARTBEAT")
+        self.assertEqual(component["quarantine_count"], 1)
+        self.assertEqual(component["reason_code"], "FILE_INBOX_DIAGNOSTIC")
 
     def test_central_database_controls_read_and_back_up_only_the_server_store(self) -> None:
         with socket.socket() as probe:
@@ -216,6 +516,87 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(request) as response:
             self.assertEqual(json.loads(response.read()), {"previous": 3600, "interval_seconds": 86400})
         self.assertEqual(server.central_database.maintenance_configuration(self.root), {"interval_seconds": 86400})
+
+    def test_every_console_setting_persists_through_the_central_configuration_api(self) -> None:
+        """Every visible Console setting has one CENTRAL-owned save path."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        expected = {
+            "log_retention_days": 180,
+            "telemetry_retention_days": 180,
+            "log_level": "DEBUG",
+            "inbox_scan_interval_seconds": 15,
+            "open_pr_check_interval_seconds": 60,
+            "dashboard_stream_interval_seconds": 5,
+            "provider_readiness_refresh_seconds": 600,
+            "platform_health_refresh_seconds": 15,
+            "component_details_refresh_seconds": 60,
+        }
+        for key, value in expected.items():
+            with self.subTest(key=key):
+                request = Request(
+                    f"http://127.0.0.1:{port}/api/configuration",
+                    data=json.dumps({"key": key, "value": value, "previous": None}).encode(),
+                    method="POST", headers={"Content-Type": "application/json"},
+                )
+                with urlopen(request) as response:
+                    result = json.loads(response.read())
+                self.assertEqual(result["key"], key)
+                self.assertEqual(result["value"], value)
+        with urlopen(f"http://127.0.0.1:{port}/api/configuration") as response:
+            persisted = json.loads(response.read())
+        self.assertEqual({key: persisted[key] for key in expected}, expected)
+
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            events = [
+                json.loads(row[0]) for row in connection.execute(
+                    "SELECT payload FROM engineering_component_logs "
+                    "WHERE component='operations_console' "
+                    "AND json_extract(payload, '$.event')='configuration_changed'"
+                )
+            ]
+        self.assertEqual(len(events), len(expected))
+        self.assertEqual(
+            {(event["configuration_scope"], event["configuration_key"]) for event in events},
+            {("OPERATIONS_CONSOLE", key) for key in expected},
+        )
+        log_level = next(event for event in events if event["configuration_key"] == "log_level")
+        self.assertEqual(log_level["previous_value"], "INFO")
+        self.assertEqual(log_level["new_value"], "DEBUG")
+
+    def test_server_configuration_mutation_routes_are_audited_in_central_logs(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        requests = (
+            ("/api/central-database/configuration", {"interval_seconds": 86400}),
+            ("/api/provider-capacity/configuration", {"codex_capacity_reserve_percent": 0}),
+        )
+        for route, payload in requests:
+            request = Request(
+                f"http://127.0.0.1:{port}{route}", data=json.dumps(payload).encode(), method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urlopen(request) as response:
+                self.assertEqual(response.status, 200)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            events = [
+                json.loads(row[0]) for row in connection.execute(
+                    "SELECT payload FROM engineering_component_logs "
+                    "WHERE component='operations_console' "
+                    "AND json_extract(payload, '$.event')='configuration_changed'"
+                )
+            ]
+        self.assertEqual(
+            {(event["configuration_scope"], event["configuration_key"]) for event in events},
+            {
+                ("CENTRAL_DATABASE", "maintenance_interval_seconds"),
+                ("PROVIDER_CAPACITY", "codex_capacity_reserve_percent"),
+            },
+        )
 
     def test_download_attachment_headers_reject_request_control_characters(self) -> None:
         self.assertEqual(
@@ -252,24 +633,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertNotIn('CENTRAL database', panel)
         self.assertIn('class="configuration-central-database__maintenance"', panel)
         self.assertIn('data-saved-value="3600"', panel)
-        self.assertIn('id="centralDatabaseLocation"', panel)
-        self.assertIn('configuration-central-database__location-link', panel)
-        self.assertIn('configuration.ep_database_open_folder', panel)
+        self.assertNotIn('id="centralDatabaseLocation"', panel)
+        self.assertNotIn('configuration-central-database__location-link', panel)
+        self.assertNotIn('configuration.ep_database_open_folder', panel)
         self.assertIn('aria-describedby="centralDatabaseMaintenanceHelp centralDatabaseMaintenanceStatus"', panel)
         self.assertIn("maintenance.dataset.savedValue", script)
         self.assertIn("maintenance.value=previous", script)
         self.assertIn("Number(result.interval_seconds)!==requested", script)
-
-    @patch("engineering_platform.server.sys.platform", "darwin")
-    @patch("engineering_platform.server.LocalProcessProvider")
-    def test_ep_database_location_opens_only_the_central_owning_directory(self, process: MagicMock) -> None:
-        server.initialize(self.root)
-        process.return_value.execute.return_value = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
-
-        opened = server._open_central_database_directory(self.root)
-
-        self.assertEqual(opened, {"opened_directory": str(self.root.resolve())})
-        process.return_value.execute.assert_called_once_with(self.root.resolve(), ("open", str(self.root.resolve())))
 
     def test_runtime_directory_route_is_retired_in_the_central_console(self) -> None:
         identity = server.initialize(self.root)
@@ -310,6 +680,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "/api/configuration",
             "/api/provider-login-status",
             "/api/execution-runtime-status",
+            "/api/logs/all",
             "/api/logs/inbox",
             "/api/logs/dashboard",
         ):
@@ -321,7 +692,19 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 # (503), but an empty project selection must never reject a
                 # host-wide endpoint as missing project scope.
                 self.assertNotEqual(error.code, 409, path)
-        for path in ("/api/prompt-history", "/api/dashboard-snapshot", "/api/events"):
+        with urlopen(f"http://127.0.0.1:{port}/api/dashboard-snapshot") as response:
+            snapshot = json.loads(response.read())
+        self.assertEqual(snapshot["scope"], "PLATFORM")
+        self.assertRegex(snapshot["status"]["platform_version"], r"^\d+\.\d+\.\d+")
+        self.assertEqual(snapshot["status"]["queue_depth"], 0)
+        self.assertEqual(snapshot["runs"], [])
+        with urlopen(f"http://127.0.0.1:{port}/api/events", timeout=2) as response:
+            self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+            self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
+            event = "".join(response.readline().decode("utf-8") for _ in range(4))
+        self.assertIn('"scope":"PLATFORM"', event)
+        self.assertNotIn('"runs":[{', event)
+        for path in ("/api/prompt-history",):
             with self.assertRaises(HTTPError) as blocked:
                 urlopen(f"http://127.0.0.1:{port}{path}")
             self.assertEqual(blocked.exception.code, 409, path)
@@ -336,6 +719,57 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             first = response.read().decode("utf-8")
         with urlopen(f"http://127.0.0.1:{port}/?project=engineering-platform") as response:
             second = response.read().decode("utf-8")
+        # Platform runtime readiness must retain its CENTRAL source when the
+        # browser selects a project and adds its request-scoped header.
+        with urlopen(Request(
+            f"http://127.0.0.1:{port}/api/execution-runtime-status",
+            headers={"X-Engineering-Platform-Project": "djconnect"},
+        )) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
+            self.assertIn(json.loads(response.read())["state"], {"READY", "UNAVAILABLE"})
+        # The browser's two context modes must retain the same authority for
+        # every Platform route.  Status payload presentation can differ, but
+        # the health path must never become a project/check-out delegate.
+        for path in (
+            "/health", "/api/platform-status", "/api/dashboard-snapshot",
+            "/api/status", "/api/provider-login-status",
+            "/api/execution-runtime-status",
+            "/api/components/ep_server/details", "/api/components/platform_database/details",
+            "/api/components/lifecycle_worker/details", "/api/components/operations_console/details",
+            "/api/components/dashboard_relay/details", "/api/components/file_inbox_ingress/details", "/api/configuration",
+        ):
+            for headers in ({}, {"X-Engineering-Platform-Project": "djconnect"}):
+                try:
+                    with urlopen(Request(f"http://127.0.0.1:{port}{path}", headers=headers)) as response:
+                        self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM", path)
+                except HTTPError as error:
+                    self.assertNotEqual(error.code, 409, path)
+                    self.assertEqual(error.headers["EP-Console-Route-Owner"], "PLATFORM", path)
+        # Retired routes are handled before project selection too, but retain
+        # their own explicit historical owner rather than masquerading as a
+        # supported platform component projection.
+        for headers in ({}, {"X-Engineering-Platform-Project": "djconnect"}):
+            with self.assertRaises(HTTPError) as retired:
+                urlopen(Request(f"http://127.0.0.1:{port}/api/logs/inbox", headers=headers))
+            self.assertEqual(retired.exception.code, 410)
+            self.assertEqual(retired.exception.headers["EP-Console-Route-Owner"], "HISTORICAL_UNREACHABLE")
+        # Actions are just as host-wide as their status cards. Invalid bodies
+        # make these probes non-mutating while still exercising dispatch.
+        for path, body in (
+            ("/api/provider-login/repair", b"{}"),
+            ("/api/execution-runtime/repair", b"{}"),
+            ("/api/components/dashboard_relay/restart", b"[]"),
+            ("/api/configuration", b"{}"),
+        ):
+            for headers in ({}, {"X-Engineering-Platform-Project": "djconnect"}):
+                request_headers = {"Content-Type": "application/json", **headers}
+                try:
+                    with urlopen(Request(f"http://127.0.0.1:{port}{path}", data=body, method="POST", headers=request_headers)) as response:
+                        self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM", path)
+                except HTTPError as error:
+                    self.assertNotEqual(error.code, 404, path)
+                    self.assertEqual(error.headers["EP-Console-Route-Owner"], "PLATFORM", path)
         # EventSource supplies the CENTRAL scope as a query value because it
         # cannot set the dashboard fetch header. Both bound projects must
         # reach the preserved live route, not leak scope into a 404 path.
@@ -343,6 +777,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             with urlopen(f"http://127.0.0.1:{port}/api/events?project={identifier}", timeout=2) as response:
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+                self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
+                event = "".join(response.readline().decode("utf-8") for _ in range(4))
+                self.assertIn('"platform_version":"2.0.0"', event)
         # Browser module and stylesheet requests precede the document's
         # project-aware fetch wrapper, so neutral package assets must remain
         # available without a scope header.
@@ -358,25 +795,32 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('data-project-id="engineering-platform" data-project-name="engineering-platform"', second)
         self.assertNotIn(str(roots[0]), first)
         self.assertNotIn("Project-scoped local workspace", first)
-        selector = server._console_document_transform(
-            "djconnect", [{"project_id": "djconnect", "repository_id": "djconnect"}], roots[0], self.root,
-        )(b"<main></main>").decode("utf-8")
         no_project = server._no_project_console_document(
             [{"project_id": "djconnect", "repository_id": "djconnect"}],
             self.root,
         ).decode("utf-8")
-        self.assertIn('&lt;geen&gt;</option>', selector)
-        self.assertIn("dashboard-select-options-changed", selector)
-        self.assertIn('>djconnect</option>', selector)
-        self.assertNotIn('>DJConnect</option>', selector)
         self.assertIn('data-project-id="none" data-project-name="&lt;geen&gt;"', no_project)
         self.assertIn('id="noProjectSelected"', no_project)
+        self.assertIn('data-i18n="central.no_project_selected_title"', no_project)
+        self.assertIn('data-i18n="central.no_project_selected_body"', no_project)
+        self.assertIn('data-i18n="project.label"', no_project)
+        self.assertNotIn('Geen project gekozen', no_project)
         self.assertIn('dashboard-status-banner--no-project', no_project)
         self.assertLess(no_project.index('id="noProjectSelected"'), no_project.index('<main class="dashboard-grid"'))
         self.assertNotIn(str(roots[0]), no_project)
         self.assertIn('/assets/dashboard.js', no_project)
         self.assertIn('id="componentLogs"', no_project)
         self.assertIn('id="configuration"', no_project)
+        self.assertNotIn('id="configurationInboxOpen"', no_project)
+        self.assertNotIn('id="configurationInboxModal"', no_project)
+        self.assertIn('id="configurationServerSettings"', no_project)
+        self.assertIn('configurationInboxScanInterval', no_project)
+        self.assertIn('configurationOpenPrInterval', no_project)
+        self.assertLess(
+            no_project.index('id="configurationServerSettings"'),
+            no_project.index('configurationOpenPrInterval'),
+        )
+        self.assertIn('configuration-file-inbox-readonly', no_project)
         self.assertIn('id="centralDatabaseHeading"', no_project)
         self.assertIn('/api/central-database/download', no_project)
         self.assertNotIn('workspace-database-section', no_project)
@@ -386,11 +830,6 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('id="noProjectSelected"', unscoped)
         self.assertNotIn('data-project-id="djconnect"', unscoped)
         self.assertNotIn(str(roots[0]), unscoped)
-        self.assertEqual(server._historical_dashboard_path(server.urlsplit("/api/events?project=djconnect")), "/api/events")
-        self.assertEqual(
-            server._historical_dashboard_path(server.urlsplit("/api/prompt-history/run/report?project=djconnect&audit=download")),
-            "/api/prompt-history/run/report?audit=download",
-        )
         self.assertIn('/assets/dashboard.js', first)
         self.assertIn(b"fetch", asset)
         self.assertNotIn(str(roots[0]), first)
@@ -434,7 +873,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute(
                 "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
-                ("dashboard", '{"event":"central_console_test","level":"INFO"}', "2026-01-01T00:00:04+00:00"),
+                ("operations_console", '{"event":"central_console_test","level":"INFO"}', "2026-01-01T00:00:04+00:00"),
             )
         artifact = self.root / "artifacts" / "reports" / "dj-run.md"
         artifact.parent.mkdir(parents=True)
@@ -459,7 +898,31 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(response.read(), b"# CENTRAL report\n")
         with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/chat?project=djconnect") as response:
             self.assertEqual(json.loads(response.read())["messages"][0]["content"], "CENTRAL transcript")
-        with urlopen(f"http://127.0.0.1:{port}/api/logs/dashboard?project=djconnect") as response:
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/all?project=djconnect&page_size=200") as response:
             logs = json.loads(response.read())
         self.assertEqual(logs["scope"], "PLATFORM")
-        self.assertEqual(logs["entries"][0]["event"], "central_console_test")
+        central_record = next(entry for entry in logs["entries"] if entry["event"] == "central_console_test")
+        self.assertEqual(central_record["component"], "operations_console")
+        # The installation lifecycle owns the Console now.  The retired
+        # Dashboard listener never emitted a supported startup event here.
+        self.assertIn("operations_console_available", [entry["event"] for entry in logs["entries"]])
+        ndjson_request = Request(
+            f"http://127.0.0.1:{port}/api/logs/operations_console?format=ndjson",
+        )
+        with urlopen(ndjson_request) as response:
+            self.assertEqual(response.headers["Content-Type"], "application/x-ndjson; charset=utf-8")
+            exported = [json.loads(line) for line in response.read().decode("utf-8").splitlines()]
+        exported_record = next(entry for entry in exported if entry["event"] == "central_console_test")
+        self.assertEqual(exported_record["component"], "operations_console")
+        self.assertIn("timestamp", exported_record)
+        delete_request = Request(
+            f"http://127.0.0.1:{port}/api/logs/all",
+            data=b'{"component":"operations_console"}', method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(delete_request) as response:
+            deleted = json.loads(response.read())
+        self.assertGreaterEqual(deleted["deleted"], 1)
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console") as response:
+            remaining = json.loads(response.read())
+        self.assertNotIn("central_console_test", [entry["event"] for entry in remaining["entries"]])

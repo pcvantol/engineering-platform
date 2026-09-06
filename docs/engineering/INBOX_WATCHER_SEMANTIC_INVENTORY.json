@@ -19,7 +19,7 @@
         "_source_revision", "publish_ready_record", "_configured_scan_interval",
         "cloud_root", "folders", "local_folders", "launch_path", "stable_prompt", "_looks_like_markdown",
         "discover", "_archive_path", "_already_seen", "_move", "_lock", "_scan_queue", "launch_agent", "doctor",
-        "migrate_icloud_archives", "main"
+        "main"
       ]
     },
     {
@@ -42,7 +42,7 @@
         "defer_queued_prompt", "_record_provider_free_admission", "_blocking_predecessor", "_predecessor_recovery_action",
         "retry_admission_preflight", "predecessor_retry_admission_preflight", "submit_execution_retry",
         "status_reconciliation_preview", "_is_verified_status_reconciliation", "submit_status_reconciliation",
-        "submit_predecessor_retry", "_admit_dependabot_pull_requests", "_admit_queue_candidate", "once"
+        "submit_predecessor_retry", "_admit_queue_candidate", "once"
       ]
     },
     {
@@ -80,7 +80,7 @@
     }
   ],
   "summary": {
-    "declared_function_responsibilities": 76,
+    "declared_function_responsibilities": 74,
     "unclassified": 0,
     "ambiguous": 0,
     "server_to_codex_shortcut": false,

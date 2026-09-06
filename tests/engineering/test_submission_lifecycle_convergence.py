@@ -11,9 +11,10 @@ import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import server, submission_cli, submission_service
+from engineering_platform import file_inbox, server, submission_cli, submission_service
 
 
 class CanonicalSubmissionLifecycleTest(unittest.TestCase):
@@ -58,67 +59,121 @@ class CanonicalSubmissionLifecycleTest(unittest.TestCase):
         assert receipt["admission"] == "ADMITTED"
         assert receipt["transport"] == transport
 
-    def _payload(self, key: str) -> dict[str, object]:
+    def _payload(self, key: str, mode: str = "MANAGED") -> dict[str, object]:
+        target = "\nTarget repository: /tmp/isolated-genesis-target" if mode == "GENESIS" else ""
         return {
             "repository_id": "isolated-repository",
             "producer": {"id": "canary", "type": "HUMAN", "version": "1"},
-            "prompt": "Validate only; this isolated canary must not execute.",
+            "prompt": f"Execution Mode: {mode.title()}{target}\n\nValidate only; this isolated canary must not execute.",
             "idempotency_key": key,
             "correlation_id": "canary-correlation",
             "mission_id": "canary-mission",
             "engineering_action_id": "canary-action",
-            "constraints": {"mode": "canary"},
+            "constraints": {"mode": mode, "canary": True},
         }
 
-    def test_http_cli_and_legacy_file_share_the_durable_non_dispatch_lifecycle(self) -> None:
-        server.start(self.root)
-        http_request = Request(
+    def _http_submit(self, payload: dict[str, object], *, credential: str | None = None) -> dict[str, object]:
+        headers = {"Content-Type": "application/json"}
+        if credential is not None:
+            headers["Authorization"] = f"Bearer {credential}"
+        request = Request(
             f"http://127.0.0.1:{self.port}/v1/projects/isolated-project/submissions",
-            data=json.dumps(self._payload("http")).encode("utf-8"), method="POST",
-            headers={"Authorization": f"Bearer {self.credential}", "Content-Type": "application/json"},
+            data=json.dumps(payload).encode("utf-8"), method="POST", headers=headers,
         )
-        with urlopen(http_request) as response:  # nosec B310 -- isolated loopback canary
-            http_receipt = json.loads(response.read())
-        self._assert_lifecycle(http_receipt, "HTTP")
+        with urlopen(request) as response:  # nosec B310 -- isolated loopback canary
+            return json.loads(response.read())
 
-        prompt = self.root / "cli-prompt.md"
-        prompt.write_text("Validate only; this isolated canary must not execute.", encoding="utf-8")
-        constraints = self.root / "constraints.json"
-        constraints.write_text(json.dumps({"mode": "canary"}), encoding="utf-8")
+    def _cli_submit(self, payload: dict[str, object], mode: str) -> dict[str, object]:
+        prompt = self.root / f"cli-{mode.lower()}.md"
+        constraints = self.root / f"constraints-{mode.lower()}.json"
+        prompt.write_text(str(payload["prompt"]), encoding="utf-8")
+        constraints.write_text(json.dumps(payload["constraints"]), encoding="utf-8")
         output = io.StringIO()
         with patch.dict(os.environ, {"EP_CONSUMER_TOKEN": self.credential}, clear=False), redirect_stdout(output):
-            self.assertEqual(
-                submission_cli.main([
-                    "submit", "--server", f"http://127.0.0.1:{self.port}", "--project", "isolated-project",
-                    "--repository", "isolated-repository", "--producer-id", "canary", "--producer-type", "HUMAN",
-                    "--producer-version", "1", "--prompt-file", str(prompt), "--idempotency-key", "cli",
-                    "--correlation-id", "canary-correlation", "--mission-id", "canary-mission",
-                    "--engineering-action-id", "canary-action", "--constraints-file", str(constraints),
-                ]),
-                0,
-            )
-        cli_receipt = json.loads(output.getvalue())
-        self._assert_lifecycle(cli_receipt, "CLI")
+            self.assertEqual(submission_cli.main([
+                "submit", "--server", f"http://127.0.0.1:{self.port}", "--project", "isolated-project",
+                "--repository", "isolated-repository", "--producer-id", "canary", "--producer-type", "HUMAN",
+                "--producer-version", "1", "--prompt-file", str(prompt), "--idempotency-key", str(payload["idempotency_key"]),
+                "--correlation-id", "canary-correlation", "--mission-id", "canary-mission",
+                "--engineering-action-id", "canary-action", "--constraints-file", str(constraints),
+            ]), 0)
+        return json.loads(output.getvalue())
 
-        legacy = self.root / "legacy.json"
-        legacy.write_text(
-            json.dumps({"project_id": "isolated-project", "submission": self._payload("legacy")}),
-            encoding="utf-8",
+    def _file_inbox_submit(self, payload: dict[str, object], mode: str) -> dict[str, object]:
+        root = self.root / "file-inbox"
+        incoming = root / "incoming"
+        incoming.mkdir(parents=True, exist_ok=True)
+        receipts_before = set((root / "accepted").glob("*.receipt.json")) if (root / "accepted").exists() else set()
+        (incoming / f"{mode.lower()}.json").write_text(
+            json.dumps({"project_id": "isolated-project", "submission": payload}), encoding="utf-8",
         )
+        self.assertEqual(
+            file_inbox.process_once(root, server=f"http://127.0.0.1:{self.port}", credential=self.credential),
+            {"accepted": 1, "quarantined": 0, "retryable": 0},
+        )
+        receipt = next(iter(set((root / "accepted").glob("*.receipt.json")) - receipts_before))
+        return json.loads(receipt.read_text(encoding="utf-8"))
+
+    def test_every_transport_and_execution_mode_share_the_durable_non_dispatch_lifecycle(self) -> None:
+        server.start(self.root)
+        for mode in ("MANAGED", "GENESIS"):
+            with self.subTest(transport="HTTP", mode=mode):
+                self._assert_lifecycle(self._http_submit(self._payload(f"http-{mode}", mode), credential=self.credential), "HTTP")
+            with self.subTest(transport="CLI", mode=mode):
+                self._assert_lifecycle(self._cli_submit(self._payload(f"cli-{mode}", mode), mode), "CLI")
+            with self.subTest(transport="FILE_INBOX", mode=mode):
+                receipt = self._file_inbox_submit(self._payload(f"file-{mode}", mode), mode)
+                with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+                    lifecycle = submission_service.lifecycle(connection, str(receipt["submission_id"]))
+                self.assertEqual(lifecycle["transport"], "FILE_INBOX")
+                self.assertEqual(lifecycle["execution"], "NOT_DISPATCHED")
+
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
-            legacy_receipt = submission_service.submit_legacy_file(connection, legacy).to_dict()
-            self._assert_lifecycle(legacy_receipt, "LEGACY_FILE")
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM ep_execution_runs").fetchone()[0], 0,
             )
             self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM ep_submission_events").fetchone()[0], 9,
+                connection.execute("SELECT COUNT(*) FROM ep_submission_events").fetchone()[0], 18,
             )
             for submission_id, in connection.execute("SELECT submission_id FROM ep_submissions"):
                 self.assertEqual(
                     submission_service.lifecycle(connection, submission_id)["execution"],
                     "NOT_DISPATCHED",
                 )
+
+    def test_negative_transport_matrix_rejects_admission_without_creating_a_run(self) -> None:
+        """Each ingress preserves CENTRAL's terminal rejection without dispatching."""
+        server.start(self.root)
+        rejected = self._payload("http-rejected")
+        rejected["repository_id"] = "unknown-repository"
+        with self.assertRaises(HTTPError) as http_error:
+            self._http_submit(rejected, credential=self.credential)
+        self.assertEqual(http_error.exception.code, 404)
+
+        prompt, constraints, output = self.root / "rejected.md", self.root / "rejected.json", io.StringIO()
+        prompt.write_text(str(rejected["prompt"]), encoding="utf-8")
+        constraints.write_text(json.dumps(rejected["constraints"]), encoding="utf-8")
+        with patch.dict(os.environ, {"EP_CONSUMER_TOKEN": self.credential}, clear=False), redirect_stdout(output):
+            self.assertEqual(submission_cli.main([
+                "submit", "--server", f"http://127.0.0.1:{self.port}", "--project", "isolated-project",
+                "--repository", "unknown-repository", "--prompt-file", str(prompt), "--constraints-file", str(constraints),
+            ]), 1)
+        self.assertIn("UNKNOWN_REPOSITORY", output.getvalue())
+
+        inbox_root = self.root / "rejected-file-inbox"
+        (inbox_root / "incoming").mkdir(parents=True)
+        (inbox_root / "incoming" / "rejected.json").write_text(
+            json.dumps({"project_id": "isolated-project", "submission": rejected}), encoding="utf-8",
+        )
+        self.assertEqual(
+            file_inbox.process_once(inbox_root, server=f"http://127.0.0.1:{self.port}", credential=self.credential),
+            {"accepted": 0, "quarantined": 1, "retryable": 0},
+        )
+        receipt = json.loads(next((inbox_root / "quarantine").glob("*.receipt.json")).read_text(encoding="utf-8"))
+        self.assertEqual(receipt["reason"], "UNKNOWN_REPOSITORY")
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_execution_runs").fetchone()[0], 0)
 
     def test_idempotency_key_cannot_alias_a_different_lifecycle_request(self) -> None:
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
@@ -135,27 +190,7 @@ class CanonicalSubmissionLifecycleTest(unittest.TestCase):
                 )
 
 
-class InboxWatcherSemanticInventoryTest(unittest.TestCase):
-    def test_inventory_covers_each_watcher_function_exactly_once(self) -> None:
+class RetiredInboxWatcherTest(unittest.TestCase):
+    def test_retired_watcher_runtime_is_not_packaged_source(self) -> None:
         repository = Path(__file__).resolve().parents[2]
-        inventory = json.loads(
-            (repository / "docs/engineering/INBOX_WATCHER_SEMANTIC_INVENTORY.json").read_text(encoding="utf-8")
-        )
-        source = repository / str(inventory["source"])
-        functions = {
-            node.name for node in ast.parse(source.read_text(encoding="utf-8")).body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        mapped = [
-            symbol for item in inventory["inventory"] for symbol in item["symbols"]
-        ]
-        self.assertEqual(len(mapped), len(set(mapped)))
-        self.assertEqual(set(mapped), functions)
-        self.assertTrue(
-            all(item["classification"] in inventory["classification_vocabulary"] for item in inventory["inventory"])
-        )
-        self.assertEqual(inventory["summary"]["declared_function_responsibilities"], len(functions))
-        self.assertEqual(inventory["summary"]["unclassified"], 0)
-        self.assertEqual(inventory["summary"]["ambiguous"], 0)
-        self.assertFalse(inventory["summary"]["server_to_codex_shortcut"])
-        self.assertEqual(inventory["summary"]["execution_protocol_status"], "NOT_IMPLEMENTED")
+        self.assertFalse((repository / "src/engineering_platform/inbox_watcher.py").exists())

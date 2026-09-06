@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -20,6 +24,22 @@ STATE = SimpleNamespace(
 
 
 class EmergencyRecoveryTest(unittest.TestCase):
+    def test_emergency_recovery_import_does_not_load_retired_inbox_watcher_runtime(self) -> None:
+        source_root = Path(__file__).resolve().parents[2] / "src"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json, sys; import engineering_platform.emergency_recovery; "
+                "print(json.dumps('engineering_platform.inbox_watcher' in sys.modules))",
+            ],
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            env=os.environ | {"PYTHONPATH": str(source_root)},
+        )
+        self.assertEqual(json.loads(completed.stdout), False)
+
     def test_central_recovery_rejects_missing_or_cross_project_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "engineering.db"

@@ -1,6 +1,8 @@
 # Phase P-B Console parity matrix
 
-The standalone Server root reuses `engineering_platform.dashboard.handler` and
+The standalone Server root owns the Console HTTP boundary and uses
+`engineering_platform.server_console_services` for retained project
+projections; it no longer reuses a direct Dashboard handler. It serves
 the installed package's `dashboard.js`, `dashboard.css`, locale catalog,
 status store, and Operations Console icons.  It does not duplicate the legacy
 route table.  CENTRAL validates the selected project through its schema-44

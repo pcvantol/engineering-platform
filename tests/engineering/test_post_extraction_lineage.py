@@ -94,4 +94,68 @@ class GovernedPhaseBaselineTests(unittest.TestCase):
             self.assertEqual("UNACCOUNTED",inventory[0]["classification"])
             self.assertTrue(any("unaccounted current target" in error for error in errors))
 
+class SuccessorReceiptModelTests(unittest.TestCase):
+    anchor="a" * 40
+    completion_a="b" * 40
+    completion_b="c" * 40
+    completion_c="d" * 40
+
+    def receipt(self, identity, phase):
+        return {"receipt_id":identity,"phase_id":phase,"historical_target_path":identity + ".py"}
+
+    def completions(self, receipts):
+        b=[receipt for receipt in receipts.values() if receipt["phase_id"]=="B"]
+        c=[receipt for receipt in receipts.values() if receipt["phase_id"]=="C"]
+        return {"governed_phase_seals":[{"phase_id":"A","completion_baseline":self.completion_a}],"successor_phase_completions":[
+            {"phase_id":"B","predecessor_phase_id":"A","predecessor_completion_sha":self.completion_a,"completion_sha":self.completion_b,"receipt_ids":[x["receipt_id"] for x in b],"receipts_sha256":MODULE.canonical_digest(b)},
+            {"phase_id":"C","predecessor_phase_id":"B","predecessor_completion_sha":self.completion_b,"completion_sha":self.completion_c,"receipt_ids":[x["receipt_id"] for x in c],"receipts_sha256":MODULE.canonical_digest(c)}]}
+
+    def test_multihop_successor_completion_chain_passes(self):
+        receipts={"b.py":self.receipt("b","B"),"c.py":self.receipt("c","C")}; errors=[]
+        with patch.object(MODULE,"ancestor",lambda *_args: True):
+            phases=MODULE.successor_phase_completions(Path("."),self.anchor,self.completion_c,self.completions(receipts),receipts,errors)
+        self.assertEqual({"A":self.completion_a,"B":self.completion_b,"C":self.completion_c},phases)
+        self.assertEqual([],errors)
+
+    def test_wrong_predecessor_or_digest_is_rejected(self):
+        receipts={"b.py":self.receipt("b","B"),"c.py":self.receipt("c","C")}; ledger=self.completions(receipts)
+        ledger["successor_phase_completions"][1]["predecessor_completion_sha"]="0" * 40
+        ledger["successor_phase_completions"][0]["receipts_sha256"]="0" * 64
+        errors=[]
+        with patch.object(MODULE,"ancestor",lambda *_args: True):
+            MODULE.successor_phase_completions(Path("."),self.anchor,self.completion_c,ledger,receipts,errors)
+        self.assertEqual(2,sum("invalid successor phase completion" in error for error in errors))
+
+    def test_explicit_retirement_is_the_only_empty_destination(self):
+        errors=[]
+        MODULE.validate_responsibilities({"x.py::module"},[],[{"responsibility":"x.py::module","reason":"retired"}],errors,"x.py")
+        self.assertEqual([],errors)
+        errors=[]
+        MODULE.validate_responsibilities({"x.py::module"},[],[],errors,"x.py")
+        self.assertTrue(any("unaccounted responsibility" in error for error in errors))
+
+    def test_duplicate_phase_identity_is_rejected(self):
+        receipts={"b.py":self.receipt("b","B")}; ledger=self.completions({**receipts,"c.py":self.receipt("c","C")})
+        duplicate=dict(ledger["successor_phase_completions"][0]); ledger["successor_phase_completions"].append(duplicate)
+        errors=[]
+        with patch.object(MODULE,"ancestor",lambda *_args: True):
+            MODULE.successor_phase_completions(Path("."),self.anchor,self.completion_c,ledger,receipts,errors)
+        self.assertTrue(any("invalid successor phase completion" in error for error in errors))
+
+    def test_duplicate_successor_claim_is_rejected(self):
+        errors=[]
+        receipts=[{"historical_target_path":"x.py"},{"historical_target_path":"x.py"}]
+        self.assertEqual({"x.py"},set(MODULE.successor_receipts({"successor_evolutions":receipts},errors)))
+        self.assertTrue(any("duplicate successor receipt" in error for error in errors))
+
+    def test_malformed_successor_claim_is_rejected(self):
+        errors=[]
+        self.assertEqual({},MODULE.successor_receipts({"successor_evolutions":[{"historical_target_path":"../x.py"}]},errors))
+        self.assertTrue(any("malformed" in error for error in errors))
+
+    def test_non_list_successor_receipts_are_rejected(self):
+        errors=[]
+        self.assertEqual({},MODULE.successor_receipts({"successor_evolutions":{}},errors))
+        self.assertIn("successor evolutions must be a list",errors)
+
 if __name__ == "__main__": unittest.main()

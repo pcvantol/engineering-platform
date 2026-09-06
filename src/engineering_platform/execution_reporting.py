@@ -100,7 +100,7 @@ def _component_inventory(bundle: TerminalEvidenceBundle) -> tuple[tuple[str, tup
         lower = path.casefold()
         if path == "src/engineering_platform/execution_host.py":
             name = "Engineering Report Generator"
-        elif path.startswith("src/engineering_platform/assets/") or path == "src/engineering_platform/dashboard.py":
+        elif path.startswith("src/engineering_platform/assets/") or path == "src/engineering_platform/server_console_services.py":
             name = "Engineering Evidence Dashboard"
         elif "report_analysis" in lower:
             name = "Engineering Report Analysis"

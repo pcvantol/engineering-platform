@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timezone
 import argparse
-import fcntl
 import json
 import hashlib
 import os
@@ -175,36 +174,14 @@ def _schema_v3(connection: sqlite3.Connection) -> None:
 
 
 def _schema_v4(connection: sqlite3.Connection) -> None:
-    """Migrate the previous redacted component-log files into SQLite once."""
-    database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
-    logs = database.parent / "logs"
-    for component in ("inbox", "dashboard"):
-        existing = connection.execute(
-            "SELECT COUNT(*) FROM engineering_component_logs WHERE component=?", (component,)
-        ).fetchone()[0]
-        if existing:
-            continue
-        files = [logs / f"{component}.log.{index}" for index in range(3, 0, -1)]
-        files.append(logs / f"{component}.log")
-        for path in files:
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-            for line in lines:
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                created_at = payload.get("timestamp")
-                if not isinstance(created_at, str) or not created_at:
-                    created_at = datetime.now(timezone.utc).isoformat()
-                connection.execute(
-                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
-                    (component, json.dumps(payload, separators=(",", ":"), sort_keys=True), created_at),
-                )
+    """Retired migration marker for legacy local component logs.
+
+    The old importer made ``dashboard`` and ``inbox`` writable component
+    identities in the CENTRAL store.  Those aliases have no supported
+    consumer, so historical files are now forensic input only and are never
+    imported into operational component logging.
+    """
+    del connection
 
 
 def _schema_v5(connection: sqlite3.Connection) -> None:
@@ -2167,25 +2144,6 @@ def _assert_controlled_schema_activation(root: Path, path: Path) -> None:
                 connection.close()
         except sqlite3.DatabaseError as error:
             raise EngineeringStorageError("Engineering storage activation cannot inspect the shared database.") from error
-    locks = root.resolve() / WORKSPACE_DIRECTORY / "locks"
-    for component in ("inbox-watcher", "dashboard"):
-        lock = locks / f"{component}.lock"
-        if not lock.exists():
-            continue
-        try:
-            with lock.open("a+", encoding="utf-8") as handle:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError as error:
-                    raise EngineeringStorageError(
-                        f"Engineering storage activation requires {component} to stop first."
-                    ) from error
-                finally:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except OSError as error:
-            raise EngineeringStorageError("Engineering storage activation cannot verify component ownership.") from error
-
-
 def _schema_version(connection: sqlite3.Connection) -> int:
     tables = {
         str(row[0])

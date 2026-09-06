@@ -67,6 +67,22 @@ post-extraction lineage receipts; the historical project-local
 bookkeeping describes source evolution only; it does not claim CENTRAL
 migration completion.
 
+## Append-only successor phases
+
+A completed phase seal is immutable.  Later product phases must therefore not
+rewrite its `evolutions` entry or seal digest.  They are represented in the
+ledger's `successor_evolutions` collection.  Each successor receipt names its
+own identity and phase, the sealed predecessor phase and completion SHA, the
+hash at that predecessor baseline, a bounded first/last commit range, and an
+explicit current destination or retirement responsibility.
+
+The verifier first validates the historical and sealed records unchanged, then
+validates exactly one successor receipt for each post-completion mutation.  It
+rejects a wrong predecessor identity or hash, duplicate claims, a range that
+does not modify its declared path, a destination hash mismatch, or an implicit
+retirement.  This supports additional bounded phases without making runtime or
+CENTRAL authority part of provenance bookkeeping.
+
 Target-only modules are intentionally outside this historical mapping.  They
 remain normal post-extraction product development and do not modify either
 Stage 1 digest.  At final cutover, both Stage 1 and Stage 2 are required to

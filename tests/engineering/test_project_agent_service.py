@@ -44,6 +44,8 @@ class ProjectAgentServiceTests(unittest.TestCase):
         self.assertEqual(payload["Label"], service.LABEL)
         self.assertNotIn("secret", encoded.lower())
         self.assertNotIn("password", encoded.lower())
+        self.assertEqual(payload["StandardOutPath"], "/dev/null")
+        self.assertEqual(payload["StandardErrorPath"], "/dev/null")
         self.assertEqual(plistlib.loads(encoded.encode())["ProgramArguments"][0], str(Path(temporary) / "installed/bin/engineering-project-agent"))
         self.assertNotIn("engineering-platform-b6b", encoded)
 

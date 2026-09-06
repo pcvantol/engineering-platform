@@ -30,6 +30,7 @@ from engineering_platform.telemetry import (
 from engineering_platform.producer import ProducerMetadata
 from engineering_platform.execution_timing import record_phase
 from engineering_platform import server
+from engineering_platform import telemetry
 
 
 class ExecutionHostTelemetryTest(unittest.TestCase):
@@ -140,6 +141,33 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT state,source FROM terminal_telemetry_outbox WHERE run_id='run-durable'").fetchone(), ("PROCESSED", "LIVE_TERMINAL"))
             row = next(item for item in daily_statistics(root) if item["date"] == "2026-08-25")
             self.assertEqual(row["prompt_count"], 1)
+
+    def test_terminal_outbox_marks_malformed_or_mismatched_evidence_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            persist_execution(root, self._record("telemetry-bootstrap", "COMPLETE", datetime.now(timezone.utc)))
+            with open_storage(root) as connection:
+                connection.execute(
+                    "INSERT INTO terminal_telemetry_outbox(run_id,payload,source,state,created_at) VALUES(?,?,?,'PENDING',?)",
+                    ("broken-telemetry", "{", "RECOVERY", "2026-09-05T00:00:00+00:00"),
+                )
+            self.assertEqual(materialize_pending_terminal_telemetry(root), {"processed": 0, "failed": 1, "pending": 1})
+            with open_storage(root) as connection:
+                self.assertEqual(connection.execute("SELECT state FROM terminal_telemetry_outbox WHERE run_id='broken-telemetry'").fetchone()[0], "FAILED_RETRYABLE")
+
+    def test_terminal_recovery_limits_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            persist_execution(root, self._record("limit-bootstrap", "COMPLETE", datetime.now(timezone.utc)))
+            with self.assertRaises(ValueError):
+                materialize_pending_terminal_telemetry(root, limit=0)
+            with self.assertRaises(ValueError):
+                recover_missing_terminal_telemetry(root, limit=251)
+
+    def test_terminal_payload_decoder_rejects_missing_identity_lifecycle_and_timestamp(self) -> None:
+        for payload in (None, {}, {"producer": {}}, {"producer": {}, "run_id": "run", "terminal_state": "UNKNOWN", "execution_mode": "MANAGED", "workspace": "w", "repository": "r", "execution_host_version": "v"}):
+            with self.assertRaises(ValueError):
+                telemetry._from_payload(payload)
 
     def test_recovery_uses_structured_terminal_evidence_and_canonical_date(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

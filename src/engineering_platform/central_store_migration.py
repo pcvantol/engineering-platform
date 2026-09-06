@@ -23,7 +23,7 @@ import sys
 import unicodedata
 import uuid
 
-from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, database_path, legacy_database_path
+from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, database_path, legacy_database_path
 from .providers import LaunchdProvider
 from .forensic_attribution import ForensicAttributionError, canonical_attribution_json, load_and_attribute
 from .forensic_attribution_v2 import ForensicAttributionV2Error, canonical_attribution_v2_json, load_and_enrich_v2
@@ -451,11 +451,14 @@ def _metadata(path: Path, key: str) -> dict[str, object] | None:
 
 
 def admission_status(repo: Path) -> dict[str, object]:
-    path = database_path(repo)
-    if not path.is_file():
-        raise CutoverError("ADMISSION_FREEZE_FAILED", "authority is unresolved")
-    payload = _metadata(path, CONTROL_KEY)
-    return payload or {"state": "INACTIVE"}
+    try:
+        path = database_path(repo)
+        if not path.is_file():
+            raise CutoverError("ADMISSION_FREEZE_FAILED", "authority is unresolved")
+        payload = _metadata(path, CONTROL_KEY)
+        return payload or {"state": "INACTIVE"}
+    except (OSError, sqlite3.DatabaseError, EngineeringStorageError) as error:
+        raise CutoverError("ADMISSION_FREEZE_FAILED", "authority is unreadable") from error
 
 
 def set_admission_freeze(repo: Path, *, migration_id: str | None = None, reason: str, operator: str = "operator") -> dict[str, object]:
@@ -1497,7 +1500,14 @@ def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict
     quiescence = inspect_quiescence(Path(candidate.resolved_path))
     inventory = project_scope_inventory(Path(candidate.resolved_path))
     backup = backup_readiness(identity, installation_data_root())
-    receipt.update({"source": source, "quiescence": quiescence, "backup_readiness": backup, "snapshot_strategy": snapshot_plan(source), "project_scope": inventory, "critical_table_counts": _table_counts(Path(candidate.resolved_path))})
+    try:
+        critical_counts = _table_counts(Path(candidate.resolved_path))
+    except (OSError, sqlite3.DatabaseError):
+        # The source inspection above has already recorded the fail-closed
+        # integrity finding.  Preflight must report that finding, never crash
+        # while attempting optional inventory detail for the same bad source.
+        critical_counts = {}
+    receipt.update({"source": source, "quiescence": quiescence, "backup_readiness": backup, "snapshot_strategy": snapshot_plan(source), "project_scope": inventory, "critical_table_counts": critical_counts})
     codes = list(source["blocking_codes"]) + list(quiescence["blocking_codes"]) + list(inventory["blocking_codes"])
     if backup["blocking_code"]:
         codes.append(backup["blocking_code"])
