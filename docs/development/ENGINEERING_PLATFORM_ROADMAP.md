@@ -1,170 +1,168 @@
 # Engineering Platform Roadmap
 
+## Current standalone/bootstrap critical path — 2026-09-06
+
+This section is the current sequencing authority where older roadmap prose or derived cross-product projections conflict with the post-P-TRANSPORT decisions.
+
+### Current facts
+
+- `P-TRANSPORT` is **MERGED / CLOSED**. It provides three canonical submission transports — HTTP, installed CLI and Server-owned File Inbox — normalized through the Server-owned Submission Service/CENTRAL boundary. File Inbox is transport only, never lifecycle authority.
+- The Phase-1 Local Consumer API read-only foundation and the later P-TRANSPORT HTTP submission ingress are distinct. The existence of the earlier read-only API qualification must not be interpreted as “all EP HTTP is read-only”.
+- Current work is `P-NEUTRAL`: remove remaining active DJConnect platform identity/authority while preserving historical evidence and bounded migration compatibility.
+- The Canonical Project Authority Repository declares durable logical project/repository identity in `.engineering-platform/repository.json` under the B8R architecture. Workspace may project identity and own human-facing state/display naming; Workspace availability is not required for EP to attach a declared repository.
+- Broader Project-Agent separation, generalized Agent dispatch, multi-host scheduling and multi-repository parallel execution are **not prerequisites by default** for the first standalone verification. They are follow-on productization unless the minimum installed execution canary proves a concrete dependency.
+- Likewise, broad P-QUEUE/B8E productization must not become an artificial all-or-nothing gate. Only concrete queue/lease/recovery/finalization/zero-loss capabilities required to prove one installed governed execution are on the immediate critical path; unresolved broader capabilities remain explicit follow-on work.
+
+### Shortest safe path to `EP::STANDALONE_EP_VERIFIED`
+
+```text
+P-TRANSPORT merged/closed
+  -> P-NEUTRAL closure
+  -> qualify minimum existing installed execution path
+       canonical submission
+       -> bounded admission
+       -> current execution/provider path
+       -> finalization
+       -> immutable receipt/result evidence
+       -> canonical status/result observation
+  -> first governed installed execution
+  -> EP::STANDALONE_EP_VERIFIED
+```
+
+The first standalone canary is intentionally single-project, single-Action and serial. It does not require the final generalized Agent topology, multi-host dispatch or multi-repository concurrency.
+
+After `EP::STANDALONE_EP_VERIFIED`, Forge should consume the existing canonical HTTP submission transport and canonical EP run/result evidence to qualify the first Forge → EP → Forge loop. A new Forge-specific submission transport is prohibited unless an actual contract gap proves the existing P-TRANSPORT HTTP ingress insufficient.
+
+`P_TRANSPORT_STATUS = MERGED_CLOSED`
+
+`P_NEUTRAL_STATUS = ACTIVE_CRITICAL_PATH`
+
+`GENERAL_AGENT_SEPARATION_ON_STANDALONE_CRITICAL_PATH = FALSE`
+
+`WORKSPACE_REQUIRED_FOR_FIRST_STANDALONE_CANARY = FALSE`
+
+`FORGE_SHOULD_REUSE_P_TRANSPORT_HTTP = TRUE`
+
 ## 1.4 — Remote Engineering Experience
 
-Completed. Canonical status, remote dashboard, inbox watcher, Tailscale
-diagnostics and repository handoffs remain local, read-only and without
-release, deployment or product authority.
+Completed. Canonical status, remote dashboard and repository handoffs remain operational surfaces without planning or product authority.
 
 ## 1.5 — Platform Productization
 
-Completed and operational. The platform is an independent engineering product
-located in this repository as an implementation strategy. Platform Identity,
-Workspace Identity, provider and capability registries, configuration
-validation and the Public Platform API remove architectural dependence on
-DJConnect. Existing commands remain compatibility wrappers.
+Completed and operational. Engineering Platform is an independent engineering product. Platform identity, provider/capability registries, configuration validation and public boundaries remove architectural dependence on DJConnect. Historical compatibility does not grant current authority.
 
-The completed operational hardening keeps iCloud Drive limited to Inbox
-transport, stores canonical prompt archives, status, reports and logs under
-`.engineering/`, stops a strict Inbox sequence after `BLOCKED` or `FAILED`, and
-provides bounded redacted component logs, report analysis and read-only private
-Codex advice. Qualification covers 39 registered scenarios. These are
-compatible 1.5 maintenance and evidence improvements, not a 1.6 requirement.
-The Engineering Platform CI quality gate measures branch coverage for its four
-protected core execution files and requires each to remain at least 80.20%; the
-authoritative requirement matrix is
-[Engineering Platform non-functional requirements](../engineering/ENGINEERING_PLATFORM_NON_FUNCTIONAL_REQUIREMENTS.md).
+## 1.6 / 2.0 — Extraction and versioned boundary
 
-## 1.6 — Repository Extraction Readiness
-
-Planned. Dependency, namespace, import and public-API audits will demonstrate
-that extraction is primarily repository movement, not a redesign.
-
-## 2.0 — Versioned Platform Boundary
-
-In review. Engineering Platform `2.0.0` aligns the platform, runner, Inbox
-watcher and private dashboard at one major version and raises the fail-closed
-minimum version for new engineering prompts. Storage, protocol and lifecycle
-formats remain unchanged.
-
-Standalone packaging, repository templates and a generic CLI remain separate
-follow-on work until repository-extraction readiness is qualified. The version
-bump alone does not move the platform out of this repository or change
-authority.
+Repository extraction/versioning work established the independent product boundary. Versioning, packaging and migration evidence do not themselves change runtime authority; authority changes only through qualified installed-product gates.
 
 ## 2.x — Standalone Execution Operations Platform
 
-Planned. The 2.x extraction turns Engineering Platform into an installed,
-provider- and consumer-neutral local Execution Host. The dashboard is
-positioned internally as the **Execution Operations Console**: it presents
-host operations and a selected Workspace project, but is never a second source
-of lifecycle, planning or repository authority.
+Engineering Platform is the installed, provider- and consumer-neutral execution authority. The Execution Operations Console is presentation/operations only and never a second source of planning, project topology or lifecycle authority.
 
-**Canonical phase roadmap (ADR-0026):**
+### Core authority split
 
-1. **Phase 2 — CLOSED / RETIRED CLEAN-SLATE DECISION.** The current
-   contaminated migration is `RETIRED_FOR_CLEAN_SLATE_EXTRACTION`; its stores
-   are forensic evidence, not standalone authority.
-2. **Phase 3 — HISTORY-PRESERVING PHYSICAL EXTRACTION + CLEAN STANDALONE
-   STORE.** Extract the proven EP implementation, qualify it independently,
-   then create a fresh official schema-41 installation store.
-3. **Phase 4 — CONSUMER CUTOVER.** Register consumers afresh and issue new
-   OS-secret-stored credentials only after standalone qualification.
-4. **Phase 5 — LEGACY RUNTIME REMOVAL.** Remove generic EP runtime from
-   DJConnect only after package, store and consumers qualify; forensic archive
-   retention is decided separately.
+- **Forge owns why/what:** Mission, Engineering Action intent, planning dependencies and governance.
+- **EP owns how:** submission/admission, execution lifecycle, provider execution, finalization, receipts/evidence, operational recovery and canonical execution projections.
+- **Workspace owns human/project UX:** presentation, comprehension and permitted intent; never execution authority.
+- **Canonical Project Authority Repository owns declared logical topology input:** EP validates the committed `.engineering-platform/repository.json`; path, Git remote, display name, host, Agent or Workspace runtime identity are never substitutes.
 
-The extraction sequence is deliberately incremental and provenance-preserving:
+### Datastore and identity
 
-**Current authorization:** Phase 0 / Increments 1 and 2 and Phase 1 /
-Increment 1 — **Local Consumer API Contract Foundation** — are complete.
-Phase 1 / Increment 2 (**Local API Transport + Authentication Runtime**) is
-implemented and post-merge qualified as a loopback-only, minimal read-only v1
-service with EP-owned verifier metadata; schema 39 is active. Phase 1 /
-Increment 3 (**Consumer Registration + OS Credential Integration**) is
-complete and qualified: schema 40 is active, while consumer cutover and
-Engineering mutation remain separately governed work.
+One installed EP instance owns its operational CENTRAL datastore. Project, repository, installation, consumer, Agent, run, producer and Forge Mission/Action identities are independent and correlated only by explicit versioned contracts. Files are transport/rendered evidence/export/fallback, not competing lifecycle authority.
 
-1. **Boundary and consumer contract — architecture complete.** ADR-0019 and the EP consumer
-   contract establish one installation-owned store, the canonical
-   Workspace-provided `project_id`, and the mutable Workspace-provided
-   `project_name` used for display.
-2. **Clean data-root and multi-project bootstrap.** Install one EP data root and one
-   SQLite database per local user/machine, outside all consumer repositories.
-   Register projects before admission; scope every EP-owned Inbox route, queue,
-   lease, lifecycle record, receipt, report, Prompt History, telemetry and
-   dashboard projection by the immutable `project_id`. A project name is a
-   label only and can be refreshed without rewriting historical evidence.
-3. **Settings and diagnostics placement.** Keep Inbox routing, Inbox scan
-   cadence and open-PR check cadence in the selected project's queue settings.
-   Keep log retention, log level and dashboard/component refresh preferences
-   installation-wide. Move free disk space, database path, database size and
-   schema version into a machine/platform diagnostic block; they do not belong
-   to a Workspace project.
-4. **Datastore governance and recovery.** Ship forward-only, transactional
-   migrations with a pre-migration backup, startup integrity check, explicit
-   compatibility gate and documented recovery procedure. Fresh standalone EP
-   creates schema 41 from canonical product definitions; a future legitimate
-   clean schema-40 upgrade is separate. No current DJConnect database is a
-   standalone seed.
-5. **Server-side API contracts.** Define typed, bounded host API contracts per
-   endpoint: accepted fields and enums, unknown-field rejection, Unicode and
-   newline rules, stable error codes and redacted diagnostics. The server stays
-   authoritative; browser-side normalization is defense in depth only. The
-   read-only AI chat must not allow supplied text to override host configuration,
-   repository paths or system context.
-6. **Internal service boundaries.** Preserve one local host process unless an
-   operational need proves otherwise, while separating the HTTP/API facade,
-   application services, status projection, operational controls and datastore
-   repositories. The Operations Console remains a thin presentation consumer.
-7. **Forge-native host integration.** Forge/Workspace remains the owner of
-   planning, Runtime Prompts and the canonical project registry; EP owns
-   admission, execution lifecycle, telemetry, evidence, Inbox and Prompt
-   History. Retain a fail-closed serial default-FIFO queue per repository/
-   execution scope, with at most one mutating execution and a lease retained
-   through finalization/reconciliation. Queue selection remains policy-driven;
-   it must not make EP a planner. When Forge later supplies `depends_on`, EP
-   validates and enforces it without becoming a planner. The physical Inbox
-   route and Workspace API route remain parallel admission paths.
-8. **Advisory telemetry.** Retain telemetry only as operational observation,
-   never as repository or lifecycle evidence. Add median/p50 and p95 views,
-   then segment by execution mode, target repository, terminal state and
-   model/provider when that metadata is supplied by the consumer contract.
-9. **Package, release and consumer cutover.** Extract relevant history into the
-   EP repository; publish an immutable pinned wheel with dedicated CI,
-   supply-chain evidence and releases. Update DJConnect and Forge/Workspace to
-   install that wheel only, provide a local backup/compatibility/migration/
-   launch-service upgrade path, and remove `src/engineering_platform` only after the
-   packaged paths have been proven.
+### Canonical submission transports
 
-The central-store and project-scope decision is specified in
-[ADR-0019](../adr/0019-engineering-platform-central-installation-store.md).
-[ADR-0026](../adr/0026-ep-clean-slate-standalone-store-and-migration-retirement.md)
-retires the current contaminated legacy-to-CENTRAL migration in favor of a
-clean standalone store. The
-concrete registration and ownership boundary is specified in the
-[EP consumer contract](ENGINEERING_PLATFORM_CONSUMER_CONTRACT.md). The
-phase-level delivery, safety gates and architect review questions are in the
-[EP extraction and migration plan](ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md).
+P-TRANSPORT qualifies exactly three supported submission transports:
+
+1. canonical HTTP submission ingress;
+2. installed CLI submission ingress;
+3. Server-owned File Inbox ingress.
+
+All normalize through the same Server-owned submission/CENTRAL authority. Consumers choose a supported transport; transport selection never changes admission/lifecycle authority. Forge's machine-to-machine integration should prefer the canonical HTTP transport.
+
+### Current P-NEUTRAL increment
+
+P-NEUTRAL removes active DJConnect naming/identity from generic EP runtime, installation, lifecycle, configuration and logging authority. Historical-only artifacts and migration-source references may remain when explicitly classified. Current concrete work includes neutralizing the remaining installed relay identity without creating dual authority or unsafe rollback.
+
+P-NEUTRAL closure requires zero active generic DJConnect platform identity within the qualified host/repository scope. It does not authorize broad historical deletion.
+
+## Standalone verification contract
+
+`EP::STANDALONE_EP_VERIFIED` is satisfied by evidence that the installed EP product can independently execute one real governed engineering Action end to end with no legacy execution authority required.
+
+Minimum proof:
+
+1. installed EP Server/runtime healthy;
+2. canonical project/repository identity validated and attached through current EP authority;
+3. canonical submission accepted through a supported P-TRANSPORT ingress;
+4. bounded admission/project scope enforced;
+5. one mutating execution runs through the current qualified execution/provider path;
+6. finalization completes;
+7. immutable receipt/result/provenance evidence exists;
+8. canonical status/result projection can be observed by a consumer;
+9. failure/retry behavior for this single-run profile is fail-closed;
+10. legacy DJConnect platform authority is not required.
+
+Not required for this first gate unless the canary proves otherwise:
+
+- generalized Agent separation;
+- multi-Agent or multi-host scheduling;
+- generalized dispatch architecture;
+- multi-repository parallel mutation;
+- Workspace UI/control plane;
+- full later B8E capability productization unrelated to the single-run proof.
+
+Any concrete missing capability discovered by the canary becomes a bounded prerequisite; future capability labels do not become prerequisites merely by historical roadmap association.
+
+## Follow-on execution productization
+
+After standalone verification, continue separately with broader capabilities where valuable:
+
+- generalized Project-Agent separation and dispatch;
+- multi-host/Agent availability and routing;
+- richer queue policy, capacity and ordering;
+- multi-repository leases/parallelism;
+- broader recovery/retry profiles;
+- B8E zero-loss/product parity closure not required by the first canary;
+- installed-product Goldens and broader dogfooding.
+
+These remain EP-owned and must preserve the same authority split.
+
+## Forge integration after standalone verification
+
+Forge must not become an execution engine. The intended machine boundary is:
+
+```text
+Forge immutable Action/submission intent
+  -> EP canonical P-TRANSPORT HTTP submission
+  -> EP admission/run/finalization
+  -> EP immutable terminal evidence
+  -> Forge observation/reconciliation
+```
+
+Forge records its intended Action/submission key before the HTTP call. EP persists canonical submission/run evidence. Ambiguous HTTP outcomes are reconciled by canonical identity/correlation rather than automatic duplicate submission.
+
+Forge may consume canonical EP readiness/status/result/evidence APIs but must not derive authority from CENTRAL filesystem access, launchctl, Console HTML, logs or direct Agent control.
 
 ## Cross-product producer capabilities
 
-This is the canonical EP allocation for external consumers. It names EP-owned
-capabilities and gates; it does not allocate Forge or Workspace work. A
-consumer may use a frozen contract for fixtures, but may claim an integration
-only after the stated EP qualification gate passes.
+| Node ID | Current meaning | Bootstrap disposition |
+| --- | --- | --- |
+| `EP::LOCAL_CONSUMER_API_V1` | Qualified consumer/authentication/read contract foundation. | AVAILABLE; not the only HTTP surface after P-TRANSPORT. |
+| `EP::P_TRANSPORT_V1` | Three canonical submission transports with Server/CENTRAL normalization. | MERGED / QUALIFIED transport capability. |
+| `EP::P_NEUTRAL_V1` | No active generic DJConnect platform identity/authority. | ACTIVE critical-path increment. |
+| `EP::STANDALONE_EP_VERIFIED` | One independent installed governed execution with canonical evidence. | NEXT major qualification target after P-NEUTRAL/minimum execution closure. |
+| `EP::PROJECT_ATTACHMENT_AND_ADMISSION_V1` | Consumer-facing attachment/admission hardening beyond the current B8R runtime. | FOLLOW-ON/consumer qualification; do not reinterpret as absence of current EP attachment authority. |
+| `EP::ENGINEERING_CONTRACT_FOUNDATION_V1` | Rich consumer contract for DoR/DoD/Human Gates/Action projections and quality outcomes. | Long-term Forge producer contract; the first bootstrap canary should use minimum existing contracts and expose only real gaps. |
 
-| Node ID | Type and canonical EP allocation | Provides | Depends on | Qualification gate and lifecycle |
-| --- | --- | --- | --- | --- |
-| `EP::LOCAL_CONSUMER_API_V1` | IMPLEMENTATION_INCREMENT — Phase 1 / Increments 1–3 | Versioned scoped consumer envelope, exact `(consumer_id, project_id)` registration authority and credential lifecycle. | EP Phase 1 local runtime foundation. | **Complete / qualified:** Phase 1 closure, schema 40 active and bounded registration/credential evidence. This is a registration base, not consumer cutover. |
-| `EP::STANDALONE_EP_VERIFIED` | QUALIFICATION_GATE — Phase 3 B8C → B8D → B9 | Qualified installed EP Server/Agent execution authority. | `EP::PHASE3_STANDALONE_PACKAGE_AND_INSTALL_QUALIFICATION_V1`; `EP::P_TRANSPORT_V1`; `EP::P_QUEUE_V1`; `EP::P_NEUTRAL_V1`; `EP::P_INSTALLER_V1`; `EP::P_RELEASE_V1`; `EP::PHASE_P_REAUDIT_V1`; `EP::PD_INSTALLED_PRODUCT_GOLDENS_V1`; `EP::PHASE_S_EXECUTION_PROTOCOL_FOUNDATION_V1`; `EP::B8E_ZERO_LOSS_PASS`. | B9 activation: installed Server, newly registered Project Agent, first attached project and first governed execution. The explicit prerequisite definitions and current status are authoritative in the [extraction and migration plan](ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md#migration-to-v1-dependency-authority). **Planned / unavailable.** |
-| `EP::PROJECT_ATTACHMENT_AND_ADMISSION_V1` | IMPLEMENTATION_INCREMENT — Phase 4 / Increment 1 | Idempotent canonical project registration refresh, repository/Agent attachment, scoped consumer cutover and an admission-ready project. | `EP::LOCAL_CONSUMER_API_V1`; `EP::STANDALONE_EP_VERIFIED`. | Clean-install, fresh-registration, idempotency, project-routing/isolation and first-governed-execution evidence. **Planned / unavailable.** |
-| `EP::ENGINEERING_CONTRACT_FOUNDATION_V1` | IMPLEMENTATION_INCREMENT — Phase 4 / Increment 2 | Capability classification; Effective DoR; pre-dispatch readiness; Effective DoD; proof requirements; Human Gates; live/historical Action projection; completion enforcement; `ActionQualityOutcome`; packaged baseline contracts; immutable Action contract snapshots. | `EP::LOCAL_CONSUMER_API_V1`; `EP::STANDALONE_EP_VERIFIED`. | `EP::ENGINEERING_CONTRACT_FOUNDATION_V1_QUALIFIED`: installed-artifact contract tests, negative admission/gate tests, recovery/evidence-projection tests and retained qualification receipt. **Planned / unavailable.** |
+## Consumer and Workspace position
 
-Phase 4 / Increment 1 and Increment 2 are capability-named producer
-allocations. They are not authorization to begin implementation, consumer
-cutover or Engineering mutation without their separately approved EP work and
-qualification. Forge consumes the Increment-2 capability through its L0
-milestone; Workspace consumes Increment 1 through its onboarding capability.
+Workspace is not on the critical path for first standalone verification or the first Forge → EP → Forge machine canary. Workspace later composes Forge planning and EP execution projections and initiates permitted intent without becoming authority.
+
+Older documentation that says Workspace supplies the canonical EP logical `project_id` is superseded for topology authority by B8R. Consumer registration identity and human-facing Workspace project state remain separate concepts.
 
 ## Policy
 
-Platform code must not acquire DJConnect runtime, Home Assistant, branding or
-repository-name dependencies. Consumer-specific presentation and metadata
-enter through Workspace configuration or qualified providers only.
+Platform code must not acquire DJConnect runtime, Home Assistant, branding or repository-name dependencies. Historical evidence and explicitly bounded migration compatibility may retain names without retaining authority.
 
-The planned home deployment of one authoritative Forge installation, one
-authoritative EP installation and one primary Worker on a Mac mini is a local
-deployment profile only. It is not a product-wide singleton invariant and does
-not authorize Phase 0, Increment 2, extraction, storage migration or other
-roadmap implementation.
+The planned home deployment of one authoritative Forge installation, one authoritative EP installation and one primary execution host on a Mac mini is a deployment profile, not a product-wide singleton invariant.
