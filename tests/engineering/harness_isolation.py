@@ -10,7 +10,7 @@ import shutil
 import tempfile
 
 
-TEST_INSTALLATION_ROOT = "DJCONNECT_EP_TEST_INSTALLATION_ROOT"
+TEST_INSTALLATION_ROOT = "ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT"
 _ORIGINAL_DATABASE_PATH = None
 _SUITE_INSTALLATION_ROOT: Path | None = None
 
@@ -29,7 +29,7 @@ def activate() -> Path:
     if configured:
         installation_root = Path(configured).resolve()
     else:
-        installation_root = Path(tempfile.mkdtemp(prefix="djconnect-engineering-tests-"))
+        installation_root = Path(tempfile.mkdtemp(prefix="engineering-platform-tests-"))
         os.environ["HOME"] = str(installation_root)
         os.environ["XDG_DATA_HOME"] = str(installation_root / ".local" / "share")
         os.environ[TEST_INSTALLATION_ROOT] = str(installation_root)
@@ -70,7 +70,7 @@ def activate() -> Path:
 def scoped_installation_root():
     """Temporarily make a nested EP authority root active for one test."""
     outer = {name: os.environ.get(name) for name in ("HOME", "XDG_DATA_HOME", TEST_INSTALLATION_ROOT)}
-    inner = Path(tempfile.mkdtemp(prefix="djconnect-engineering-test-override-"))
+    inner = Path(tempfile.mkdtemp(prefix="engineering-platform-test-override-"))
     os.environ["HOME"] = str(inner / "home")
     os.environ["XDG_DATA_HOME"] = str(inner / ".local" / "share")
     os.environ[TEST_INSTALLATION_ROOT] = str(inner)

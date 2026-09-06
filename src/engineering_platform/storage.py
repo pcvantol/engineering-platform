@@ -25,8 +25,8 @@ ENGINEERING_STORAGE_SCHEMA_VERSION = 40
 STORE_AUTHORITY_POINTER = "store-authority.json"
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
-ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
-ADMITTED_STORAGE_ROOT_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT"
+ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA"
+ADMITTED_STORAGE_ROOT_ENVIRONMENT = "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT"
 # This is set only by the installed CENTRAL lifecycle composition boundary.
 # It is deliberately not inferred from a checkout: an explicit installation
 # database is the only supported operational authority for a standalone run.

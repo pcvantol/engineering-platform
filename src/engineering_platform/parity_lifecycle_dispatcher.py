@@ -211,8 +211,8 @@ def _default_runner(repository_root: Path, *, central_database: Path | None = No
 def _historical_admission_environment(repository_root: Path, data_root: Path):
     """Keep the runner's existing persisted-admission guard in force."""
     keys = (
-        "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA",
-        "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT",
+        "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA",
+        "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT",
         CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
     )
     previous = {key: os.environ.get(key) for key in keys}

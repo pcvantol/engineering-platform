@@ -24,7 +24,7 @@ class LocalDataRetirementTest(unittest.TestCase):
     def test_runtime_resolver_has_no_dashboard_configuration_or_inbox_override(self) -> None:
         source = (Path(__file__).parents[2] / "src" / "engineering_platform" / "platform_api.py").read_text(encoding="utf-8")
         self.assertNotIn("dashboard_configuration", source)
-        self.assertNotIn("DJCONNECT_ENGINEERING_INBOX", source)
+        self.assertNotIn("ENGINEERING_PLATFORM_INBOX", source)
         self.assertFalse((Path(__file__).parents[2] / "src" / "engineering_platform" / "dashboard_configuration.py").exists())
 
     def test_retirement_and_configuration_inventories_are_complete(self) -> None:

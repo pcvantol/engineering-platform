@@ -707,8 +707,8 @@ class EngineeringStorageTest(unittest.TestCase):
             migrations = dict(storage.MIGRATIONS)
             migrations[ENGINEERING_STORAGE_SCHEMA_VERSION + 1] = lambda _: None
             environment = {
-                "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(root),
-                "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": str(
+                "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT": str(root),
+                "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA": str(
                     ENGINEERING_STORAGE_SCHEMA_VERSION
                 ),
             }

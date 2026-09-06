@@ -13,8 +13,11 @@ from .validation_profile import ValidationProfileResolutionError, resolve_produc
 _FIELD_LIMIT = 160
 _PRODUCER_TYPES = frozenset({"HUMAN", "FORGE", "EXTERNAL", "UNKNOWN"})
 _FIELD_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,159}$")
-ENVELOPE_CONTRACT_NAME = "djconnect.producer_submission"
+ENVELOPE_CONTRACT_NAME = "engineering_platform.producer_submission"
 ENVELOPE_CONTRACT_VERSION = "1.0"
+# This is accepted only to ingest immutable predecessor evidence during the
+# transition.  EP never emits it as a current producer contract.
+LEGACY_ENVELOPE_CONTRACT_NAME = "djconnect.producer_submission"
 
 
 @dataclass(frozen=True)
@@ -98,7 +101,7 @@ def parse_producer_submission(content: str) -> ProducerSubmission:
         raise ProducerSubmissionError("Producer Submission Envelope is not valid JSON.") from error
     envelope = _object(envelope, "root")
     contract = _object(envelope.get("contract"), "contract")
-    if contract.get("name") != ENVELOPE_CONTRACT_NAME:
+    if contract.get("name") not in {ENVELOPE_CONTRACT_NAME, LEGACY_ENVELOPE_CONTRACT_NAME}:
         raise ProducerSubmissionError("Producer Submission Envelope contract name is unsupported.")
     contract_version = contract.get("version")
     if contract_version != ENVELOPE_CONTRACT_VERSION:

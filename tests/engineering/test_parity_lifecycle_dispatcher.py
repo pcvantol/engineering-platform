@@ -337,8 +337,8 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             retry_operator_gate(self.data, project_id="alpha", run_id=receipt.run_id)
 
     def test_historical_admission_environment_restores_preexisting_and_absent_values(self) -> None:
-        schema = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
-        root = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT"
+        schema = "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA"
+        root = "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT"
         central = parity_lifecycle_dispatcher.CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT
         with patch.dict(os.environ, {schema: "old-schema", central: "old-central"}, clear=False):
             os.environ.pop(root, None)

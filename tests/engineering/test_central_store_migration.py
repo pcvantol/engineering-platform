@@ -538,7 +538,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
             fcntl.flock(dashboard.fileno(), fcntl.LOCK_UN)
             dashboard.close()
 
-    def test_happy_path_reuses_freeze_migration_id_and_allows_expected_pre_stop_locks(self) -> None:
+    def test_cutover_refuses_live_retired_service_locks_without_reassuming_ownership(self) -> None:
         dashboard = self._held_lock("dashboard.lock", "dashboard", process_id=101)
         watcher = self._held_lock("inbox-watcher.lock", "inbox-watcher", process_id=102)
         data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
@@ -578,11 +578,10 @@ class CentralStoreMigrationTests(unittest.TestCase):
             with root_patch, target_patch, resolver_patch, patch.object(migration, "_process_command", side_effect=command):
                 migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
                 services = Services()
-                receipt = migration.controlled_cutover(self.root, services=services)
-                self.assertEqual(receipt["migration_id"], "migration-a")
-                self.assertEqual(receipt["state"], "SERVICES_RESTARTED")
-                self.assertTrue((data_root / "engineering.db").is_file())
-                self.assertEqual(migration.controlled_cutover(self.root, services=services)["migration_id"], "migration-a")
+                with self.assertRaisesRegex(migration.CutoverError, "QUIESCENCE_FAILED"):
+                    migration.controlled_cutover(self.root, services=services)
+                self.assertEqual(services.stopped_labels, ["com.engineeringplatform.dashboard-relay"])
+                self.assertEqual(services.started_labels, [])
         finally:
             if not dashboard.closed:
                 dashboard.close()

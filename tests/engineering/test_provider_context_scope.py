@@ -56,12 +56,12 @@ class ProviderContextScopeTests(unittest.TestCase):
         proxy = ToolProxyEnvironment()
         with proxy as environment:
             ok = subprocess.run(
-                ("djconnect-context-escalate", "BLAME_REQUIRED", "COMMITS_TOUCHING_PATH", "file.py", "2",
+                ("engineering-platform-context-escalate", "BLAME_REQUIRED", "COMMITS_TOUCHING_PATH", "file.py", "2",
                  "--diagnostic", "Current source does not identify the authoring change."),
                 text=True, capture_output=True, env=environment, check=False,
             )
             rejected = subprocess.run(
-                ("djconnect-context-escalate", "BLAME_REQUIRED", "COMMITS_TOUCHING_PATH", "file.py", "11",
+                ("engineering-platform-context-escalate", "BLAME_REQUIRED", "COMMITS_TOUCHING_PATH", "file.py", "11",
                  "--diagnostic", "Current source does not identify the authoring change."),
                 text=True, capture_output=True, env=environment, check=False,
             )
@@ -71,7 +71,7 @@ class ProviderContextScopeTests(unittest.TestCase):
             records = proxy.context_escalations()
             self.assertEqual(records[0]["reason"], "BLAME_REQUIRED")
         # The temporary invocation ledger is deliberately destroyed on exit.
-        self.assertFalse(Path(environment["DJCONNECT_CONTEXT_ESCALATION_FILE"]).exists())
+        self.assertFalse(Path(environment["ENGINEERING_PLATFORM_CONTEXT_ESCALATION_FILE"]).exists())
 
     def test_history_telemetry_is_observed_only_when_a_history_query_runs(self) -> None:
         no_history = churn_from_jsonl(

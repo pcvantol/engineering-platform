@@ -46,7 +46,7 @@ class PlatformProductizationTest(unittest.TestCase):
         configuration = PlatformConfiguration.load(ROOT)
         self.assertEqual(configuration.platform.id, "engineering-platform")
         self.assertEqual(configuration.platform.version, "2.0.0")
-        self.assertEqual(configuration.workspace.id, "djconnect")
+        self.assertEqual(configuration.workspace.id, "engineering-platform")
         self.assertEqual(configuration.providers["runtime"], "codex_cli")
 
     def test_public_api_has_all_productization_capabilities(self) -> None:

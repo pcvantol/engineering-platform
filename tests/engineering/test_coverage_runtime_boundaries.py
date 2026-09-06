@@ -1211,7 +1211,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertIn("DISARMED", output.getvalue())
 
     def test_controlled_interruption_hook_consumes_once_and_records_artifact(self) -> None:
-        with patch.dict("os.environ", {"DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE": "run-a:QUALITY_CONTROL_AGENT"}, clear=False), patch(
+        with patch.dict("os.environ", {"ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE": "run-a:QUALITY_CONTROL_AGENT"}, clear=False), patch(
             "engineering_platform.provider_recovery.load_recovery_state", return_value=None
         ), patch("engineering_platform.provider_recovery.record_artifact") as recorded:
             self.assertTrue(provider_recovery.consume_controlled_interruption_hook(self.root, run_id="run-a", phase="QUALITY_CONTROL_AGENT"))

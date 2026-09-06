@@ -428,7 +428,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn("localeCompare(", dashboard_script)
         self.assertIn("initializeDashboardConfiguration", dashboard_script)
         self.assertIn("scheduleProviderReadinessRefresh", dashboard_script)
-        self.assertIn("__djconnectDashboardTranslate", dashboard_script)
+        self.assertIn("__engineeringPlatformDashboardTranslate", dashboard_script)
         server_source = (root / "src/engineering_platform/server.py").read_text(encoding="utf-8")
         self.assertIn("configuration.ep_database_maintenance_saved", server_source)
         self.assertIn("configuration.ep_database_maintenance_failed", server_source)

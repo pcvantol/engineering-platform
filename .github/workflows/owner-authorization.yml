@@ -55,19 +55,10 @@ jobs:
               echo "repository_name=${TARGET_REPOSITORY#pcvantol/}" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "Repository is not in the selected DJConnect Trusted Delivery installation: $TARGET_REPOSITORY" >&2
+              echo "Repository is not the selected Engineering Platform delivery target: $TARGET_REPOSITORY" >&2
               exit 1
               ;;
           esac
-      - id: app-token
-        if: github.repository == 'pcvantol/djconnect'
-        name: Mint scoped central authorization token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ vars.DJCONNECT_TRUSTED_DELIVERY_APP_ID }}
-          private-key: ${{ secrets.DJCONNECT_TRUSTED_DELIVERY_PRIVATE_KEY }}
-          owner: pcvantol
-          repositories: ${{ steps.target.outputs.repository_name }}
       - name: Collect Trusted Delivery authorization request
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -77,13 +68,12 @@ jobs:
           TARGET_SHA: ${{ inputs.candidate_sha }}
           TARGET_PR: ${{ inputs.pr_number }}
         with:
-          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          github-token: ${{ github.token }}
           script: |
             const fs = require("fs");
             const [targetOwner, targetRepo] = process.env.TARGET_REPOSITORY.split("/");
             if (!targetOwner || !targetRepo) throw new Error("repository must use owner/name form");
-            const centralDispatch = context.repo.owner === "pcvantol" && context.repo.repo === "djconnect";
-            if (!centralDispatch && process.env.TARGET_REPOSITORY !== process.env.GITHUB_REPOSITORY) throw new Error("reusable authorization may only target its caller repository");
+            if (process.env.TARGET_REPOSITORY !== process.env.GITHUB_REPOSITORY) throw new Error("authorization may only target its caller repository");
             if (!/^[0-9a-f]{40}$/.test(process.env.TARGET_SHA)) throw new Error("candidate_sha must be a full SHA");
             if (context.actor !== process.env.OWNER_LOGIN) throw new Error("GitHub actor is not the configured repository owner");
             const pr = await github.rest.pulls.get({owner: targetOwner, repo: targetRepo, pull_number: Number(process.env.TARGET_PR)});
@@ -122,7 +112,7 @@ jobs:
           TARGET_REPOSITORY: ${{ inputs.repository }}
           TARGET_SHA: ${{ inputs.candidate_sha }}
         with:
-          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          github-token: ${{ github.token }}
           script: |
             const [targetOwner, targetRepo] = process.env.TARGET_REPOSITORY.split("/");
             await github.rest.repos.createCommitStatus({owner: targetOwner, repo: targetRepo, sha: process.env.TARGET_SHA, context: "Owner Authorization", state: "success", description: "HIGH_RISK authorized for this exact SHA", target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`});

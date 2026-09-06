@@ -4,7 +4,7 @@ The Engineering runner never persists raw tool output.  Codex executes shell
 tools inside its own provider turn, so the temporary PATH proxy created here is
 the only safe interception point: it preserves exit status, returns small or
 source output unchanged, and makes an explicit raw expansion available only to
-the same invocation via ``DJCONNECT_EVIDENCE_EXPAND=1``.
+the same invocation via ``ENGINEERING_PLATFORM_EVIDENCE_EXPAND=1``.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ SEARCH_MATCH_LIMIT = 24
 SEARCH_LINE_LIMIT = 240
 GIT_FACT_LIMIT = 2_048
 GITHUB_FACT_LIMIT = 4_096
-PROXIED_TOOLS = ("git", "gh", "rg", "grep", "pytest", "python", "python3", "npm", "npx", "djconnect-context-escalate")
+PROXIED_TOOLS = ("git", "gh", "rg", "grep", "pytest", "python", "python3", "npm", "npx", "engineering-platform-context-escalate")
 
 
 @dataclass(frozen=True)
@@ -84,25 +84,25 @@ def project_output(command: Iterable[str], output: str, exit_code: int) -> Evide
             text = _failure_tail(output)
             more = text != output
             if more:
-                marker = "\nMORE_EVIDENCE_AVAILABLE: set DJCONNECT_EVIDENCE_EXPAND=1 for this command."
+                marker = "\nMORE_EVIDENCE_AVAILABLE: set ENGINEERING_PLATFORM_EVIDENCE_EXPAND=1 for this command."
                 text = f"{text[:FAILED_DIAGNOSTIC_LIMIT - _bytes(marker)]}{marker}"
         elif raw_bytes > PASSING_TEST_LIMIT:
             passed = next((line for line in output.splitlines() if "passed" in line.casefold()), "PASS")
-            text = f"PASSING_TEST_OUTPUT_BOUNDED\n{passed[:PASSING_TEST_LIMIT // 2]}\nMORE_EVIDENCE_AVAILABLE: set DJCONNECT_EVIDENCE_EXPAND=1 for this command."
+            text = f"PASSING_TEST_OUTPUT_BOUNDED\n{passed[:PASSING_TEST_LIMIT // 2]}\nMORE_EVIDENCE_AVAILABLE: set ENGINEERING_PLATFORM_EVIDENCE_EXPAND=1 for this command."
             more = True
         else:
             text, more = output, False
     elif category == "search" and len(output.splitlines()) > SEARCH_MATCH_LIMIT:
         text = _bounded_lines(output, count=SEARCH_MATCH_LIMIT, width=SEARCH_LINE_LIMIT)
-        text += f"\nMATCHES_BOUNDED: shown={SEARCH_MATCH_LIMIT} total={len(output.splitlines())}\nMORE_EVIDENCE_AVAILABLE: set DJCONNECT_EVIDENCE_EXPAND=1 for this command."
+        text += f"\nMATCHES_BOUNDED: shown={SEARCH_MATCH_LIMIT} total={len(output.splitlines())}\nMORE_EVIDENCE_AVAILABLE: set ENGINEERING_PLATFORM_EVIDENCE_EXPAND=1 for this command."
         more = True
     elif category == "git" and raw_bytes > GIT_FACT_LIMIT:
         text = _bounded_lines(output, count=32, width=SEARCH_LINE_LIMIT)
-        text += "\nGIT_EVIDENCE_BOUNDED\nMORE_EVIDENCE_AVAILABLE: set DJCONNECT_EVIDENCE_EXPAND=1 for this command."
+        text += "\nGIT_EVIDENCE_BOUNDED\nMORE_EVIDENCE_AVAILABLE: set ENGINEERING_PLATFORM_EVIDENCE_EXPAND=1 for this command."
         more = True
     elif category == "github" and raw_bytes > GITHUB_FACT_LIMIT:
         text = _bounded_lines(output, count=48, width=SEARCH_LINE_LIMIT)
-        text += "\nGITHUB_EVIDENCE_BOUNDED\nMORE_EVIDENCE_AVAILABLE: set DJCONNECT_EVIDENCE_EXPAND=1 for this command."
+        text += "\nGITHUB_EVIDENCE_BOUNDED\nMORE_EVIDENCE_AVAILABLE: set ENGINEERING_PLATFORM_EVIDENCE_EXPAND=1 for this command."
         more = True
     else:
         text, more = output, False
@@ -116,21 +116,21 @@ class ToolProxyEnvironment:
         self._temporary: TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> Mapping[str, str]:
-        self._temporary = TemporaryDirectory(prefix="djconnect-evidence-")
+        self._temporary = TemporaryDirectory(prefix="engineering-platform-evidence-")
         directory = Path(self._temporary.name)
         repository_root = Path(__file__).resolve().parents[2]
         for name in PROXIED_TOOLS:
             launcher = directory / name
-            target = "context_escalation_main" if name == "djconnect-context-escalate" else "proxy_main"
+            target = "context_escalation_main" if name == "engineering-platform-context-escalate" else "proxy_main"
             launcher.write_text(
                 f"#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(repository_root)!r})\nfrom engineering_platform.evidence_projection import {target}\n{target}({name!r})\n",
                 encoding="utf-8",
             )
             launcher.chmod(0o700)
         environment = dict(os.environ)
-        environment["DJCONNECT_EVIDENCE_ORIGINAL_PATH"] = environment.get("PATH", os.defpath)
-        environment["PATH"] = f"{directory}{os.pathsep}{environment['DJCONNECT_EVIDENCE_ORIGINAL_PATH']}"
-        environment["DJCONNECT_CONTEXT_ESCALATION_FILE"] = str(directory / "context-escalations.jsonl")
+        environment["ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH"] = environment.get("PATH", os.defpath)
+        environment["PATH"] = f"{directory}{os.pathsep}{environment['ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH']}"
+        environment["ENGINEERING_PLATFORM_CONTEXT_ESCALATION_FILE"] = str(directory / "context-escalations.jsonl")
         return environment
 
     def __exit__(self, *_: object) -> None:
@@ -154,7 +154,7 @@ class ToolProxyEnvironment:
 def proxy_main(name: str | None = None) -> None:
     """Run the proxied command and emit only its bounded invocation-local view."""
     name = name or Path(sys.argv[0]).name
-    original_path = os.environ.get("DJCONNECT_EVIDENCE_ORIGINAL_PATH", os.defpath)
+    original_path = os.environ.get("ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH", os.defpath)
     executable = shutil.which(name, path=original_path)
     if executable is None:
         raise SystemExit(f"Evidence proxy could not resolve {name}.")
@@ -163,7 +163,7 @@ def proxy_main(name: str | None = None) -> None:
         env={**os.environ, "PATH": original_path}, check=False,
     )
     raw = f"{completed.stdout}{completed.stderr}"
-    if os.environ.get("DJCONNECT_EVIDENCE_EXPAND") == "1":
+    if os.environ.get("ENGINEERING_PLATFORM_EVIDENCE_EXPAND") == "1":
         sys.stdout.write(raw)
     else:
         sys.stdout.write(project_output((name, *sys.argv[1:]), raw, completed.returncode).text)
@@ -186,7 +186,7 @@ def context_escalation_main(_: str | None = None) -> None:
     except (ValueError, IndexError) as error:
         sys.stderr.write(f"Context escalation rejected: {error}\n")
         raise SystemExit(2)
-    path = os.environ.get("DJCONNECT_CONTEXT_ESCALATION_FILE")
+    path = os.environ.get("ENGINEERING_PLATFORM_CONTEXT_ESCALATION_FILE")
     if not path:
         sys.stderr.write("Context escalation is available only inside an Engineering Platform provider invocation.\n")
         raise SystemExit(2)
