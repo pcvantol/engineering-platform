@@ -512,7 +512,10 @@ def main(argv: list[str] | None = None) -> int:
         dependabot_environment = {**os.environ, "EP_QUALIFICATION_INITIALIZE_ONLY": "1", "EP_DEPENDABOT_QUALIFICATION_FIXTURE": str(fixture)}
         process = subprocess.Popen([str(server), "serve", "--data-root", str(dependabot_root)], env=dependabot_environment)  # nosec B603
         try:
-            deadline = time.monotonic() + 15
+            # The two independently bound Server-child admissions can each
+            # encounter one SQLite retry on a contended hosted runner.  This
+            # remains a real installed-product wait, not a mocked fallback.
+            deadline = time.monotonic() + 30
             rows: list[tuple[str, str, str]] = []
             heartbeat = dependabot_root / "dependabot-producer-heartbeat.json"
             while time.monotonic() < deadline:
