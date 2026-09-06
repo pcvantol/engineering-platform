@@ -21,7 +21,7 @@ submission ingress and has no direct path to CENTRAL.
 | `com.engineeringplatform.local-api` | HISTORICAL_ONLY; never a replacement service | No |
 | Local API LaunchAgent generation and service CLI | REMOVE | No |
 | CENTRAL migration service ordering | REMOVE | No |
-| `local_api_credentials` tables and verifier | CURRENT_AUTHORITY: Server HTTP consumer authentication | Yes, Server-owned |
+| `ep_consumer_credentials` and `ep_consumer_registrations` tables and verifier | CURRENT_AUTHORITY: Server HTTP consumer authentication | Yes, Server-owned |
 | credential-table forensic and migration evidence | HISTORICAL_ONLY / MIGRATION_ONLY | No service authority |
 
 The credential table names are retained for schema compatibility and current

@@ -211,16 +211,16 @@ work while that condition remains unresolved.
 The installer creates no project by inference. A Workspace consumer connects a
 new or existing Git checkout only by supplying canonical project identity; EP
 then validates the selected checkout and project Inbox route. Consumers pin the
-wheel and use the Local Consumer API, while their CI exercises that adapter
-against an ephemeral EP store. They never install a user host, manipulate EP
-SQLite, start LaunchAgents or authenticate Codex/GitHub in CI.
-The Local Consumer API is loopback-only.
+wheel and submit only through the supported HTTP JSON, installed CLI or File
+Inbox ingresses. They never install a user host, manipulate EP SQLite, start
+LaunchAgents or authenticate Codex/GitHub in CI. The historical Local Consumer
+API is retired; it is neither an ingress nor a loopback service.
 
-ADR-0022 authorizes the next, still-unimplemented consumer boundary: EP-owned
-registration for an exact `consumer_id` and `project_id`, production
-verifier-only credentials, and consumer-side macOS Keychain storage. It does
-not change this API's read-only surface, loopback bind, lifecycle authority or
-current Forge, Workspace and DJConnect integrations.
+ADR-0022 authorizes the consumer boundary: EP-owned registration for an exact
+`consumer_id` and `project_id`, production verifier-only credentials, and
+consumer-side macOS Keychain storage where a supported consumer requires it.
+Those credentials authorize the canonical Server boundary; they do not create
+a Local Consumer API lifecycle, bind or service authority.
 
 ### Common lifecycle invariants
 
@@ -402,7 +402,7 @@ Genesis target
 | Scope | current Managed checkout or Genesis target | immutable `project_id` plus registered workspace/repository |
 | Display name | current workspace metadata | mutable Workspace-supplied `project_name`, used only as a label |
 | Queues and Inbox | current configured route | one isolated Inbox route, FIFO queue and lease domain per project |
-| Consumers | current local routes and dashboard | independently authenticated DJConnect, Forge and Workspace consumers through a versioned Local Consumer API |
+| Consumers | current local routes and dashboard | independently authenticated consumers through HTTP JSON, installed CLI and File Inbox into the Server-owned Submission Service |
 | UI position | local Operations Console | same Operations Console semantics, selectable project projection |
 
 In EP 2.x, `project_id` becomes the canonical cross-system scope. A path,

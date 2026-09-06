@@ -12,7 +12,7 @@ from threading import Thread
 import unittest
 
 from engineering_platform.local_api import LOOPBACK_ADDRESS, LocalApiServer
-from engineering_platform.local_api_credentials import (
+from engineering_platform.ep_consumer_credentials import (
     CredentialAuthority,
     create_qualification_credential,
     main,
@@ -46,7 +46,7 @@ class QualificationCredentialTests(unittest.TestCase):
         connection = open_storage(self.root)
         try:
             row = connection.execute(
-                "SELECT credential_id,verifier,fingerprint,expires_at,revoked_at FROM local_api_credentials"
+                "SELECT credential_id,verifier,fingerprint,expires_at,revoked_at FROM ep_consumer_credentials"
             ).fetchone()
             self.assertTrue(str(row[0]).startswith("qualification-"))
             self.assertEqual(bytes(row[1]), verifier(created.credential))

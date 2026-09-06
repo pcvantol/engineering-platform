@@ -32,7 +32,7 @@ CLASSIFIED_FALLBACKS = {
     "host_preflight.py": "RETIRED_DIRECT_HOST_COMPATIBILITY",
     "live_status.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "local_api.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
-    "local_api_credentials.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
+    "ep_consumer_credentials.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "managed_autonomy.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "parity_lifecycle_dispatcher.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "pr_evidence_backfill.py": "FORENSIC_MIGRATION_ONLY",

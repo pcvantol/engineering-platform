@@ -77,8 +77,8 @@ class WriterCandidate:
 _WRITER_CANDIDATES = (
     WriterCandidate("execution_submissions", "storage.record_submission", ("src/engineering_platform/human_text_ingress.py",), ("tests/engineering",)),
     WriterCandidate("execution_runs", "storage.record_execution_run", (), ("tests/engineering",)),
-    WriterCandidate("local_api_credentials", "local_api_credentials.issue_or_rotate", ("src/engineering_platform/local_api.py",), ("tests/engineering",), ("src/engineering_platform/dashboard.py",)),
-    WriterCandidate("local_api_consumer_registrations", "local_api_credentials.register_consumer", ("src/engineering_platform/local_api.py",), ("tests/engineering",), ("src/engineering_platform/dashboard.py",)),
+    WriterCandidate("ep_consumer_credentials", "ep_consumer_credentials.issue_or_rotate", ("src/engineering_platform/ep_consumer_credentials.py",), ("tests/engineering",), ("src/engineering_platform/dashboard.py",)),
+    WriterCandidate("ep_consumer_registrations", "ep_consumer_credentials.register_consumer", ("src/engineering_platform/ep_consumer_credentials.py",), ("tests/engineering",), ("src/engineering_platform/dashboard.py",)),
     WriterCandidate("engineering_component_logs", "component_logging.log_event", ("src/engineering_platform",), ("tests/engineering",), maintenance_callers=("src/engineering_platform/component_logging.py",)),
     WriterCandidate("engineering_metadata", "dashboard_configuration.update", ("src/engineering_platform/dashboard.py",), ("tests/engineering",)),
     WriterCandidate("execution_projections", "storage.store_projection", ("src/engineering_platform",), ("tests/engineering",)),
@@ -162,7 +162,10 @@ def _fixture_evidence(change: dict[str, Any], literals: dict[str, list[str]]) ->
                 "state_semantics": "IMMUTABLE_BUSINESS_STATE", "evidence_status": "PROVEN",
                 "rule_id": "EXACT_TEST_SUBMISSION_FIXTURE",
                 "evidence": _evidence("EXACT_TEST_SUBMISSION_FIXTURE", {"type": "exact_fixture_literal", "sources": sources})}
-    if change["table_name"] in {"local_api_credentials", "local_api_consumer_registrations"} and len(sources) and len(values) >= 2:
+    if change["table_name"] in {
+        "ep_consumer_credentials", "ep_consumer_registrations",
+        "local_api_credentials", "local_api_consumer_registrations",
+    } and len(sources) and len(values) >= 2:
         # Explicit test scopes prove fixed credentials/registrations. Generated
         # IDs require the scope plus an established lifecycle signal, never ID
         # shape alone.

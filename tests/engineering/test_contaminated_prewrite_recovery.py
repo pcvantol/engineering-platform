@@ -60,7 +60,6 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         with sqlite3.connect(self.central) as connection:
             connection.execute("CREATE TABLE backup_probe (value TEXT)")
             connection.execute("INSERT INTO backup_probe VALUES ('fixture')")
-            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(41)")
         pointer = migration.write_authority_pointer(migration_id=self.migration_id, authority=self.central, legacy=self.legacy, state="AUTHORITY_SWITCHED")
         self.database_patch = patch.object(
             migration, "database_path", side_effect=lambda _repo: self.central if (self.data / "runtime" / "store-authority.json").exists() and json.loads((self.data / "runtime" / "store-authority.json").read_text())["authoritative_path"] == str(self.central.resolve()) else self.legacy
@@ -114,7 +113,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         self.assertFalse(baseline["project_scope_delta"])
         with sqlite3.connect(self.central) as connection:
             connection.execute(
-                "INSERT INTO local_api_credentials (credential_id, consumer_id, project_id, verifier, fingerprint, issued_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO ep_consumer_credentials (credential_id, consumer_id, project_id, verifier, fingerprint, issued_at) VALUES (?, ?, ?, ?, ?, ?)",
                 ("delta", "consumer", "project", b"v" * 32, b"f" * 32, "2026-01-01T00:00:00Z"),
             )
         changed = migration.authority_independent_baseline_attestation(self.legacy, self.central)
@@ -126,7 +125,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
     def test_registration_and_project_scope_delta_fail_closed(self) -> None:
         with sqlite3.connect(self.central) as connection:
             connection.execute(
-                "INSERT INTO local_api_consumer_registrations (consumer_id, project_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO ep_consumer_registrations (consumer_id, project_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 ("delta-consumer", "delta-project", "ACTIVE", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
             )
         changed = migration.authority_independent_baseline_attestation(self.legacy, self.central)
@@ -245,7 +244,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
                 ("consumer", "project", "DISABLED", "2026-08-31 12:44:24", "2026-08-31 12:44:26", "2026-08-31 12:44:26", '{"action":"DISABLE"}'),
                 ("rotate", "project", "ACTIVE", "2026-08-31 12:44:26", "2026-08-31 12:44:26", None, '{"action":"REGISTER"}'),
             )
-            connection.executemany("INSERT INTO local_api_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,disabled_at,audit_metadata) VALUES(?,?,?,?,?,?,?)", registrations)
+            connection.executemany("INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,disabled_at,audit_metadata) VALUES(?,?,?,?,?,?,?)", registrations)
             credentials = (
                 ("credential-alpha", "workspace-client", "project-alpha", "now", None),
                 ("production-consumer", "consumer", "project", "2026-08-31 12:44:25", "2026-08-31 12:44:26"),
@@ -255,7 +254,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
             )
             for credential_id, consumer_id, project_id, issued_at, revoked_at in credentials:
                 expires_at = "2026-08-31 12:59:27" if credential_id.startswith("qualification-") else None
-                connection.execute("INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at,expires_at,revoked_at) VALUES(?,?,?,?,?,?,?,?)", (credential_id, consumer_id, project_id, hashlib.sha256(("v:" + credential_id).encode()).digest(), hashlib.sha256(("f:" + credential_id).encode()).digest(), issued_at, expires_at, revoked_at))
+                connection.execute("INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at,expires_at,revoked_at) VALUES(?,?,?,?,?,?,?,?)", (credential_id, consumer_id, project_id, hashlib.sha256(("v:" + credential_id).encode()).digest(), hashlib.sha256(("f:" + credential_id).encode()).digest(), issued_at, expires_at, revoked_at))
 
     def test_historical_attestation_covers_exact_fixture_components(self) -> None:
         self._historical_authority_fixture()
@@ -304,7 +303,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         migration.create_contamination_attestation(self.repo, migration_id=self.migration_id, operator="operator")
         with sqlite3.connect(self.central) as connection:
             connection.execute(
-                "INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
+                "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
                 ("orphan-authority", "orphan", "project", b"v" * 32, b"f" * 32, "2026-08-31 12:45:00"),
             )
         with self.assertRaisesRegex(migration.CutoverError, "CONTAMINATION_PROVENANCE_UNRESOLVED"):
@@ -319,6 +318,6 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
 
     def test_weak_historical_fixture_is_rejected(self) -> None:
         with sqlite3.connect(self.central) as connection:
-            connection.execute("INSERT INTO local_api_consumer_registrations(consumer_id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("similar", "values", "ACTIVE", "2026-01-01", "2026-01-01"))
+            connection.execute("INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("similar", "values", "ACTIVE", "2026-01-01", "2026-01-01"))
         with self.assertRaisesRegex(migration.CutoverError, "CONTAMINATION_PROVENANCE_UNRESOLVED"):
             migration.create_contamination_attestation(self.repo, migration_id=self.migration_id, operator="operator")
