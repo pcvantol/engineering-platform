@@ -74,7 +74,7 @@ class SmallRuntimeBoundaryCoverageTests(unittest.TestCase):
                 from engineering_platform.evidence_projection import proxy_main
                 proxy_main("missing-tool")
         with ToolProxyEnvironment() as environment, patch.dict("os.environ", environment, clear=True), patch(
-            "sys.argv", ["djconnect-context-escalate", "bad"]
+            "sys.argv", ["engineering-platform-context-escalate", "bad"]
         ):
             from engineering_platform.evidence_projection import context_escalation_main
             with self.assertRaises(SystemExit) as rejected:

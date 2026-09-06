@@ -184,15 +184,15 @@ class BoundedProviderRecoveryTests(unittest.TestCase):
 
     def test_controlled_hook_is_run_bound_one_shot_and_not_prompt_driven(self) -> None:
         runner = self._runner([AgentResult("COMPLETE", branch="topic")])
-        original = os.environ.get("DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE")
-        os.environ["DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE"] = f"{self.state.run_id}:{self.state.phase}"
+        original = os.environ.get("ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE")
+        os.environ["ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE"] = f"{self.state.run_id}:{self.state.phase}"
         try:
             result = runner._invoke_agent_with_timing(self.state, "prompt prose cannot enable this hook")
         finally:
             if original is None:
-                os.environ.pop("DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE", None)
+                os.environ.pop("ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE", None)
             else:
-                os.environ["DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE"] = original
+                os.environ["ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE"] = original
         self.assertEqual(result.terminal_state, "COMPLETE")
         self.assertEqual(self.store.load(self.state.run_id).provider_recovery_attempts[0]["result"], "RECOVERED")
         self.assertEqual(len(runner.agent.outcomes), 0)

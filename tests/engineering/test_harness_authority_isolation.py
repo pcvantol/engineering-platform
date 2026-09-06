@@ -30,7 +30,7 @@ def _schema_version(path: Path) -> int:
 
 class EngineeringHarnessAuthorityIsolationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.installation_root = Path(os.environ["DJCONNECT_EP_TEST_INSTALLATION_ROOT"]).resolve()
+        self.installation_root = Path(os.environ["ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT"]).resolve()
         self.assertTrue(self.installation_root.is_dir())
         self.external = tempfile.TemporaryDirectory()
         self.external_root = Path(self.external.name)

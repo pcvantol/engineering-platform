@@ -18,7 +18,7 @@ from .storage import EngineeringStorageError, open_storage
 from .providers import GitProvider
 from .platform_components import PLATFORM_COMPONENT_IDS
 
-LOG_LEVEL_ENVIRONMENT = "DJCONNECT_ENGINEERING_LOG_LEVEL"
+LOG_LEVEL_ENVIRONMENT = "ENGINEERING_PLATFORM_LOG_LEVEL"
 SERVER_DATA_ROOT_ENVIRONMENT = "EP_SERVER_DATA_ROOT"
 DEFAULT_LOG_LEVEL = "INFO"
 COMPONENT_LOG_PAGE_SIZE = 50
@@ -133,7 +133,7 @@ def component_logger(
             candidate = Path(configured_root).resolve() / "engineering.db"
             if candidate.is_file():
                 central_database = candidate
-    logger = logging.getLogger(f"djconnect.engineering.{component}")
+    logger = logging.getLogger(f"engineering_platform.{component}")
     logger.setLevel(configured_level(level))
     logger.propagate = False
     for handler in tuple(logger.handlers):

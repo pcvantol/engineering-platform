@@ -36,7 +36,7 @@ jobs:
               per_page: 100,
             });
             const exactProtected = new Set([
-              "PLATFORM_STRATEGY.md", "DJCONNECT_CONSTITUTION.md", "FOUNDATION_INDEX.md",
+              "PLATFORM_STRATEGY.md", "ENGINEERING_PLATFORM_CONSTITUTION.md", "FOUNDATION_INDEX.md",
               "CANONICAL_REFERENCES.md", "PRODUCT_VISION.md", "DOMAIN_MODEL.md",
               "CLIENT_CAPABILITY_MATRIX.md", "REPOSITORY_OWNERSHIP.md",
               "PLATFORM_GOVERNANCE.md", "CI_CD_RELEASE_GOVERNANCE.md",

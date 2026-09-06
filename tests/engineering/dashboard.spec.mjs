@@ -102,7 +102,7 @@ test.beforeAll(async () => {
     ...process.env,
     HOME: isolatedHome,
     XDG_DATA_HOME: path.join(installationRoot, ".local", "share"),
-    DJCONNECT_EP_TEST_INSTALLATION_ROOT: installationRoot,
+    ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT: installationRoot,
   });
   dashboard = server.process;
   dashboardUrl = server.url;
@@ -1965,7 +1965,7 @@ test.describe("Engineering Status browser smoke", () => {
 
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await page.waitForFunction(
-        () => typeof window.__djconnectDashboardLocalizationCalls === "function",
+        () => typeof window.__engineeringPlatformDashboardLocalizationCalls === "function",
       );
       await page.waitForFunction(
         () => document.body.classList.contains("dashboard-ready"),
@@ -2038,7 +2038,7 @@ test.describe("Engineering Status browser smoke", () => {
       }
 
       const calls = await page.evaluate(() =>
-        window.__djconnectDashboardLocalizationCalls(),
+        window.__engineeringPlatformDashboardLocalizationCalls(),
       );
       expect(calls.length, `${language} should render localized dashboard copy`).toBeGreaterThan(0);
 

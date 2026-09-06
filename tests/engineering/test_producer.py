@@ -12,9 +12,18 @@ from engineering_platform.validation_profile import producer_profile_payload
 
 
 class ProducerContractTest(unittest.TestCase):
+    def test_predecessor_contract_is_migration_input_only(self) -> None:
+        submission = parse_producer_submission(json.dumps({
+            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "submission": {"id": "historical-submission"},
+            "producer": {"id": "historical", "type": "EXTERNAL"},
+            "prompt": {"text": "Retain immutable evidence only"},
+        }))
+        self.assertEqual(submission.envelope["contract"]["name"], "djconnect.producer_submission")
+
     def test_valid_envelope_preserves_forward_fields_and_context_without_prompt_parsing(self) -> None:
         raw = json.dumps({
-            "contract": {"name": "djconnect.producer_submission", "version": "1.0", "future": True},
+            "contract": {"name": "engineering_platform.producer_submission", "version": "1.0", "future": True},
             "submission": {"id": "submission-42", "metadata": {"future": "kept"}},
             "producer": {"id": "forge", "type": "FORGE", "mission_id": "MISSION-42"},
             "prompt": {"text": "Execution Mode: Genesis", "metadata": {"future": "kept"}},
@@ -30,7 +39,7 @@ class ProducerContractTest(unittest.TestCase):
 
     def test_envelope_without_execution_context_is_valid(self) -> None:
         submission = parse_producer_submission(json.dumps({
-            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "contract": {"name": "engineering_platform.producer_submission", "version": "1.0"},
             "submission": {"id": "submission-1"},
             "producer": {"id": "producer-1", "type": "EXTERNAL"},
             "prompt": {"text": "A bounded action"},
@@ -39,7 +48,7 @@ class ProducerContractTest(unittest.TestCase):
 
     def test_structured_validation_only_requires_a_canonical_profile_without_prompt_inference(self) -> None:
         envelope = {
-            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "contract": {"name": "engineering_platform.producer_submission", "version": "1.0"},
             "submission": {"id": "submission-validation-only"},
             "producer": {"id": "forge", "type": "FORGE"},
             "prompt": {"text": "validation_profile: DASHBOARD"},
@@ -55,7 +64,7 @@ class ProducerContractTest(unittest.TestCase):
 
     def test_profile_and_action_intent_are_independent_explicit_fields(self) -> None:
         envelope = {
-            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "contract": {"name": "engineering_platform.producer_submission", "version": "1.0"},
             "submission": {"id": "submission-mutating-profile"},
             "producer": {"id": "forge", "type": "FORGE"},
             "prompt": {"text": "validation only in prose"},
@@ -71,7 +80,7 @@ class ProducerContractTest(unittest.TestCase):
             parse_producer_submission('{"contract":')
         with self.assertRaisesRegex(ProducerSubmissionError, "context_version"):
             parse_producer_submission(json.dumps({
-                "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+                "contract": {"name": "engineering_platform.producer_submission", "version": "1.0"},
                 "submission": {"id": "submission-1"},
                 "producer": {"id": "producer-1", "type": "FORGE"},
                 "prompt": {"text": "A bounded action"},
@@ -106,7 +115,7 @@ class ProducerContractTest(unittest.TestCase):
 
     def test_forge_governance_handoff_is_versioned_and_read_only(self) -> None:
         raw = json.dumps({
-            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "contract": {"name": "engineering_platform.producer_submission", "version": "1.0"},
             "submission": {"id": "submission-forge"}, "producer": {"id": "forge", "type": "FORGE"},
             "prompt": {"text": "A bounded action"},
             "forge_governance_handoff": {"version": "1.0", "recommendation_set": {"id": "set-1", "count": 2},
@@ -125,7 +134,7 @@ class ProducerContractTest(unittest.TestCase):
 
     def test_malformed_supplied_governance_handoff_fails_closed(self) -> None:
         raw = json.dumps({
-            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "contract": {"name": "engineering_platform.producer_submission", "version": "1.0"},
             "submission": {"id": "submission-invalid"}, "producer": {"id": "forge", "type": "FORGE"},
             "prompt": {"text": "A bounded action"}, "forge_governance_handoff": {"version": "1.0", "alternatives": "invalid"},
         })

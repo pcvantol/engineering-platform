@@ -9,9 +9,9 @@
     "capability_registry_version": 1
   },
   "workspace": {
-    "id": "djconnect",
-    "name": "DJConnect Engineering",
-    "repository": {"provider": "github", "owner": "pcvantol", "name": "djconnect", "default_branch": "main"},
+    "id": "engineering-platform",
+    "name": "Engineering Platform",
+    "repository": {"provider": "github", "owner": "pcvantol", "name": "engineering-platform", "default_branch": "main"},
     "branding": {"dashboard_title": "EP Operations"},
     "workspace_authorization": {
       "allowed_roots": [],

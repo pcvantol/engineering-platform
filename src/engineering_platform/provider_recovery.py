@@ -122,7 +122,7 @@ def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str)
     setting from firing in a later host.  It contains no prompt or provider
     command data.
     """
-    requested = os.environ.get("DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE")
+    requested = os.environ.get("ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE")
     armed, path = _control_paths(root, run_id, phase)
     durable_armed = armed.is_file()
     if (requested != f"{run_id}:{phase}" and not durable_armed) or load_recovery_state(root, run_id) is not None:

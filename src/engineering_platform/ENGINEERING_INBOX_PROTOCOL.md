@@ -36,7 +36,7 @@ never changes admission, scheduling, preflight, lifecycle or execution.
 
 `tools.engineering.workspace_inbox_api.publish(root, envelope)` is the bounded
 local API for trusted Forge and Human callers. It accepts only a complete
-`djconnect.producer_submission` v1 envelope whose Producer Type is `FORGE` or
+`engineering_platform.producer_submission` v1 envelope whose Producer Type is `FORGE` or
 `HUMAN`; plain-text prompts, incomplete envelopes and every other producer type
 fail closed. It first records the immutable producer submission evidence in local
 Engineering storage, then writes the original UTF-8 envelope through a private
@@ -101,11 +101,10 @@ prompt text when an explicit action intent or profile is required.
 ### Human Text Ingress Adapter
 
 The Human Text Ingress Adapter and `workspace_inbox_api` converge on the same
-structured Human implementation. An unannotated `.txt` uses configured
-`human_ingress.producer_id` (environment key
-`DJCONNECT_ENGINEERING_HUMAN_INGRESS_PRODUCER_ID`, default
-`human:operator-peter`), `MANAGED` and explicit `MUTATING_DELIVERY`, without
-inventing a validation profile. Prompt prose never changes these values.
+structured Human implementation. An unannotated `.txt` supplies its canonical
+producer binding, `MANAGED` and explicit `MUTATING_DELIVERY`, without
+inventing a validation profile. Prompt prose never changes these values; there
+is no ambient Human-ingress environment override.
 
 An exact, first-byte header may set only `action_intent`
 (`MUTATING_DELIVERY` or `VALIDATION_ONLY`) and `validation_profile`:
@@ -158,7 +157,7 @@ SQLite access, structured logging initialization, and host identity/version/
 Bootstrap Contract. It does not inspect a Git repository, workspace state,
 Engineering Actions, capability or mission.
 
-`DJCONNECT_ENGINEERING_PREFLIGHT_MIN_FREE_BYTES` configures the minimum free
+`ENGINEERING_PLATFORM_PREFLIGHT_MIN_FREE_BYTES` configures the minimum free
 disk threshold in bytes (default: 1 GiB). A `FAIL` leaves the Inbox item in
 place, starts no run and moves no prompt into `Running`. Evidence is stored
 locally under `.engineering/status/host_preflight.json`; each failure records a

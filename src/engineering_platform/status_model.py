@@ -87,7 +87,7 @@ def publish(root: Path, payload: dict[str, object]) -> None:
         connection.close()
     markdown = "\n".join(
         (
-            "# DJConnect Engineering",
+            "# Engineering Platform",
             "",
             "## Current State",
             f"`{payload['watcher_state']}` — `{payload['current_phase'] or 'idle'}`",

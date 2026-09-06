@@ -65,7 +65,7 @@ class EvidenceProjectionTests(unittest.TestCase):
             expected = "".join(f"needle {item}\n" for item in range(80))
             with ToolProxyEnvironment() as environment:
                 proxy_directory = Path(environment["PATH"].split(os.pathsep, 1)[0])
-                environment["DJCONNECT_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
+                environment["ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
                 # Command and fixture path are test-controlled.
                 bounded = subprocess.run(  # nosec B603
                     ("rg", "needle", str(source)),
@@ -78,7 +78,7 @@ class EvidenceProjectionTests(unittest.TestCase):
                     ("rg", "needle", str(source)),
                     capture_output=True,
                     check=False,
-                    env={**environment, "DJCONNECT_EVIDENCE_EXPAND": "1"},
+                    env={**environment, "ENGINEERING_PLATFORM_EVIDENCE_EXPAND": "1"},
                     text=True,
                 )
             self.assertEqual(bounded.returncode, 0)
@@ -102,7 +102,7 @@ class EvidenceProjectionTests(unittest.TestCase):
             )
             executable.chmod(0o700)
             with ToolProxyEnvironment() as environment:
-                environment["DJCONNECT_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
+                environment["ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
                 bounded = subprocess.run(  # nosec B603
                     ("pytest",), capture_output=True, check=False, env=environment, text=True
                 )
@@ -110,7 +110,7 @@ class EvidenceProjectionTests(unittest.TestCase):
                     ("pytest",),
                     capture_output=True,
                     check=False,
-                    env={**environment, "DJCONNECT_EVIDENCE_EXPAND": "1"},
+                    env={**environment, "ENGINEERING_PLATFORM_EVIDENCE_EXPAND": "1"},
                     text=True,
                 )
             self.assertEqual(bounded.returncode, 1)

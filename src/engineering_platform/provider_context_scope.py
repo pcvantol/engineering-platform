@@ -85,6 +85,6 @@ def provider_instruction(scope: ContextScope) -> str:
         "Do not enumerate historical pull requests or broad git history for orientation. "
         f"{direct_lineage} "
         "If current evidence has a concrete gap, before a historical query run "
-        "`djconnect-context-escalate REASON BOUNDARY_KIND BOUNDARY LIMIT --diagnostic 'evidence gap'`; "
+        "`engineering-platform-context-escalate REASON BOUNDARY_KIND BOUNDARY LIMIT --diagnostic 'evidence gap'`; "
         "use only its admitted boundary (maximum 10 commits or 10 PRs) and continue."
     )
