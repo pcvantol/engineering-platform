@@ -83,7 +83,8 @@ class ServerRelayTests(unittest.TestCase):
         ), patch("engineering_platform.server_relay.render_launch_agent", return_value=neutral), patch(
             "engineering_platform.server_relay.LaunchdProvider", return_value=launchd
         ):
-            return server_relay.install(self.root, probe=(lambda: probe))
+            functional_probe = probe if callable(probe) else (lambda: probe)
+            return server_relay.install(self.root, probe=functional_probe)
 
     def test_denies_neutral_bootstrap_when_legacy_bootout_raises(self) -> None:
         launchd = FakeLaunchd({server_relay.LEGACY_RELAY_LABEL}, uninstall_error_for=server_relay.LEGACY_RELAY_LABEL)
@@ -129,6 +130,13 @@ class ServerRelayTests(unittest.TestCase):
         launchd = FakeLaunchd({server_relay.LEGACY_RELAY_LABEL})
         with self.assertRaisesRegex(server_relay.RelayCutoverError, "RELAY_CUTOVER_ROLLED_BACK"):
             self._cutover(launchd, probe=False)
+        self.assertEqual(launchd.loaded, {server_relay.LEGACY_RELAY_LABEL})
+
+    def test_rollback_fails_closed_when_previously_healthy_legacy_probe_does_not_restore(self) -> None:
+        launchd = FakeLaunchd({server_relay.LEGACY_RELAY_LABEL}, install_error_for="com.engineeringplatform.dashboard-relay")
+        responses = iter((True, False))  # pre-cutover legacy health, then restored legacy health
+        with self.assertRaisesRegex(server_relay.RelayCutoverError, "ROLLBACK_LEGACY_FUNCTIONAL_PROBE_FAILED"):
+            self._cutover(launchd, probe=lambda: next(responses))
         self.assertEqual(launchd.loaded, {server_relay.LEGACY_RELAY_LABEL})
 
     def test_rollback_does_not_restore_legacy_when_neutral_unload_is_unverified(self) -> None:

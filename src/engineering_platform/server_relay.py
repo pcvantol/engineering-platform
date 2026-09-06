@@ -100,7 +100,7 @@ def _unload_and_verify(launchd: LaunchdProvider, label: str, plist: Path, *, cod
         raise RelayCutoverError(code)
 
 
-def _restore_legacy(launchd: LaunchdProvider, state: PreCutoverState, legacy: Path, neutral: Path) -> None:
+def _restore_legacy(launchd: LaunchdProvider, state: PreCutoverState, legacy: Path, neutral: Path, *, probe=relay_functional_probe) -> None:
     """Restore exactly the captured legacy loaded state after neutral is absent."""
     _unload_and_verify(launchd, _definition_label(), neutral, code="ROLLBACK_NEUTRAL_UNLOAD_UNVERIFIED")
     neutral.unlink(missing_ok=True)
@@ -113,6 +113,8 @@ def _restore_legacy(launchd: LaunchdProvider, state: PreCutoverState, legacy: Pa
         restored = launchd.runtime_status(LEGACY_RELAY_LABEL).qualified
         if restored != state.legacy_process_active:
             raise RelayCutoverError("ROLLBACK_LEGACY_PROCESS_STATE_MISMATCH")
+        if state.legacy_functional_probe is True and not probe():
+            raise RelayCutoverError("ROLLBACK_LEGACY_FUNCTIONAL_PROBE_FAILED")
     elif launchd.inspect(LEGACY_RELAY_LABEL):
         raise RelayCutoverError("ROLLBACK_LEGACY_STATE_MISMATCH")
 
@@ -153,7 +155,7 @@ def install(data_root: Path, *, probe=relay_functional_probe) -> dict[str, str]:
         if not probe():
             raise RelayCutoverError("NEUTRAL_FUNCTIONAL_PROBE_FAILED")
     except Exception as error:
-        _restore_legacy(launchd, state, legacy, plist)
+        _restore_legacy(launchd, state, legacy, plist, probe=probe)
         raise RelayCutoverError("RELAY_CUTOVER_ROLLED_BACK") from error
     # Commit point: legacy is proven inactive, and neutral is loaded, active,
     # and functionally healthy. Only now may the migration source be retired.
