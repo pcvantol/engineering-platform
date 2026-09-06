@@ -68,11 +68,11 @@ ABORTABLE_STATES = frozenset({"PRECHECK", "ADMISSION_FROZEN", "QUIESCENT_SOURCE_
 ABORT_REASONS = frozenset({"CONTROLLER_VERSION_INCOMPATIBLE", "PRE_HANDOFF_CONTROLLER_DEFECT"})
 SERVICE_STOP_ORDER = (
     "com.djconnect.engineering-inbox", "com.djconnect.engineering-local-api",
-    "com.djconnect.engineering-dashboard-relay", "com.djconnect.engineering-dashboard",
+    "com.engineeringplatform.dashboard-relay", "com.djconnect.engineering-dashboard",
 )
 SERVICE_START_ORDER = (
     "com.djconnect.engineering-local-api", "com.djconnect.engineering-dashboard",
-    "com.djconnect.engineering-dashboard-relay", "com.djconnect.engineering-inbox",
+    "com.engineeringplatform.dashboard-relay", "com.djconnect.engineering-inbox",
 )
 EXPECTED_RUNNING_LOCKS = {
     "dashboard.lock": ("dashboard", "engineering_platform.dashboard", "com.djconnect.engineering-dashboard"),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from engineering_platform import server_relay
 
@@ -24,17 +24,17 @@ class ServerRelayTests(unittest.TestCase):
 
     def test_install_uses_the_canonical_component_label_and_server_paths(self) -> None:
         binary = self.root / "runtime" / "engineering-dashboard-relay"
-        plist = self.root / "LaunchAgents" / "com.djconnect.engineering-dashboard-relay.plist"
+        plist = self.root / "LaunchAgents" / "com.engineeringplatform.dashboard-relay.plist"
         with patch("engineering_platform.server_relay.build_relay", return_value=binary), patch(
             "engineering_platform.server_relay.render_launch_agent", return_value=plist
         ), patch("engineering_platform.server_relay.LaunchdProvider") as launchd:
             result = server_relay.install(self.root)
-        launchd.return_value.install.assert_called_once_with("com.djconnect.engineering-dashboard-relay", plist)
+        launchd.return_value.install.assert_called_once_with("com.engineeringplatform.dashboard-relay", plist)
         self.assertEqual(result["component"], "dashboard_relay")
         self.assertEqual(result["binary"], str(binary))
 
     def test_uninstall_removes_only_the_relay_launch_agent(self) -> None:
-        plist = self.root / "LaunchAgents" / "com.djconnect.engineering-dashboard-relay.plist"
+        plist = self.root / "LaunchAgents" / "com.engineeringplatform.dashboard-relay.plist"
         plist.parent.mkdir(parents=True)
         plist.write_text("relay", encoding="utf-8")
         with patch("engineering_platform.server_relay.launch_agent_path", return_value=plist), patch(
@@ -44,3 +44,25 @@ class ServerRelayTests(unittest.TestCase):
         launchd.return_value.uninstall.assert_called_once_with(plist)
         self.assertFalse(plist.exists())
         self.assertEqual(result["component"], "dashboard_relay")
+
+    def test_install_migrates_the_single_legacy_relay_without_dual_authority(self) -> None:
+        home = self.root.parent / "home"
+        legacy = home / "Library" / "LaunchAgents" / "com.djconnect.engineering-dashboard-relay.plist"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("legacy", encoding="utf-8")
+        binary = self.root / "runtime" / "engineering-dashboard-relay"
+        neutral = home / "Library" / "LaunchAgents" / "com.engineeringplatform.dashboard-relay.plist"
+        with patch("engineering_platform.server_relay.Path.home", return_value=home), patch(
+            "engineering_platform.server_relay.build_relay", return_value=binary
+        ), patch("engineering_platform.server_relay.render_launch_agent", return_value=neutral), patch(
+            "engineering_platform.server_relay.LaunchdProvider"
+        ) as launchd:
+            server_relay.install(self.root)
+        self.assertEqual(
+            launchd.return_value.method_calls,
+            [
+                call.uninstall(legacy),
+                call.install("com.engineeringplatform.dashboard-relay", neutral),
+            ],
+        )
+        self.assertFalse(legacy.exists())

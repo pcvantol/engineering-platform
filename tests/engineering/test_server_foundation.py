@@ -436,8 +436,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 "launchd", "configured", True, "LaunchAgent process is active"
             )
             result = server._restart_platform_component(self.root, "dashboard_relay")
-        launchd.return_value.restart.assert_called_once_with("com.djconnect.engineering-dashboard-relay")
-        launchd.return_value.runtime_status.assert_called_with("com.djconnect.engineering-dashboard-relay")
+        launchd.return_value.restart.assert_called_once_with("com.engineeringplatform.dashboard-relay")
+        launchd.return_value.runtime_status.assert_called_with("com.engineeringplatform.dashboard-relay")
         self.assertEqual(result, {
             "restarting": "dashboard_relay", "scope": "PLATFORM",
             "postcondition": "LIFECYCLE_OWNER_RUNNING",
@@ -460,8 +460,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(OSError, "COMPONENT_RESTART_POSTCONDITION_FAILED"):
                 server._restart_platform_component(self.root, "dashboard_relay")
-        launchd.return_value.restart.assert_called_once_with("com.djconnect.engineering-dashboard-relay")
-        launchd.return_value.runtime_status.assert_called_with("com.djconnect.engineering-dashboard-relay")
+        launchd.return_value.restart.assert_called_once_with("com.engineeringplatform.dashboard-relay")
+        launchd.return_value.runtime_status.assert_called_with("com.engineeringplatform.dashboard-relay")
         self.assertEqual(
             [call.args[2] for call in logged.call_args_list],
             ["component_restart_requested", "component_restart_failed"],
@@ -470,7 +470,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def test_server_cli_installs_relay_through_server_owned_lifecycle(self) -> None:
         with patch("engineering_platform.server.server_relay.install", return_value={
             "component": "dashboard_relay", "binary": "/installation/runtime/engineering-dashboard-relay",
-            "launch_agent": "/Library/LaunchAgents/com.djconnect.engineering-dashboard-relay.plist",
+            "launch_agent": "/Library/LaunchAgents/com.engineeringplatform.dashboard-relay.plist",
         }) as install, redirect_stdout(io.StringIO()) as output:
             self.assertEqual(server.main(["relay-install", "--data-root", str(self.root)]), 0)
         install.assert_called_once_with(self.root)

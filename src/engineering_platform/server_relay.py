@@ -17,6 +17,9 @@ from .resources import package_path
 
 RUNTIME_DIRECTORY = "runtime"
 RELAY_BINARY_FILENAME = "engineering-dashboard-relay"
+# This identifier is retained solely to migrate an already installed legacy
+# relay.  The canonical component model is the only active lifecycle owner.
+LEGACY_RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
 
 
 def _definition_label() -> str:
@@ -51,6 +54,11 @@ def launch_agent_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{_definition_label()}.plist"
 
 
+def legacy_launch_agent_path() -> Path:
+    """Return the one retired relay plist that may be migrated."""
+    return Path.home() / "Library" / "LaunchAgents" / f"{LEGACY_RELAY_LABEL}.plist"
+
+
 def render_launch_agent(binary: Path) -> Path:
     """Render the one canonical Relay LaunchAgent from an installed binary."""
     destination = launch_agent_path()
@@ -63,10 +71,27 @@ def render_launch_agent(binary: Path) -> Path:
 
 
 def install(data_root: Path) -> dict[str, str]:
-    """Install the bounded relay through the Server's component definition."""
+    """Install the canonical relay and retire its single migration source.
+
+    The neutral plist is rendered before the legacy job is unloaded.  If the
+    canonical bootstrap fails, the still-present legacy plist is reloaded so a
+    failed migration cannot leave the user without the access adapter.
+    """
     binary = build_relay(data_root)
     plist = render_launch_agent(binary)
-    LaunchdProvider().install(_definition_label(), plist)
+    launchd = LaunchdProvider()
+    legacy = legacy_launch_agent_path()
+    legacy_present = legacy.is_file()
+    if legacy_present:
+        launchd.uninstall(legacy)
+    try:
+        launchd.install(_definition_label(), plist)
+    except Exception:
+        if legacy_present:
+            launchd.install(LEGACY_RELAY_LABEL, legacy)
+        raise
+    if legacy_present:
+        legacy.unlink()
     return {"component": "dashboard_relay", "binary": str(binary), "launch_agent": str(plist)}
 
 
