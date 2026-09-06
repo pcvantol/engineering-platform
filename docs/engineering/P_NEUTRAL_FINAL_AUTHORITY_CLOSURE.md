@@ -42,6 +42,7 @@ They are not operated as Engineering Platform identity.  Current operator and
 installation documentation uses Engineering Platform terminology.
 
 `DJCONNECT_PROJECT_IDENTITY_ALLOWED = TRUE`
+
 `DJCONNECT_PLATFORM_IDENTITY_ALLOWED = FALSE`
 
 ## Separate credential-schema increment
@@ -59,3 +60,13 @@ silently folded into this authority closure.
 components, CENTRAL, HTTP JSON, installed CLI, File Inbox and Server-owned
 relay/console lifecycle.  It must not install `com.djconnect.*`, Local Consumer
 API, Forge, Workspace, or Project Agent productization.
+
+| P-INSTALLER-V1 boundary | Contract |
+| --- | --- |
+| Must include | EP Server, CENTRAL, HTTP JSON, installed CLI, File Inbox, Server-owned lifecycle and Server-owned relay/console where applicable. |
+| Must exclude | Legacy DJConnect services, Local Consumer API, Forge Runtime, Workspace and Project Agent productization. |
+| Project consumption | DJConnect may be attached later as a project; it is never an EP platform component. |
+
+The installed P-TRANSPORT matrix is a real-wheel canary.  It waits a bounded
+30 seconds for the two independently bound Server-child Dependabot admissions,
+so a hosted SQLite retry cannot be misreported as a missing authority binding.

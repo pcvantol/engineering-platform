@@ -20,7 +20,16 @@ SOURCE = ROOT / "src"
 class PNeutralFinalAuthorityClosureTests(unittest.TestCase):
     def test_current_product_has_no_djconnect_authority(self) -> None:
         self.assertEqual(guard.violations(SOURCE), [])
-        self.assertEqual(guard.report(SOURCE)["CURRENT_AUTHORITY_VIOLATIONS"], 0)
+        self.assertEqual(
+            guard.report(SOURCE),
+            {
+                "CURRENT_AUTHORITY_VIOLATIONS": 0,
+                "HISTORICAL_REFERENCE_FALSE_POSITIVES": 0,
+                "LOCAL_API_SUPPORTED_INGRESS": False,
+                "SUPPORTED_SUBMISSION_INGRESS_COUNT": 3,
+                "findings": [],
+            },
+        )
 
     def test_current_component_and_ingress_inventory_is_neutral(self) -> None:
         self.assertEqual(SUPPORTED_SUBMISSION_INGRESSES, ("HTTP_JSON", "INSTALLED_CLI", "FILE_INBOX"))
@@ -74,6 +83,20 @@ class PNeutralFinalAuthorityClosureTests(unittest.TestCase):
                 "RETIRED_CONFIGURATION_AUTHORITY:new_runtime.py:DJCONNECT_ENGINEERING_",
                 guard.violations(source),
             )
+
+    def test_authority_register_documents_the_installer_boundary(self) -> None:
+        register = (ROOT / "docs" / "engineering" / "P_NEUTRAL_FINAL_AUTHORITY_CLOSURE.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "P_INSTALLER_V1_PROFILE = EP_SERVER_ONLY",
+            "com.djconnect.*",
+            "Local Consumer API",
+            "Forge",
+            "Workspace",
+            "Project Agent productization",
+        ):
+            self.assertIn(required, register)
 
 
 if __name__ == "__main__":
