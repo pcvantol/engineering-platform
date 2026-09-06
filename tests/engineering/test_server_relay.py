@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 from types import SimpleNamespace
 
 from engineering_platform import server_relay
@@ -97,6 +97,21 @@ class ServerRelayTests(unittest.TestCase):
         with self.assertRaisesRegex(server_relay.RelayCutoverError, "LEGACY_UNLOAD_UNVERIFIED"):
             self._cutover(launchd)
         self.assertNotIn("com.engineeringplatform.dashboard-relay", launchd.loaded)
+
+    def test_denies_cutover_when_neutral_is_already_loaded(self) -> None:
+        neutral = "com.engineeringplatform.dashboard-relay"
+        launchd = FakeLaunchd({neutral})
+        with self.assertRaisesRegex(server_relay.RelayCutoverError, "NEUTRAL_ALREADY_LOADED"):
+            self._cutover(launchd)
+        self.assertEqual(launchd.loaded, {neutral})
+
+    def test_denies_cutover_when_neutral_inspection_is_ambiguous(self) -> None:
+        neutral = "com.engineeringplatform.dashboard-relay"
+        launchd = Mock()
+        launchd.inspect.side_effect = lambda label: Mock() if label == neutral else False
+        with self.assertRaisesRegex(server_relay.RelayCutoverError, "NEUTRAL_ALREADY_LOADED"):
+            self._cutover(launchd)
+        launchd.install.assert_not_called()
 
     def test_neutral_bootstrap_failure_restores_loaded_legacy(self) -> None:
         launchd = FakeLaunchd({server_relay.LEGACY_RELAY_LABEL}, install_error_for="com.engineeringplatform.dashboard-relay")

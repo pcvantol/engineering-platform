@@ -188,10 +188,31 @@ class InstallationBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Swift compiler"):
                 server_relay.build_relay(self.root)
         binary = self.root / "runtime" / "relay"
-        with patch("engineering_platform.server_relay.build_relay", return_value=binary), patch("engineering_platform.server_relay.render_launch_agent", return_value=Path("/tmp/relay.plist")), patch("engineering_platform.server_relay.LaunchdProvider") as launchd:
-            result = server_relay.install(self.root)
+        class ExplicitUnloadedLaunchd:
+            """Minimal lifecycle state for this installation-boundary test."""
+
+            def __init__(self) -> None:
+                self.loaded: set[str] = set()
+                self.installs: list[tuple[str, Path]] = []
+
+            def inspect(self, label: str) -> bool:
+                return label in self.loaded
+
+            def runtime_status(self, label: str) -> SimpleNamespace:
+                return SimpleNamespace(qualified=label in self.loaded)
+
+            def install(self, label: str, plist: Path) -> None:
+                self.installs.append((label, plist))
+                self.loaded.add(label)
+
+            def uninstall(self, plist: Path) -> None:
+                self.loaded.discard(plist.stem)
+
+        launchd = ExplicitUnloadedLaunchd()
+        with patch("engineering_platform.server_relay.build_relay", return_value=binary), patch("engineering_platform.server_relay.render_launch_agent", return_value=Path("/tmp/relay.plist")), patch("engineering_platform.server_relay.LaunchdProvider", return_value=launchd):
+            result = server_relay.install(self.root, probe=lambda: True)
         self.assertEqual(result["component"], "dashboard_relay")
-        launchd.return_value.install.assert_called_once()
+        self.assertEqual(launchd.installs, [("com.engineeringplatform.dashboard-relay", Path("/tmp/relay.plist"))])
 
     def test_topology_rejects_malformed_server_declarations(self) -> None:
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
