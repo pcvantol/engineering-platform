@@ -108,6 +108,8 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         qualification = (root / "tools" / "qualification" / "p_transport_installed_ingress_matrix.py").read_text(encoding="utf-8")
         self.assertIn("DEPENDABOT_BINDING_TIMEOUT_SECONDS = 30", qualification)
         self.assertIn("time.monotonic() + DEPENDABOT_BINDING_TIMEOUT_SECONDS", qualification)
+        self.assertIn("DEPENDABOT_DISPATCH_TIMEOUT_SECONDS = 60", qualification)
+        self.assertIn("timeout=DEPENDABOT_DISPATCH_TIMEOUT_SECONDS", qualification)
 
     def test_browser_fixture_uses_the_server_boundary_and_no_local_finder_route(self) -> None:
         """Dashboard browser evidence must not revive the retired direct listener."""

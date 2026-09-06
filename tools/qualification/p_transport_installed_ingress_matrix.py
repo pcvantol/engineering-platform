@@ -36,6 +36,13 @@ CASES = (
 # canary from scheduling noise without introducing a mocked alternate path.
 DEPENDABOT_BINDING_TIMEOUT_SECONDS = 30
 
+# The Server-owned lifecycle worker serializes the two real Dependabot
+# submissions after producer discovery.  On a contended hosted SQLite runner,
+# a dispatch can begin only after the other admission's bounded retry window;
+# retain a finite, named qualification limit instead of making product code or
+# lifecycle semantics depend on runner timing.
+DEPENDABOT_DISPATCH_TIMEOUT_SECONDS = 60
+
 
 def command(binary: Path, *args: str, environment: dict[str, str] | None = None) -> dict[str, object]:
     completed = subprocess.run([str(binary), *args], check=True, text=True, capture_output=True, env=environment)  # nosec B603
@@ -546,7 +553,12 @@ def main(argv: list[str] | None = None) -> int:
             # SQLite contention/retry window for two independently-bound
             # projects; this is not a mock or an alternate dispatch path.
             for submission_id, _project, _repository in rows:
-                wait_for_dispatch(server, dependabot_root, submission_id, timeout=30)
+                wait_for_dispatch(
+                    server,
+                    dependabot_root,
+                    submission_id,
+                    timeout=DEPENDABOT_DISPATCH_TIMEOUT_SECONDS,
+                )
             evidence["DEPENDABOT_MULTI_PROJECT_BINDING"] = {"pass": True, "submissions": [row[0] for row in rows]}
         finally:
             process.terminate(); process.wait(timeout=5)
