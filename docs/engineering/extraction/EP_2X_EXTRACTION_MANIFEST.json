@@ -23,7 +23,7 @@
     "GENERATED_LOCAL_ONLY"
   ],
   "candidate_universe_digest": "5f981891f15163f22ce5da59a450b4225e3da9f79879917864b19cef1bcafe54",
-  "manifest_semantic_digest": "dd2316de24b4de5269db84be44dd6772bb0b32c9a40fba29846e71d21362be84",
+  "manifest_semantic_digest": "5f3c477f95bf4dfa0fc5283df13f1097bd889c4753649210b043df952a5197ea",
   "path_rules": [
     {
       "path": "tools/engineering",
@@ -179,14 +179,6 @@
     },
     {
       "path": ".github/workflows/owner-authorization.yml",
-      "classification": "EP_WORKFLOW",
-      "reason_code": "EP_GOVERNANCE_CI",
-      "ownership": "EP",
-      "extraction_target": ".github/workflows",
-      "dependency_notes": "Governance workflow requiring neutral policy boundary."
-    },
-    {
-      "path": ".github/workflows/trusted-ai-actor-validation.yml",
       "classification": "EP_WORKFLOW",
       "reason_code": "EP_GOVERNANCE_CI",
       "ownership": "EP",

@@ -23,7 +23,7 @@ class PlatformConfigurationError(ValueError):
 # launchd deliberately starts with a minimal environment.  Preserve the
 # resolved launcher rather than depending on a later child process finding a
 # different PATH.  The value is local host configuration, not product data.
-RUNTIME_EXECUTABLE_ENVIRONMENT = "DJCONNECT_ENGINEERING_CODEX_EXECUTABLE"
+RUNTIME_EXECUTABLE_ENVIRONMENT = "ENGINEERING_PLATFORM_CODEX_EXECUTABLE"
 RUNTIME_PATH_FALLBACK = (
     "/opt/homebrew/bin",
     "/usr/local/bin",

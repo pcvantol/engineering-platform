@@ -26,16 +26,16 @@ function t(key, values = {}, fallback = key) {
 // Kept deliberately read-only for the browser regression suite.  It makes
 // every dashboard copy lookup auditable without adding a second translation
 // path or relying on a hand-maintained list of visible labels.
-window.__djconnectDashboardLocalizationCalls = () => [...localizationCalls.values()];
+window.__engineeringPlatformDashboardLocalizationCalls = () => [...localizationCalls.values()];
 // Server-owned enhancement scripts may request a catalog value, but never
 // provide their own user-visible fallback copy.
-window.__djconnectDashboardTranslate = (key) => t(key);
+window.__engineeringPlatformDashboardTranslate = (key) => t(key);
 document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
   NO_PROJECT_SELECTED = document.body.dataset.projectId === "none",
-  DASHBOARD_BUILD = window.DJCONNECT_DASHBOARD_BUILD || "",
-  DASHBOARD_BUILD_KEY = "djconnect-engineering-dashboard-build",
+  DASHBOARD_BUILD = window.ENGINEERING_PLATFORM_DASHBOARD_BUILD || "",
+  DASHBOARD_BUILD_KEY = "engineering-platform-dashboard-build",
   fallback = {
     watcher_state: "REMOTE_ENGINEERING_DEGRADED",
     current_phase: "UNKNOWN",

@@ -43,14 +43,14 @@ REVIEWER_LABELS = {
     "finalization": "Finalization Reviewer",
 }
 PRODUCT_MATCHERS = {
-    "apple_platform": (("apps/apple/", "djconnect-app", "swiftui", "watchos", "macos", "ios"), "Apple platform capability"),
-    "windows_platform": (("apps/windows/", "djconnect-windows", "maui", "windows packaging"), "Windows platform capability"),
-    "home_assistant_integration": (("custom_components/djconnect", "home assistant", "config flow", "options flow", "coordinator", "entity model"), "Home Assistant integration capability"),
-    "esphome_firmware": (("esphome", "djconnect-esp32", "firmware yaml", ".yaml"), "ESPHome firmware capability"),
-    "pi_renderer": (("djconnect-pi", "pi renderer", "raspberry pi", "display lifecycle"), "Pi renderer capability"),
+    "apple_platform": (("apps/apple/", "engineering-platform-app", "swiftui", "watchos", "macos", "ios"), "Apple platform capability"),
+    "windows_platform": (("apps/windows/", "engineering-platform-windows", "maui", "windows packaging"), "Windows platform capability"),
+    "home_assistant_integration": (("custom_components/engineering_platform", "home assistant", "config flow", "options flow", "coordinator", "entity model"), "Home Assistant integration capability"),
+    "esphome_firmware": (("esphome", "engineering-platform-esp32", "firmware yaml", ".yaml"), "ESPHome firmware capability"),
+    "pi_renderer": (("engineering-platform-pi", "pi renderer", "raspberry pi", "display lifecycle"), "Pi renderer capability"),
     "universal_receiver": (("universal receiver", "vibecast", "browser receiver", "receiver transport"), "Universal Receiver capability"),
-    "website": (("djconnect-website", "website", "static site", "product messaging"), "Website capability"),
-    "api": (("djconnect-api", "rest api", "api contract", "api documentation"), "API capability"),
+    "website": (("engineering-platform-website", "website", "static site", "product messaging"), "Website capability"),
+    "api": (("engineering-platform-api", "rest api", "api contract", "api documentation"), "API capability"),
 }
 
 

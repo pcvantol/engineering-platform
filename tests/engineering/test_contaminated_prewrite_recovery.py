@@ -39,7 +39,7 @@ class _FailingServices(_Services):
 
 class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(dir=os.environ["DJCONNECT_EP_TEST_INSTALLATION_ROOT"])
+        self.temporary = tempfile.TemporaryDirectory(dir=os.environ["ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT"])
         self.repo = Path(self.temporary.name) / "repo"
         self.repo.mkdir()
         self.data = Path(self.temporary.name) / "installation"

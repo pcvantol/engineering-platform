@@ -1,4 +1,4 @@
-"""Thin foreground orchestrator for one bounded DJConnect engineering prompt."""
+"""Thin foreground orchestrator for one bounded Engineering Platform prompt."""
 
 from __future__ import annotations
 
@@ -262,7 +262,7 @@ Invocation-scoped source-read reuse:
 - Shell reads are not host-intercepted: use this invocation-local evidence deliberately, and do not claim a cache hit unless you actually reuse content already inspected in this invocation.
 - The host bounds only oversized Git, GitHub, search, and test output at the
   provider tool boundary. A bounded result says `MORE_EVIDENCE_AVAILABLE`;
-  rerun that same narrow command with `DJCONNECT_EVIDENCE_EXPAND=1` only when
+  rerun that same narrow command with `ENGINEERING_PLATFORM_EVIDENCE_EXPAND=1` only when
   its exact raw output is required. Source reads remain exact by default.
 - A successful test result may be compact, but a failed test keeps its failing
   identity, assertion and diagnostic context. Never treat a bounded result as
@@ -311,7 +311,7 @@ Local validation hand-off boundary:
 - Create, commit and push the bounded implementation branch, but do not create a pull request yet.
 - Return that branch with `pull_request: null` after relevant focused validation. The host owns the next local repository validation gate and only that gate may create the implementation PR after the canonical suite passes.
 """
-    return f"""You are executing one bounded DJConnect engineering transaction.
+    return f"""You are executing one bounded Engineering Platform transaction.
 Provider role: {provider_role.value}. Context projection: {projection.budget_version}; source items: {projection.source_item_count}; omitted lower-priority items: {projection.omitted_low_priority_count}.{context_scope_instruction}
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
 {authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{local_gate}{pr_handoff}
@@ -480,7 +480,7 @@ class EngineeringRunner:
         if state.admission_decision == "PASS" and state.admission_completed_at:
             return state, None
         source = "RUNNER"
-        if state.execution_mode == "MANAGED" and os.environ.get("DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"):
+        if state.execution_mode == "MANAGED" and os.environ.get("ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA"):
             try:
                 admission = load_admission_decision(self.root, state.run_id, central_database=self.store.central_database)
             except EngineeringStorageError:
@@ -852,15 +852,15 @@ class EngineeringRunner:
                 complete_phase(self.root, span, outcome="FAILED")
                 return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control invocation evidence could not be persisted.")
             exit_code: int | None
-            previous_run_id = os.environ.get("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID")
-            os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = validation.run_id
+            previous_run_id = os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID")
+            os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = validation.run_id
             try:
                 command_outcome = self._run_required_validation_command(launcher.command)
             finally:
                 if previous_run_id is None:
-                    os.environ.pop("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID", None)
+                    os.environ.pop("ENGINEERING_PLATFORM_VALIDATION_RUN_ID", None)
                 else:
-                    os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = previous_run_id
+                    os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = previous_run_id
             # Compatibility with direct host tests that intentionally stub the
             # old scalar boundary; production always supplies a structured
             # deterministic outcome with captured subprocess output.
@@ -1286,8 +1286,8 @@ class EngineeringRunner:
             set_handoff_deadline(
                 lambda: time.monotonic() - deadline_started >= timeout.seconds
             )
-        prior_validation_run_id = os.environ.get("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID")
-        os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = state.run_id
+        prior_validation_run_id = os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID")
+        os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = state.run_id
         try:
             if self._controlled_interruption_requested(state):
                 raise CodexInvocationError(
@@ -1394,9 +1394,9 @@ class EngineeringRunner:
             raise
         finally:
             if prior_validation_run_id is None:
-                os.environ.pop("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID", None)
+                os.environ.pop("ENGINEERING_PLATFORM_VALIDATION_RUN_ID", None)
             else:
-                os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = prior_validation_run_id
+                os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = prior_validation_run_id
             if callable(command_callback):
                 command_callback(None)
             if callable(process_callback):
@@ -3166,8 +3166,8 @@ def main(argv: list[str] | None = None) -> int:
         # Keep the watcher admission boundary with every child process the
         # runner starts. Source may change during execution, but the canonical
         # live database must remain readable by the admitting components.
-        os.environ["DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"] = str(args.admitted_storage_schema)
-        os.environ["DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT"] = str(root)
+        os.environ["ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA"] = str(args.admitted_storage_schema)
+        os.environ["ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT"] = str(root)
     compatibility = (
         RunnerCompatibility(storage_schemas=frozenset({args.admitted_storage_schema}))
         if args.admitted_storage_schema is not None

@@ -19,7 +19,7 @@ PLAYWRIGHT_COMMAND = ("npx", "playwright", "test", "tests/engineering/dashboard.
 LOCK_COMPONENT = "dashboard-browser-validation"
 LOCAL_BATCH_TIMEOUT_SECONDS = 300
 PROCESS_TERMINATION_TIMEOUT_SECONDS = 5
-EVIDENCE_RUN_ID_ENV = "DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"
+EVIDENCE_RUN_ID_ENV = "ENGINEERING_PLATFORM_VALIDATION_RUN_ID"
 
 
 def _common_git_directory(root: Path) -> Path:
@@ -140,7 +140,7 @@ def _run_local_shards(root: Path) -> int:
     environment = {**os.environ, "CI": "1"}
     common_git = _common_git_directory(root)
     with single_instance(common_git, LOCK_COMPONENT):
-        with tempfile.TemporaryDirectory(prefix="djconnect-dashboard-shards-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="engineering-platform-dashboard-shards-") as temporary:
             directory = Path(temporary)
             processes: list[tuple[str, Path, subprocess.Popen[bytes]]] = []
             failed = False

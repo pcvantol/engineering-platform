@@ -68,17 +68,17 @@ STATES = (
 )
 ABORTABLE_STATES = frozenset({"PRECHECK", "ADMISSION_FROZEN", "QUIESCENT_SOURCE_BASELINE"})
 ABORT_REASONS = frozenset({"CONTROLLER_VERSION_INCOMPATIBLE", "PRE_HANDOFF_CONTROLLER_DEFECT"})
-SERVICE_STOP_ORDER = (
-    "com.djconnect.engineering-inbox",
-    "com.engineeringplatform.dashboard-relay", "com.djconnect.engineering-dashboard",
-)
-SERVICE_START_ORDER = (
-    "com.djconnect.engineering-dashboard",
-    "com.engineeringplatform.dashboard-relay", "com.djconnect.engineering-inbox",
-)
-EXPECTED_RUNNING_LOCKS = {
+# CENTRAL cutover may control only the current relay.  The other two labels are
+# retained below solely to recognize a stale pre-P-NEUTRAL lock; they are never
+# installed, restarted or selected as lifecycle authority by this module.
+SERVICE_STOP_ORDER = ("com.engineeringplatform.dashboard-relay",)
+SERVICE_START_ORDER = ("com.engineeringplatform.dashboard-relay",)
+HISTORICAL_LOCK_IDENTITIES = {
     "dashboard.lock": ("dashboard", "engineering_platform.dashboard", "com.djconnect.engineering-dashboard"),
     "inbox-watcher.lock": ("inbox-watcher", "engineering_platform.inbox_watcher", "com.djconnect.engineering-inbox"),
+}
+EXPECTED_RUNNING_LOCKS = {
+    **HISTORICAL_LOCK_IDENTITIES,
 }
 
 
@@ -1375,21 +1375,14 @@ def rollback(repo: Path, *, migration_id: str, operator: str = "operator") -> di
 
 
 def _desired_state_matches(repo: Path) -> bool:
-    """Run the canonical host verification used by post-cutover readiness."""
-    verifier = repo / "scripts" / "runner" / "bootstrap_djconnect_macos_host.sh"
-    if not verifier.is_file():
-        return False
-    try:
-        result = subprocess.run(
-            [str(verifier), "--verify"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0 and "**MATCH**" in result.stdout
+    """Fail closed until a current Engineering Platform verifier is supplied.
+
+    The predecessor host bootstrap is intentionally not a current EP authority
+    or readiness oracle.  Callers may inject the installed EP verification
+    boundary explicitly; this legacy migration module never invokes it.
+    """
+    del repo
+    return False
 
 
 def stage_a_readiness(

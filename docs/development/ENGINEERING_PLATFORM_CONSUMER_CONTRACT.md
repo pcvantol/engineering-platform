@@ -1,5 +1,14 @@
 # Engineering Platform 2.x consumer contract
 
+> **Status — retired Local Consumer API design evidence:** This document
+> records the earlier Local Consumer API contract work. P-NEUTRAL retired that
+> service as current product authority. The supported submission ingress set is
+> now exactly HTTP JSON, installed CLI and File Inbox, each normalized by
+> Engineering Platform Server → Submission Service → CENTRAL. References below
+> to a Local Consumer API server, its lifecycle or consumer registration are
+> historical design/provenance only; `local_api_credentials` remains
+> Server-owned HTTP-consumer authentication persistence, not service authority.
+
 > **Scope clarification (B8R):** This contract's Workspace `project_id`
 > language applies to the legacy consumer API scope. The durable logical
 > identity of a repository attached through the Project Agent is declared by

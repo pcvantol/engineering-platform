@@ -7,7 +7,7 @@
 ## Purpose
 
 Engineering Platform is the stable, producer-neutral execution platform for
-DJConnect engineering work. It accepts compliant Engineering Actions from a
+engineering work. It accepts compliant Engineering Actions from a
 Human Architect, Forge or a future Producer and applies one generic execution
 architecture regardless of origin.
 
@@ -192,10 +192,10 @@ own host runtime. The app is a user-facing wrapper around the one idempotent
 `engineering-platform-host --install` engine; it does not duplicate host
 mutation logic. That engine installs the pinned EP package and supported
 provider CLIs, creates an empty installation-owned data root/database,
-configures dashboard and watcher services, verifies one-writer health and then
+configures Server-owned lifecycle services, verifies one-writer health and then
 opens the loopback Console for explicit first-run provider login. This is
-distinct from DJConnect developer-machine bootstrap: EP does not inherit Apple
-signing, Home Assistant lab or product-specific runner requirements.
+distinct from predecessor developer-machine bootstrap: EP does not inherit
+product-specific signing, lab or runner requirements.
 
 One macOS user has one EP installation. The engine acquires an
 installation-wide lock and detects any existing installation marker, writer and
@@ -402,7 +402,7 @@ Genesis target
 | Scope | current Managed checkout or Genesis target | immutable `project_id` plus registered workspace/repository |
 | Display name | current workspace metadata | mutable Workspace-supplied `project_name`, used only as a label |
 | Queues and Inbox | current configured route | one isolated Inbox route, FIFO queue and lease domain per project |
-| Consumers | current local routes and dashboard | independently authenticated consumers through HTTP JSON, installed CLI and File Inbox into the Server-owned Submission Service |
+| Consumers and submission ingress | legacy local routes and dashboard | independently authenticated consumers through exactly HTTP JSON, installed CLI and File Inbox, normalized by Server → Submission Service → CENTRAL |
 | UI position | local Operations Console | same Operations Console semantics, selectable project projection |
 
 In EP 2.x, `project_id` becomes the canonical cross-system scope. A path,

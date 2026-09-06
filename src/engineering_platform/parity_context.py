@@ -59,7 +59,7 @@ class HistoricalCandidate:
             if value is not None:
                 producer[field] = value
         return json.dumps({
-            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "contract": {"name": "engineering_platform.producer_submission", "version": "1.0"},
             "submission": {"id": self.submission_id},
             "producer": producer,
             "prompt": {"text": self.prompt},

@@ -1,5 +1,12 @@
 # Engineering Platform 2.x extraction and migration plan
 
+> **P-NEUTRAL supersession:** Earlier Local Consumer API transport and
+> lifecycle proposals in this historical extraction plan are retired. Current
+> product ingress is exactly HTTP JSON, installed CLI and File Inbox through
+> Engineering Platform Server → Submission Service → CENTRAL. References to
+> DJConnect below describe predecessor provenance or a future external project,
+> never current Engineering Platform runtime authority.
+
 **Status:** Phase 0 complete; Phase 1 complete / qualified; Phase 2 closed / retired clean-slate decision; Phase 3 authorized for history-preserving physical extraction
 **Scope:** Engineering Platform 2.x extraction from `pcvantol/djconnect` to a
 standalone, local-first Execution Operations Platform

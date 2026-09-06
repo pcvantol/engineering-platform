@@ -1460,11 +1460,11 @@ class ClientContractTest(unittest.TestCase):
 
 
 _INHERITED_RUNNER_ENVIRONMENT = (
-    "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA",
-    "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT",
-    "DJCONNECT_ENGINEERING_VALIDATION_RUN_ID",
-    "DJCONNECT_ENGINEERING_BACKGROUND_RUN_ID",
-    "DJCONNECT_ENGINEERING_BACKGROUND_JOB_ID",
+    "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA",
+    "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT",
+    "ENGINEERING_PLATFORM_VALIDATION_RUN_ID",
+    "ENGINEERING_PLATFORM_BACKGROUND_RUN_ID",
+    "ENGINEERING_PLATFORM_BACKGROUND_JOB_ID",
 )
 
 
@@ -1500,9 +1500,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 ),
                 0,
             )
-            self.assertEqual(os.environ["DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"], "18")
+            self.assertEqual(os.environ["ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA"], "18")
             self.assertEqual(
-                Path(os.environ["DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT"]).resolve(),
+                Path(os.environ["ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT"]).resolve(),
                 Path(temporary).resolve(),
             )
 
@@ -1682,8 +1682,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(runner._confirm_deterministic_admission(admitted), (admitted, None))
         pending = TransactionState("watcher-admission", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
         environment = {
-            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
-            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(self.root),
+            "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
+            "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT": str(self.root),
         }
         with patch.dict(os.environ, environment, clear=False), \
              patch("engineering_platform.execution_host.load_admission_decision", side_effect=execution_host.EngineeringStorageError("offline")):
@@ -1797,8 +1797,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
         with patch.dict(os.environ, {
-            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
-            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(self.root),
+            "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
+            "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT": str(self.root),
         }, clear=False), patch(
             "engineering_platform.execution_host.load_admission_decision", return_value=None
         ):
@@ -1824,8 +1824,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "observed_at": "2026-08-29T07:00:00+00:00",
         }
         with patch.dict(os.environ, {
-            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
-            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(self.root),
+            "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
+            "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT": str(self.root),
         }, clear=False), patch(
             "engineering_platform.execution_host.load_admission_decision", return_value=admission
         ):

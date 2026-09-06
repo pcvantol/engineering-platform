@@ -23,7 +23,7 @@ MAX_HISTORY_ITEMS = 20
 MAX_CONTEXT_CHARACTERS = 24_000
 MAX_RESPONSE_CHARACTERS = 6_000
 CHAT_TIMEOUT_SECONDS = 75
-CHAT_MODEL_ENVIRONMENT = "DJCONNECT_ENGINEERING_CHAT_MODEL"
+CHAT_MODEL_ENVIRONMENT = "ENGINEERING_PLATFORM_CHAT_MODEL"
 DEFAULT_CHAT_MODEL = "gpt-5.6-terra"
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,80}")
 _chat_lock = Lock()
@@ -193,7 +193,7 @@ CONTEXTPAKKET:
     if not _chat_lock.acquire(blocking=False):
         raise CodexChatError("Er wordt al een Codex-gesprek verwerkt. Probeer het zo opnieuw.")
     try:
-        with tempfile.TemporaryDirectory(prefix="djconnect-codex-chat-") as workspace:
+        with tempfile.TemporaryDirectory(prefix="engineering-platform-codex-chat-") as workspace:
             try:
                 completed = CodexCliProvider().invoke(
                     Path(workspace),

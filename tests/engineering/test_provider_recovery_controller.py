@@ -154,8 +154,8 @@ class ProviderRecoveryControllerTests(unittest.TestCase):
         StateStore(self.root / ".engineering" / "engineering-runs").save(
             TransactionState(hook_run, "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT", branch="topic")
         )
-        prior = os.environ.get("DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE")
-        os.environ["DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE"] = f"{hook_run}:EXECUTE_AGENT"
+        prior = os.environ.get("ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE")
+        os.environ["ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE"] = f"{hook_run}:EXECUTE_AGENT"
         try:
             self.assertTrue(consume_controlled_interruption_hook(
                 self.root, run_id=hook_run, phase="EXECUTE_AGENT",
@@ -170,9 +170,9 @@ class ProviderRecoveryControllerTests(unittest.TestCase):
             ))
         finally:
             if prior is None:
-                os.environ.pop("DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE", None)
+                os.environ.pop("ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE", None)
             else:
-                os.environ["DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE"] = prior
+                os.environ["ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE"] = prior
 
     def test_operator_arm_status_disarm_and_durable_consumption(self) -> None:
         run_id = "operator-control-run"
