@@ -8,8 +8,8 @@ This section is the current sequencing authority where older roadmap prose or de
 
 - `P-TRANSPORT` is **MERGED / CLOSED**. It provides three canonical submission transports — HTTP, installed CLI and Server-owned File Inbox — normalized through the Server-owned Submission Service/CENTRAL boundary. File Inbox is transport only, never lifecycle authority.
 - The Phase-1 Local Consumer API read-only foundation and the later P-TRANSPORT HTTP submission ingress are distinct. The existence of the earlier read-only API qualification must not be interpreted as “all EP HTTP is read-only”.
-- Current work is `P-NEUTRAL`: remove remaining active DJConnect platform identity/authority while preserving historical evidence and bounded migration compatibility.
-- `P-INSTALLER-V1` is now an explicit critical-path gate immediately after P-NEUTRAL. It installs/repairs only the standalone Engineering Platform Server-side product components required by the first installed execution canary. It does **not** install Forge, Workspace or generalized Project-Agent productization.
+- `P-NEUTRAL` is **MERGED / CLOSED**. Commit `b44af0914622dd57c5c5c2266ee2caf9b31d9007` supplies the final authority-closure register and guarded evidence that active DJConnect platform identity/authority is absent while historical evidence remains classified and retained.
+- `P-INSTALLER-V1` is the **CURRENT AUTONOMY FRONTIER**. It installs/repairs only the standalone Engineering Platform Server-side product components required by the first installed execution canary. It does **not** install Forge, Workspace or generalized Project-Agent productization.
 - The Canonical Project Authority Repository declares durable logical project/repository identity in `.engineering-platform/repository.json` under the B8R architecture. Workspace may project identity and own human-facing state/display naming; Workspace availability is not required for EP to attach a declared repository.
 - Broader Project-Agent separation, generalized Agent dispatch, multi-host scheduling and multi-repository parallel execution are **not prerequisites by default** for the first standalone verification. They are follow-on productization unless the minimum installed execution canary proves a concrete dependency.
 - Broad P-QUEUE/B8E productization must not become an artificial all-or-nothing gate. Only concrete queue/lease/recovery/finalization/zero-loss capabilities required to prove one installed governed execution are on the immediate critical path.
@@ -19,8 +19,8 @@ This section is the current sequencing authority where older roadmap prose or de
 
 ```text
 P-TRANSPORT merged/closed
-  -> P-NEUTRAL closure
-  -> P-INSTALLER-V1
+  -> P-NEUTRAL merged/closed
+  -> P-INSTALLER-V1 current frontier
        server-side EP product only
        clean install/repair/update
        canonical runtime + CENTRAL + HTTP/CLI/Inbox + Console/relay as applicable
@@ -107,7 +107,7 @@ The bootstrap through `EP::SELF_HOSTED_ENGINEERING_VERIFIED` must use the **mini
 
 Numbered sequence:
 
-1. P-NEUTRAL closure.
+1. P-NEUTRAL closure (complete; preserved predecessor).
 2. P-INSTALLER-V1 qualification and installed Server cutover/repair.
 3. DJConnect declaration + CENTRAL attachment.
 4. First real DJConnect Engineering Action.
@@ -117,7 +117,7 @@ Numbered sequence:
 Governance policy:
 
 - One bounded bootstrap authority envelope may cover repository implementation, installer implementation, declaration creation, attachment, read-only inspection, deterministic validation, defect repair, exact-head requalification, hosted checks and repeated Human Security review without returning to the owner between each engineering sub-step.
-- P-NEUTRAL implementation and P-INSTALLER-V1 implementation/qualification are engineering loops: implement -> validate -> diagnose -> bounded repair -> revalidate -> security re-review until merge/cutover-ready.
+- P-INSTALLER-V1 implementation/qualification is an engineering loop: implement -> validate -> diagnose -> bounded repair -> revalidate -> security re-review until merge/cutover-ready. P-NEUTRAL is complete and remains only as the preserved predecessor/closure evidence.
 - Repository declaration creation and CENTRAL attachment are topology realization inside the approved B8R boundary; they are not separate owner gates when project/repository identity, install scope and allowed host are already pinned.
 - Tests, CI failures, installer defects, migration defects and Security-review findings that remain within the approved phase boundary are not owner gates.
 - `EP::STANDALONE_EP_VERIFIED` and `EP::SELF_HOSTED_ENGINEERING_VERIFIED` are evidence milestones, not manual approval stops by themselves.
@@ -134,9 +134,6 @@ The preferred operational model is therefore:
 
 ```text
 OWNER APPROVES ONE BOUNDED BOOTSTRAP ENVELOPE
-        |
-        v
-P-NEUTRAL engineering loop
         |
         v
 P-INSTALLER-V1 engineering + installed qualification loop
@@ -220,9 +217,14 @@ P-TRANSPORT qualifies exactly three supported submission transports:
 
 All normalize through the same Server-owned Submission Service/CENTRAL authority. Forge's machine-to-machine integration should prefer canonical HTTP.
 
-## Current P-NEUTRAL increment
+## Completed P-NEUTRAL authority closure
 
-P-NEUTRAL removes active DJConnect naming/identity from generic EP runtime, installation, lifecycle, configuration and logging authority. Historical-only artifacts and migration-source references may remain when explicitly classified. Current concrete work includes neutralizing the remaining installed relay identity without creating dual authority or unsafe rollback.
+P-NEUTRAL removed active DJConnect naming/identity from generic EP runtime,
+installation, lifecycle, configuration and logging authority. The merged final
+closure commit is `b44af0914622dd57c5c5c2266ee2caf9b31d9007`; its authority
+guard and closure register preserve historical-only artifacts and
+migration-source references when explicitly classified. It is a completed
+predecessor, not current work.
 
 P-NEUTRAL closure requires zero active generic DJConnect platform identity within the qualified host/repository scope. It does **not** remove the historical EP implementation from the DJConnect source repository. DJConnect source retirement remains separately governed post-standalone work.
 
@@ -232,11 +234,11 @@ P-NEUTRAL closure requires zero active generic DJConnect platform identity withi
 
 ### First-loop gate decomposition and reconciliation status
 
-This is a **PENDING_PR** reconciliation of the older migration-to-V1 dependency
-table, not a statement that its full umbrella gates are already complete. The
-owning migration/DAG authority must be updated together with this roadmap
-before a narrower edge is treated as merged canonical sequencing. For each
-gate, the first-loop test is physical: if the named capability is absent, can
+This is a **MERGED_CANONICAL** reconciliation of the older migration-to-V1
+dependency table, not a statement that its full umbrella gates are already
+complete. The owning migration/DAG authority is updated together with this
+roadmap before a narrower edge is treated as merged canonical sequencing. For
+each gate, the first-loop test is physical: if the named capability is absent, can
 one bounded Forge Action still enter through HTTP, receive durable identity,
 be admitted, mutate its repository, validate/review/repair/finalize, retain
 terminal evidence, and reconcile after Forge restart?
@@ -246,7 +248,7 @@ terminal evidence, and reconcile after Forge restart?
 | Phase-3 package/install | A clean installed Server/CENTRAL/runtime that can run the canary | Historical dependency authority says incomplete; no current installed-proof claim is made here | `AUTONOMY_CRITICAL` bounded capability; full historical phase needs reconciliation |
 | P-TRANSPORT | HTTP JSON -> Server -> Submission Service -> CENTRAL, with CLI/File Inbox retained as peer ingresses | Merged P-TRANSPORT authority and installed ingress qualification | `AUTONOMY_CRITICAL`; qualified transport capability |
 | P-QUEUE | Durable submission/run identity, one serial mutating lane, lease/restart/replay protection, finalization/evidence for the canary | Older authority records broad qualification remaining | `PARTIALLY_AUTONOMY_CRITICAL`; not generalized queue/fairness productization |
-| P-NEUTRAL | No dual current execution, Server/CENTRAL, routing, or credential authority in the canary scope | Active authority-closure proposals remain pending | `AUTONOMY_CRITICAL` minimum subset; historical/forensic labels are not blockers when safely classified |
+| P-NEUTRAL | No dual current execution, Server/CENTRAL, routing, or credential authority in the canary scope | Merged closure `b44af091`; guarded current-authority inventory and retained historical classifications | `AUTONOMY_CRITICAL` completed predecessor; historical/forensic labels are not blockers when safely classified |
 | P-INSTALLER | Reproducible Server-side install/repair/update and health for the one EP instance | Proposed here; qualification not yet claimed | `AUTONOMY_CRITICAL` bounded capability; excludes Forge, Workspace and general Agent productization |
 | P-RELEASE | A trusted artifact/version/rollback path sufficient for the canary install | Older authority records active gap | `PARTIALLY_AUTONOMY_CRITICAL`; full channel/product release programme is not presumed required |
 | Phase-P re-audit / installed Goldens / B8E | Zero-loss disposition and installed evidence for every capability claimed live by the canary | Older authority records these incomplete/blocked | `PARTIALLY_AUTONOMY_CRITICAL`; audit the canary capability set, not unrelated future product scope |
@@ -309,8 +311,8 @@ Forge may consume canonical EP readiness/status/result/evidence APIs but must no
 | --- | --- | --- |
 | `EP::LOCAL_CONSUMER_API_V1` | Qualified consumer/authentication/read contract foundation. | AVAILABLE. |
 | `EP::P_TRANSPORT_V1` | Three canonical submission transports with Server/CENTRAL normalization. | MERGED / QUALIFIED. |
-| `EP::P_NEUTRAL_V1` | No active generic DJConnect platform identity/authority. | ACTIVE. |
-| `EP::P_INSTALLER_V1` | Reproducible standalone Server-side EP install/repair/update boundary; excludes Forge/Workspace/general Agent productization. | CRITICAL PATH immediately after P-NEUTRAL. |
+| `EP::P_NEUTRAL_V1` | No active generic DJConnect platform identity/authority. | MERGED / CLOSED; completion evidence `b44af091`. |
+| `EP::P_INSTALLER_V1` | Reproducible standalone Server-side EP install/repair/update boundary; excludes Forge/Workspace/general Agent productization. | CURRENT AUTONOMY FRONTIER. |
 | `EP::STANDALONE_EP_VERIFIED` | One independent installed governed DJConnect execution with canonical evidence. | AFTER P-INSTALLER-V1 + DJConnect canary. |
 | `EP::SELF_HOSTED_ENGINEERING_VERIFIED` | Installed EP executes a real bounded Engineering Platform source change through CENTRAL. | IMMEDIATE POST-STANDALONE dogfood gate. |
 | `EP::PROJECT_ATTACHMENT_AND_ADMISSION_V1` | Consumer-facing attachment/admission hardening beyond current B8R runtime. | FOLLOW-ON consumer qualification. |

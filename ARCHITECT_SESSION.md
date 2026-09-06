@@ -60,7 +60,8 @@ Before reaching an architecture conclusion:
 4. Inspect every open EP architecture, roadmap, migration and P-NEUTRAL PR,
    recording its exact head. Inspect current Forge consumer requirements/open
    proposals, Forge Platform installation/deployment authority, and relevant
-   Workspace dependency documents at their `main` revisions.
+   Workspace dependency documents at their freshly resolved remote `origin/main`
+   revisions. Do not use a local peer checkout as current peer authority.
 5. Inspect the actual installed EP instance separately: service/health,
    installation identity/data root, CENTRAL schema/integrity, installed wheel
    and CLI, ingress availability, credential/auth boundary, attached project,
@@ -72,6 +73,23 @@ installed 3x2 ingress matrix; `P_NEUTRAL_LOCAL_API_RETIREMENT.md`; the CENTRAL
 authority maps; `EXECUTION_HOST_ARCHITECTURE.md`; `RUN_QUALIFICATION_EVIDENCE_CONTRACT.md`;
 and the phase-P migration/dependency authorities above. Follow their links for
 the narrow contract at issue rather than inventing a parallel summary.
+
+## Peer authority freshness
+
+Before using time-sensitive Forge or Workspace status, refresh that
+repository's remote state and resolve its `origin/main`. Record the repository,
+exact SHA and observation timestamp. A previously observed SHA is historical
+observation evidence only; local filesystem timestamps do not establish
+freshness. If either refresh or remote resolution is unavailable, record:
+
+```text
+PEER_AUTHORITY_FRESHNESS = UNVERIFIED
+```
+
+and do not present time-sensitive peer status as current. Otherwise record
+`PEER_AUTHORITY_FRESHNESS = VERIFIED`. EP owns EP capability status; consumer
+repositories own only their dependency semantics. Do not turn a peer's
+projection into a second EP roadmap.
 
 ## Evidence labels
 
@@ -89,9 +107,17 @@ Every material statement must carry one of these labels:
 | `INFERENCE` | A conclusion derived from evidence; never silently promoted. |
 | `PROPOSAL` | A suggested future change awaiting its owner. |
 
-Always distinguish `IMPLEMENTED`, `QUALIFIED`, `AVAILABLE_TO_CONSUMER`, and
-`DOCUMENTED_STATUS`. No one implies another. If they disagree, record a stale
-projection or an unresolved conflict instead of flattening the states.
+Every material current-status conclusion records `DOCUMENTED_STATUS`,
+`IMPLEMENTED`, `QUALIFIED`, `COMPLETION_EVIDENCE`,
+`AVAILABLE_TO_CONSUMER`, and `CURRENT_RECONCILED_STATUS`. No one implies
+another. If a roadmap/DAG/status projection says `ACTIVE`, `PLANNED`, or
+`INCOMPLETE` while stronger same-capability owning-repository canonical
+completion or qualification evidence proves closure, set
+`STALE_PROJECTION_SUSPECTED = TRUE`, inspect the scope of the evidence, and
+repair the owning current-status projection. Roadmap order is not stronger
+than canonical completion evidence. Implementation alone never implies
+qualification. `CURRENT_STATUS_IS_EVIDENCE_RECONCILED = TRUE` is required
+before reporting a status as current.
 
 ## Two-pass bootstrap
 
@@ -104,13 +130,19 @@ state; open EP proposals; and peer consumer requirements. Label the result
 
 ### Pass 2 — Evidence Reconciliation
 
-Test whether roadmap projections are stale, a historical umbrella gate is
-being treated as atomic, implementation has advanced without qualification,
+Compare within EP as well as across products: roadmap, dependency DAG, status
+projections, completion/qualification evidence, implementation evidence and
+merged canonical history. Classify each finding as `NO_CONFLICT`,
+`STALE_PROJECTION_SUSPECTED`, `PENDING_RECONCILIATION`, or
+`REAL_AUTHORITY_CONFLICT`. Test whether roadmap projections are stale, a
+historical umbrella gate is being treated as atomic, implementation has advanced without qualification,
 qualification is unavailable to the consumer, historic migration ordering is
 being confused with a physical dependency, a peer needs only a bounded
 producer capability, an open PR contains a supported successor, or an
 installed runtime already supplies a producer seam. Do not rewrite Pass 1;
-write only supported, owned findings back to their canonical record.
+write only supported, owned findings back to their canonical record. A stale
+current-status projection is normally an autonomous documentation/status
+repair, not automatically a human architecture decision.
 
 ## First-loop objective and dependency test
 
@@ -241,6 +273,7 @@ roadmap/DAG proposal; do not create competing P-NEUTRAL or roadmap truths.
 | Governance change | governance documents |
 | Execution contract change | owning execution contract |
 | Migration authority finding | owning migration/authority document |
+| Stale current status | owning roadmap/status/DAG projection |
 | Bootstrap method change | this file |
 | Peer-product truth | peer authority; reference it, do not duplicate it as EP authority |
 | Transient reasoning | do not persist |
@@ -257,11 +290,12 @@ without chat history.
 
 Every substantive Architect response ends with a compact ASCII progress report.
 It is a read-time evidence projection, not a fourth roadmap or an independent
-status register. Derive the shared rows afresh from the current owning
-repository `main` authorities, their exact SHA/date where material, canonical
-producer evidence, and open-PR head/qualification state. Name those sources in
-`SOURCES`; never copy a peer's status into this file or silently promote a
-`PENDING_PR` to canonical truth.
+status register. Derive the shared rows afresh from current remote
+`origin/main` owning authorities, their exact SHA and observation timestamp,
+canonical producer evidence, and open-PR head/qualification state. Never copy
+a peer's status into this file or silently promote a `PENDING_PR` to canonical
+truth. If peer freshness is unverified, say so and omit time-sensitive peer
+status claims.
 
 Use capability/evidence rows only — a status is never inferred from ordering,
 elapsed time, or an approximate percentage. Every row must use exactly one of:
@@ -275,8 +309,12 @@ The report must include both shared sections and this product-specific section:
 
 ```text
 ARCHITECT PROGRESS
-SOURCES: Forge main=<SHA/date>; EP main=<SHA/date>; Workspace main=<SHA/date>;
-         pending=<PR/head/check state or none>
+SOURCES
+Forge origin/main=<SHA>@<observed-at>
+EP origin/main=<SHA>@<observed-at>
+Workspace origin/main=<SHA>@<observed-at>
+PEER_AUTHORITY_FRESHNESS=VERIFIED | UNVERIFIED
+pending=<PR/head/check state or none>
 
 AUTONOMY CUTOVER
 <status> <capability> — <producer/qualification evidence and classification>

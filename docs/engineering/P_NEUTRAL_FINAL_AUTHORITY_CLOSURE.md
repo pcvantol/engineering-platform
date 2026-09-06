@@ -4,6 +4,22 @@ This register classifies residual DJConnect references by their operational
 responsibility.  It deliberately does not use a clean string search as a
 completion condition.
 
+## Completion status
+
+`P_NEUTRAL_DOCUMENTED_STATUS = COMPLETE`
+
+`P_NEUTRAL_COMPLETION_EVIDENCE = b44af0914622dd57c5c5c2266ee2caf9b31d9007`
+
+`P_NEUTRAL_CURRENT_RECONCILED_STATUS = COMPLETE`
+
+`P_NEUTRAL_COMPLETED_PREDECESSOR_PRESERVED = TRUE`
+
+`P_INSTALLER_V1_CURRENT_FRONTIER = TRUE`
+
+The completion evidence applies only to active generic Engineering Platform
+authority. It preserves, rather than authorizes removal of, the historical,
+provenance, migration-source and negative-fixture references classified below.
+
 ## Current Engineering Platform authority
 
 | Domain | Current identity | DJConnect current authority |
