@@ -10,6 +10,8 @@ engineering-platform-server init --data-root /secure/ep-server
 engineering-platform-server start --data-root /secure/ep-server
 engineering-platform-server health --data-root /secure/ep-server
 engineering-platform-server stop --data-root /secure/ep-server
+engineering-platform-server service-install --data-root /secure/ep-server
+engineering-platform-server service-uninstall --data-root /secure/ep-server
 engineering-platform-server relay-install --data-root /secure/ep-server
 ```
 
@@ -34,6 +36,12 @@ Server also owns the Operations Console at `/` and its secret-free topology
 projection at `GET /v1/operations/projects`. See
 [Standalone runtime surfaces](STANDALONE_RUNTIME_SURFACES.md) for the complete
 installed-artifact authority and role contract.
+
+`service-install` installs exactly one per-user macOS LaunchAgent for the
+foreground `serve` entrypoint. Its fixed arguments use the installed Python
+runtime and initialized data root; it never invokes the self-daemonizing
+`start` helper or accepts arbitrary commands. `service-uninstall` removes only
+that owned LaunchAgent and preserves CENTRAL and installation identity.
 
 The existing Execution Host remains unchanged and retains its current execution
 authority. The server does not read a source checkout, `.engineering`, or any
