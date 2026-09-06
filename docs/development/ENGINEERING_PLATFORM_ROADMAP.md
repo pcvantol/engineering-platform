@@ -285,6 +285,12 @@ Workspace is not on the critical path for first standalone verification or first
 
 The old EP implementation/source remnants in DJConnect are not removed by P-NEUTRAL or P-INSTALLER-V1. After standalone authority, self-development and required responsibility-transfer evidence are established, a separately governed DJConnect source-retirement increment may remove obsolete EP runtime/source/wrappers/configuration while preserving historical/provenance evidence and justified migration material.
 
+## 1.5 — Platform Productization
+
+Completed and operational.
+
+The completed 1.5 productization boundary remains historical maturity evidence. Current P-NEUTRAL/P-INSTALLER/bootstrap work is subsequent maintenance and standalone qualification, not a reopening of 1.5.
+
 ## Policy
 
 Platform code must not acquire DJConnect runtime, Home Assistant, branding or repository-name dependencies. Historical evidence and explicitly bounded migration compatibility may retain names without retaining authority.
