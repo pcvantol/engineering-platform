@@ -17,6 +17,7 @@ class PNeutralRepositoryNamespaceTests(unittest.TestCase):
             },
             "local_api.py": {"com.djconnect.engineering-local-api"},
             "platform_bootstrap.py": {".djconnect"},
+            "producer.py": {"djconnect.producer_submission"},
             "server_relay.py": {"com.djconnect.engineering-dashboard-relay"},
         }
         for path in SOURCE.glob("*.py"):
@@ -26,6 +27,7 @@ class PNeutralRepositoryNamespaceTests(unittest.TestCase):
                 "DJCONNECT_EVIDENCE_",
                 "DJCONNECT_CONTEXT_ESCALATION_FILE",
                 "com.djconnect.",
+                "djconnect.producer_submission",
             ):
                 if retired not in text:
                     continue
@@ -49,6 +51,15 @@ class PNeutralRepositoryNamespaceTests(unittest.TestCase):
         self.assertTrue(storage.ADMITTED_STORAGE_ROOT_ENVIRONMENT.startswith("ENGINEERING_PLATFORM_"))
         self.assertEqual(producer.ENVELOPE_CONTRACT_NAME, "engineering_platform.producer_submission")
         self.assertNotEqual(producer.ENVELOPE_CONTRACT_NAME, producer.LEGACY_ENVELOPE_CONTRACT_NAME)
+
+    def test_active_workflows_have_no_predecessor_identity(self) -> None:
+        workflows = ROOT / ".github" / "workflows"
+        for path in workflows.glob("*.yml"):
+            self.assertNotIn(
+                "djconnect",
+                path.read_text(encoding="utf-8").lower(),
+                f"predecessor identity remains active in workflow {path.name}",
+            )
 
 
 if __name__ == "__main__":
