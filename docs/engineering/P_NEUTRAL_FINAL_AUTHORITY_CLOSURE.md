@@ -41,7 +41,7 @@ the real DJConnect project are retained as `PROVENANCE_ONLY`,
 They are not operated as Engineering Platform identity.  Current operator and
 installation documentation uses Engineering Platform terminology.
 
-`DJCONNECT_PROJECT_IDENTITY_ALLOWED = TRUE`  
+`DJCONNECT_PROJECT_IDENTITY_ALLOWED = TRUE`
 `DJCONNECT_PLATFORM_IDENTITY_ALLOWED = FALSE`
 
 ## Separate credential-schema increment
