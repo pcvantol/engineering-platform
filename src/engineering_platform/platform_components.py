@@ -32,7 +32,7 @@ PLATFORM_COMPONENTS = (
         "DASHBOARD_RELAY_ACTIVE", "DASHBOARD_RELAY_UNAVAILABLE",
         "DASHBOARD_RELAY_SERVER_NATIVE", "dashboard_relay_available",
         restart_supported=True,
-        lifecycle_label="com.djconnect.engineering-dashboard-relay",
+        lifecycle_label="com.engineeringplatform.dashboard-relay",
     ),
     PlatformComponent("http_ingress", "transport.http", "TRANSPORT", "ingress", "HTTP_INGRESS_HEALTHY", "HTTP_INGRESS_DOWN", "CENTRAL_LISTENER_ENDPOINT", "http_ingress_available", False, True),
     PlatformComponent("cli_ingress", "transport.cli", "TRANSPORT", "ingress", "CLI_INGRESS_AVAILABLE", "CLI_INGRESS_DEGRADED", "CANONICAL_SUBMISSION_COMPATIBILITY", "cli_ingress_available", False, True),
