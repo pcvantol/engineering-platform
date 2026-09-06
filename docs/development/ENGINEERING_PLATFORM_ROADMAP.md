@@ -230,6 +230,45 @@ P-NEUTRAL closure requires zero active generic DJConnect platform identity withi
 
 `EP::STANDALONE_EP_VERIFIED` is satisfied by evidence that the P-INSTALLER-V1-installed EP product can independently execute one real governed DJConnect Engineering Action end to end with no legacy execution authority required.
 
+### First-loop gate decomposition and reconciliation status
+
+This is a **PENDING_PR** reconciliation of the older migration-to-V1 dependency
+table, not a statement that its full umbrella gates are already complete. The
+owning migration/DAG authority must be updated together with this roadmap
+before a narrower edge is treated as merged canonical sequencing. For each
+gate, the first-loop test is physical: if the named capability is absent, can
+one bounded Forge Action still enter through HTTP, receive durable identity,
+be admitted, mutate its repository, validate/review/repair/finalize, retain
+terminal evidence, and reconcile after Forge restart?
+
+| Umbrella gate | Exact first-loop capability | Evidence state at this proposal | First-loop disposition |
+| --- | --- | --- | --- |
+| Phase-3 package/install | A clean installed Server/CENTRAL/runtime that can run the canary | Historical dependency authority says incomplete; no current installed-proof claim is made here | `AUTONOMY_CRITICAL` bounded capability; full historical phase needs reconciliation |
+| P-TRANSPORT | HTTP JSON -> Server -> Submission Service -> CENTRAL, with CLI/File Inbox retained as peer ingresses | Merged P-TRANSPORT authority and installed ingress qualification | `AUTONOMY_CRITICAL`; qualified transport capability |
+| P-QUEUE | Durable submission/run identity, one serial mutating lane, lease/restart/replay protection, finalization/evidence for the canary | Older authority records broad qualification remaining | `PARTIALLY_AUTONOMY_CRITICAL`; not generalized queue/fairness productization |
+| P-NEUTRAL | No dual current execution, Server/CENTRAL, routing, or credential authority in the canary scope | Active authority-closure proposals remain pending | `AUTONOMY_CRITICAL` minimum subset; historical/forensic labels are not blockers when safely classified |
+| P-INSTALLER | Reproducible Server-side install/repair/update and health for the one EP instance | Proposed here; qualification not yet claimed | `AUTONOMY_CRITICAL` bounded capability; excludes Forge, Workspace and general Agent productization |
+| P-RELEASE | A trusted artifact/version/rollback path sufficient for the canary install | Older authority records active gap | `PARTIALLY_AUTONOMY_CRITICAL`; full channel/product release programme is not presumed required |
+| Phase-P re-audit / installed Goldens / B8E | Zero-loss disposition and installed evidence for every capability claimed live by the canary | Older authority records these incomplete/blocked | `PARTIALLY_AUTONOMY_CRITICAL`; audit the canary capability set, not unrelated future product scope |
+| Phase-S / Project Agent | The actual current provider path or the smallest CENTRAL-to-execution-edge protocol needed by the canary | Must be demonstrated by implementation and installed evidence | `PARTIALLY_AUTONOMY_CRITICAL`; generalized Agent fleet/topology is follow-on |
+| B9 / standalone verified | One real attached-project governed execution with terminal evidence | Qualification milestone, not pre-existing capability | `AUTONOMY_CRITICAL` evidence milestone |
+| Engineering Contract Foundation | Bounded Action identity, repository/write scope, readiness, validation, Human Gates, finalization evidence and correlation | Long-term richer producer contract remains planned | `PARTIALLY_AUTONOMY_CRITICAL`; do not weaken governance or require the whole future programme without evidence |
+
+The durable reconciliation outputs are:
+
+```text
+P_NEUTRAL_FULL_CLOSURE_REQUIRED_FOR_FIRST_LOOP = only active-authority closure in the canary scope
+P_NEUTRAL_MINIMUM_REQUIRED_SUBSET = singular Server/CENTRAL/lifecycle/routing/credential authority
+P_NEUTRAL_DEFERABLE_REMAINDER = safely classified historical, forensic, and naming cleanup residuals
+FULL_P_INSTALLER_REQUIRED_FOR_FIRST_LOOP = FALSE
+GENERAL_AGENT_PRODUCTIZATION_REQUIRED_FOR_FIRST_LOOP = FALSE unless the canary proves a minimal protocol gap
+```
+
+These are conditional dependency semantics, not an authorization to bypass
+qualification. Record actual implementation, qualification, and installed
+runtime evidence in the owning migration/qualification records; do not infer
+them from this roadmap.
+
 Minimum proof:
 
 1. `EP::P_INSTALLER_V1_QUALIFIED` and installed Server/runtime healthy;
