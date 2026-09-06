@@ -88,17 +88,12 @@ jobs:
           # is qualified by route and browser integration, not a fabricated
           # per-file carry-over baseline.
           minimum = 80.20
-          targets = (
-              "engineering_platform/platform_bootstrap.py",
-              "engineering_platform/providers.py",
-              "engineering_platform/file_inbox.py",
-          )
           report = json.loads(Path("engineering-platform-coverage.json").read_text())
           files = report["files"]
           failures = []
-          # Every shipped Python module is production scope.  This aggregate
-          # gate is deliberately independent from the stricter evidence bar
-          # below for the three protected runtime boundaries.
+          # Every shipped Python module is production scope.  The contract is
+          # deliberately per-module: a strong aggregate must not conceal one
+          # under-qualified production boundary.
           import engineering_platform
           production_root = Path(engineering_platform.__file__).resolve().parent
           production_modules = sorted(production_root.rglob("*.py"))
@@ -113,7 +108,8 @@ jobs:
               failures.append(f"repository production coverage: {aggregate:.2f}% (minimum 80.00%)")
           else:
               print(f"repository production coverage: {aggregate:.2f}%")
-          for target in targets:
+          for module in production_modules:
+              target = module.relative_to(production_root.parent).as_posix()
               matching_paths = [path for path in files if path.replace("\\\\", "/").endswith(target)]
               covered = (
                   files[matching_paths[0]]["summary"]["percent_covered"]
