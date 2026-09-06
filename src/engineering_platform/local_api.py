@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import sys
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from .contracts.local_consumer_api import (
     ContractError,
@@ -19,11 +22,26 @@ from .local_api_credentials import CredentialAuthority
 from .providers import LaunchdProvider
 from .storage import open_storage
 
-LABEL = "com.djconnect.engineering-local-api"
+# The retired identity is recognized only to migrate an already installed
+# Local API.  New installation and lifecycle ownership use LABEL exclusively.
+LEGACY_LABEL = "com.djconnect.engineering-local-api"
+LABEL = "com.engineeringplatform.local-api"
 LOOPBACK_ADDRESS = "127.0.0.1"
 DEFAULT_PORT = 8766
 MAX_BODY_BYTES = 8192
 REQUEST_TIMEOUT_SECONDS = 15
+
+
+class LocalApiCutoverError(RuntimeError):
+    """Fail closed when the exact Local API identity migration is unsafe."""
+
+
+@dataclass(frozen=True)
+class PreCutoverState:
+    legacy_plist_present: bool
+    legacy_loaded: bool
+    legacy_process_active: bool
+    legacy_functional_probe: bool | None
 
 
 def valid_port(value: object) -> int:
@@ -195,13 +213,130 @@ def run(root: Path, *, port: int = DEFAULT_PORT) -> None:
     LocalApiServer(root.resolve(), port).serve_forever(poll_interval=0.5)
 
 
+def launch_agent_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+
+def legacy_launch_agent_path() -> Path:
+    """Return the one retired Local API plist that may be migrated."""
+    return Path.home() / "Library" / "LaunchAgents" / f"{LEGACY_LABEL}.plist"
+
+
+def local_api_functional_probe(port: int = DEFAULT_PORT) -> bool:
+    """Perform the bounded, token-free loopback health check used for commit."""
+    try:
+        with urlopen(f"http://{LOOPBACK_ADDRESS}:{valid_port(port)}/health", timeout=2) as response:  # noqa: S310 -- fixed loopback endpoint
+            return 200 <= response.status < 300
+    except (OSError, URLError):
+        return False
+
+
+def pre_cutover_state(
+    launchd: LaunchdProvider, *, port: int = DEFAULT_PORT, probe=local_api_functional_probe
+) -> PreCutoverState:
+    """Capture non-secret legacy state so rollback restores it exactly."""
+    loaded = launchd.inspect(LEGACY_LABEL)
+    runtime = launchd.runtime_status(LEGACY_LABEL) if loaded else None
+    active = bool(runtime and runtime.qualified)
+    return PreCutoverState(
+        legacy_launch_agent_path().is_file(), loaded, active, probe(port) if active else None
+    )
+
+
+def _unload_and_verify(launchd: LaunchdProvider, label: str, plist: Path, *, code: str) -> None:
+    if not launchd.inspect(label):
+        return
+    launchd.uninstall(plist)
+    if launchd.inspect(label):
+        raise LocalApiCutoverError(code)
+
+
+def _restore_legacy(
+    launchd: LaunchdProvider,
+    state: PreCutoverState,
+    legacy: Path,
+    neutral: Path,
+    *,
+    port: int,
+    probe=local_api_functional_probe,
+) -> None:
+    """Restore exactly the captured legacy state only after neutral is absent."""
+    _unload_and_verify(
+        launchd, LABEL, neutral, code="ROLLBACK_NEUTRAL_UNLOAD_UNVERIFIED"
+    )
+    neutral.unlink(missing_ok=True)
+    if state.legacy_loaded:
+        if not state.legacy_plist_present:
+            raise LocalApiCutoverError("ROLLBACK_LEGACY_PLIST_MISSING")
+        if not launchd.inspect(LEGACY_LABEL):
+            launchd.install(LEGACY_LABEL, legacy)
+        if not launchd.inspect(LEGACY_LABEL):
+            raise LocalApiCutoverError("ROLLBACK_LEGACY_LOAD_UNVERIFIED")
+        restored = launchd.runtime_status(LEGACY_LABEL).qualified
+        if restored != state.legacy_process_active:
+            raise LocalApiCutoverError("ROLLBACK_LEGACY_PROCESS_STATE_MISMATCH")
+        if state.legacy_functional_probe is True and not probe(port):
+            raise LocalApiCutoverError("ROLLBACK_LEGACY_FUNCTIONAL_PROBE_FAILED")
+    elif launchd.inspect(LEGACY_LABEL):
+        raise LocalApiCutoverError("ROLLBACK_LEGACY_STATE_MISMATCH")
+
+
 def launch_agent(repo: Path, port: int = DEFAULT_PORT) -> Path:
-    destination = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
+    destination = launch_agent_path()
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     destination.write_text(
         f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array><string>{sys.executable}</string><string>-m</string><string>engineering_platform.local_api</string><string>run</string><string>--repo</string><string>{repo}</string><string>--port</string><string>{valid_port(port)}</string></array><key>WorkingDirectory</key><string>{repo}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>',
         encoding="utf-8",
     )
     return destination
+
+
+def install(
+    repo: Path, *, port: int = DEFAULT_PORT, probe=local_api_functional_probe
+) -> Path:
+    """Install the canonical Local API and retire its single migration source.
+
+    The commit point requires legacy absence plus neutral loaded, active and
+    functionally healthy proof. Before that point the legacy plist and its
+    captured loaded state remain the sole rollback authority.
+    """
+    port = valid_port(port)
+    launchd = LaunchdProvider()
+    legacy = legacy_launch_agent_path()
+    neutral = launch_agent_path()
+    state = pre_cutover_state(launchd, port=port, probe=probe)
+    if launchd.inspect(LABEL) or neutral.exists():
+        raise LocalApiCutoverError("NEUTRAL_ALREADY_PRESENT")
+    try:
+        if state.legacy_loaded:
+            _unload_and_verify(launchd, LEGACY_LABEL, legacy, code="LEGACY_UNLOAD_UNVERIFIED")
+        plist = launch_agent(repo, port)
+        launchd.install(LABEL, plist)
+        if not launchd.inspect(LABEL):
+            raise LocalApiCutoverError("NEUTRAL_LOAD_UNVERIFIED")
+        if not launchd.runtime_status(LABEL).qualified:
+            raise LocalApiCutoverError("NEUTRAL_PROCESS_UNHEALTHY")
+        if not probe(port):
+            raise LocalApiCutoverError("NEUTRAL_FUNCTIONAL_PROBE_FAILED")
+    except LocalApiCutoverError as error:
+        _restore_legacy(launchd, state, legacy, neutral, port=port, probe=probe)
+        if str(error) == "LEGACY_UNLOAD_UNVERIFIED":
+            raise
+        raise LocalApiCutoverError("LOCAL_API_CUTOVER_ROLLED_BACK") from error
+    except Exception as error:
+        _restore_legacy(launchd, state, legacy, neutral, port=port, probe=probe)
+        raise LocalApiCutoverError("LOCAL_API_CUTOVER_ROLLED_BACK") from error
+    if state.legacy_plist_present:
+        legacy.unlink()
+    return plist
+
+
+def uninstall() -> Path:
+    """Remove only the canonical Local API LaunchAgent."""
+    agent = launch_agent_path()
+    LaunchdProvider().uninstall(agent)
+    agent.unlink(missing_ok=True)
+    return agent
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -211,16 +346,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args(argv)
     repo = args.repo.resolve()
-    agent = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     if args.command == "run":
         run(repo, port=args.port)
         return 0
     if args.command == "install":
-        LaunchdProvider().install(LABEL, launch_agent(repo, args.port))
+        install(repo, port=args.port)
         return 0
     if args.command == "uninstall":
-        LaunchdProvider().uninstall(agent)
-        agent.unlink(missing_ok=True)
+        uninstall()
         return 0
     try:
         port = valid_port(args.port)
