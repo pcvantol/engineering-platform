@@ -41,6 +41,10 @@ PLATFORM_COMPONENTS = (
 )
 PLATFORM_COMPONENT_BY_ID = {component.id: component for component in PLATFORM_COMPONENTS}
 PLATFORM_COMPONENT_IDS = frozenset(PLATFORM_COMPONENT_BY_ID)
+# The installed product has exactly these submission boundaries.  The Local
+# Consumer API is historical compatibility code, not a fourth ingress.
+SUPPORTED_SUBMISSION_INGRESSES = ("HTTP_JSON", "INSTALLED_CLI", "FILE_INBOX")
+SUPPORTED_SUBMISSION_INGRESS_COUNT = len(SUPPORTED_SUBMISSION_INGRESSES)
 # Route consumers import this value instead of duplicating a literal inventory.
 PLATFORM_COMPONENT_ROUTE_PATTERN = "(?:" + "|".join(component.id for component in PLATFORM_COMPONENTS) + ")"
 

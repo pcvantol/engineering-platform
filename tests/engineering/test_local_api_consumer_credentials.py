@@ -8,7 +8,7 @@ from threading import Thread
 import unittest
 from unittest.mock import patch
 from engineering_platform.local_api import LOOPBACK_ADDRESS, LocalApiServer
-from engineering_platform.local_api_credentials import CredentialAuthority, create_qualification_credential, qualification_status, revoke_consumer, revoke_credential, revoke_qualification_credential, rotate_credential, consumer_status, disable_consumer, issue_credential, register_consumer, verify_capabilities_over_http
+from engineering_platform.local_api_credentials import CredentialAuthority, create_qualification_credential, qualification_status, revoke_consumer, revoke_credential, revoke_qualification_credential, rotate_credential, consumer_status, disable_consumer, issue_credential, register_consumer
 from engineering_platform.local_api_keychain import KeychainError, MacOSKeychainCredentialStore
 
 
@@ -99,14 +99,12 @@ class ConsumerCredentialTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "state conflicts"):
             disable_consumer(self.root, consumer_id="consumer", project_id="project")
 
-    def test_absent_scope_invalid_credential_id_and_transport_failure_fail_closed(self) -> None:
+    def test_absent_scope_and_invalid_credential_id_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "registration is absent"):
             consumer_status(self.root, consumer_id="missing", project_id="project")
         with self.assertRaisesRegex(ValueError, "not a production credential"):
             revoke_credential(self.root, "qualification-wrong-scope")
         self.assertIsNone(CredentialAuthority.test_fixture("safe", consumer_id="consumer", project_id="project").authenticate("\udcff"))
-        with patch("engineering_platform.local_api_credentials.HTTPConnection", side_effect=OSError("offline")):
-            self.assertFalse(verify_capabilities_over_http("safe", consumer_id="consumer", project_id="project"))
 
     def test_credential_authority_storage_failure_denies_readiness_authentication_and_authorization(self) -> None:
         authority = CredentialAuthority(self.root)

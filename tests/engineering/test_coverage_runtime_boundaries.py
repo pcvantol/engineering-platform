@@ -1132,19 +1132,15 @@ class InstallationBoundaryTests(unittest.TestCase):
             method()
         self.assertEqual(responses, [405] * 5)
 
-    def test_local_api_cli_doctor_and_launch_agent_are_loopback_bounded(self) -> None:
+    def test_local_api_service_is_retired_without_affecting_contract_fixtures(self) -> None:
         from engineering_platform import local_api
-        home = self.root.parent / "api-home"; output = io.StringIO()
-        with patch("engineering_platform.local_api.Path.home", return_value=home), patch(
-            "engineering_platform.local_api.readiness", return_value=True
-        ), redirect_stdout(output):
-            self.assertEqual(local_api.main(["doctor", "--repo", str(self.root), "--port", "8766"]), 0)
-            self.assertEqual(local_api.main(["doctor", "--repo", str(self.root), "--port", "1"]), 1)
-        self.assertEqual(json.loads(output.getvalue().splitlines()[0])["bind"], "127.0.0.1")
-        (home / "Library" / "LaunchAgents").mkdir(parents=True)
-        with patch("engineering_platform.local_api.Path.home", return_value=home):
-            plist = local_api.launch_agent(self.root, 8766)
-        self.assertIn("--port</string><string>8766", plist.read_text(encoding="utf-8"))
+        self.assertEqual(local_api.retirement_status()["state"], "RETIRED")
+        self.assertFalse(local_api.retirement_status()["installable"])
+        self.assertFalse(hasattr(local_api, "install"))
+        self.assertFalse(hasattr(local_api, "launch_agent"))
+        self.assertEqual(local_api.valid_port(8766), 8766)
+        with self.assertRaises(ValueError):
+            local_api.valid_port(1)
 
     def test_controlled_provider_interruption_is_run_bound_single_use_and_redacted(self) -> None:
         root = self.root.parent / "recovery-control"

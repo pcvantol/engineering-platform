@@ -4,7 +4,11 @@ import ast
 from pathlib import Path
 import unittest
 
-from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
+from engineering_platform.platform_components import (
+    PLATFORM_COMPONENT_IDS,
+    SUPPORTED_SUBMISSION_INGRESS_COUNT,
+    SUPPORTED_SUBMISSION_INGRESSES,
+)
 
 class TransportAuthorityGuardTest(unittest.TestCase):
     """Source-level canaries for the supported ingress authority boundary."""
@@ -28,6 +32,21 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         self.assertIn("submission_service.submit(connection, request)", server_source)
         self.assertIn("_admit_server_owned_file_inbox", server_source)
         self.assertIn("file_inbox.FileInboxService", server_source)
+
+    def test_three_ingress_contract_excludes_the_retired_local_api_service(self) -> None:
+        self.assertEqual(
+            SUPPORTED_SUBMISSION_INGRESSES,
+            ("HTTP_JSON", "INSTALLED_CLI", "FILE_INBOX"),
+        )
+        self.assertEqual(SUPPORTED_SUBMISSION_INGRESS_COUNT, 3)
+        self.assertNotIn("local_api", PLATFORM_COMPONENT_IDS)
+        source_root = Path(__file__).resolve().parents[2] / "src" / "engineering_platform"
+        service = (source_root / "local_api.py").read_text(encoding="utf-8")
+        for active_surface in (
+            "def run(", "def install(", "def uninstall(", "def launch_agent(",
+            "LaunchdProvider", "RunAtLoad", "KeepAlive",
+        ):
+            self.assertNotIn(active_surface, service)
 
     def test_supported_runtime_modules_do_not_import_the_retired_watcher(self) -> None:
         source_root = Path(__file__).resolve().parents[2] / "src" / "engineering_platform"

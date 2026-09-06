@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
-from http.client import HTTPConnection
 import json
 from pathlib import Path
 import secrets
@@ -336,23 +335,6 @@ def rotate_credential(
     return replacement
 
 
-def verify_capabilities_over_http(credential: str, *, consumer_id: str, project_id: str, port: int = 8766) -> bool:
-    """Prove a credential through the real, read-only Local API transport."""
-    body = json.dumps({"contract_version":"1.0","request_type":"contract.foundation","request_id":"credential-rotation","project_id":project_id,"consumer":{"consumer_id":consumer_id},"auth":{"scheme":"bearer","credential":"operator-carrier"},"payload":{}})
-    connection: HTTPConnection | None = None
-    try:
-        connection = HTTPConnection("127.0.0.1", port, timeout=15)
-        connection.request("POST", "/v1/capabilities", body=body, headers={"Content-Type":"application/json","Authorization":f"Bearer {credential}"})
-        response = connection.getresponse()
-        response.read()
-        return response.status == 200
-    except OSError:
-        return False
-    finally:
-        if connection is not None:
-            connection.close()
-
-
 class CredentialAuthority:
     """Read-only production authority with explicit in-memory test fixtures."""
 
@@ -436,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
             "create-qualification-credential",
             "qualification-status",
             "revoke-qualification-credential", "consumer-register", "consumer-status",
-            "consumer-disable", "consumer-revoke", "credential-issue", "credential-status", "credential-revoke", "credential-rotate",
+            "consumer-disable", "consumer-revoke", "credential-issue", "credential-status", "credential-revoke",
         ),
     )
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -469,13 +451,6 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(result, (ProductionCredential, QualificationCredential)):
                 result = result.disclosure()
             print(json.dumps(result, sort_keys=True))
-            return 0
-        if args.command == "credential-rotate":
-            if args.consumer_id is None or args.project_id is None or args.credential_id is None:
-                raise ValueError("--consumer-id, --project-id and --credential-id are required.")
-            from .local_api_keychain import MacOSKeychainCredentialStore
-            result = rotate_credential(root, consumer_id=args.consumer_id, project_id=args.project_id, old_credential_id=args.credential_id, store=MacOSKeychainCredentialStore(), authenticate=lambda token: verify_capabilities_over_http(token, consumer_id=args.consumer_id, project_id=args.project_id))
-            print(json.dumps(result.disclosure(), sort_keys=True))
             return 0
         if args.credential_id is None:
             raise ValueError("--credential-id is required.")
