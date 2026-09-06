@@ -94,4 +94,21 @@ class GovernedPhaseBaselineTests(unittest.TestCase):
             self.assertEqual("UNACCOUNTED",inventory[0]["classification"])
             self.assertTrue(any("unaccounted current target" in error for error in errors))
 
+class SuccessorReceiptModelTests(unittest.TestCase):
+    def test_duplicate_successor_claim_is_rejected(self):
+        errors=[]
+        receipts=[{"historical_target_path":"x.py"},{"historical_target_path":"x.py"}]
+        self.assertEqual({"x.py"},set(MODULE.successor_receipts({"successor_evolutions":receipts},errors)))
+        self.assertTrue(any("duplicate successor receipt" in error for error in errors))
+
+    def test_malformed_successor_claim_is_rejected(self):
+        errors=[]
+        self.assertEqual({},MODULE.successor_receipts({"successor_evolutions":[{"historical_target_path":"../x.py"}]},errors))
+        self.assertTrue(any("malformed" in error for error in errors))
+
+    def test_non_list_successor_receipts_are_rejected(self):
+        errors=[]
+        self.assertEqual({},MODULE.successor_receipts({"successor_evolutions":{}},errors))
+        self.assertIn("successor evolutions must be a list",errors)
+
 if __name__ == "__main__": unittest.main()
