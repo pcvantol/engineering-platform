@@ -31,6 +31,11 @@ CASES = (
     ("FILE_INBOX", "MANAGED"), ("FILE_INBOX", "GENESIS"),
 )
 
+# Two independently bound Server-child admissions can each encounter one
+# bounded SQLite retry on a hosted runner.  This protects the real installed
+# canary from scheduling noise without introducing a mocked alternate path.
+DEPENDABOT_BINDING_TIMEOUT_SECONDS = 30
+
 
 def command(binary: Path, *args: str, environment: dict[str, str] | None = None) -> dict[str, object]:
     completed = subprocess.run([str(binary), *args], check=True, text=True, capture_output=True, env=environment)  # nosec B603
@@ -512,10 +517,7 @@ def main(argv: list[str] | None = None) -> int:
         dependabot_environment = {**os.environ, "EP_QUALIFICATION_INITIALIZE_ONLY": "1", "EP_DEPENDABOT_QUALIFICATION_FIXTURE": str(fixture)}
         process = subprocess.Popen([str(server), "serve", "--data-root", str(dependabot_root)], env=dependabot_environment)  # nosec B603
         try:
-            # The two independently bound Server-child admissions can each
-            # encounter one SQLite retry on a contended hosted runner.  This
-            # remains a real installed-product wait, not a mocked fallback.
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + DEPENDABOT_BINDING_TIMEOUT_SECONDS
             rows: list[tuple[str, str, str]] = []
             heartbeat = dependabot_root / "dependabot-producer-heartbeat.json"
             while time.monotonic() < deadline:

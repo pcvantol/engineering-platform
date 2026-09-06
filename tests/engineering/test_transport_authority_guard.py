@@ -103,6 +103,12 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         ):
             self.assertIn(retired, qualification)
 
+    def test_dependabot_canary_uses_one_bounded_named_wait(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        qualification = (root / "tools" / "qualification" / "p_transport_installed_ingress_matrix.py").read_text(encoding="utf-8")
+        self.assertIn("DEPENDABOT_BINDING_TIMEOUT_SECONDS = 30", qualification)
+        self.assertIn("time.monotonic() + DEPENDABOT_BINDING_TIMEOUT_SECONDS", qualification)
+
     def test_browser_fixture_uses_the_server_boundary_and_no_local_finder_route(self) -> None:
         """Dashboard browser evidence must not revive the retired direct listener."""
         root = Path(__file__).resolve().parents[2]
