@@ -98,6 +98,21 @@ class PNeutralFinalAuthorityClosureTests(unittest.TestCase):
         ):
             self.assertIn(required, register)
 
+    def test_current_status_projects_the_completed_predecessor_and_frontier(self) -> None:
+        register = (ROOT / "docs" / "engineering" / "P_NEUTRAL_FINAL_AUTHORITY_CLOSURE.md").read_text(
+            encoding="utf-8"
+        )
+        roadmap = (ROOT / "docs" / "development" / "ENGINEERING_PLATFORM_ROADMAP.md").read_text(
+            encoding="utf-8"
+        )
+        dependency_authority = (
+            ROOT / "docs" / "development" / "ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("P_NEUTRAL_CURRENT_RECONCILED_STATUS = COMPLETE", register)
+        self.assertIn("P_INSTALLER_V1_CURRENT_FRONTIER = TRUE", register)
+        self.assertIn("`P-INSTALLER-V1` is the **CURRENT AUTONOMY FRONTIER**", roadmap)
+        self.assertIn("COMPLETE / merged closure `b44af0914622dd57c5c5c2266ee2caf9b31d9007`", dependency_authority)
+
 
 if __name__ == "__main__":
     unittest.main()
