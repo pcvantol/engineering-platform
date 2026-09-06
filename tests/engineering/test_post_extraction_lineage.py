@@ -126,6 +126,22 @@ class SuccessorReceiptModelTests(unittest.TestCase):
             MODULE.successor_phase_completions(Path("."),self.anchor,self.completion_c,ledger,receipts,errors)
         self.assertEqual(2,sum("invalid successor phase completion" in error for error in errors))
 
+    def test_explicit_retirement_is_the_only_empty_destination(self):
+        errors=[]
+        MODULE.validate_responsibilities({"x.py::module"},[],[{"responsibility":"x.py::module","reason":"retired"}],errors,"x.py")
+        self.assertEqual([],errors)
+        errors=[]
+        MODULE.validate_responsibilities({"x.py::module"},[],[],errors,"x.py")
+        self.assertTrue(any("unaccounted responsibility" in error for error in errors))
+
+    def test_duplicate_phase_identity_is_rejected(self):
+        receipts={"b.py":self.receipt("b","B")}; ledger=self.completions({**receipts,"c.py":self.receipt("c","C")})
+        duplicate=dict(ledger["successor_phase_completions"][0]); ledger["successor_phase_completions"].append(duplicate)
+        errors=[]
+        with patch.object(MODULE,"ancestor",lambda *_args: True):
+            MODULE.successor_phase_completions(Path("."),self.anchor,self.completion_c,ledger,receipts,errors)
+        self.assertTrue(any("invalid successor phase completion" in error for error in errors))
+
     def test_duplicate_successor_claim_is_rejected(self):
         errors=[]
         receipts=[{"historical_target_path":"x.py"},{"historical_target_path":"x.py"}]
