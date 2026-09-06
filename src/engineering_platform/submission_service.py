@@ -288,16 +288,16 @@ def register_consumer(connection: sqlite3.Connection, *, consumer_id: str, proje
     if connection.execute("SELECT 1 FROM ep_project_registrations WHERE project_id=? AND status='ACTIVE'", (project_id,)).fetchone() is None:
         raise SubmissionError("UNKNOWN_PROJECT", 404)
     now = _now()
-    connection.execute("""INSERT INTO local_api_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,audit_metadata)
+    connection.execute("""INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,audit_metadata)
         VALUES(?,?,'ACTIVE',?,?,?) ON CONFLICT(consumer_id,project_id) DO UPDATE SET status='ACTIVE',updated_at=excluded.updated_at""", (consumer_id, project_id, now, now, json.dumps({"action": "SUBMISSION_CONSUMER_REGISTER"}, sort_keys=True)))
 
 
 def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: str, project_id: str) -> dict[str, str]:
     """Issue a scoped bearer token once; only its verifier is retained."""
     register_consumer(connection, consumer_id=consumer_id, project_id=project_id)
-    from .local_api_credentials import fingerprint, verifier
+    from .ep_consumer_credentials import fingerprint, verifier
     token, credential_id, now = secrets.token_urlsafe(32), "production-" + secrets.token_hex(16), _now()
-    connection.execute("INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)", (credential_id, consumer_id, project_id, verifier(token), fingerprint(token), now))
+    connection.execute("INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)", (credential_id, consumer_id, project_id, verifier(token), fingerprint(token), now))
     return {"credential_id": credential_id, "consumer_id": consumer_id, "project_id": project_id, "credential": token}
 
 

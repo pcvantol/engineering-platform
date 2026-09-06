@@ -212,8 +212,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 "ep_execution_runs",
                 "ep_execution_leases",
                 "prompt_execution_history",
-                "local_api_credentials",
-                "local_api_consumer_registrations",
+                "ep_consumer_credentials",
+                "ep_consumer_registrations",
                 "ep_local_repository_bindings",
             ):
                 self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)

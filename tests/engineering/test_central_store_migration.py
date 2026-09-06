@@ -29,8 +29,8 @@ class CentralStoreMigrationTests(unittest.TestCase):
         self.root.mkdir()
         self.source = self.root / ".engineering" / "engineering.db"
         with open_storage(self.root) as connection:
-            connection.execute("INSERT INTO local_api_consumer_registrations(consumer_id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("workspace-client", "project-alpha", "ACTIVE", "now", "now"))
-            connection.execute("INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)", ("credential-alpha", "workspace-client", "project-alpha", b"v" * 32, b"f" * 32, "now"))
+            connection.execute("INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("workspace-client", "project-alpha", "ACTIVE", "now", "now"))
+            connection.execute("INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)", ("credential-alpha", "workspace-client", "project-alpha", b"v" * 32, b"f" * 32, "now"))
 
     def tearDown(self) -> None:
         self._authority_pointer_patch.stop()
@@ -193,7 +193,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
             source.backup(destination)
         self.assertTrue(migration.validate_target_equivalence(self.source, target)["equivalent"])
         with sqlite3.connect(target) as connection:
-            connection.execute("DELETE FROM local_api_consumer_registrations")
+            connection.execute("DELETE FROM ep_consumer_registrations")
         result = migration.validate_target_equivalence(self.source, target)
         self.assertFalse(result["equivalent"])
         self.assertIn("table_counts", result["differences"])
@@ -256,7 +256,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
     def test_schema_integrity_and_required_structures_are_inspected(self) -> None:
         candidate = migration.discover_legacy_stores(self.root)[0]
         facts = migration.inspect_source(candidate)
-        self.assertEqual(facts["schema_version"], 40)
+        self.assertEqual(facts["schema_version"], storage.ENGINEERING_STORAGE_SCHEMA_VERSION)
         self.assertEqual(facts["integrity"], "PASS")
         self.assertFalse(facts["blocking_codes"])
         wrong = Path(self.temporary.name) / "wrong.db"
@@ -311,7 +311,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
             source.backup(copied)
         self.assertTrue(migration.validate_target_equivalence(self.source, target)["equivalent"])
         with sqlite3.connect(target) as connection:
-            connection.execute("DELETE FROM local_api_consumer_registrations")
+            connection.execute("DELETE FROM ep_consumer_registrations")
         compared = migration.validate_target_equivalence(self.source, target)
         self.assertFalse(compared["equivalent"])
         self.assertIn("TARGET_STORE_CONFLICT", compared["blocking_codes"])

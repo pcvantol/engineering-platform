@@ -107,7 +107,10 @@ class EngineeringHarnessAuthorityIsolationTests(unittest.TestCase):
             ):
                 with storage.activate_storage_schema(repository):
                     pass
-            self.assertEqual(_schema_version(storage.database_path(repository)), 41)
+            self.assertEqual(
+                _schema_version(storage.database_path(repository)),
+                storage.ENGINEERING_STORAGE_SCHEMA_VERSION + 1,
+            )
         self.assertEqual(_fingerprint(self.external_store), before)
 
     def test_dashboard_fixture_rows_stay_out_of_external_central_store(self) -> None:

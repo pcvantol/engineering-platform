@@ -63,7 +63,7 @@ from .component_logging import (
     component_logger,
     log_event,
 )
-from .local_api_credentials import verifier
+from .ep_consumer_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import EngineeringPlatformManifest
 from .providers import (
@@ -87,7 +87,7 @@ SERVER_CONFIGURATION_VERSION = 2
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 52
+SERVER_STORE_SCHEMA_VERSION = 53
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 _CENTRAL_LOG_SORT_COLUMNS = {
@@ -356,8 +356,8 @@ SERVER_REQUIRED_TABLES = frozenset(
         "engineering_metadata",
         "ep_installations",
         "ep_control_provenance",
-        "local_api_credentials",
-        "local_api_consumer_registrations",
+        "ep_consumer_credentials",
+        "ep_consumer_registrations",
         "ep_project_registrations",
         "ep_execution_runs",
         "ep_execution_leases",
@@ -380,8 +380,8 @@ SERVER_REQUIRED_TABLES = frozenset(
 )
 SERVER_REQUIRED_INDEXES = frozenset(
     {
-        "local_api_credentials_scope_lookup",
-        "local_api_consumer_registrations_status_lookup",
+        "ep_consumer_credentials_scope_lookup",
+        "ep_consumer_registrations_status_lookup",
         "ep_project_registrations_status_lookup",
         "ep_execution_runs_project_lookup",
         "ep_control_provenance_subject_lookup",
@@ -503,10 +503,10 @@ def _install_schema_41(connection: sqlite3.Connection, identity: RuntimeIdentity
         "CREATE TABLE IF NOT EXISTS ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version=41))",
         "CREATE TABLE IF NOT EXISTS ep_control_provenance (event_id INTEGER PRIMARY KEY, event_kind TEXT NOT NULL CHECK(event_kind IN ('INSTALLATION_CREATED','CREDENTIAL_LIFECYCLE','CONSUMER_REGISTRATION','PROJECT_SCOPE_MUTATION')), subject_kind TEXT NOT NULL, subject_id TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)",
         "CREATE INDEX IF NOT EXISTS ep_control_provenance_subject_lookup ON ep_control_provenance(subject_kind,subject_id,event_id DESC)",
-        "CREATE TABLE IF NOT EXISTS local_api_credentials (credential_id TEXT PRIMARY KEY CHECK(length(credential_id) BETWEEN 1 AND 128), consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128), project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128), verifier BLOB NOT NULL UNIQUE CHECK(length(verifier)=32), fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint)=32), issued_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT, replaced_by_credential_id TEXT REFERENCES local_api_credentials(credential_id))",
-        "CREATE INDEX IF NOT EXISTS local_api_credentials_scope_lookup ON local_api_credentials(consumer_id,project_id,revoked_at)",
-        "CREATE TABLE IF NOT EXISTS local_api_consumer_registrations (consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128), project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128), status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, disabled_at TEXT, revoked_at TEXT, audit_metadata TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(consumer_id,project_id))",
-        "CREATE INDEX IF NOT EXISTS local_api_consumer_registrations_status_lookup ON local_api_consumer_registrations(consumer_id,project_id,status)",
+        "CREATE TABLE IF NOT EXISTS ep_consumer_credentials (credential_id TEXT PRIMARY KEY CHECK(length(credential_id) BETWEEN 1 AND 128), consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128), project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128), verifier BLOB NOT NULL UNIQUE CHECK(length(verifier)=32), fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint)=32), issued_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT, replaced_by_credential_id TEXT REFERENCES ep_consumer_credentials(credential_id))",
+        "CREATE INDEX IF NOT EXISTS ep_consumer_credentials_scope_lookup ON ep_consumer_credentials(consumer_id,project_id,revoked_at)",
+        "CREATE TABLE IF NOT EXISTS ep_consumer_registrations (consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128), project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128), status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, disabled_at TEXT, revoked_at TEXT, audit_metadata TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(consumer_id,project_id))",
+        "CREATE INDEX IF NOT EXISTS ep_consumer_registrations_status_lookup ON ep_consumer_registrations(consumer_id,project_id,status)",
         "CREATE TABLE IF NOT EXISTS ep_project_registrations (project_id TEXT PRIMARY KEY CHECK(length(project_id) BETWEEN 1 AND 128), attachment_contract TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
         "CREATE INDEX IF NOT EXISTS ep_project_registrations_status_lookup ON ep_project_registrations(status,project_id)",
         "CREATE TABLE IF NOT EXISTS ep_execution_runs (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id), state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
@@ -859,6 +859,169 @@ def _migrate_schema_52(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=52")
 
 
+_CONSUMER_CREDENTIAL_COLUMNS = (
+    "credential_id", "consumer_id", "project_id", "verifier", "fingerprint",
+    "issued_at", "expires_at", "revoked_at", "replaced_by_credential_id",
+)
+_CONSUMER_REGISTRATION_COLUMNS = (
+    "consumer_id", "project_id", "status", "created_at", "updated_at",
+    "disabled_at", "revoked_at", "audit_metadata",
+)
+
+
+def _table_columns(connection: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    return tuple(str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})"))
+
+
+def _require_consumer_table_shape(
+    connection: sqlite3.Connection, *, credentials: str, registrations: str,
+) -> None:
+    """Validate only table metadata; never surface credential values."""
+
+    if _table_columns(connection, credentials) != _CONSUMER_CREDENTIAL_COLUMNS:
+        raise ServerConfigurationError("EP consumer credential table shape is invalid.")
+    if _table_columns(connection, registrations) != _CONSUMER_REGISTRATION_COLUMNS:
+        raise ServerConfigurationError("EP consumer registration table shape is invalid.")
+    credential_pk = tuple(
+        str(row[1]) for row in connection.execute(f"PRAGMA table_info({credentials})") if int(row[5]) > 0
+    )
+    registration_pk = tuple(
+        str(row[1]) for row in connection.execute(f"PRAGMA table_info({registrations})") if int(row[5]) > 0
+    )
+    if credential_pk != ("credential_id",) or registration_pk != ("consumer_id", "project_id"):
+        raise ServerConfigurationError("EP consumer credential table identity is invalid.")
+
+
+def _install_ep_consumer_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "CREATE TABLE ep_consumer_credentials ("
+        "credential_id TEXT PRIMARY KEY CHECK(length(credential_id) BETWEEN 1 AND 128),"
+        "consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128),"
+        "project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128),"
+        "verifier BLOB NOT NULL UNIQUE CHECK(length(verifier)=32),"
+        "fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint)=32),"
+        "issued_at TEXT NOT NULL,expires_at TEXT,revoked_at TEXT,"
+        "replaced_by_credential_id TEXT REFERENCES ep_consumer_credentials(credential_id))"
+    )
+    connection.execute(
+        "CREATE INDEX ep_consumer_credentials_scope_lookup "
+        "ON ep_consumer_credentials(consumer_id,project_id,revoked_at)"
+    )
+    connection.execute(
+        "CREATE TABLE ep_consumer_registrations ("
+        "consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128),"
+        "project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128),"
+        "status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')),"
+        "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,disabled_at TEXT,revoked_at TEXT,"
+        "audit_metadata TEXT NOT NULL DEFAULT '{}',PRIMARY KEY(consumer_id,project_id))"
+    )
+    connection.execute(
+        "CREATE INDEX ep_consumer_registrations_status_lookup "
+        "ON ep_consumer_registrations(consumer_id,project_id,status)"
+    )
+
+
+def _assert_exact_consumer_transfer(
+    connection: sqlite3.Connection, *, source: str, destination: str, columns: tuple[str, ...],
+) -> None:
+    """Prove cardinality and values match without exposing credential material."""
+
+    column_list = ",".join(columns)
+    source_count = int(connection.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0])
+    destination_count = int(connection.execute(f"SELECT COUNT(*) FROM {destination}").fetchone()[0])
+    if source_count != destination_count:
+        raise ServerConfigurationError("EP consumer credential transfer cardinality is invalid.")
+    missing = connection.execute(
+        f"SELECT {column_list} FROM {source} EXCEPT SELECT {column_list} FROM {destination} LIMIT 1"
+    ).fetchone()
+    extra = connection.execute(
+        f"SELECT {column_list} FROM {destination} EXCEPT SELECT {column_list} FROM {source} LIMIT 1"
+    ).fetchone()
+    if missing is not None or extra is not None:
+        raise ServerConfigurationError("EP consumer credential transfer identity is invalid.")
+
+
+def _migrate_schema_53(connection: sqlite3.Connection) -> None:
+    """Transfer consumer credentials to the neutral Server/CENTRAL namespace.
+
+    The entire migration is called from the Server's enclosing immediate
+    transaction.  Legacy tables are retained untouched as migration evidence;
+    runtime code switches exclusively to the new tables only after the exact
+    transfer proof succeeds and schema metadata advances.
+    """
+
+    if _schema_version(connection) != 52:
+        raise ServerConfigurationError("EP consumer credential migration schema version is invalid.")
+    metadata = connection.execute(
+        "SELECT value FROM engineering_metadata WHERE key='installation.schema_version'"
+    ).fetchone()
+    if metadata is None or str(metadata[0]) != "52":
+        raise ServerConfigurationError("EP consumer credential migration metadata is invalid.")
+    legacy_credentials, legacy_registrations = (
+        "local_api_credentials", "local_api_consumer_registrations",
+    )
+    current_credentials, current_registrations = (
+        "ep_consumer_credentials", "ep_consumer_registrations",
+    )
+    tables = _table_names(connection)
+    legacy = {legacy_credentials, legacy_registrations} & tables
+    current = {current_credentials, current_registrations} & tables
+    if legacy and legacy != {legacy_credentials, legacy_registrations}:
+        raise ServerConfigurationError("EP consumer credential migration source is incomplete.")
+    if current and current != {current_credentials, current_registrations}:
+        raise ServerConfigurationError("EP consumer credential migration destination is incomplete.")
+    if legacy and current:
+        raise ServerConfigurationError("EP consumer credential migration has ambiguous parallel authority.")
+    if legacy:
+        _require_consumer_table_shape(
+            connection, credentials=legacy_credentials, registrations=legacy_registrations,
+        )
+        _install_ep_consumer_schema(connection)
+        connection.execute(
+            "INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,disabled_at,revoked_at,audit_metadata) "
+            "SELECT consumer_id,project_id,status,created_at,updated_at,disabled_at,revoked_at,audit_metadata "
+            "FROM local_api_consumer_registrations"
+        )
+        connection.execute(
+            "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at,expires_at,revoked_at,replaced_by_credential_id) "
+            "SELECT credential_id,consumer_id,project_id,verifier,fingerprint,issued_at,expires_at,revoked_at,replaced_by_credential_id "
+            "FROM local_api_credentials"
+        )
+        _assert_exact_consumer_transfer(
+            connection, source=legacy_registrations, destination=current_registrations,
+            columns=_CONSUMER_REGISTRATION_COLUMNS,
+        )
+        _assert_exact_consumer_transfer(
+            connection, source=legacy_credentials, destination=current_credentials,
+            columns=_CONSUMER_CREDENTIAL_COLUMNS,
+        )
+    elif current:
+        _require_consumer_table_shape(
+            connection, credentials=current_credentials, registrations=current_registrations,
+        )
+    else:
+        raise ServerConfigurationError("EP consumer credential migration source is absent.")
+    # This table is referenced by the schema-52 receipt provenance table.  Keep
+    # those foreign-key declarations pointed at the canonical name while the
+    # installation CHECK constraint is widened for schema 53.  Without this
+    # SQLite rewrites a dependent reference to the temporary table name, which
+    # would leave the completed store structurally invalid after that temporary
+    # table is retired.
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema52")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53)))"
+    )
+    connection.execute(
+        "INSERT INTO ep_installations(instance_id,created_at,schema_version) "
+        "SELECT instance_id,created_at,53 FROM ep_installations_schema52"
+    )
+    connection.execute("DROP TABLE ep_installations_schema52")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(53)")
+    connection.execute("UPDATE engineering_metadata SET value='53' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=53")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -923,18 +1086,19 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
                             connection.execute("PRAGMA foreign_keys=OFF")
+                            connection.execute("PRAGMA legacy_alter_table=ON")
                             connection.execute("BEGIN IMMEDIATE")
                             if current_schema == 42:
                                 _migrate_schema_43(connection)
@@ -954,14 +1118,21 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_50(connection)
                             if current_schema != 51:
                                 _migrate_schema_51(connection)
-                            _migrate_schema_52(connection)
+                            if current_schema != 52:
+                                _migrate_schema_52(connection)
+                            _migrate_schema_53(connection)
                             connection.execute("COMMIT")
+                            connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
                         return identity
         except sqlite3.DatabaseError as error:
             raise ServerConfigurationError("EP Server store is unavailable.") from error
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA foreign_keys=ON")
+        # Schema-53 widens ep_installations while schema-52 provenance already
+        # references it.  SQLite must retain those declarations at the
+        # canonical name during the enclosing rebuild transaction.
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("PRAGMA legacy_alter_table=ON")
         connection.execute("BEGIN IMMEDIATE")
         _install_schema_41(connection, identity)
         _migrate_schema_42(connection)
@@ -975,7 +1146,10 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_50(connection)
         _migrate_schema_51(connection)
         _migrate_schema_52(connection)
+        _migrate_schema_53(connection)
         connection.execute("COMMIT")
+        connection.execute("PRAGMA legacy_alter_table=OFF")
+        connection.execute("PRAGMA foreign_keys=ON")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
     return identity
@@ -1998,8 +2172,8 @@ def _authenticated_consumer(connection: sqlite3.Connection, token: object, proje
     """Authenticate an existing scoped CENTRAL consumer credential."""
     if not isinstance(token, str) or not token or len(token) > 4096:
         return None
-    row = connection.execute("""SELECT c.consumer_id FROM local_api_credentials c
-        JOIN local_api_consumer_registrations r ON r.consumer_id=c.consumer_id AND r.project_id=c.project_id
+    row = connection.execute("""SELECT c.consumer_id FROM ep_consumer_credentials c
+        JOIN ep_consumer_registrations r ON r.consumer_id=c.consumer_id AND r.project_id=c.project_id
         WHERE c.verifier=? AND c.project_id=? AND c.revoked_at IS NULL
         AND (c.expires_at IS NULL OR c.expires_at>CURRENT_TIMESTAMP) AND r.status='ACTIVE'""", (verifier(token), project_id)).fetchone()
     return str(row[0]) if row else None

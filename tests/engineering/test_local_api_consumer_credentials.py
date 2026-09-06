@@ -8,7 +8,7 @@ from threading import Thread
 import unittest
 from unittest.mock import patch
 from engineering_platform.local_api import LOOPBACK_ADDRESS, LocalApiServer
-from engineering_platform.local_api_credentials import CredentialAuthority, create_qualification_credential, qualification_status, revoke_consumer, revoke_credential, revoke_qualification_credential, rotate_credential, consumer_status, disable_consumer, issue_credential, register_consumer
+from engineering_platform.ep_consumer_credentials import CredentialAuthority, create_qualification_credential, qualification_status, revoke_consumer, revoke_credential, revoke_qualification_credential, rotate_credential, consumer_status, disable_consumer, issue_credential, register_consumer
 from engineering_platform.local_api_keychain import KeychainError, MacOSKeychainCredentialStore
 
 
@@ -108,7 +108,7 @@ class ConsumerCredentialTests(unittest.TestCase):
 
     def test_credential_authority_storage_failure_denies_readiness_authentication_and_authorization(self) -> None:
         authority = CredentialAuthority(self.root)
-        with patch("engineering_platform.local_api_credentials.open_storage", side_effect=OSError("offline")):
+        with patch("engineering_platform.ep_consumer_credentials.open_storage", side_effect=OSError("offline")):
             self.assertFalse(authority.ready())
             self.assertIsNone(authority.authenticate("credential"))
             scope = CredentialAuthority.test_fixture("credential", consumer_id="consumer", project_id="project").authenticate("credential")

@@ -5,7 +5,7 @@ deliberately downstream from lifecycle code and contains no action executor.
 """
 
 from .models import ActionAuditRecord, ActionPolicyDecision, AllowedAction, EvidenceReference
-from .local_consumer_api import (
+from .ep_consumer import (
     AuthEnvelope,
     ConsumerEnvelope,
     ContractError,
