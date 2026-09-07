@@ -1603,6 +1603,18 @@ def _restart_platform_component(data_root: Path, component_id: str) -> dict[str,
     }
 
 
+DASHBOARD_AUDIT_ACTOR = "DASHBOARD_USER"
+
+
+def _operations_console_logger(data_root: Path) -> logging.Logger:
+    """Return the one CENTRAL-backed logger for dashboard audit events."""
+    return component_logger(
+        data_root,
+        "operations_console",
+        central_database=data_root / SERVER_DATABASE_FILENAME,
+    )
+
+
 def _audit_configuration_change(
     data_root: Path,
     *,
@@ -1613,11 +1625,7 @@ def _audit_configuration_change(
 ) -> None:
     """Persist a bounded CENTRAL audit event for a successful setting change."""
     log_event(
-        component_logger(
-            data_root,
-            "operations_console",
-            central_database=data_root / SERVER_DATABASE_FILENAME,
-        ),
+        _operations_console_logger(data_root),
         logging.INFO,
         "configuration_changed",
         context={
@@ -1639,17 +1647,13 @@ def _audit_platform_data_action(
     """Persist one secret-free, dashboard-initiated platform-data audit fact."""
     context: dict[str, object] = {
         "audit_action": action,
-        "audit_actor": "DASHBOARD_USER",
+        "audit_actor": DASHBOARD_AUDIT_ACTOR,
         "audit_outcome": outcome,
     }
     if details:
         context.update(details)
     log_event(
-        component_logger(
-            data_root,
-            "operations_console",
-            central_database=data_root / SERVER_DATABASE_FILENAME,
-        ),
+        _operations_console_logger(data_root),
         logging.INFO,
         f"platform_data_{action.lower()}",
         context=context,
@@ -2147,9 +2151,7 @@ def _audit_dashboard_provider_action(
 ) -> None:
     """Persist a secret-free audit fact for one host-wide Console action."""
     log_event(
-        component_logger(
-            data_root, "operations_console", central_database=data_root / SERVER_DATABASE_FILENAME,
-        ),
+        _operations_console_logger(data_root),
         level,
         f"provider_action_{outcome.lower()}",
         context={
