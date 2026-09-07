@@ -1749,8 +1749,9 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
             pull_request=implementation.pull_request or state.pull_request,
             next_action="quality_and_security_review",
         )
+        candidate_root = assurance_root or self.root
         try:
-            candidate = self.repository.inspect(assurance_root or self.root)
+            candidate = self._inspect_assurance_candidate(candidate_root, state.execution_mode)
         except RunnerError:
             return self._save_terminal(quality, "BLOCKED", "assurance_candidate_unavailable", "The assurance candidate could not be inspected."), implementation
         if not candidate.clean or not re.fullmatch(r"[0-9a-f]{40}", candidate.head_sha):
@@ -1780,7 +1781,7 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
             )
             result = run_reviews(assurance_root or self.root, (selection,), assurance_objective, self.agent if hasattr(self.agent, "review") else None, evidence=evidence)[0]
             try:
-                unchanged = self.repository.inspect(assurance_root or self.root)
+                unchanged = self._inspect_assurance_candidate(candidate_root, state.execution_mode)
             except RunnerError:
                 unchanged = None
             status = "UNRESOLVED" if result.failed or unchanged is None or unchanged.head_sha != candidate.head_sha else ("FAIL" if result.recommendations else "PASS")
@@ -1810,6 +1811,27 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
             repaired = self._repair(quality, "quality/security review findings failed. Repair all listed bounded findings in one implementation repair round.")
             return repaired, implementation
         return quality, implementation
+
+    def _inspect_assurance_candidate(self, root: Path, execution_mode: str) -> RepositoryEvidence:
+        """Return a pinned review candidate without weakening Managed evidence.
+
+        Genesis deliberately supports a local-only repository.  Its assurance
+        candidate must therefore be inspectable without Managed's canonical
+        bootstrap document or an ``origin`` remote.
+        """
+        try:
+            return self.repository.inspect(root)
+        except RunnerError:
+            if execution_mode != "GENESIS" or not (root / ".git").exists():
+                raise
+        provider = getattr(self.repository, "provider", GitProvider())
+        try:
+            branch = provider.command(root, "git", "branch", "--show-current")
+            head_sha = provider.command(root, "git", "rev-parse", "HEAD")
+            clean = not provider.command(root, "git", "status", "--porcelain", "--untracked-files=all")
+        except RuntimeError as error:
+            raise RunnerError(str(error)) from error
+        return RepositoryEvidence(root.name, branch, head_sha, clean, True)
 
     def _reject_historical_agent_pull_request(
         self, state: TransactionState

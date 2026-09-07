@@ -1605,7 +1605,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         with patch("engineering_platform.execution_host._complete_phase", side_effect=execution_host.EngineeringStorageError("offline")):
             execution_host.complete_phase(self.root, SimpleNamespace())
         agent = FakeAgent(AgentResult("WAITING"))
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        runner = EngineeringRunner(self.root, self.store, SubprocessRepositoryClient(), FakeGitHub([]), agent, lambda _: None)
         state = TransactionState("timing-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
         for measured in (True, "unknown", -1, 86_401):
             agent.last_execution_seconds = measured
