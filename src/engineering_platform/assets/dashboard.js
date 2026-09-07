@@ -5845,6 +5845,12 @@ function initializeNoProjectSelectedBanner() {
     banner.hidden = true;
     try { localStorage.setItem(noProjectDismissalStorageKey, "true"); } catch {}
   });
+  $("dashboardProject")?.addEventListener("change", (event) => {
+    // Choosing the explicit global/no-project context is a fresh operator
+    // choice, rather than a continuation of a formerly dismissed notice.
+    if (event.currentTarget.value !== "") return;
+    try { localStorage.removeItem(noProjectDismissalStorageKey); } catch {}
+  });
 }
 initializeNoProjectSelectedBanner();
 applyDashboardLocale();
