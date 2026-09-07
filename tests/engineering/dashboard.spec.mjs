@@ -8259,6 +8259,20 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#centralDataImportConfirm")).toBeDisabled();
   });
 
+  test("translates platform-data import errors and marks them red", async ({ page }) => {
+    await page.route("**/api/central-data/import", async (route) => {
+      await route.fulfill({ status: 409, json: { error: "CENTRAL_ARCHIVE_MEMBER_INVALID" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    await page.locator("#centralDataImportFile").setInputFiles({ name: "invalid.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
+    await page.locator("#centralDataImportConfirm").click();
+    const status = page.locator("#centralDataImportStatus");
+    await expect(status).toHaveText("Dit ZIP-bestand bevat niet-ondersteunde of onveilige bestanden.");
+    await expect(status).toHaveCSS("color", "rgb(255, 113, 143)");
+  });
+
   test("keeps platform-data location links free of selected borders", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
