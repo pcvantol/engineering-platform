@@ -3713,7 +3713,7 @@ componentModalDismiss.type = "button";
 componentModalDismiss.className = "dashboard-modal-shell__action dashboard-modal-shell__action--primary";
 componentModalDismiss.textContent = t("action.close");
 componentModalDismiss.addEventListener("click", () => $("componentModal").close());
-$("componentModalStatus").before(componentModalDismiss);
+$("componentModalActions").append(componentModalDismiss);
 $("componentModal").addEventListener("click", (event) => {
   if (event.target === $("componentModal")) $("componentModal").close();
 });
