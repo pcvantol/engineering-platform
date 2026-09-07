@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import sqlite3
 import tempfile
 from uuid import uuid4
 import zipfile
@@ -59,6 +60,23 @@ def _durable_files(data_root: Path) -> list[tuple[PurePosixPath, Path]]:
     return files
 
 
+def _database_schema_version(content: bytes) -> int:
+    """Read the migration version from an archived SQLite database safely."""
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="ep-central-schema-", suffix=".db", delete=False) as temporary:
+            temporary.write(content)
+            temporary_path = Path(temporary.name)
+        with sqlite3.connect(f"file:{temporary_path}?mode=ro", uri=True) as connection:
+            row = connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError) as error:
+        raise CentralDataTransferError("CENTRAL_ARCHIVE_SCHEMA_INVALID") from error
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 def export_snapshot(data_root: Path) -> tuple[str, bytes]:
     """Create a portable immutable archive while Server writers are quiesced."""
     root = data_root.resolve()
@@ -76,6 +94,7 @@ def export_snapshot(data_root: Path) -> tuple[str, bytes]:
                 "format_version": FORMAT_VERSION,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "kind": "engineering-platform-central-data",
+                "schema_version": central_database.details(root)["schema_version"],
                 "entries": entries,
             }
             archive.writestr(MANIFEST_NAME, json.dumps(manifest, sort_keys=True, separators=(",", ":")))
@@ -100,6 +119,9 @@ def inspect_archive(path: Path) -> dict[str, object]:
             manifest = json.loads(archive.read(MANIFEST_NAME).decode("utf-8"))
             if not isinstance(manifest, dict) or manifest.get("format_version") != FORMAT_VERSION or manifest.get("kind") != "engineering-platform-central-data":
                 raise CentralDataTransferError("CENTRAL_ARCHIVE_MANIFEST_INVALID")
+            schema_version = manifest.get("schema_version")
+            if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version < 0:
+                raise CentralDataTransferError("CENTRAL_ARCHIVE_SCHEMA_INVALID")
             entries = manifest.get("entries")
             if not isinstance(entries, list) or not entries:
                 raise CentralDataTransferError("CENTRAL_ARCHIVE_MANIFEST_INVALID")
@@ -115,9 +137,11 @@ def inspect_archive(path: Path) -> dict[str, object]:
                 content = archive.read(name)
                 if len(content) != entry["size"] or _sha256(content) != entry["sha256"]:
                     raise CentralDataTransferError("CENTRAL_ARCHIVE_INTEGRITY_INVALID")
+            if _database_schema_version(archive.read("engineering.db")) != schema_version:
+                raise CentralDataTransferError("CENTRAL_ARCHIVE_SCHEMA_INVALID")
     except (OSError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CentralDataTransferError("CENTRAL_ARCHIVE_INVALID") from error
-    return {"entries": len(expected), "size_bytes": path.stat().st_size}
+    return {"entries": len(expected), "size_bytes": path.stat().st_size, "schema_version": schema_version}
 
 
 def stage_import(data_root: Path, source: Path) -> dict[str, object]:
@@ -129,6 +153,10 @@ def stage_import(data_root: Path, source: Path) -> dict[str, object]:
     shutil.copyfile(source, target)
     target.chmod(0o600)
     details = inspect_archive(target)
+    target_schema = central_database.details(root)["schema_version"]
+    if details["schema_version"] != target_schema:
+        target.unlink(missing_ok=True)
+        raise CentralDataTransferError("CENTRAL_ARCHIVE_SCHEMA_INCOMPATIBLE")
     pending = root / "runtime" / "pending-central-data-import.json"
     if pending.exists():
         target.unlink(missing_ok=True)

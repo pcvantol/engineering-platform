@@ -721,7 +721,9 @@ durable parts of the same state and a partial move is unsafe.
 - Import uses the same modal family, a local ZIP chooser, an explicit warning
   and a separate affirmative action. Its entry action is the filled text
   action **Importeer platformgegevens** with the `↗` glyph. It always says
-  that current state will be replaced and the Server will restart.
+  that current state will be replaced and the Server will restart. The archive
+  database schema must exactly equal the active installation schema; imports
+  never perform migrations. Schema upgrades belong to EP installation.
 - Relocation chooses a parent directory and moves the complete data root in
   one restart-bound operation. Its filled text action uses the `↗` glyph and
   follows the location responsively. The selected directory becomes the only
