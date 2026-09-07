@@ -47,6 +47,13 @@ LIFECYCLE_CONTEXT_KEYS = frozenset(
         "provider_action",
         "provider_action_source",
         "audit_outcome",
+        "audit_action",
+        "audit_actor",
+        "package_format",
+        "entry_count",
+        "schema_version",
+        "previous_location",
+        "new_location",
     }
 )
 

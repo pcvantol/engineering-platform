@@ -135,7 +135,14 @@ class ComponentLoggingTest(unittest.TestCase):
                 logger,
                 logging.INFO,
                 "component_restart_trigger_received",
-                context={**context, "target_component": "inbox_watcher", "secret": "must-not-persist"},
+                context={
+                    **context,
+                    "target_component": "inbox_watcher",
+                    "audit_action": "EXPORT",
+                    "audit_actor": "DASHBOARD_USER",
+                    "package_format": "EPDATA",
+                    "secret": "must-not-persist",
+                },
             )
             with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 payload = connection.execute(
@@ -146,6 +153,9 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertEqual(record["git_commit"], "abc123def456")
             self.assertEqual(record["launchd_label"], "com.example.engineering")
             self.assertEqual(record["target_component"], "inbox_watcher")
+            self.assertEqual(record["audit_action"], "EXPORT")
+            self.assertEqual(record["audit_actor"], "DASHBOARD_USER")
+            self.assertEqual(record["package_format"], "EPDATA")
             self.assertNotIn("secret", record)
 
     def test_invalid_level_fails_closed_without_creating_a_local_log_fallback(self) -> None:
