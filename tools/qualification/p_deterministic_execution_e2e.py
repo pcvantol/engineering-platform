@@ -112,6 +112,39 @@ def submit(base: str, credential: str, project: str, repository: str, prompt: st
         return str(json.loads(response.read())["submission_id"])
 
 
+def bind_project(server: Path, data_root: Path, *, project: str, repository: str,
+                 checkout: Path, push_declaration: bool = False) -> None:
+    """Bind a clean fixture through the same installed Server commands as production."""
+    command(server, "bootstrap-topology", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository)
+    command(server, "provision-declaration", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+    git(checkout, "add", ".engineering-platform")
+    git(checkout, "commit", "-qm", "bind installed e2e project")
+    if push_declaration:
+        git(checkout, "push", "-q", "origin", "main")
+    command(server, "bind-repository", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+
+
+def arm_controlled_recovery(venv: Path, data_root: Path, checkout: Path, ready: Path) -> str:
+    """Wait for the deterministic adapter's bounded arm window, then use its public CLI."""
+    deadline = time.monotonic() + 30
+    while not ready.is_file() and time.monotonic() < deadline:
+        time.sleep(.05)
+    if not ready.is_file():
+        raise RuntimeError("CONTROLLED_RECOVERY_ARM_WINDOW_UNAVAILABLE")
+    control = json.loads(ready.read_text(encoding="utf-8"))
+    run_id = control.get("run_id")
+    if not isinstance(run_id, str) or control.get("phase") != "EXECUTE_AGENT":
+        raise RuntimeError(f"CONTROLLED_RECOVERY_ARM_WINDOW_INVALID: {control}")
+    subprocess.run(
+        (str(venv / "bin" / "python"), "-m", "engineering_platform.provider_recovery",
+         "arm-controlled-interruption", "--repo", str(checkout), "--run-id", run_id,
+         "--phase", "EXECUTE_AGENT", "--central-database", str(data_root / CENTRAL_DATABASE_FILENAME)),
+        check=True, capture_output=True, text=True,
+    )  # nosec B603
+    ready.with_suffix(ready.suffix + ".continue").write_text("armed\n", encoding="utf-8")
+    return run_id
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, default=Path.cwd())
@@ -142,15 +175,9 @@ def main(argv: list[str] | None = None) -> int:
         evidence: dict[str, object] = {}
         layouts = (("genesis", "genesis-repo", genesis_host), ("managed", "managed-repo", managed))
         for project, repository, checkout in layouts:
-            command(server, "bootstrap-topology", "--data-root", str(data), "--project-id", project, "--repository-id", repository)
-            command(server, "provision-declaration", "--data-root", str(data), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
-            git(checkout, "add", ".engineering-platform")
-            git(checkout, "commit", "-qm", "bind installed e2e project")
-            if project == "managed":
-                git(checkout, "push", "-q", "origin", "main")
+            bind_project(server, data, project=project, repository=repository, checkout=checkout, push_declaration=project == "managed")
             if project == "managed" and args.managed_repository:
                 raise RuntimeError("MANAGED_GITHUB_FIXTURE_NEEDS_MATCHING_DECLARATION")
-            command(server, "bind-repository", "--data-root", str(data), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
         control_ready = root / "controlled-recovery-ready.json"
         env = {
             **os.environ,
@@ -174,26 +201,11 @@ def main(argv: list[str] | None = None) -> int:
                 evidence[mode] = verify_receipt(data, project, run_id)
             recovery = root / "controlled-recovery"
             create_repository(recovery, origin=root / "controlled-recovery-origin.git")
-            command(server, "bootstrap-topology", "--data-root", str(data), "--project-id", "recovery", "--repository-id", "recovery-repo")
-            command(server, "provision-declaration", "--data-root", str(data), "--project-id", "recovery", "--repository-id", "recovery-repo", "--path", str(recovery))
-            git(recovery, "add", ".engineering-platform")
-            git(recovery, "commit", "-qm", "bind recovery qualification project")
-            git(recovery, "push", "-q", "origin", "main")
-            command(server, "bind-repository", "--data-root", str(data), "--project-id", "recovery", "--repository-id", "recovery-repo", "--path", str(recovery))
+            bind_project(server, data, project="recovery", repository="recovery-repo", checkout=recovery, push_declaration=True)
             control_ready.with_suffix(control_ready.suffix + ".enable").write_text("enabled\n", encoding="utf-8")
             credential = str(command(server, "issue-consumer-credential", "--data-root", str(data), "--project-id", "recovery", "--consumer-id", "recovery-e2e")["credential"])
             submission = submit(base, credential, "recovery", "recovery-repo", "Execution Mode: Managed\n\nInstalled controlled recovery qualification.", "controlled-recovery-e2e")
-            deadline = time.monotonic() + 30
-            while not control_ready.is_file() and time.monotonic() < deadline:
-                time.sleep(.05)
-            if not control_ready.is_file():
-                raise RuntimeError("CONTROLLED_RECOVERY_ARM_WINDOW_UNAVAILABLE")
-            control = json.loads(control_ready.read_text(encoding="utf-8"))
-            run_id = control.get("run_id")
-            if not isinstance(run_id, str) or control.get("phase") != "EXECUTE_AGENT":
-                raise RuntimeError(f"CONTROLLED_RECOVERY_ARM_WINDOW_INVALID: {control}")
-            subprocess.run((str(venv / "bin" / "python"), "-m", "engineering_platform.provider_recovery", "arm-controlled-interruption", "--repo", str(recovery), "--run-id", run_id, "--phase", "EXECUTE_AGENT", "--central-database", str(data / CENTRAL_DATABASE_FILENAME)), check=True, capture_output=True, text=True)  # nosec B603
-            control_ready.with_suffix(control_ready.suffix + ".continue").write_text("armed\n", encoding="utf-8")
+            run_id = arm_controlled_recovery(venv, data, recovery, control_ready)
             _, terminal_run_id = wait_terminal(server, data, submission)
             if terminal_run_id != run_id:
                 raise RuntimeError("CONTROLLED_RECOVERY_RUN_ID_CHANGED")
