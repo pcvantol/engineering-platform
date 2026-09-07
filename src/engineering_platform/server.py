@@ -1920,6 +1920,25 @@ def _central_provider_readiness(data_root: Path) -> dict[str, dict[str, object]]
     }
 
 
+def _audit_dashboard_provider_action(
+    data_root: Path, provider: str, action: str, outcome: str, *, level: int = logging.INFO,
+) -> None:
+    """Persist a secret-free audit fact for one host-wide Console action."""
+    log_event(
+        component_logger(
+            data_root, "operations_console", central_database=data_root / SERVER_DATABASE_FILENAME,
+        ),
+        level,
+        f"provider_action_{outcome.lower()}",
+        context={
+            "provider": provider,
+            "provider_action": action,
+            "provider_action_source": "DASHBOARD",
+            "audit_outcome": outcome,
+        },
+    )
+
+
 def _central_provider_repair(data_root: Path, payload: object) -> None:
     """Start one validated host-wide provider action without a checkout."""
     if not isinstance(payload, dict) or set(payload) != {"provider", "action"}:
@@ -1927,14 +1946,21 @@ def _central_provider_repair(data_root: Path, payload: object) -> None:
     provider, action = str(payload["provider"]), str(payload["action"])
     if provider not in {"CODEX", "GITHUB"} or action not in {"login", "install"}:
         raise ValueError("Invalid provider repair request.")
-    readiness = _central_provider_readiness(data_root)
-    state = str(readiness[provider.lower()]["state"])
-    if (action == "login" and state != "AUTH_REQUIRED") or (action == "install" and state != "UNAVAILABLE"):
-        raise ValueError("Provider is not ready for the requested repair.")
-    if action == "login":
-        _start_provider_login(data_root, provider)
-    else:
-        _install_provider(data_root, provider)
+    _audit_dashboard_provider_action(data_root, provider, action, "REQUESTED")
+    try:
+        readiness = _central_provider_readiness(data_root)
+        state = str(readiness[provider.lower()]["state"])
+        if (action == "login" and state != "AUTH_REQUIRED") or (action == "install" and state != "UNAVAILABLE"):
+            raise ValueError("Provider is not ready for the requested repair.")
+        if action == "login":
+            _start_provider_login(data_root, provider)
+            _audit_dashboard_provider_action(data_root, provider, action, "STARTED")
+        else:
+            _install_provider(data_root, provider)
+            _audit_dashboard_provider_action(data_root, provider, action, "COMPLETED")
+    except (OSError, RuntimeError, ValueError):
+        _audit_dashboard_provider_action(data_root, provider, action, "FAILED", level=logging.WARNING)
+        raise
 
 
 def _central_provider_logout(data_root: Path, payload: object) -> None:
@@ -1950,10 +1976,16 @@ def _central_provider_logout(data_root: Path, payload: object) -> None:
     provider = str(payload["provider"])
     if provider not in {"CODEX", "GITHUB"}:
         raise ValueError("Invalid provider logout request.")
-    readiness = _central_provider_readiness(data_root)
-    if str(readiness[provider.lower()]["state"]) != "READY":
-        raise ValueError("Provider is not ready for logout.")
-    _logout_provider(data_root, provider)
+    _audit_dashboard_provider_action(data_root, provider, "logout", "REQUESTED")
+    try:
+        readiness = _central_provider_readiness(data_root)
+        if str(readiness[provider.lower()]["state"]) != "READY":
+            raise ValueError("Provider is not ready for logout.")
+        _logout_provider(data_root, provider)
+        _audit_dashboard_provider_action(data_root, provider, "logout", "COMPLETED")
+    except (OSError, RuntimeError, ValueError):
+        _audit_dashboard_provider_action(data_root, provider, "logout", "FAILED", level=logging.WARNING)
+        raise
 
 
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
