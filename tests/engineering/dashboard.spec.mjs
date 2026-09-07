@@ -8198,6 +8198,32 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(action.evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↓"');
   });
 
+  test("keeps platform-data actions aligned and makes transfer controls work without a selected project", async ({ page }) => {
+    const noProjectUrl = new URL(dashboardUrl);
+    noProjectUrl.search = "";
+    await page.setViewportSize({ width: 500, height: 844 });
+    await page.goto(noProjectUrl.href, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+
+    const [exportAction, importAction] = [
+      page.locator('a[href="/api/central-data/export"]'),
+      page.locator("#centralDataImport"),
+    ];
+    const dimensions = await Promise.all([exportAction, importAction].map((action) => action.evaluate((element) => {
+      const { height, width } = element.getBoundingClientRect();
+      return { height, width };
+    })));
+    expect(dimensions[0]).toEqual(dimensions[1]);
+
+    await importAction.click();
+    await expect(page.locator("#centralDataImportModal")).toBeVisible();
+    await page.locator("[data-close-central-import]").click();
+    await expect(page.locator("#centralDataImportModal")).toBeHidden();
+
+    await page.locator("#centralDatabaseRelocate").click();
+    await expect(page.locator("#centralDatabaseRelocateModal")).toBeVisible();
+  });
+
   test("uses shared semantic classes for download, copy and destructive actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download"]) {
