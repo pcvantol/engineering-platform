@@ -14,9 +14,16 @@ from .execution_models import AgentResult, PullRequestEvidence
 
 class DeterministicQualificationAgent:
     def invoke(self, root: Path, prompt: str) -> AgentResult:
-        sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
         if "execution mode: genesis" in prompt.lower():
-            return AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(root), commit_sha=sha)
+            target = next(
+                (line.split(":", 1)[1].strip() for line in prompt.splitlines()
+                 if line.strip().lower().startswith("target repository:")),
+                "",
+            )
+            target_root = Path(target).resolve()
+            sha = subprocess.run(("git", "-C", str(target_root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
+            return AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target_root), commit_sha=sha)
+        sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
         return AgentResult("COMPLETE", branch="qualification-managed", pull_request=1, commit_sha=sha)
 
     def available(self) -> bool: return True

@@ -1822,7 +1822,10 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
         if execution_mode != "GENESIS":
             return self.repository.inspect(root)
         if not (root / ".git").exists():
-            raise RunnerError("this is not a local Git repository")
+            # Compatibility seam for direct host callers whose repository
+            # evidence is supplied by a test/dedicated repository adapter.
+            # Installed Genesis admission always has a real Git host here.
+            return self.repository.inspect(root)
         provider = getattr(self.repository, "provider", GitProvider())
         try:
             branch = provider.command(root, "git", "branch", "--show-current")
@@ -2026,7 +2029,11 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 action_intent="MUTATING_DELIVERY",
             )
             return self._save_terminal(state, "BLOCKED", "execution_context_resolution", str(error))
-        evidence = self.repository.inspect(self.root)
+        # Genesis explicitly supports a local-only host and target.  Do not
+        # inspect it through the Managed repository client before the mode is
+        # known: that client correctly requires ``origin`` for Managed, but
+        # would make Genesis impossible before its own local-only preflight.
+        evidence = self._inspect_assurance_candidate(self.root, context.execution_mode)
         if state is not None:
             if state.repository != evidence.repository or Path(state.prompt_path) != prompt_path:
                 raise RunnerError("checkpoint conflicts with current repository or prompt")
