@@ -9919,8 +9919,13 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueList")).not.toContainText("Later uitvoeren");
   });
 
-  test("renders CENTRAL FIFO items without offering a legacy file deferral", async ({ page }) => {
+  test("maps CENTRAL queue actions to their matching confirmation modal", async ({ page }) => {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+      status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] },
+      component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
+    } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await selectDashboardLocale(page, "nl");
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => queueItems([
       {
@@ -9931,10 +9936,40 @@ test.describe("Engineering Status browser smoke", () => {
         action_intent: "UNSPECIFIED",
         modified_at: "2026-08-02T10:01:00Z",
         queue_source: "CENTRAL",
+        queue_state: "DEFERRED",
       },
     ], 1));
     await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
-    await expect(page.locator("#queueList .queue-defer")).toHaveCount(0);
+    await page.locator("#queueItems").evaluate((element) => { element.open = true; });
+    const messages = DASHBOARD_MESSAGES[await page.locator("html").getAttribute("lang")];
+    expect(await page.locator("#queueList button").allTextContents()).toEqual([messages["queue.resume_action"]]);
+    const resume = page.getByRole("button", { name: messages["queue.resume_action"], exact: true });
+    await expect(resume).toHaveCount(1);
+    await expect(page.getByRole("button", { name: messages["queue.defer_action"], exact: true })).toHaveCount(0);
+    await resume.click();
+    await expect(page.locator("#confirmationModalTitle")).toHaveText(messages["queue.resume_title"]);
+    await expect(page.locator("#confirmationModalText")).toHaveText(
+      messages["queue.resume_description"].replace("{title}", "sub-central-fifo"),
+    );
+    await expect(page.locator("#confirmationModalConfirm")).toHaveText(messages["queue.resume_action"]);
+    await page.locator("#confirmationModalCancel").click();
+
+    await page.evaluate(() => queueItems([{
+      submission_id: "sub-central-fifo", filename: "sub-central-fifo",
+      title_kind: "producer_submission", producer_type: "CLI", action_intent: "UNSPECIFIED",
+      modified_at: "2026-08-02T10:01:00Z", queue_source: "CENTRAL", queue_state: "QUEUED",
+    }], 1));
+    for (const [actionKey, titleKey] of [
+      ["queue.defer_action", "queue.defer_title"],
+      ["queue.quarantine_action", "queue.quarantine_title"],
+      ["queue.decline_action", "queue.decline_title"],
+    ]) {
+      const action = messages[actionKey], title = messages[titleKey];
+      await page.getByRole("button", { name: action, exact: true }).click();
+      await expect(page.locator("#confirmationModalTitle")).toHaveText(title);
+      await expect(page.locator("#confirmationModalConfirm")).toHaveText(action);
+      await page.locator("#confirmationModalCancel").click();
+    }
   });
 
   test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {
