@@ -64,7 +64,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         relay = server._platform_component_detail(self.root, "dashboard_relay")
 
         self.assertEqual(details["installation"]["central_data_path"], str(self.root.resolve()))
-        self.assertEqual(details["installation"]["database_path"], str((self.root / "engineering.db").resolve()))
+        self.assertNotIn("database_path", details["installation"])
         self.assertIn("runtime_path", details["installation"])
         self.assertIn("launch_agent_path", details["installation"])
         self.assertEqual(database["installation"], {
