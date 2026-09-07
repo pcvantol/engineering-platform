@@ -348,6 +348,21 @@ test.describe("Engineering Status browser smoke", () => {
     ]) await expect(page.locator(selector)).toHaveCount(0);
   });
 
+  test("describes each Configuration subsection beneath its heading", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await expect(page.locator("#configurationServerSettings > .configuration-subsection-description"))
+      .toHaveText("Beheert de scan van File Inbox-ingang en de controle op open pull requests.");
+    await expect(page.locator(".configuration-readonly-settings > .configuration-subsection-description"))
+      .toHaveText("Vaste hostbeheerde instellingen voor leases, controles en retries. Deze waarden zijn alleen-lezen.");
+    await expect(page.locator("#configurationHostComponents > .configuration-subsection-description"))
+      .toHaveText("Bepaalt hoe vaak de Operations Console live componentinformatie vernieuwt.");
+    await expect(page.locator("#configurationProviderLoginStatus > .configuration-subsection-description"))
+      .toHaveText("Toont de lokale beschikbaarheid en inlogstatus van Codex en GitHub.");
+    await expect(page.locator("#configurationValidationEnvironmentStatus > .configuration-subsection-description"))
+      .toHaveText("Toont de Python-runtime die Engineering Platform en validatie gebruiken.");
+  });
+
   test("persists the bounded serverpush interval from Configuration", async ({ page }) => {
     const writes = [];
     await page.route("**/api/configuration", async (route) => {

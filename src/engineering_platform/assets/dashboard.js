@@ -5983,7 +5983,7 @@ function providerLoginStatusBlock() {
     block.setAttribute("aria-live", "polite");
     const title = document.createElement("h2");
     title.textContent = t("configuration.provider_login_status");
-    block.append(title);
+    block.append(title, configurationSubsectionDescription("configuration.provider_login_status_description"));
     for (const provider of ["CODEX", "GITHUB"]) {
       const row = document.createElement("div");
       row.className = "configuration-provider-status__row";
@@ -6031,7 +6031,7 @@ function validationEnvironmentBlock() {
   runtimeBlock.setAttribute("aria-live", "polite");
   runtimeBlock.append(Object.assign(document.createElement("h3"), {
     textContent: t("configuration.validation_environment"),
-  }));
+  }), configurationSubsectionDescription("configuration.validation_environment_description"));
   const runtime = document.createElement("div");
   runtime.className = "configuration-provider-status__row configuration-validation-environment__row";
   runtime.dataset.executionRuntime = "true";
@@ -6054,6 +6054,17 @@ function validationEnvironmentBlock() {
   );
   runtimeBlock.append(runtime, details);
   return runtimeBlock;
+}
+function configurationSubsectionDescription(key) {
+  return Object.assign(document.createElement("p"), {
+    className: "configuration-subsection-description", textContent: t(key),
+  });
+}
+function ensureConfigurationSubsectionDescription(selector, key) {
+  const section = document.querySelector(selector);
+  const title = section?.querySelector(":scope > h2");
+  if (!section || !title || section.querySelector(":scope > .configuration-subsection-description")) return;
+  title.after(configurationSubsectionDescription(key));
 }
 const PROVIDER_READINESS_KEYS = Object.freeze(["codex", "github"]);
 const CHECK_FAILED_PROVIDERS = Object.freeze({
@@ -6327,7 +6338,7 @@ function groupHostComponentConfiguration() {
     section.className = "configuration-host-components";
     const title = document.createElement("h2");
     title.dataset.i18n = "configuration.dashboard_settings";
-    section.append(title);
+    section.append(title, configurationSubsectionDescription("configuration.dashboard_settings_description"));
     configuration.insertBefore(section, controls);
   }
   section.querySelector("h2").textContent = t("configuration.dashboard_settings");
@@ -6338,6 +6349,8 @@ function groupHostComponentConfiguration() {
     section.append(hostControls);
   }
   hostControls.append(componentDetails, dashboardStatus, status);
+  ensureConfigurationSubsectionDescription("#configurationServerSettings", "configuration.server_settings_description");
+  ensureConfigurationSubsectionDescription(".configuration-readonly-settings", "configuration.readonly_platform_settings_description");
 }
 function ensureProviderReadinessConfigurationControl() {
   if ($("configurationProviderReadinessInterval")) return;
