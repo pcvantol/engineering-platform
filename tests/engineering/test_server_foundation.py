@@ -4,6 +4,7 @@ import json
 import inspect
 import io
 import os
+import plistlib
 import re
 import subprocess
 import sys
@@ -83,13 +84,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             LaunchdRuntimeDetails("com.engineeringplatform.server", True, True, 321, "(never exited)", 2048, 61),
         )
 
-        ep_server = server._platform_component_detail(self.root, "ep_server")
-        relay = server._platform_component_detail(self.root, "dashboard_relay")
-        worker = server._platform_component_detail(self.root, "lifecycle_worker")
+        with patch("engineering_platform.server._launch_agent_configuration", return_value={
+            "run_at_load": True, "keep_alive": True,
+        }):
+            ep_server = server._platform_component_detail(self.root, "ep_server")
+            relay = server._platform_component_detail(self.root, "dashboard_relay")
+            worker = server._platform_component_detail(self.root, "lifecycle_worker")
 
         self.assertEqual(ep_server["launchd"], {
             "label": "com.engineeringplatform.server", "loaded": True, "active": True,
-            "pid": 321, "last_exit_code": "(never exited)",
+            "pid": 321, "last_exit_code": "(never exited)", "run_at_load": True, "keep_alive": True,
         })
         self.assertEqual(relay["launchd"]["pid"], 654)
         self.assertEqual(relay["launchd"]["last_exit_code"], "1")
@@ -99,6 +103,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(relay["processes"], [{"pid": 654, "memory_kib": 1024}])
         self.assertEqual(worker["process_state"], "IN_PROCESS")
         self.assertEqual(worker["process_host"], {"component": "ep_server", "pid": 321})
+
+    def test_launchagent_configuration_projects_boolean_and_dictionary_policies(self) -> None:
+        plist_path = self.root / "agent.plist"
+        plist_path.parent.mkdir(parents=True)
+        plist_path.write_bytes(plistlib.dumps({"RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}}))
+
+        self.assertEqual(server._launch_agent_configuration(plist_path), {
+            "run_at_load": True,
+            "keep_alive": True,
+        })
 
     def test_register_topology_cli_reads_the_versioned_json_declaration(self) -> None:
         declaration_path = Path(self.temporary.name) / "repository.json"
