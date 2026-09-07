@@ -24,10 +24,11 @@ release branch before publication; after publication, create a new
 `release-X.Y.Z` branch with a new version rather than rerunning publication of
 the same distribution.
 
-The PyPI action uses only `PYPI_API_TOKEN` from the EP repository's GitHub
-Actions secret scope. The publication job deliberately has no OIDC token: this
-prevents the action from silently selecting a separately configured trusted
-publisher instead of the repository's approved release credential. A secret
-stored in another repository is intentionally not readable by this workflow;
-configure the authorized publishing credential in EP before creating the first
-release branch.
+The PyPI action uses PyPI Trusted Publishing. Its job receives only the
+ephemeral GitHub OIDC token and no long-lived PyPI API token. Configure the
+pending publisher before the first publication with project
+`engineering-platform`, owner `pcvantol`, repository
+`engineering-platform`, workflow file
+`ep-server-production-release.yml`, and no environment. PyPI binds the
+publisher to this repository and workflow; a release from another repository
+cannot use it.
