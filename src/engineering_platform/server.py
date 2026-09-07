@@ -1806,16 +1806,21 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
     """Return the Slice-B project status/history projection from CENTRAL only."""
     queue = _console_queue_projection(data_root, project_id)
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        # Dispatch is the canonical CENTRAL lifecycle record.  Older
+        # qualification stores can retain durable dispatch/receipt evidence
+        # after their optional execution-run projection was pruned or was
+        # unavailable during an interrupted migration.  Keep that truthful
+        # history visible rather than rendering an empty dashboard.
         runs = connection.execute(
-            """SELECT run_id,state,created_at,updated_at,execution_mode
-                FROM ep_execution_runs WHERE project_id=?
-                ORDER BY created_at DESC,run_id DESC LIMIT 1000""",
+            """SELECT d.run_id,d.state,d.claimed_at,d.updated_at,
+                      COALESCE(r.execution_mode,'MANAGED')
+                 FROM ep_parity_lifecycle_dispatches AS d
+                 LEFT JOIN ep_execution_runs AS r ON r.run_id=d.run_id
+                 WHERE d.project_id=?
+                 ORDER BY d.claimed_at DESC,d.run_id DESC LIMIT 1000""",
             (project_id,),
         ).fetchall()
-        dispatches = dict(connection.execute(
-            "SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=?",
-            (project_id,),
-        ).fetchall())
+        dispatches = dict((str(run_id), str(state)) for run_id, state, *_ in runs)
     records = [
         {
             "run_id": str(run_id), "status": str(dispatches.get(run_id, state)),
@@ -1882,14 +1887,15 @@ def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[st
     """Read bounded daily telemetry through CENTRAL's run/project lineage."""
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         rows = connection.execute(
-            """SELECT r.execution_date,COUNT(*),
-                      SUM(r.terminal_state='COMPLETE'),SUM(r.terminal_state='BLOCKED'),SUM(r.terminal_state='FAILED'),
+            """SELECT substr(d.claimed_at,1,10),COUNT(*),
+                      SUM(d.state='COMPLETE'),SUM(d.state='BLOCKED'),SUM(d.state='FAILED'),
                       AVG(r.execution_seconds),AVG(r.total_execution_seconds),AVG(r.queue_wait_seconds),
                       SUM(r.input_tokens),SUM(r.output_tokens),SUM(r.total_tokens)
-                 FROM execution_runs AS r
-                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
+                 FROM ep_parity_lifecycle_dispatches AS d
+                 LEFT JOIN execution_runs AS r ON r.run_id=d.run_id
                  WHERE d.project_id=?
-                 GROUP BY r.execution_date ORDER BY r.execution_date DESC LIMIT 360""",
+                 GROUP BY substr(d.claimed_at,1,10)
+                 ORDER BY substr(d.claimed_at,1,10) DESC LIMIT 360""",
             (project_id,),
         ).fetchall()
     keys = (
