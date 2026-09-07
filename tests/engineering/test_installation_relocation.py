@@ -28,12 +28,15 @@ class InstallationRelocationTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_platform_data_request_moves_every_durable_resource_as_one_unit(self) -> None:
+        prepared = installation_relocation.prepare(self.root, str(self.target))
+        destination = self.target / self.root.name
+        self.assertEqual(prepared["value"], str(destination.resolve()))
+        self.assertTrue((destination / ".engineering-platform-relocation-prepared").is_file())
         requested = installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
         self.assertTrue((self.root / "runtime/pending-platform-data-relocation.json").exists())
 
         applied = installation_relocation.apply_pending(self.root)
 
-        destination = self.target / self.root.name
         self.assertEqual(requested, {key: applied[key] for key in requested})
         self.assertEqual(applied["kind"], "PLATFORM_DATA")
         self.assertFalse(self.root.exists())
@@ -43,6 +46,20 @@ class InstallationRelocationTest(unittest.TestCase):
         with sqlite3.connect(destination / "engineering.db") as connection:
             self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "retained")
         self.assertFalse((destination / "runtime/pending-platform-data-relocation.json").exists())
+
+    def test_prepared_empty_destination_is_removed_when_relocation_is_cancelled(self) -> None:
+        destination = self.target / self.root.name
+        installation_relocation.prepare(self.root, str(self.target))
+        installation_relocation.discard_prepared(self.root, str(self.target))
+        self.assertFalse(destination.exists())
+
+    def test_prepared_destination_with_new_content_is_never_removed(self) -> None:
+        destination = self.target / self.root.name
+        installation_relocation.prepare(self.root, str(self.target))
+        (destination / "operator-note.txt").write_text("keep", encoding="utf-8")
+        with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_DESTINATION_NOT_EMPTY"):
+            installation_relocation.discard_prepared(self.root, str(self.target))
+        self.assertEqual((destination / "operator-note.txt").read_text(encoding="utf-8"), "keep")
 
     def test_request_rejects_existing_or_nested_destinations(self) -> None:
         (self.target / self.root.name).mkdir()
@@ -57,11 +74,13 @@ class InstallationRelocationTest(unittest.TestCase):
                 installation_relocation.request(self.root, kind, str(self.target))
 
     def test_platform_data_can_be_relocated_again_from_its_new_canonical_location(self) -> None:
+        installation_relocation.prepare(self.root, str(self.target))
         installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
         installation_relocation.apply_pending(self.root)
         first_destination = self.target / self.root.name
         second_parent = Path(self.temporary.name) / "selected-again"
         second_parent.mkdir()
+        installation_relocation.prepare(first_destination, str(second_parent))
         installation_relocation.request(first_destination, "PLATFORM_DATA", str(second_parent))
         installation_relocation.apply_pending(first_destination)
         destination = second_parent / self.root.name
@@ -69,6 +88,7 @@ class InstallationRelocationTest(unittest.TestCase):
         self.assertEqual((destination / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
 
     def test_only_one_platform_move_can_be_pending_and_payload_must_be_valid(self) -> None:
+        installation_relocation.prepare(self.root, str(self.target))
         installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
         with self.assertRaisesRegex(installation_relocation.RelocationError, "RELOCATION_ALREADY_PENDING"):
             installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
@@ -94,6 +114,7 @@ class InstallationRelocationTest(unittest.TestCase):
     def test_relocation_is_atomic_without_creating_a_compatibility_link(self) -> None:
         """A completed move has one canonical location and no old-path link."""
         destination = self.target / self.root.name
+        installation_relocation.prepare(self.root, str(self.target))
         installation_relocation.relocate_platform_data(self.root, str(self.target))
         self.assertFalse(self.root.exists())
         self.assertFalse(self.root.is_symlink())

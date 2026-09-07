@@ -726,4 +726,8 @@ durable parts of the same state and a partial move is unsafe.
   one restart-bound operation. Its filled text action uses the `↗` glyph and
   follows the location responsively. The selected directory becomes the only
   canonical location: no symlink or compatibility directory remains at the
-  old location. An installed EP LaunchAgent is rewritten to the new root.
+  old location. The chooser immediately displays the exact future root (for
+  example `…/central`), creates that empty directory and verifies it is
+  writable. Closing the modal without relocating removes only that prepared,
+  still-empty directory. An installed EP LaunchAgent is rewritten to the new
+  root.

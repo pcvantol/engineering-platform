@@ -599,9 +599,20 @@ class InstallationBoundaryTests(unittest.TestCase):
     def test_central_data_transfer_routes_require_confirmation_and_quiesce_writers(self) -> None:
         """The Console exposes one guarded, whole-state transfer boundary."""
         browse, browse_responses = self._in_process_console_handler("/api/central-data/relocate/browse")
-        with patch("engineering_platform.server._choose_local_directory", return_value="/Volumes/archive"):
+        with patch("engineering_platform.server._choose_local_directory", return_value="/Volumes/archive"), patch(
+            "engineering_platform.server.installation_relocation.prepare", return_value={"directory": "/Volumes/archive", "value": "/Volumes/archive/data"}
+        ) as prepared:
             self.assertTrue(browse._central_database_configuration("do_POST"))
-        self.assertEqual(browse_responses[-1], (200, {"value": "/Volumes/archive"}))
+        prepared.assert_called_once_with(self.root, "/Volumes/archive")
+        self.assertEqual(browse_responses[-1], (200, {"directory": "/Volumes/archive", "value": "/Volumes/archive/data"}))
+
+        discard, discard_responses = self._in_process_console_handler(
+            "/api/central-data/relocate/discard", body=b'{"directory":"/Volumes/archive"}', headers={"Content-Length": "32"}
+        )
+        with patch("engineering_platform.server.installation_relocation.discard_prepared") as discarded:
+            self.assertTrue(discard._central_database_configuration("do_POST"))
+        discarded.assert_called_once_with(self.root, "/Volumes/archive")
+        self.assertEqual(discard_responses[-1], (204, {}))
 
         blocked, blocked_responses = self._in_process_console_handler(
             "/api/central-data/relocate", body=b"{}", headers={"Content-Length": "2"}

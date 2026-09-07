@@ -8224,6 +8224,21 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#centralDatabaseRelocateModal")).toBeVisible();
   });
 
+  test("prepares the visible central destination and discards it on relocation cancel", async ({ page }) => {
+    await page.route("**/api/central-data/relocate/browse", async (route) => {
+      await route.fulfill({ json: { directory: "/Volumes/Archive", value: "/Volumes/Archive/central" } });
+    });
+    const discarded = page.waitForRequest((request) => request.url().endsWith("/api/central-data/relocate/discard"));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDatabaseRelocate").click();
+    await page.locator("#centralDatabaseRelocateBrowse").click();
+    await expect(page.locator("#centralDatabaseRelocateDestinationValue")).toHaveText("/Volumes/Archive/central");
+    await page.locator("[data-close-relocation]").first().click();
+    const request = await discarded;
+    expect(JSON.parse(request.postData() || "{}")).toEqual({ directory: "/Volumes/Archive" });
+  });
+
   test("keeps platform-data location links free of selected borders", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#configuration").evaluate((element) => { element.open = true; });

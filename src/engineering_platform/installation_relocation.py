@@ -17,6 +17,7 @@ class RelocationError(ValueError):
 
 
 _PENDING = "runtime/pending-platform-data-relocation.json"
+_PREPARED = ".engineering-platform-relocation-prepared"
 
 
 def _directory(value: object) -> Path:
@@ -51,6 +52,46 @@ def _destination(root: Path, directory: object) -> Path:
     return target
 
 
+def _prepared_marker(destination: Path) -> Path:
+    return destination / _PREPARED
+
+
+def prepare(data_root: Path, directory: object) -> dict[str, str]:
+    """Create and prove write access to the exact future data-root folder."""
+    root = Path(data_root).expanduser().resolve()
+    if not (root / "engineering.db").is_file():
+        raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
+    destination = _destination(root, directory)
+    if destination.exists():
+        raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
+    destination.mkdir(mode=0o700)
+    marker = _prepared_marker(destination)
+    try:
+        marker.write_text("prepared", encoding="utf-8")
+        if marker.read_text(encoding="utf-8") != "prepared":
+            raise OSError("PLATFORM_DATA_DESTINATION_NOT_WRITABLE")
+    except Exception:
+        marker.unlink(missing_ok=True)
+        destination.rmdir()
+        raise
+    return {"previous": str(root), "directory": str(_directory(directory)), "value": str(destination)}
+
+
+def discard_prepared(data_root: Path, directory: object) -> None:
+    """Remove only the empty destination directory created by ``prepare``."""
+    destination = _destination(Path(data_root).expanduser().resolve(), directory)
+    marker = _prepared_marker(destination)
+    if not marker.is_file() or marker.read_text(encoding="utf-8") != "prepared":
+        return
+    marker.unlink()
+    try:
+        destination.rmdir()
+    except OSError:
+        # Never delete a directory that gained user content after preparation.
+        marker.write_text("prepared", encoding="utf-8")
+        raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_EMPTY")
+
+
 def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
     """Persist one whole-platform move for the next clean Server startup."""
     if kind != "PLATFORM_DATA":
@@ -59,8 +100,10 @@ def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
     if not (root / "engineering.db").is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     destination = _destination(root, directory)
-    if destination.exists() and destination.resolve() != root:
+    if destination.exists() and not _prepared_marker(destination).is_file() and destination.resolve() != root:
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
+    if not _prepared_marker(destination).is_file():
+        raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_PREPARED")
     pending = _pending_path(root)
     if pending.exists():
         raise RelocationError("RELOCATION_ALREADY_PENDING")
@@ -81,8 +124,18 @@ def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]
         raise RelocationError("PLATFORM_DATA_DESTINATION_INVALID")
     if not root.is_dir() or not (root / "engineering.db").is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
-    if destination.exists():
+    if destination.exists() and not _prepared_marker(destination).is_file():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
+    if destination.exists():
+        marker = _prepared_marker(destination)
+        if marker.read_text(encoding="utf-8") != "prepared":
+            raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
+        marker.unlink()
+        try:
+            destination.rmdir()
+        except OSError as error:
+            marker.write_text("prepared", encoding="utf-8")
+            raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_EMPTY") from error
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.replace(root, destination)
     return {"previous": str(root), "value": str(destination.resolve())}
