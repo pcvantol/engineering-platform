@@ -17,7 +17,7 @@ class ProjectTopologyTests(unittest.TestCase):
     def test_server_local_topology_registers_without_an_agent_attachment(self) -> None:
         declaration = json.loads(FIXTURE.read_text())
         with tempfile.TemporaryDirectory() as temporary:
-            database = Path(temporary) / "engineering.db"
+            database = Path(temporary) / server.SERVER_DATABASE_FILENAME
             server.initialize(Path(temporary))
             with sqlite3.connect(database) as connection:
                 result = project_topology.register_server_local_topology(connection, declaration=declaration)
@@ -30,7 +30,7 @@ class ProjectTopologyTests(unittest.TestCase):
         declaration = json.loads(FIXTURE.read_text())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); server.initialize(root)
-            with sqlite3.connect(root / "engineering.db") as connection:
+            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "MALFORMED"):
                     project_topology.register_server_local_topology(connection, declaration={"project": {}})
                 project_topology.register_server_local_topology(connection, declaration=declaration)
@@ -48,7 +48,7 @@ class ProjectTopologyTests(unittest.TestCase):
         declaration = json.loads(FIXTURE.read_text())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); server.initialize(root)
-            with sqlite3.connect(root / "engineering.db") as connection:
+            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "INVALID_ATTACHMENT_AVAILABILITY"):
                     project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="UNAVAILABLE")
                 registered = project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
@@ -61,12 +61,12 @@ class ProjectTopologyTests(unittest.TestCase):
         declaration = json.loads(FIXTURE.read_text())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); server.initialize(root)
-            with sqlite3.connect(root / "engineering.db") as connection:
+            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
                 project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
                 connection.execute("UPDATE ep_repository_registrations SET authority_repository_id='other-authority'")
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "REPOSITORY_IDENTITY_CONFLICT"):
                     project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
-            with sqlite3.connect(root / "engineering.db") as connection:
+            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
                 connection.execute("DELETE FROM ep_repository_registrations")
                 connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("acme-data", "different-project", "acme-data", "authority", "{}", "now", "now"))
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "REPOSITORY_IDENTITY_CONFLICT"):

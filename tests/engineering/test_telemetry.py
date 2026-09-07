@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
+from engineering_platform import server
 from engineering_platform.telemetry import (
     ExecutionTelemetry,
     clear_telemetry,
@@ -39,7 +40,7 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
             data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
             server.initialize(data)
             previous = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
-            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / "engineering.db")
+            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / server.SERVER_DATABASE_FILENAME)
             now = datetime.now(timezone.utc)
             try:
                 persist_execution(checkout, ExecutionTelemetry(
@@ -50,7 +51,7 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 if previous is None: os.environ.pop("EP_CENTRAL_OPERATIONAL_DATABASE", None)
                 else: os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = previous
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
-            with sqlite3.connect(data / "engineering.db") as connection:
+            with sqlite3.connect(data / server.SERVER_DATABASE_FILENAME) as connection:
                 self.assertIsNotNone(connection.execute(
                     "SELECT 1 FROM execution_runs WHERE run_id='inbox-central-telemetry'"
                 ).fetchone())

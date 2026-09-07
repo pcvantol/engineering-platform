@@ -16,6 +16,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
+from . import central_database
+
 
 MAX_PROMPT_BYTES = 65536
 MAX_FIELD_LENGTH = 128
@@ -404,7 +406,7 @@ def write_terminal_evidence(
     from .agent_state import StateError, TransactionState
     from .storage import record_artifact
 
-    database = data_root / "engineering.db"
+    database = central_database.path(data_root)
     with sqlite3.connect(database) as connection:
         row = connection.execute(
             """SELECT d.submission_id,d.project_id,d.repository_id,d.state,

@@ -82,6 +82,16 @@ def host_status(root: Path, *, require_github: bool = True) -> dict[str, dict[st
         codex_result = codex.command("login", "status") if codex_installed else None
     except OSError:
         codex_result = None
+    # A server can be queried immediately after launchd restarts it (notably
+    # after a platform-data import).  The managed CLI may transiently fail
+    # while its local session transport is being reattached.  One immediate,
+    # token-free retry prevents that short restart window from being presented
+    # as a provider fault, while still failing closed if it persists.
+    if codex_installed and _classify(codex_result) == "CHECK_FAILED":
+        try:
+            codex_result = codex.command("login", "status")
+        except OSError:
+            codex_result = None
     result = {
         "codex": {"provider": "CODEX", "state": "UNAVAILABLE" if not codex_installed else _classify(codex_result)},
     }

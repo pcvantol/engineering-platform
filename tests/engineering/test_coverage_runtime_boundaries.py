@@ -599,9 +599,20 @@ class InstallationBoundaryTests(unittest.TestCase):
     def test_central_data_transfer_routes_require_confirmation_and_quiesce_writers(self) -> None:
         """The Console exposes one guarded, whole-state transfer boundary."""
         browse, browse_responses = self._in_process_console_handler("/api/central-data/relocate/browse")
-        with patch("engineering_platform.server._choose_local_directory", return_value="/Volumes/archive"):
+        with patch("engineering_platform.server._choose_local_directory", return_value="/Volumes/archive"), patch(
+            "engineering_platform.server.installation_relocation.prepare", return_value={"directory": "/Volumes/archive", "value": "/Volumes/archive/data"}
+        ) as prepared:
             self.assertTrue(browse._central_database_configuration("do_POST"))
-        self.assertEqual(browse_responses[-1], (200, {"value": "/Volumes/archive"}))
+        prepared.assert_called_once_with(self.root, "/Volumes/archive")
+        self.assertEqual(browse_responses[-1], (200, {"directory": "/Volumes/archive", "value": "/Volumes/archive/data"}))
+
+        discard, discard_responses = self._in_process_console_handler(
+            "/api/central-data/relocate/discard", body=b'{"directory":"/Volumes/archive"}', headers={"Content-Length": "32"}
+        )
+        with patch("engineering_platform.server.installation_relocation.discard_prepared") as discarded:
+            self.assertTrue(discard._central_database_configuration("do_POST"))
+        discarded.assert_called_once_with(self.root, "/Volumes/archive")
+        self.assertEqual(discard_responses[-1], (204, {}))
 
         blocked, blocked_responses = self._in_process_console_handler(
             "/api/central-data/relocate", body=b"{}", headers={"Content-Length": "2"}
@@ -618,6 +629,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertTrue(relocation._central_database_configuration("do_POST"))
         requested.assert_called_once_with(self.root, "PLATFORM_DATA", "/Volumes/archive")
         self.assertEqual(relocation_responses[-1], (202, {"value": "/Volumes/archive/data", "restarting": True}))
+        self.assertTrue(relocation.server.restart_after_shutdown)
 
         imported, import_responses = self._in_process_console_handler(
             "/api/central-data/import", body=b"zip", headers={"Content-Length": "3", "X-EP-Central-Import-Confirmed": "true"}
@@ -628,6 +640,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertTrue(imported._central_database_configuration("do_POST"))
         staged.assert_called_once()
         self.assertEqual(import_responses[-1], (202, {"entries": 2, "restarting": True}))
+        self.assertTrue(imported.server.restart_after_shutdown)
 
         denied, denied_responses = self._in_process_console_handler("/api/central-data/import")
         self.assertTrue(denied._central_database_configuration("do_POST"))
@@ -641,10 +654,11 @@ class InstallationBoundaryTests(unittest.TestCase):
         exported.server.lifecycle_worker = Mock()
         headers: list[tuple[str, str]] = []
         exported.send_header = lambda name, value: headers.append((name, value))
-        with patch("engineering_platform.server.central_data_transfer.export_snapshot", return_value=("central.zip", b"zip")):
+        with patch("engineering_platform.server.central_data_transfer.export_snapshot", return_value=("central.epdata", b"zip")):
             self.assertTrue(exported._central_database_configuration("do_GET"))
         self.assertEqual(exported.wfile.getvalue(), b"zip")
-        self.assertIn(("Content-Type", "application/zip"), headers)
+        self.assertIn(("Content-Type", "application/vnd.engineering-platform.epdata+zip"), headers)
+        self.assertIn(("Content-Disposition", 'attachment; filename="central.epdata"'), headers)
         self.assertFalse(exported.server.central_data_transfer_active)
         for service in (exported.server.dependabot_service, exported.server.inbox_service, exported.server.lifecycle_worker):
             service.stop.assert_called_once()

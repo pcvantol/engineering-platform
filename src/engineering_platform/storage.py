@@ -21,6 +21,7 @@ import sys
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
+CENTRAL_OPERATIONAL_DATABASE_FILENAME = "epdata.sqlite"
 ENGINEERING_STORAGE_SCHEMA_VERSION = 41
 STORE_AUTHORITY_POINTER = "store-authority.json"
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
@@ -2158,7 +2159,7 @@ def database_path(root: Path) -> Path:
     central = os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT)
     if central:
         path = Path(central).expanduser().resolve()
-        if path.name != DATABASE_FILENAME or not path.is_file():
+        if path.name != CENTRAL_OPERATIONAL_DATABASE_FILENAME or not path.is_file():
             raise EngineeringStorageError("CENTRAL operational database is unavailable.")
         return path
     legacy = root.resolve() / WORKSPACE_DIRECTORY / DATABASE_FILENAME

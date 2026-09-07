@@ -16,6 +16,7 @@ from engineering_platform.prompt_history import (
     report_for_prompt_history,
 )
 from engineering_platform.storage import open_storage, record_admission_decision, record_submission
+from engineering_platform import server
 from engineering_platform.execution_timing import record_phase
 from engineering_platform.telemetry import ExecutionTelemetry, persist_execution
 from engineering_platform import server
@@ -29,7 +30,7 @@ class PromptHistoryTest(unittest.TestCase):
             report = data / "artifacts" / "reports" / "central.md"; report.parent.mkdir(parents=True)
             report.write_text("# Engineering Report\n\n- Run ID: `inbox-central`\n- Terminal state: `COMPLETE`\n", encoding="utf-8")
             previous = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
-            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / "engineering.db")
+            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / server.SERVER_DATABASE_FILENAME)
             try:
                 record_terminal_report(checkout, report)
                 self.assertEqual(report_path_for_prompt_history(checkout, "inbox-central"), report.resolve())

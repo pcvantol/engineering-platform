@@ -69,6 +69,32 @@ class ServerServiceTests(unittest.TestCase):
         self.assertFalse(paths.plist_path.exists())
         self.assertEqual(calls, [["launchctl", "bootout", f"gui/{server_service.os.getuid()}", str(paths.plist_path)]])
 
+    def test_relocation_rewrites_and_reloads_an_installed_agent(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        paths.launch_agents_dir.mkdir(parents=True)
+        paths.plist_path.write_text("owned", encoding="utf-8")
+        destination = Path(self.temporary.name) / "relocated"
+        destination.mkdir()
+        (destination / "server.json").write_text("{}", encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            self.assertTrue(server_service.repoint_after_relocation(self.root, destination, home=self.home, runner=runner))
+        with paths.plist_path.open("rb") as stream:
+            payload = __import__("plistlib").load(stream)
+        self.assertEqual(payload["ProgramArguments"][-1], str(destination.resolve()))
+        self.assertEqual(calls, [
+            ["launchctl", "bootout", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+            ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+        ])
+
+    def test_relocation_does_nothing_when_service_is_not_installed(self) -> None:
+        self.assertFalse(server_service.repoint_after_relocation(self.root, self.root, home=self.home))
+
     def test_launchagent_failures_and_non_macos_fail_closed(self) -> None:
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
             def failed(arguments: list[str]) -> subprocess.CompletedProcess[str]:

@@ -16,7 +16,7 @@ from typing import Any
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import external_producer_binding
+from . import central_database, external_producer_binding
 from . import submission_service
 from .providers import GitHubProvider
 
@@ -288,7 +288,7 @@ class DependabotService:
 
     def tick(self) -> int:
         """Discover all active bindings without retaining a local cursor/store."""
-        database = self.data_root / "engineering.db"
+        database = central_database.path(self.data_root)
         with sqlite3.connect(database) as connection:
             identities = external_producer_binding.active_external_identities(
                 connection,
