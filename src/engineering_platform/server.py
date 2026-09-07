@@ -2242,7 +2242,7 @@ def _central_database_section(data_root: Path) -> str:
         '<header class="configuration-central-database__header">'
         '<div><h2 id="centralDatabaseHeading" data-i18n="configuration.ep_database">EP-database</h2>'
         '<p data-i18n="configuration.ep_database_description">Platformbrede opslag voor projecten, uitvoeringen en configuratie.</p></div>'
-        '<div class="configuration-central-database__actions"><a class="dashboard-action dashboard-action--download" href="/api/central-data/export" download '
+        '<div class="configuration-central-database__actions"><a class="configuration-central-database__export" href="/api/central-data/export" download '
         'data-i18n="configuration.central_data_export" data-i18n-aria-label="configuration.central_data_export" '
         'aria-label="Exporteer platformgegevens">Exporteer platformgegevens</a><button class="configuration-central-database__relocate" id="centralDataImport" type="button" data-i18n="configuration.central_data_import">Importeer platformgegevens</button></div></header>'
         '<dl class="configuration-central-database__facts">'
