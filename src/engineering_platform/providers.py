@@ -73,7 +73,9 @@ def installed_python_environment() -> dict[str, str]:
     repository asks for the conventional ``python -m ...`` command; otherwise
     it can accidentally resolve a different system Python.
     """
-    executable = Path(sys.executable).resolve()
+    # Keep the venv launcher path intact.  Resolving it selects the framework
+    # base interpreter and lets a child validation command escape the EP venv.
+    executable = Path(sys.executable).expanduser().absolute()
     environment = dict(os.environ)
     environment["PATH"] = str(executable.parent) + os.pathsep + environment.get("PATH", "")
     virtual_environment = executable.parent.parent
