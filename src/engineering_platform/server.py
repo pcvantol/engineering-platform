@@ -15,6 +15,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import plistlib
 import re
 import select
 import shlex
@@ -1289,6 +1290,24 @@ def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
     }
 
 
+def _launch_agent_configuration(plist_path: Path) -> dict[str, object]:
+    """Project the safe start policy from one EP-owned LaunchAgent plist."""
+    try:
+        payload = plistlib.loads(plist_path.read_bytes())
+    except (OSError, plistlib.InvalidFileException):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    configuration: dict[str, object] = {}
+    run_at_load = payload.get("RunAtLoad")
+    if isinstance(run_at_load, bool):
+        configuration["run_at_load"] = run_at_load
+    keep_alive = payload.get("KeepAlive")
+    if isinstance(keep_alive, (bool, dict)):
+        configuration["keep_alive"] = bool(keep_alive)
+    return configuration
+
+
 def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, object] | None:
     """Expose one secret-free detail view from the same platform projection."""
     component = status(data_root)["components"].get(component_id)  # type: ignore[index]
@@ -1336,6 +1355,10 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
             "active": observed.active,
             "pid": observed.pid,
             "last_exit_code": observed.last_exit_code,
+            **(
+                _launch_agent_configuration(Path(installation["launch_agent_path"]))
+                if isinstance(installation.get("launch_agent_path"), str) else {}
+            ),
         }
         detail["process_state"] = "OWNED_PROCESS"
         detail["processes"] = ([{
