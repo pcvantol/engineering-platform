@@ -440,6 +440,66 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             server._central_provider_logout(self.root, {"provider": "INVALID"})
 
+    @patch("engineering_platform.server.log_event")
+    @patch("engineering_platform.server.component_logger")
+    @patch("engineering_platform.server._start_provider_login")
+    @patch("engineering_platform.server._central_provider_readiness")
+    def test_dashboard_provider_actions_write_secret_free_central_audit_events(
+        self, readiness: object, start_login: object, logger: object, logged: object,
+    ) -> None:
+        readiness.return_value = {
+            "codex": {"state": "AUTH_REQUIRED"},
+            "github": {"state": "READY"},
+        }
+
+        server._central_provider_repair(self.root, {"provider": "CODEX", "action": "login"})
+
+        self.assertEqual([call.args[2] for call in logged.call_args_list], [
+            "provider_action_requested", "provider_action_started",
+        ])
+        for call in logged.call_args_list:
+            self.assertEqual(call.kwargs["context"], {
+                "provider": "CODEX", "provider_action": "login",
+                "provider_action_source": "DASHBOARD",
+                "audit_outcome": "REQUESTED" if call.args[2].endswith("requested") else "STARTED",
+            })
+        start_login.assert_called_once_with(self.root, "CODEX")
+        self.assertEqual(logger.call_count, 2)
+
+    @patch("engineering_platform.server.log_event")
+    @patch("engineering_platform.server._central_provider_readiness")
+    def test_failed_dashboard_provider_action_is_audited_without_diagnostic_output(
+        self, readiness: object, logged: object,
+    ) -> None:
+        readiness.return_value = {"codex": {"state": "READY"}, "github": {"state": "READY"}}
+
+        with self.assertRaisesRegex(ValueError, "not ready"):
+            server._central_provider_repair(self.root, {"provider": "CODEX", "action": "login"})
+
+        self.assertEqual([call.args[2] for call in logged.call_args_list], [
+            "provider_action_requested", "provider_action_failed",
+        ])
+        self.assertEqual(logged.call_args_list[-1].kwargs["context"]["audit_outcome"], "FAILED")
+        self.assertNotIn("diagnostic", logged.call_args_list[-1].kwargs)
+
+    def test_dashboard_provider_audit_is_persisted_in_the_central_console_log(self) -> None:
+        server.initialize(self.root)
+
+        server._audit_dashboard_provider_action(self.root, "CODEX", "install", "COMPLETED")
+
+        with sqlite3.connect(self.root / "engineering.db") as connection:
+            row = connection.execute(
+                "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
+            ).fetchone()
+        self.assertIsNotNone(row)
+        entry = json.loads(row[0])
+        self.assertEqual(entry["event"], "provider_action_completed")
+        self.assertEqual(entry["provider"], "CODEX")
+        self.assertEqual(entry["provider_action"], "install")
+        self.assertEqual(entry["provider_action_source"], "DASHBOARD")
+        self.assertEqual(entry["audit_outcome"], "COMPLETED")
+        self.assertNotIn("diagnostic", entry)
+
     @patch("engineering_platform.server.provider_readiness.runtime_details")
     @patch("engineering_platform.server.provider_readiness.host_status")
     def test_central_provider_readiness_uses_host_authentication_not_repository_access(
