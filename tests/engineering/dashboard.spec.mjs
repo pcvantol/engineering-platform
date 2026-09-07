@@ -519,6 +519,30 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#executionRuntimeBanner")).toBeHidden();
   });
 
+  test("uses one color hierarchy throughout Configuration", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    const colors = await page.evaluate(() => {
+      const values = (selector) => [...document.querySelectorAll(selector)]
+        .map((element) => getComputedStyle(element).color);
+      return {
+        headings: values("#configurationServerSettings h2, .configuration-central-database__header h2, #configurationHostComponents h2, .configuration-readonly-settings h2, .configuration-timeout-policy h2, #configurationProviderLoginStatus h2, #configurationValidationEnvironmentStatus h3"),
+        labels: [
+          ["server", values("#configurationServerSettings label > span:first-child")],
+          ["database", values(".configuration-central-database__facts dt")],
+          ["maintenance", values(".configuration-central-database__maintenance .label")],
+          ["timeout", values(".configuration-timeout-policy .field .label")],
+        ],
+      };
+    });
+    expect(colors.headings.length).toBeGreaterThan(1);
+    const labelColors = colors.labels.flatMap(([, values]) => values);
+    expect(labelColors.length).toBeGreaterThan(1);
+    expect(new Set(colors.headings)).toEqual(new Set(["rgb(240, 182, 106)"]));
+    expect(new Set(labelColors)).toEqual(new Set(["rgb(243, 211, 106)"]));
+  });
+
   test("uses the compact destructive action contract for provider sign-out", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
