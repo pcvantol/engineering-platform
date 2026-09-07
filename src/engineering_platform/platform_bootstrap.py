@@ -366,9 +366,10 @@ def _provision_workspace_paths(root: Path, workspace: Path) -> dict[str, Path]:
         exclude = git_directory / "info" / "exclude"
         try:
             existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
-            if ".engineering/" not in existing.splitlines():
+            if ".engineering" not in existing.splitlines():
                 exclude.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                exclude.write_text(existing.rstrip("\n") + "\n.engineering/\n", encoding="utf-8")
+                prefix = existing.rstrip("\n")
+                exclude.write_text((prefix + "\n" if prefix else "") + ".engineering\n", encoding="utf-8")
         except OSError:
             pass
     return paths

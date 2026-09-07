@@ -33,6 +33,7 @@ from engineering_platform.platform_bootstrap import (
     _link_workspace,
     _merge_databases,
     _merge_workspace,
+    _provision_workspace_paths,
     _worktree_roots,
     _merge_legacy_workspace,
     _validate_legacy_merge,
@@ -60,6 +61,28 @@ def _version_projection_files() -> tuple[str, ...]:
 
 
 class PlatformProductizationTest(unittest.TestCase):
+    def test_runtime_workspace_symlink_is_excluded_from_git_untracked_evidence(self) -> None:
+        """The platform-owned workspace link must not fail a clean-candidate gate."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            root.mkdir()
+            (root / ".git" / "info").mkdir(parents=True)
+            config = root / "src" / "engineering_platform"
+            config.mkdir(parents=True)
+            (config / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
+                (ROOT / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            workspace = root / ".git" / "engineering-platform"
+            workspace.mkdir()
+            (root / ".engineering").symlink_to(workspace, target_is_directory=True)
+
+            _provision_workspace_paths(root, workspace)
+
+            self.assertEqual(
+                (root / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines(),
+                [".engineering"],
+            )
     def test_release_version_is_consistent_across_every_canonical_component(self) -> None:
         """A release cannot publish a mixed Server, Console, Runner, or package version."""
         manifest = json.loads((ROOT / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json").read_text(encoding="utf-8"))
