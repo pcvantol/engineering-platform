@@ -3190,7 +3190,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.declaration is None:
                 raise ServerConfigurationError("--declaration is required for explicit topology registration.")
             initialize(args.data_root)
-            declaration = args.declaration.read_text(encoding="utf-8")
+            try:
+                declaration = json.loads(args.declaration.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ServerConfigurationError("REPOSITORY_DECLARATION_UNREADABLE") from error
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = project_topology.register_server_local_topology(connection, declaration=declaration)
         elif args.command == "bootstrap-topology":
