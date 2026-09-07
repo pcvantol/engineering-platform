@@ -53,7 +53,9 @@ def create_repository(path: Path, *, origin: Path | None = None) -> None:
 
 
 def wait_terminal(server: Path, data_root: Path, submission_id: str) -> tuple[str, str]:
-    deadline = time.monotonic() + 45
+    # Managed deliberately yields between the implementation merge and the
+    # finalization/reconciliation polls; leave room for those bounded resumes.
+    deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         diagnosis = command(server, "submission-diagnose", "--data-root", str(data_root), "--submission-id", submission_id)
         state, run_id = diagnosis.get("dispatch_state"), diagnosis.get("run_id")
