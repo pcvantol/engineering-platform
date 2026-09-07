@@ -78,11 +78,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     @patch("engineering_platform.server.LaunchdProvider")
     def test_service_components_expose_their_launchagent_as_host_detail(self, launchd: object) -> None:
         server.initialize(self.root)
-        launchd.return_value.runtime_details.side_effect = (
-            LaunchdRuntimeDetails("com.engineeringplatform.server", True, True, 321, "(never exited)", 2048, 61),
-            LaunchdRuntimeDetails("com.engineeringplatform.dashboard-relay", True, True, 654, "1", 1024, 30),
-            LaunchdRuntimeDetails("com.engineeringplatform.server", True, True, 321, "(never exited)", 2048, 61),
-        )
+        def runtime_details(label: str) -> LaunchdRuntimeDetails:
+            return {
+                "com.engineeringplatform.server": LaunchdRuntimeDetails(
+                    "com.engineeringplatform.server", True, True, 321, "(never exited)", 2048, 61,
+                ),
+                "com.engineeringplatform.dashboard-relay": LaunchdRuntimeDetails(
+                    "com.engineeringplatform.dashboard-relay", True, True, 654, "1", 1024, 30,
+                ),
+            }[label]
+        launchd.return_value.runtime_details.side_effect = runtime_details
 
         with patch("engineering_platform.server._launch_agent_configuration", return_value={
             "run_at_load": True, "keep_alive": True,
@@ -102,7 +107,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(ep_server["uptime_seconds"], 61)
         self.assertEqual(relay["processes"], [{"pid": 654, "memory_kib": 1024}])
         self.assertEqual(worker["process_state"], "IN_PROCESS")
-        self.assertEqual(worker["process_host"], {"component": "ep_server", "pid": 321})
+        self.assertEqual(worker["process_host"], {
+            "component": "ep_server", "pid": 321, "uptime_seconds": 61,
+        })
 
     def test_launchagent_configuration_projects_boolean_and_dictionary_policies(self) -> None:
         plist_path = self.root / "agent.plist"
@@ -559,10 +566,14 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             launchd.return_value.runtime_status.return_value = ProviderStatus(
                 "launchd", "configured", True, "LaunchAgent process is active"
             )
+            launchd.return_value.runtime_details.return_value = LaunchdRuntimeDetails(
+                "com.engineeringplatform.dashboard-relay", True, True, 654, None, 1024, 30,
+            )
             component = server.status(self.root)["components"]["dashboard_relay"]
         self.assertTrue(component["healthy"])
         self.assertEqual(component["status_code"], "DASHBOARD_RELAY_ACTIVE")
         self.assertEqual(component["lifecycle_state"], "RUNNING")
+        self.assertEqual(component["uptime_seconds"], 30)
 
         with patch("engineering_platform.server._runtime", return_value={"pid": 73}), patch(
             "engineering_platform.server._alive", return_value=True

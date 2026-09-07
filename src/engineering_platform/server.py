@@ -1273,11 +1273,14 @@ def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
     definition = PLATFORM_COMPONENT_BY_ID["dashboard_relay"]
     label = definition.lifecycle_label
     try:
-        runtime = LaunchdProvider().runtime_status(label) if label else None
+        lifecycle = LaunchdProvider()
+        runtime = lifecycle.runtime_status(label) if label else None
+        observed = lifecycle.runtime_details(label) if label else None
+        observed = observed if isinstance(observed, LaunchdRuntimeDetails) else None
         relay_running = bool(runtime and runtime.qualified)
         detail = runtime.detail if runtime is not None else "lifecycle owner unavailable"
     except OSError:
-        relay_running, detail = False, "lifecycle owner unavailable"
+        observed, relay_running, detail = None, False, "lifecycle owner unavailable"
     healthy = server_running and relay_running
     return {
         "healthy": healthy,
@@ -1285,7 +1288,9 @@ def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
         "detail_code": definition.detail_code,
         "lifecycle_label": label,
         "lifecycle_state": "RUNNING" if relay_running else "STOPPED",
-        "uptime_seconds": 0,
+        # A Relay has its own LaunchAgent process.  Never substitute a
+        # placeholder (notably zero) for the observed process lifetime.
+        "uptime_seconds": observed.uptime_seconds if observed is not None else None,
         "recent_error": None if healthy else detail,
     }
 
@@ -1381,6 +1386,7 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
         detail["process_host"] = {
             "component": "ep_server",
             "pid": host.pid if host is not None and host.active else None,
+            "uptime_seconds": host.uptime_seconds if host is not None and host.active else None,
         }
     return detail
 

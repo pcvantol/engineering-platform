@@ -7801,6 +7801,7 @@ test.describe("Engineering Status browser smoke", () => {
         detail: "HTTP-dashboard reageert",
         version: "1.2.87",
         uptime_seconds: detailsRequest === 1 ? 10 : 20,
+        process_state: "OWNED_PROCESS",
         processes: [{ pid: 42, memory_kib: detailsRequest === 1 ? 1024 : 2048 }],
         launchd: {},
         restart_supported: true,
@@ -7851,9 +7852,10 @@ test.describe("Engineering Status browser smoke", () => {
       component: "lifecycle_worker",
       healthy: true,
       process_state: "IN_PROCESS",
-      process_host: { component: "ep_server", pid: 321 },
+      process_host: { component: "ep_server", pid: 321, uptime_seconds: 3725 },
     }));
     await expect(page.locator("#componentModalContent")).toContainText("ProcesstatusDraait in EP-server (PID 321)");
+    await expect(page.locator("#componentModalContent")).toContainText("Gedeelde EP-server-uptime1u 2m");
 
     await page.locator("#componentModalClose").click();
     await page.evaluate(() => showComponentModal({
@@ -7864,6 +7866,17 @@ test.describe("Engineering Status browser smoke", () => {
     }));
     await expect(page.locator("#componentModalContent")).toContainText("ProcesstatusOpslagcomponent; geen proces");
     await expect(page.locator("#componentModalContent")).toContainText("Databasegrootte12,5 MB");
+
+    await page.locator("#componentModalClose").click();
+    await page.evaluate(() => showComponentModal({
+      component: "dashboard_relay",
+      healthy: true,
+      uptime_seconds: 30,
+      process_state: "OWNED_PROCESS",
+      processes: [{ pid: 654, memory_kib: 1024 }],
+    }));
+    await expect(page.locator("#componentModalContent")).toContainText("Uptime30s");
+    await expect(page.locator("#componentModalContent")).toContainText("Huidig geheugenPID 654: 1.0 MiB");
   });
 
   test("keeps the component-modal header inside its panel while details scroll", async ({ page }) => {
