@@ -2149,6 +2149,16 @@ def _central_database_script() -> str:
     return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus'),translate=window.__engineeringPlatformDashboardTranslate;if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;maintenance.setAttribute('aria-busy','true');if(maintenanceStatus)maintenanceStatus.textContent='';try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_saved')}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_failed')}finally{maintenance.disabled=false;maintenance.removeAttribute('aria-busy')}});const modal=document.getElementById('centralDatabaseRelocateModal'),open=document.getElementById('centralDatabaseRelocate'),input=document.getElementById('centralDatabaseRelocateDirectory'),destination=document.getElementById('centralDatabaseRelocateDestination'),destinationValue=document.getElementById('centralDatabaseRelocateDestinationValue'),save=document.getElementById('centralDatabaseRelocateSave'),status=document.getElementById('centralDatabaseRelocateStatus');open?.addEventListener('click',()=>modal.showModal());modal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>modal.close());document.getElementById('centralDatabaseRelocateBrowse')?.addEventListener('click',async()=>{const r=await fetch('/api/central-database/relocate/browse',{method:'POST'}),p=await r.json();if(p.value){input.value=p.value;destinationValue.textContent=p.value;destination.hidden=false;save.disabled=false;}});save?.addEventListener('click',async()=>{const r=await fetch('/api/central-database/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:input.value})}),p=await r.json();status.textContent=r.ok?translate('configuration.relocation_restarting'):p.error||translate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);});'''
 
 
+def _file_inbox_section(data_root: Path) -> str:
+    """Render File Inbox relocation with the same installation-owned affordance."""
+    location = escape(str((data_root / FILE_INBOX_DIRECTORY).resolve()))
+    return f'''<section class="configuration-central-database" aria-labelledby="fileInboxHeading"><header class="configuration-central-database__header"><div><h2 id="fileInboxHeading" data-i18n="configuration.file_inbox">File Inbox</h2><p data-i18n="configuration.file_inbox_relocation_help">Verplaats de File Inbox alleen wanneer deze leeg is.</p></div></header><dl class="configuration-central-database__facts"><div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.file_inbox_location">File Inbox-locatie</dt><dd class="configuration-central-database__location-value"><span class="configuration-central-database__location-link">{location}</span><button class="configuration-central-database__relocate" id="fileInboxRelocate" type="button" data-i18n="configuration.relocate_file_inbox">Verplaats File Inbox</button></dd></div></dl></section><dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="fileInboxRelocateModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-i18n="configuration.relocate_file_inbox">Verplaats File Inbox</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-relocation="fileInboxRelocateModal">×</button></header><p data-i18n="configuration.file_inbox_relocation_help">Verplaats de File Inbox alleen wanneer deze leeg is.</p><dl class="installation-relocation-modal__locations"><div><dt data-i18n="configuration.current_folder">Huidige map</dt><dd>{location}</dd></div><div id="fileInboxRelocateDestination" hidden><dt data-i18n="configuration.new_folder">Nieuwe map</dt><dd id="fileInboxRelocateDestinationValue"></dd></div></dl><input id="fileInboxRelocateDirectory" type="hidden"><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="fileInboxRelocateBrowse" type="button" data-i18n="configuration.choose_folder">Kies map</button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="fileInboxRelocateSave" type="button" disabled data-i18n="configuration.relocate">Verplaatsen</button></div><p id="fileInboxRelocateStatus" role="status"></p></section></dialog>'''
+
+
+def _file_inbox_relocation_script() -> str:
+    return '''const inboxModal=document.getElementById('fileInboxRelocateModal'),inboxOpen=document.getElementById('fileInboxRelocate'),inboxInput=document.getElementById('fileInboxRelocateDirectory'),inboxDestination=document.getElementById('fileInboxRelocateDestination'),inboxDestinationValue=document.getElementById('fileInboxRelocateDestinationValue'),inboxSave=document.getElementById('fileInboxRelocateSave'),inboxStatus=document.getElementById('fileInboxRelocateStatus');inboxOpen?.addEventListener('click',()=>inboxModal.showModal());inboxModal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>inboxModal.close());document.getElementById('fileInboxRelocateBrowse')?.addEventListener('click',async()=>{const r=await fetch('/api/configuration/file-inbox/relocate/browse',{method:'POST'}),p=await r.json();if(p.value){inboxInput.value=p.value;inboxDestinationValue.textContent=p.value;inboxDestination.hidden=false;inboxSave.disabled=false;}});inboxSave?.addEventListener('click',async()=>{const r=await fetch('/api/configuration/file-inbox/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:inboxInput.value})}),p=await r.json();inboxStatus.textContent=r.ok?window.__engineeringPlatformDashboardTranslate('configuration.relocation_restarting'):p.error||window.__engineeringPlatformDashboardTranslate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);});'''
+
+
 def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> bytes:
     """Add the canonical File Inbox projection to the installed Console.
 
@@ -2210,7 +2220,7 @@ def _console_project_boundary(project_id: str, options: str) -> str:
   });
 })();
 </script>'''.replace("$PROJECT", json.dumps(project_id)).replace("$OPTIONS", json.dumps(options)).replace(
-        "$CENTRAL_DATABASE_SCRIPT", _central_database_script(),
+        "$CENTRAL_DATABASE_SCRIPT", _central_database_script() + _file_inbox_relocation_script(),
     )
 
 
@@ -2225,7 +2235,7 @@ def _no_project_console_document(projects: list[dict[str, str]], data_root: Path
     )
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
-    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
+    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script() + _file_inbox_relocation_script())
     empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong data-i18n="central.no_project_selected_title"></strong><span data-i18n="central.no_project_selected_body"></span><button class="no-project-selected__dismiss" id="noProjectSelectedDismiss" type="button" data-i18n-aria-label="action.close" data-i18n-title="action.close"><span aria-hidden="true">×</span></button></aside>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
@@ -2246,7 +2256,6 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
         1,
     )
     document = document.replace(b'<pre></pre>', b'<pre data-i18n="format.not_available"></pre>', 1)
-    document = _retire_legacy_inbox_configuration(document, data_root)
     # Keep the unscoped explanation in the sticky header.  It is operational
     # context, not a project card that should scroll away with the dashboard.
     document = document.replace(
@@ -2262,7 +2271,7 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
     )
     document = document.replace(
         b'<p class="category-description" data-i18n="description.configuration"></p>',
-        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"),
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8") + _file_inbox_section(data_root).encode("utf-8"),
         1,
     )
     return document.replace(b"</head>", scoped_style.encode("utf-8") + b"</head>", 1)
@@ -2283,7 +2292,7 @@ def _selected_project_console_document(project_id: str, projects: list[dict[str,
     document = document.replace(b'<pre></pre>', b'<pre data-i18n="central.project_workspace_not_authority"></pre>', 1)
     document = document.replace(
         b'<p class="category-description" data-i18n="description.configuration"></p>',
-        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"), 1,
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8") + _file_inbox_section(data_root).encode("utf-8"), 1,
     )
     return document.replace(b"</main>", _console_project_boundary(project_id, options).encode("utf-8") + b"</main>", 1)
 

@@ -996,7 +996,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             no_project.index('id="configurationServerSettings"'),
             no_project.index('configurationOpenPrInterval'),
         )
-        self.assertIn('configuration-file-inbox-readonly', no_project)
+        self.assertIn('id="fileInboxHeading"', no_project)
+        self.assertIn('id="fileInboxRelocate"', no_project)
         self.assertIn('id="centralDatabaseHeading"', no_project)
         self.assertIn('/api/central-database/download', no_project)
         self.assertNotIn('workspace-database-section', no_project)
