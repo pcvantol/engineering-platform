@@ -2694,6 +2694,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": str(error)})
                 return True
             self._send(202, {**result, "restarting": True})
+            self.server.restart_after_shutdown = True  # type: ignore[attr-defined]
             Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
             return True
         if request.path == "/api/central-data/import" and method == "do_POST":
@@ -2717,6 +2718,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": str(error)})
                 return True
             self._send(202, {**result, "restarting": True})
+            self.server.restart_after_shutdown = True  # type: ignore[attr-defined]
             Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
             return True
         if request.path == "/api/central-database/download" and method == "do_GET":
@@ -3438,6 +3440,7 @@ def serve(data_root: Path) -> int:
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
     server.central_data_transfer_lock = RLock()  # type: ignore[attr-defined]
     server.central_data_transfer_active = False  # type: ignore[attr-defined]
+    server.restart_after_shutdown = False  # type: ignore[attr-defined]
     # Lifecycle composition is intentionally lazy: read-only Server import
     # and Console startup must stay independent of retired watcher modules.
     from .lifecycle_worker import LifecycleWorker
@@ -3495,6 +3498,7 @@ def serve(data_root: Path) -> int:
             definition.startup_event,
             context={"target_component": definition.id},
         )
+    restart_after_shutdown = False
     try:
         server.serve_forever()
     finally:
@@ -3503,6 +3507,9 @@ def serve(data_root: Path) -> int:
         worker.stop()
         server.server_close()
         (data_root / SERVER_RUNTIME_FILENAME).unlink(missing_ok=True)
+        restart_after_shutdown = server.restart_after_shutdown  # type: ignore[attr-defined]
+    if restart_after_shutdown:
+        os.execv(sys.executable, [sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(data_root)])
     return 0
 
 
