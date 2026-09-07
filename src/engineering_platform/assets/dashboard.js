@@ -3480,13 +3480,13 @@ function formatComponentDatabaseSize(value) {
     maximumFractionDigits: 1,
   }) + " MB";
 }
-function componentDetailField(list, label, value, { localPath = false } = {}) {
+function componentDetailField(list, label, value) {
   if (value === null || value === undefined || value === "") return;
   const term = document.createElement("dt"),
     description = document.createElement("dd"),
     entry = document.createElement("div");
   term.textContent = label;
-  if (localPath && typeof value === "string" && value.startsWith("/"))
+  if (typeof value === "string" && value.startsWith("/"))
     description.append(localFilesystemLink(value));
   else description.textContent = String(value);
   entry.append(term, description);
@@ -3544,7 +3544,7 @@ function showComponentModal(payload) {
   if (payload.kind === "TRANSPORT") {
     const transportTimestamp = (value) => value ? formatTimestamp(value) : null;
     componentDetailField(fields, t("transport.last_submission"), transportTimestamp(payload.last_successful_submission));
-    componentDetailField(fields, t("transport.location"), payload.watched_location, { localPath: true });
+    componentDetailField(fields, t("transport.location"), payload.watched_location);
     componentDetailField(fields, t("transport.heartbeat"), transportTimestamp(payload.heartbeat));
     componentDetailField(fields, t("transport.delivery_retry"), payload.delivery_retry ? t("transport.retry." + payload.delivery_retry, {}, String(payload.delivery_retry)) : null);
     componentDetailField(fields, t("transport.quarantine"), payload.quarantine_count);
@@ -3562,14 +3562,13 @@ function showComponentModal(payload) {
     Array.isArray(launchd.program_arguments) && launchd.program_arguments.length
       ? launchd.program_arguments[0]
       : payload.executable_path,
-    { localPath: true },
   );
   componentDetailField(fields, t("component.launchd_label"), launchd.label);
   componentDetailField(fields, t("component.lifecycle_owner"), launchd.label ? t("component.launch_agent") : null);
   componentDetailField(fields, t("component.lifecycle_status"), launchdLifecycleState(launchd));
   componentDetailField(fields, t("component.process_id"), launchd.pid);
   componentDetailField(fields, t("component.last_stopped"), launchdLastStopped(launchd));
-  componentDetailField(fields, t("component.launch_agent"), launchd.plist_path, { localPath: true });
+  componentDetailField(fields, t("component.launch_agent"), launchd.plist_path);
   componentDetailField(
     fields,
     t("component.launchd_configuration"),
@@ -3586,13 +3585,13 @@ function showComponentModal(payload) {
   } else {
     componentDetailField(fields, t("component.process_status"), componentProcessStatus(payload));
   }
-  componentDetailField(fields, t("component.runtime_path"), installation.runtime_path, { localPath: true });
-  componentDetailField(fields, t("component.central_data_path"), installation.central_data_path, { localPath: true });
-  componentDetailField(fields, t("component.database_path"), installation.database_path, { localPath: true });
+  componentDetailField(fields, t("component.runtime_path"), installation.runtime_path);
+  componentDetailField(fields, t("component.central_data_path"), installation.central_data_path);
+  componentDetailField(fields, t("component.database_path"), installation.database_path);
   componentDetailField(fields, t("workspace.database_size"), formatComponentDatabaseSize(payload.database_size_bytes));
-  componentDetailField(fields, t("component.launch_agent"), installation.launch_agent_path, { localPath: true });
-  componentDetailField(fields, t("component.error_log_path"), installation.error_log_path, { localPath: true });
-  componentDetailField(fields, t("component.relay_binary_path"), installation.relay_binary_path, { localPath: true });
+  componentDetailField(fields, t("component.launch_agent"), installation.launch_agent_path);
+  componentDetailField(fields, t("component.error_log_path"), installation.error_log_path);
+  componentDetailField(fields, t("component.relay_binary_path"), installation.relay_binary_path);
   content.append(fields);
   restart.hidden = !payload.restart_supported;
   restart.dataset.component = payload.component;
@@ -7151,7 +7150,7 @@ function detailField(label, value, preformatted = false, folder = false) {
   name.className = "label";
   name.textContent = label;
   const supplied = String(value ?? "—");
-  const content = folder && supplied.startsWith("/") ? localFilesystemLink(supplied) : output;
+  const content = supplied.startsWith("/") ? localFilesystemLink(supplied) : output;
   if (content === output) output.textContent = supplied;
   field.append(name, content);
   return field;
