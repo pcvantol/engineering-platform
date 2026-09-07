@@ -141,6 +141,19 @@ test("dismisses the no-project banner for the current browser", async ({ page })
   await expect(banner).toBeHidden();
 });
 
+test("shows the no-project banner again after explicitly choosing no project", async ({ page }) => {
+  const noProjectUrl = new URL(dashboardUrl);
+  noProjectUrl.search = "";
+  await page.goto(noProjectUrl.href, { waitUntil: "domcontentloaded" });
+  const banner = page.getByTestId("no-project-selected");
+  await page.locator("#noProjectSelectedDismiss").click();
+  await expect(banner).toBeHidden();
+  const navigation = page.waitForNavigation({ waitUntil: "domcontentloaded" });
+  await page.locator("#dashboardProject").dispatchEvent("change");
+  await navigation;
+  await expect(banner).toBeVisible();
+});
+
 test.afterAll(async () => {
   if (dashboard && dashboard.exitCode === null && dashboard.signalCode === null) {
     const exited = new Promise((resolve) => dashboard.once("exit", resolve));
