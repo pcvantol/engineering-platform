@@ -868,7 +868,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn("maintenance.value=previous", script)
         self.assertIn("Number(result.interval_seconds)!==requested", script)
         self.assertIn("window.__engineeringPlatformLocalFilesystemLink", script)
-        self.assertIn("destinationValue.replaceChildren", script)
+        self.assertIn("relocationDestinationValue.replaceChildren", script)
 
     def test_relocation_destination_paths_use_the_canonical_copy_control(self) -> None:
         self.assertIn("window.__engineeringPlatformLocalFilesystemLink", server._central_database_script())

@@ -4057,3 +4057,8 @@ Object.assign(DASHBOARD_MESSAGES.nl,{"configuration.central_data_import_help":"K
 Object.assign(DASHBOARD_MESSAGES.de,{"configuration.central_data_import_help":"Wählen Sie eine zuvor exportierte .epdata-Datei. Alle aktuellen Plattformdaten werden ersetzt."});
 Object.assign(DASHBOARD_MESSAGES.fr,{"configuration.central_data_import_help":"Choisissez un fichier .epdata exporté précédemment. Toutes les données actuelles de la plateforme seront remplacées."});
 Object.assign(DASHBOARD_MESSAGES.es,{"configuration.central_data_import_help":"Elija un archivo .epdata exportado anteriormente. Todos los datos actuales de la plataforma se reemplazarán."});
+Object.assign(DASHBOARD_MESSAGES.en,{"configuration.central_data_import_restarting":"Import is ready; the server is restarting."});
+Object.assign(DASHBOARD_MESSAGES.nl,{"configuration.central_data_import_restarting":"Import staat klaar; de server start opnieuw."});
+Object.assign(DASHBOARD_MESSAGES.de,{"configuration.central_data_import_restarting":"Der Import ist bereit; der Server startet neu."});
+Object.assign(DASHBOARD_MESSAGES.fr,{"configuration.central_data_import_restarting":"L’importation est prête ; le serveur redémarre."});
+Object.assign(DASHBOARD_MESSAGES.es,{"configuration.central_data_import_restarting":"La importación está lista; el servidor se está reiniciando."});

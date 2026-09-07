@@ -8295,6 +8295,18 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(status).not.toHaveClass(/configuration-central-data-import__error/);
   });
 
+  test("uses an import-specific restart message after accepting platform data", async ({ page }) => {
+    await page.route("**/api/central-data/import", async (route) => {
+      await route.fulfill({ status: 202, json: { restarting: true } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    await page.locator("#centralDataImportFile").setInputFiles({ name: "platform.epdata", mimeType: "application/vnd.engineering-platform.epdata+zip", buffer: Buffer.from("package") });
+    await page.locator("#centralDataImportConfirm").click();
+    await expect(page.locator("#centralDataImportStatus")).toHaveText("Import staat klaar; de server start opnieuw.");
+  });
+
   test("keeps platform-data location links free of selected borders", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#configuration").evaluate((element) => { element.open = true; });

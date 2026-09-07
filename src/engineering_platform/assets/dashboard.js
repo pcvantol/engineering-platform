@@ -8550,7 +8550,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const errors = new Set(["CENTRAL_IMPORT_BLOCKED","CENTRAL_IMPORT_UPLOAD_INCOMPLETE","CENTRAL_IMPORT_ALREADY_PENDING","CENTRAL_IMPORT_REQUEST_INVALID","CENTRAL_IMPORT_FAILED","CENTRAL_DATABASE_UNAVAILABLE","CENTRAL_ARCHIVE_SIZE_INVALID","CENTRAL_ARCHIVE_MEMBER_INVALID","CENTRAL_ARCHIVE_MANIFEST_INVALID","CENTRAL_ARCHIVE_SCHEMA_INVALID","CENTRAL_ARCHIVE_SCHEMA_INCOMPATIBLE","CENTRAL_ARCHIVE_INTEGRITY_INVALID","CENTRAL_ARCHIVE_INVALID"]);
   new MutationObserver(() => {
     const code = status.textContent?.trim() || "";
-    const failed = Boolean(code) && code !== t("configuration.relocation_restarting");
+    const failed = Boolean(code)
+      && code !== t("configuration.relocation_restarting")
+      && code !== t("configuration.central_data_import_restarting");
     status.classList.toggle("configuration-central-data-import__error", failed);
     if (failed && status.dataset.importErrorMessage !== code) {
       const message = t(`configuration.central_data_import_error.${errors.has(code) ? code : "CENTRAL_IMPORT_FAILED"}`);
