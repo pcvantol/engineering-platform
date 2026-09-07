@@ -14,6 +14,9 @@ from .execution_models import AgentResult, PullRequestEvidence
 
 class DeterministicQualificationAgent:
     def invoke(self, root: Path, prompt: str) -> AgentResult:
+        if "sole automatic post-finalization reconciliation" in prompt.lower():
+            sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
+            return AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha=sha)
         if "execution mode: genesis" in prompt.lower():
             target = next(
                 (line.split(":", 1)[1].strip() for line in prompt.splitlines()
