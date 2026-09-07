@@ -382,6 +382,21 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
   checks.push(["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }, { section: t("dashboard.health.section.execution") }]);
   return { state, checks };
 }
+function orderedPlatformComponentEntries(components, model = latestPlatformHealth?.component_model) {
+  const known = new Set(), entries = [];
+  if (Array.isArray(model)) {
+    model.forEach((definition) => {
+      const id = definition?.id;
+      if (typeof id !== "string" || !Object.hasOwn(components, id)) return;
+      known.add(id);
+      entries.push([id, components[id]]);
+    });
+  }
+  Object.entries(components).forEach(([id, component]) => {
+    if (!known.has(id)) entries.push([id, component]);
+  });
+  return entries;
+}
 function renderDashboardHealth(status = latestStatus, platformHealth = latestPlatformHealth) {
   const indicator = $("dashboardHealthIndicator"), tooltipTitle = $("dashboardHealthTooltipTitle"), checks = $("dashboardHealthChecks"), accessibleLabel = $("dashboardHealthAccessibleLabel");
   if (!indicator || !tooltipTitle || !checks || !accessibleLabel) return;
@@ -3730,7 +3745,12 @@ function renderPlatformHealth(payload) {
     container.append(message);
     return;
   }
-  for (const [key, component] of Object.entries(components)) {
+  // The popout derives its grouped presentation from component_model. Keep
+  // the component section on that same canonical inventory order as well.
+  for (const [key, component] of orderedPlatformComponentEntries(
+    components,
+    latestPlatformHealth?.component_model,
+  )) {
     const item = document.createElement("article"),
       indicator = document.createElement("span"),
       name = document.createElement("span"),

@@ -10409,6 +10409,16 @@ test.describe("Engineering Status browser smoke", () => {
     const card = page.locator("#platformHealth .platform-health__component").filter({ hasText: "EP-server" });
     await expect(card).toHaveAttribute("data-health", "true");
     await expect(card).not.toContainText("Inbox-watcher");
+    await expect(page.locator("#platformHealth .platform-health__component-name")).toHaveText([
+      "EP-server",
+      "Platformdatabase",
+      "Lifecycle Worker",
+      "Operations Console",
+      "Server Relay↗",
+      "HTTP/API-ingang",
+      "CLI-ingang",
+      "Bestandsinbox-ingang",
+    ]);
   });
 
   test("opens canonical ingress details from the status popout", async ({ page }) => {
