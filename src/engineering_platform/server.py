@@ -1321,7 +1321,6 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
         installation = {
             "runtime_path": str(runtime_executable.parent.parent),
             "central_data_path": str(data_root.resolve()),
-            "database_path": str((data_root / SERVER_DATABASE_FILENAME).resolve()),
             "launch_agent_path": str(service_paths.plist_path),
             "error_log_path": str(service_paths.stderr_log),
         }
