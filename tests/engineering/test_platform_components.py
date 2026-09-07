@@ -13,6 +13,7 @@ from engineering_platform.providers import (
     GitProvider,
     GitHubProvider,
     ICloudInboxProvider,
+    LaunchdRuntimeDetails,
     LaunchdProvider,
     TailscaleProvider,
     registry,
@@ -133,6 +134,23 @@ class ProviderContractTest(unittest.TestCase):
         running = LaunchdProvider().runtime_status("com.example.watcher")
         self.assertTrue(running.qualified)
         self.assertIn("active", running.detail)
+
+    @patch("engineering_platform.providers.subprocess.run")
+    @patch("engineering_platform.providers.shutil.which", side_effect=("/bin/launchctl", "/bin/ps"))
+    def test_launchd_runtime_details_include_metrics_only_for_the_observed_pid(self, _: object, run: object) -> None:
+        run.side_effect = (
+            __import__("subprocess").CompletedProcess(
+                ("launchctl", "print"), 0,
+                "active count = 1\npid = 42\nlast exit code = (never exited)\n", "",
+            ),
+            __import__("subprocess").CompletedProcess(("ps",), 0, "2048 01:02:03\n", ""),
+        )
+
+        details = LaunchdProvider().runtime_details("com.example.watcher")
+
+        self.assertEqual(details, LaunchdRuntimeDetails(
+            "com.example.watcher", True, True, 42, "(never exited)", 2048, 3723,
+        ))
 
     @patch("engineering_platform.providers.LaunchdProvider.restart")
     @patch("engineering_platform.providers.LaunchdProvider.inspect", return_value=False)

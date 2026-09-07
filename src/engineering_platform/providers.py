@@ -34,6 +34,19 @@ class LaunchdRuntimeDetails:
     active: bool
     pid: int | None
     last_exit_code: str | None
+    memory_kib: int | None = None
+    uptime_seconds: int | None = None
+
+
+def _elapsed_seconds(value: str) -> int | None:
+    """Parse macOS ``ps etime`` without treating malformed host output as fact."""
+    match = re.fullmatch(r"(?:(\d+)-)?(\d{1,2}):(\d{2}):(\d{2})", value)
+    if not match:
+        return None
+    days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
+    if minutes >= 60 or seconds >= 60:
+        return None
+    return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
 
 
 class RuntimeProvider(Protocol):
@@ -348,10 +361,31 @@ class LaunchdProvider:
         last_exit = re.search(r"(?m)^\s*last exit code\s*=\s*(.+)$", output)
         pid = int(pid_match.group(1)) if pid_match else None
         active = (active_count is not None and int(active_count.group(1)) > 0) or pid is not None
+        memory_kib, uptime_seconds = self._process_metrics(pid) if active and pid else (None, None)
         return LaunchdRuntimeDetails(
             label, True, active, pid,
             last_exit.group(1).strip() if last_exit else None,
+            memory_kib, uptime_seconds,
         )
+
+    @staticmethod
+    def _process_metrics(pid: int) -> tuple[int | None, int | None]:
+        """Read memory and elapsed time for a launchd-proven process only."""
+        executable = shutil.which("ps")
+        if not executable:
+            return None, None
+        completed = subprocess.run(
+            (executable, "-o", "rss=", "-o", "etime=", "-p", str(pid)),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode:
+            return None, None
+        columns = completed.stdout.strip().split()
+        if len(columns) != 2 or not columns[0].isdigit():
+            return None, None
+        return int(columns[0]), _elapsed_seconds(columns[1])
 
     def restart(self, label: str) -> None:
         executable = shutil.which("launchctl")

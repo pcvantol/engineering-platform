@@ -7713,6 +7713,8 @@ test.describe("Engineering Status browser smoke", () => {
         pid: 321,
         last_exit_code: "(never exited)",
       },
+      process_state: "OWNED_PROCESS",
+      processes: [{ pid: 321, memory_kib: 2048 }],
       restart_supported: false,
     }));
 
@@ -7721,6 +7723,26 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(content).toContainText("Lifecycle-statusActief");
     await expect(content).toContainText("PID321");
     await expect(content).toContainText("Laatst gestoptNooit gestopt");
+    await expect(content).toContainText("Huidig geheugenPID 321: 2.0 MiB");
+  });
+
+  test("distinguishes server-hosted components and storage from owned processes", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "lifecycle_worker",
+      healthy: true,
+      process_state: "IN_PROCESS",
+      process_host: { component: "ep_server", pid: 321 },
+    }));
+    await expect(page.locator("#componentModalContent")).toContainText("ProcesstatusDraait in EP-server (PID 321)");
+
+    await page.locator("#componentModalClose").click();
+    await page.evaluate(() => showComponentModal({
+      component: "platform_database",
+      healthy: true,
+      process_state: "STORAGE",
+    }));
+    await expect(page.locator("#componentModalContent")).toContainText("ProcesstatusOpslagcomponent; geen proces");
   });
 
   test("renders prompt-history report actions as light surfaces in light mode", async ({ page }) => {

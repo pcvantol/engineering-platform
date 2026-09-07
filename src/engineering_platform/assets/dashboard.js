@@ -3466,17 +3466,23 @@ function componentDetailField(list, label, value) {
 }
 function componentMemory(processes) {
   if (!Array.isArray(processes) || !processes.length)
-    return t("ui.no_local_process");
+    return t("component.owned_process_unavailable");
   return processes
     .map(
-      (process) =>
-        "PID " +
-        process.pid +
-        ": " +
-        (Number(process.memory_kib || 0) / 1024).toFixed(1) +
-        " MiB",
+      (process) => process.memory_kib === null || process.memory_kib === undefined
+        ? "PID " + process.pid + " · " + t("component.memory_unavailable")
+        : "PID " + process.pid + ": " + (Number(process.memory_kib) / 1024).toFixed(1) + " MiB",
     )
     .join(" · ");
+}
+function componentProcessStatus(payload) {
+  if (payload.process_state === "STORAGE") return t("component.storage_no_process");
+  const host = payload.process_host || {};
+  if (payload.process_state === "IN_PROCESS")
+    return host.pid === null || host.pid === undefined
+      ? t("component.runs_in_ep_server_unavailable")
+      : t("component.runs_in_ep_server", { pid: host.pid });
+  return null;
 }
 function launchdLifecycleState(launchd) {
   if (!launchd.label) return null;
@@ -3546,11 +3552,11 @@ function showComponentModal(payload) {
           (launchd.keep_alive ? "✓" : "—")
       : null,
   );
-  componentDetailField(
-    fields,
-    t("component.current_memory"),
-    componentMemory(payload.processes),
-  );
+  if (payload.process_state === "OWNED_PROCESS") {
+    componentDetailField(fields, t("component.current_memory"), componentMemory(payload.processes));
+  } else {
+    componentDetailField(fields, t("component.process_status"), componentProcessStatus(payload));
+  }
   componentDetailField(fields, t("component.runtime_path"), installation.runtime_path);
   componentDetailField(fields, t("component.central_data_path"), installation.central_data_path);
   componentDetailField(fields, t("component.database_path"), installation.database_path);
