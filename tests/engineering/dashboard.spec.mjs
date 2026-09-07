@@ -8174,6 +8174,16 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("renders central-data export as a filled text action with its download glyph", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const action = page.locator('a[href="/api/central-data/export"]');
+    await expect(action).toHaveClass(/configuration-central-database__export/);
+    await expect(action).not.toHaveClass(/dashboard-action--download/);
+    await expect(action).toHaveCSS("border-top-style", "solid");
+    await expect(action).toHaveCSS("background-color", /rgb/);
+    await expect(action.evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↓"');
+  });
+
   test("uses shared semantic classes for download, copy and destructive actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download"]) {
