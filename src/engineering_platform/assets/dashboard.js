@@ -5832,6 +5832,20 @@ document.addEventListener("pointerdown", (event) => {
 const workspaceLocation = document.querySelector('[data-workspace-label="ui.workspace_location"] + pre');
 replaceWithLocalFilesystemLink(workspaceLocation);
 replaceWithLocalFilesystemLink($("rateLimitProviderPath"));
+const noProjectDismissalStorageKey = "engineering-platform.no-project-selected.dismissed.v1";
+function initializeNoProjectSelectedBanner() {
+  const banner = $("noProjectSelected"), dismiss = $("noProjectSelectedDismiss");
+  if (!banner || !dismiss || dismiss.dataset.dismissBound) return;
+  dismiss.dataset.dismissBound = "true";
+  try {
+    banner.hidden = localStorage.getItem(noProjectDismissalStorageKey) === "true";
+  } catch {}
+  dismiss.addEventListener("click", () => {
+    banner.hidden = true;
+    try { localStorage.setItem(noProjectDismissalStorageKey, "true"); } catch {}
+  });
+}
+initializeNoProjectSelectedBanner();
 applyDashboardLocale();
 let dashboardConfiguration = {}, dashboardConfigurationLoaded = false;
 const configurationFields = Object.freeze({

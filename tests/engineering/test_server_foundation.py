@@ -366,6 +366,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             document = response.read().decode("utf-8")
         self.assertIn('data-project-id="none"', document)
         self.assertIn('id="noProjectSelected"', document)
+        self.assertIn('id="noProjectSelectedDismiss"', document)
         self.assertIn('data-i18n="central.no_project_selected_title"', document)
         self.assertIn('data-i18n="central.no_project_selected_body"', document)
         self.assertNotIn('Geen project gekozen', document)
