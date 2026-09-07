@@ -1539,6 +1539,10 @@ function localFilesystemLink(value) {
   configureLocalFilesystemLink(link, value);
   return link;
 }
+// Server-rendered configuration affordances can add a selected local path
+// after this module has initialized.  Keep that path on the same canonical
+// copy-to-clipboard control as every other local filesystem reference.
+window.__engineeringPlatformLocalFilesystemLink = localFilesystemLink;
 document.querySelectorAll("[data-local-path]").forEach((link) =>
   configureLocalFilesystemLink(link, link.dataset.localPath),
 );
@@ -2479,6 +2483,9 @@ function r(status, snapshot = {}) {
 // snapshot cannot offer the same action again.
 let workspaceMainSwitchScheduled = false;
 function renderWorkspaceGit(workspaceGit) {
+  // The installed Server removes the former selected-project Workspace card:
+  // project scope is logical, whereas a checkout is run-bound evidence.
+  if (!$("workspaceCard")) return;
   if (!workspaceGit || typeof workspaceGit !== "object") return;
   $("workspaceBranch").textContent =
     workspaceGit.branch || t("format.not_available");
@@ -2798,27 +2805,44 @@ function setUpdateMode(key) {
   updateModeKey = key;
   $("updateMode").textContent = t(key);
 }
-async function loadInitialDashboardStatus() {
+function applyDashboardSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot.status !== "object")
+    throw Error(t("dashboard.status_invalid"));
+  dashboardStatusStore.update(snapshot.status, snapshot);
+  renderWorkspaceGit(snapshot.workspace_git);
+  renderWorkspaceWorktrees(snapshot.workspace_worktrees);
+  const terminalRun = snapshot.status.last_executed_run;
+  if (terminalRun && terminalRun !== promptHistoryTerminalRun) {
+    promptHistoryTerminalRun = terminalRun;
+    void refreshPromptHistory();
+  }
+  humanize();
+  checkBuild(snapshot.build_commit);
+}
+async function refreshDashboardSnapshot({ allowAfterServerPush = false, successMode, failureMode } = {}) {
   try {
     const response = await fetch("/api/dashboard-snapshot", {
       cache: "no-store",
     });
     if (!response.ok) throw Error(t("dashboard.status_unavailable"));
     const snapshot = await response.json();
-    if (!snapshot || typeof snapshot.status !== "object")
-      throw Error(t("dashboard.status_invalid"));
-    if (receivedDashboardServerPush) return;
-    dashboardStatusStore.update(snapshot.status, snapshot);
-    renderWorkspaceGit(snapshot.workspace_git);
-    renderWorkspaceWorktrees(snapshot.workspace_worktrees);
-    humanize();
-    checkBuild(snapshot.build_commit);
-    setUpdateMode("refresh.connecting");
+    if (receivedDashboardServerPush && !allowAfterServerPush) return false;
+    applyDashboardSnapshot(snapshot);
+    if (successMode) setUpdateMode(successMode);
+    return true;
   } catch {
-    if (receivedDashboardServerPush) return;
+    if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardStatusStore.update(fallback);
     humanize();
-    setUpdateMode("refresh.failed_reconnecting");
+    if (failureMode) setUpdateMode(failureMode);
+    return false;
+  }
+}
+async function loadInitialDashboardStatus() {
+  try {
+    await refreshDashboardSnapshot({
+      successMode: "refresh.connecting", failureMode: "refresh.failed_reconnecting",
+    });
   } finally {
     // Readiness means that the first authoritative status projection has
     // settled (including its bounded fallback), not merely that the HTML has
@@ -2837,18 +2861,9 @@ function startDashboardUpdates() {
   events.addEventListener("dashboard", (x) => {
     if (!$("autoRefresh").checked) return;
     try {
-      let snapshot = JSON.parse(x.data);
+      const snapshot = JSON.parse(x.data);
+      applyDashboardSnapshot(snapshot);
       receivedDashboardServerPush = true;
-      dashboardStatusStore.update(snapshot.status, snapshot);
-      renderWorkspaceGit(snapshot.workspace_git);
-      renderWorkspaceWorktrees(snapshot.workspace_worktrees);
-      const terminalRun = snapshot.status?.last_executed_run;
-      if (terminalRun && terminalRun !== promptHistoryTerminalRun) {
-        promptHistoryTerminalRun = terminalRun;
-        void refreshPromptHistory();
-      }
-      humanize();
-      checkBuild(snapshot.build_commit);
       setUpdateMode("refresh.connected");
     } catch {
       dashboardStatusStore.update(fallback);
@@ -5790,7 +5805,7 @@ function applyDashboardLocale() {
     ["#dashboardTitle", "dashboard.title"],
     ["#dashboardSplashTitle", "dashboard.title"],
     ["#dashboardSplashLoading", "dashboard.loading"],
-    ["#platformVersionLabel", "footer.platform_version"],
+    ["#platformVersionLabel", "footer.platform_name"],
     ["#confirmationModalCancel", "action.cancel"],
     ["#confirmationModalConfirm", "action.confirm"],
     ["#predecessorRetry", "recovery.action"],
@@ -6777,10 +6792,25 @@ allSectionsToggle.addEventListener("click", () =>
   setAllSections(allSectionsToggle.getAttribute("aria-checked") !== "true"),
 );
 autoRefreshToggle.checked = dashboardClientState.autoRefresh !== false;
+async function reconcileDashboardAfterAutoRefreshEnabled() {
+  // SSE intentionally suppresses unchanged snapshots. A browser that was
+  // paused can therefore not rely on a later event to learn about log rows
+  // written while it was off. Always perform both reads on re-enable.
+  await refreshDashboardSnapshot({
+    allowAfterServerPush: true,
+    successMode: "refresh.connected",
+    failureMode: "refresh.reconnecting",
+  });
+  await refreshComponentLogs({}, true);
+}
 autoRefreshToggle.addEventListener("change", () => {
   dashboardClientState.autoRefresh = autoRefreshToggle.checked;
   saveDashboardClientState();
-  setUpdateMode(autoRefreshToggle.checked ? "refresh.connected" : "refresh.off");
+  if (!autoRefreshToggle.checked) {
+    setUpdateMode("refresh.off");
+    return;
+  }
+  void reconcileDashboardAfterAutoRefreshEnabled();
 });
 document.addEventListener(
   "toggle",

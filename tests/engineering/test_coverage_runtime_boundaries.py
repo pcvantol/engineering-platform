@@ -20,6 +20,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import socket
 from contextlib import redirect_stdout
+from threading import RLock
 
 from engineering_platform import agent_trust, central_database, project_topology, server, server_relay
 from engineering_platform import providers
@@ -588,10 +589,66 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertTrue(update._central_database_configuration("do_POST"))
         changed.assert_called_once_with(self.root, 120)
         self.assertEqual(update_responses[-1], (200, {"interval_seconds": 120}))
-        unavailable, unavailable_responses = self._in_process_console_handler("/api/central-database/download")
-        with patch("engineering_platform.server.central_database.snapshot", return_value=None):
-            self.assertTrue(unavailable._central_database_configuration("do_GET"))
-        self.assertEqual(unavailable_responses[-1], (503, {"error": "CENTRAL_DATABASE_UNAVAILABLE"}))
+        # A database-only download would create an incomplete CENTRAL backup.
+        # The route is intentionally retained as a clear retirement response;
+        # callers must use the complete central-data export instead.
+        retired, retired_responses = self._in_process_console_handler("/api/central-database/download")
+        self.assertTrue(retired._central_database_configuration("do_GET"))
+        self.assertEqual(retired_responses[-1], (410, {"error": "CENTRAL_DATABASE_DOWNLOAD_RETIRED"}))
+
+    def test_central_data_transfer_routes_require_confirmation_and_quiesce_writers(self) -> None:
+        """The Console exposes one guarded, whole-state transfer boundary."""
+        browse, browse_responses = self._in_process_console_handler("/api/central-data/relocate/browse")
+        with patch("engineering_platform.server._choose_local_directory", return_value="/Volumes/archive"):
+            self.assertTrue(browse._central_database_configuration("do_POST"))
+        self.assertEqual(browse_responses[-1], (200, {"value": "/Volumes/archive"}))
+
+        blocked, blocked_responses = self._in_process_console_handler(
+            "/api/central-data/relocate", body=b"{}", headers={"Content-Length": "2"}
+        )
+        self.assertTrue(blocked._central_database_configuration("do_POST"))
+        self.assertEqual(blocked_responses[-1], (409, {"error": "PLATFORM_DATA_RELOCATION_BLOCKED"}))
+
+        relocation, relocation_responses = self._in_process_console_handler(
+            "/api/central-data/relocate", body=b'{"directory":"/Volumes/archive"}', headers={"Content-Length": "32"}
+        )
+        with patch("engineering_platform.server.installation_relocation.request", return_value={"value": "/Volumes/archive/data"}) as requested, patch(
+            "engineering_platform.server.Timer"
+        ):
+            self.assertTrue(relocation._central_database_configuration("do_POST"))
+        requested.assert_called_once_with(self.root, "PLATFORM_DATA", "/Volumes/archive")
+        self.assertEqual(relocation_responses[-1], (202, {"value": "/Volumes/archive/data", "restarting": True}))
+
+        imported, import_responses = self._in_process_console_handler(
+            "/api/central-data/import", body=b"zip", headers={"Content-Length": "3", "X-EP-Central-Import-Confirmed": "true"}
+        )
+        with patch("engineering_platform.server.central_data_transfer.stage_import", return_value={"entries": 2}) as staged, patch(
+            "engineering_platform.server.Timer"
+        ):
+            self.assertTrue(imported._central_database_configuration("do_POST"))
+        staged.assert_called_once()
+        self.assertEqual(import_responses[-1], (202, {"entries": 2, "restarting": True}))
+
+        denied, denied_responses = self._in_process_console_handler("/api/central-data/import")
+        self.assertTrue(denied._central_database_configuration("do_POST"))
+        self.assertEqual(denied_responses[-1], (409, {"error": "CENTRAL_IMPORT_BLOCKED"}))
+
+        exported, _responses = self._in_process_console_handler("/api/central-data/export")
+        exported.server.central_data_transfer_lock = RLock()
+        exported.server.central_data_transfer_active = False
+        exported.server.dependabot_service = Mock()
+        exported.server.inbox_service = Mock()
+        exported.server.lifecycle_worker = Mock()
+        headers: list[tuple[str, str]] = []
+        exported.send_header = lambda name, value: headers.append((name, value))
+        with patch("engineering_platform.server.central_data_transfer.export_snapshot", return_value=("central.zip", b"zip")):
+            self.assertTrue(exported._central_database_configuration("do_GET"))
+        self.assertEqual(exported.wfile.getvalue(), b"zip")
+        self.assertIn(("Content-Type", "application/zip"), headers)
+        self.assertFalse(exported.server.central_data_transfer_active)
+        for service in (exported.server.dependabot_service, exported.server.inbox_service, exported.server.lifecycle_worker):
+            service.stop.assert_called_once()
+            service.start.assert_called_once()
 
     def test_console_event_streams_are_central_and_disconnect_safely(self) -> None:
         for name, args in (

@@ -122,7 +122,7 @@ class DashboardStatusTest(unittest.TestCase):
         ).decode("utf-8")
         self.assertIn('data-i18n="workspace.free_disk_space"', page)
         self.assertIn("12.3 GB", page)
-        self.assertIn("Engineering Platform 2.0.0", page)
+        self.assertIn(f"Engineering Platform {DASHBOARD_VERSION}", page)
 
     def test_configuration_section_is_the_final_dashboard_block(self) -> None:
         page = _dashboard_html(

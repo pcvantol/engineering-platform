@@ -63,13 +63,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: {python-version: '3.12'}
-      - name: Build and install standalone Engineering Platform
-        run: python3 -m pip install build coverage .
+      - name: Build and install next canonical Engineering Platform wheel
+        run: |
+          python3 -m pip install build coverage
+          python3 tools/qualification/build_platform_wheel.py --source-root . --install-python "$(command -v python3)"
       - name: Import, bytecode and qualification smoke
         run: |
           python3 -c "import engineering_platform, engineering_platform.execution_host"
           python3 -m compileall -q src/engineering_platform
           PYTHONPATH=src python3 tools/qualification/console_route_ownership_guard.py --source-root src
+          python3 tools/qualification/platform_version_consistency.py --source-root .
           python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Qualify installed P-TRANSPORT 3×2 ingress matrix
         run: python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
@@ -104,8 +107,13 @@ jobs:
           measured_modules = {Path(path).resolve() for path in files}
           unmeasured = [str(path) for path in production_modules if path not in measured_modules]
           aggregate = report["totals"]["percent_covered"]
-if len(production_modules) != 108:
-    failures.append(f"production module inventory changed: {len(production_modules)} (expected 108)")
+          # Discover the current shipped inventory instead of pinning a count.
+          # The unmeasured-module check below still fails closed whenever a
+          # production module is added without coverage evidence.
+          if not production_modules:
+              failures.append("production module inventory is empty")
+          else:
+              print(f"production module inventory: {len(production_modules)}")
           if unmeasured:
               failures.append("unmeasured production modules: " + ", ".join(unmeasured))
           if aggregate < 80.00:

@@ -465,17 +465,15 @@ logging layer is available.
 
 ## Component health endpoint
 
-`GET /health` returns JSON for unattended checks. It is healthy only when the
-dashboard process, Engineering Execution Host LaunchAgent, private relay
-LaunchAgent, local status storage and relay connectivity are all available. It returns HTTP
-`200` with `"health":"ok"` when all components are healthy, otherwise HTTP
-`503` with `"health":"degraded"` and a per-component diagnostic. The endpoint
-is read-only and does not repair a component. A loaded LaunchAgent alone is
-not evidence of health: its service process must be active. This prevents a
-KeepAlive job that is repeatedly exiting from being shown as an active
-Inbox-watcher. If the watcher is stopped while the shared database is behind
-the source schema, the status projection exposes the safe reason
-`storage_activation_required`; it does not attempt the activation itself.
+`GET /health` is the canonical unattended Platform health endpoint. It returns
+the complete `PLATFORM_COMPONENTS` inventory and a safe per-component status.
+Its aggregate is healthy only when every component explicitly marked critical
+in that inventory is healthy: it returns HTTP `200` with `"health":"ok"`.
+When a critical component is unavailable, it returns HTTP `503` with
+`"health":"degraded"` and `unhealthy_components`. Non-critical access and
+producer adapters are still checked and reported, but do not make a core
+Server probe fail on a host where that optional adapter is not installed.
+The endpoint is read-only and never repairs a component.
 
 The matching **Platformonderdelen** dashboard category exposes a per-component
 information dialog. It obtains its bounded metadata from
@@ -627,12 +625,11 @@ letting one shared layout regression consume the full job timeout.
 
 The Engineering Platform workflow runs the Python suite under branch coverage
 against the installed `engineering_platform` package. Every shipped Python
-module participates in the aggregate production measurement, which must be at
-least 80.00%. The protected runtime modules are `platform_bootstrap.py`,
-`providers.py`, and Server-owned `file_inbox.py`; each must be at least
-80.20%. Retired `dashboard.py` and `inbox_watcher.py` are not coverage
-targets and must not be reintroduced to satisfy a metric. To reproduce the
-measurement locally from a clean installed candidate:
+module must reach at least 80.20% branch coverage; the aggregate production
+measurement must be at least 80.00%. Retired `dashboard.py` and
+`inbox_watcher.py` are not shipped coverage targets and must not be
+reintroduced to satisfy a metric. To reproduce the measurement locally from a
+clean installed candidate:
 
 ```sh
 coverage run --branch --source=engineering_platform -m unittest discover -s tests/engineering

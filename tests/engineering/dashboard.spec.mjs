@@ -500,10 +500,16 @@ test.describe("Engineering Status browser smoke", () => {
     const login = block.locator('[data-provider="GITHUB"] [data-provider-repair]');
     await expect(login).toBeVisible();
     await expect(login).toHaveText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.login"].replace("{provider}", "GitHub"));
-    await expect(login).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    expect(await login.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
     await login.hover();
     await expect(login).toHaveCSS("background-color", "rgb(244, 195, 79)");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-logout]')).toBeHidden();
+    const logout = block.locator('[data-provider="CODEX"] [data-provider-logout]');
+    await expect(logout).toBeVisible();
+    expect(await logout.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+    await page.locator("#themeToggle").click();
+    expect(await login.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+    expect(await logout.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
     const validation = page.locator("#configurationValidationEnvironmentStatus");
     await expect(validation).toBeVisible();
     await expect(validation).toContainText(DASHBOARD_MESSAGES.nl["configuration.validation_environment"]);
@@ -559,7 +565,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(name).toHaveCSS("color", "rgb(247, 243, 238)");
     await expect(logout).toHaveCSS("min-height", "32px");
     await expect(logout).toHaveCSS("border-top-color", "rgb(255, 120, 153)");
-    await expect(logout).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    expect(await logout.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
     await logout.hover();
     await expect(logout).toHaveCSS("background-color", "rgb(255, 113, 143)");
     await expect(logout).toHaveCSS("color", "rgb(35, 19, 26)");
@@ -692,7 +698,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(banner).toContainText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.auth_required"].replace("{provider}", "Codex"));
     await expect(page.locator("#githubProviderReadinessBanner")).toBeHidden();
     await expect(page.locator("#codexProviderReadinessAction")).toHaveText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.login"].replace("{provider}", "Codex"));
-    await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    expect(await page.locator("#codexProviderReadinessAction").evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
     await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("color", "rgb(255, 244, 214)");
     await page.locator("#codexProviderReadinessAction").hover();
     await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("background-color", "rgb(244, 195, 79)");
@@ -798,52 +804,11 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueList")).not.toContainText("Structured submission");
   });
 
-  test("projects local worktrees above open pull requests and refreshes their rows", async ({ page }) => {
+  test("does not render retired project workspace controls", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#autoRefresh").uncheck();
-    await page.evaluate(() => {
-      const workspace = document.querySelector("#workspaceCard");
-      window.renderWorkspaceWorktrees({ available: true, worktrees: [
-        { path: "/workspace", branch: "main", commit: "123456789abc" },
-        { path: "/tmp/polish", branch: "codex/polish", commit: "abcdef123456", active: true },
-      ] });
-      if (!document.querySelector("#workspaceOpenPullRequests")) {
-        const pullRequests = document.createElement("section");
-        pullRequests.id = "workspaceOpenPullRequests";
-        workspace.append(pullRequests);
-      }
-    });
-    const worktrees = page.locator("#workspaceWorktrees");
-    await expect(worktrees).toContainText("Lokale worktrees en branches");
-    await expect(worktrees).toContainText("codex/polish");
-    await expect(worktrees.locator(".workspace-worktrees__active")).toHaveAttribute("aria-label", "Huidige actieve worktree");
-    await expect(worktrees).toContainText("/tmp/polish");
-    await expect(worktrees.locator(".workspace-worktrees__refresh")).toHaveCount(0);
-    await expect(worktrees.locator(".workspace-worktrees__remove")).toHaveCount(0);
-    await expect(worktrees.locator(".workspace-worktrees__path--open")).toHaveCount(0);
-    await expect(worktrees).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(worktrees.locator("ul")).toHaveCSS("overflow-y", "auto");
-    await expect(worktrees.locator("ul").first().locator("li").first()).toHaveCSS("padding-bottom", "16px");
-    await expect(worktrees.locator(".workspace-branch-actions")).not.toContainText("Beoordeel losse lokale branches");
-    await expect(worktrees.locator(".workspace-branch-actions")).toContainText("Switch naar FF main");
-    expect(await page.evaluate(() => {
-      const worktrees = document.querySelector("#workspaceWorktrees");
-      const pullRequests = document.querySelector("#workspaceOpenPullRequests");
-      return Boolean(worktrees.compareDocumentPosition(pullRequests) & Node.DOCUMENT_POSITION_FOLLOWING);
-    })).toBe(true);
-    expect(await page.evaluate(() => {
-      const worktrees = document.querySelector("#workspaceWorktrees");
-      const actions = worktrees?.querySelector(".workspace-branch-actions");
-      return actions?.previousElementSibling?.tagName;
-    })).toBe("UL");
-    await page.evaluate(() => window.renderWorkspaceWorktrees({ available: true, worktrees: [
-      { path: null, branch: "main", commit: "fedcba987654", checked_out: false },
-      { path: "/workspace", branch: "codex/refreshed", commit: "fedcba987654" },
-    ] }));
-    await expect(worktrees).toContainText("main");
-    await expect(worktrees).toContainText("Niet lokaal uitgecheckt");
-    await expect(worktrees).toContainText("codex/refreshed");
-    await expect(worktrees).not.toContainText("codex/polish");
+    await expect(page.locator("#workspaceCard")).toHaveCount(0);
+    await expect(page.locator("#workspaceWorktrees")).toHaveCount(0);
+    await expect(page.locator("#workspaceOpenPullRequests")).toHaveCount(0);
   });
 
   test("copies local filesystem paths without a Finder route", async ({ page }) => {
@@ -854,13 +819,7 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
-    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
-    const workspace = page.locator("#workspaceCard pre").first();
-    const workspacePath = await workspace.textContent();
-    // This is translated by the active Console locale.  The retirement
-    // invariant is that it is explanatory text, never a browseable path.
-    expect(workspacePath?.trim()).toBeTruthy();
-    expect(workspacePath).not.toMatch(/[\\/]/);
+    await expect(page.locator("#workspaceCard")).toHaveCount(0);
 
     await page.evaluate(() => rateLimits({
       provider: "Codex CLI", provider_version: "0.150.1",
@@ -885,12 +844,6 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(checkout).toHaveText("/Users/example/Documents/GitHub/djconnect");
     await expect(checkout).not.toHaveAttribute("href", /file:/);
 
-    await page.evaluate(() => renderWorkspaceWorktrees({ available: true, worktrees: [
-      { path: "/Users/example/Documents/GitHub/djconnect", branch: "main", commit: "123456789abc" },
-    ] }));
-    const worktreePath = page.locator("#workspaceWorktrees .workspace-worktrees__path");
-    await expect(worktreePath).toHaveAttribute("type", "button");
-    await expect(worktreePath).not.toHaveAttribute("href", /file:/);
     await expect.poll(() => requestedDirectories).toEqual([]);
   });
 
@@ -1035,44 +988,14 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
-  test("hides an acknowledged main switch while the old dashboard document awaits restart", async ({ page }) => {
-    await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/workspace-switch-to-main", async (route) => {
-      await route.fulfill({ status: 202, json: {
-        previous_branch: "codex/polish-workspace-actions",
-        branch: "main",
-        synchronized: "true",
-        engineering_platform: "restart_scheduled",
-      } });
-    });
+  test("does not expose a retired main-switch action", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
-    await page.locator("#autoRefresh").uncheck();
-    await page.locator("#workspaceBranchMain").evaluate((element) => { element.hidden = false; });
-
-    const switchMain = page.locator("#workspaceBranchMain");
-    await expect(switchMain).toBeVisible();
-    await dispatchDashboardPointerClick(switchMain);
-    await page.locator("#confirmationModalConfirm").click();
-    await expect(page.locator("#workspaceBranchMainResultModal")).toBeVisible();
-    await expect(switchMain).toBeHidden();
-    expect(readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8")).toContain(
-      "workspaceMainSwitchScheduled || !workspaceGit.main_action_available",
-    );
+    await expect(page.locator("#workspaceBranchMain")).toHaveCount(0);
+    await expect(page.locator("#workspaceBranchMainResultModal")).toHaveCount(0);
   });
 
-  test("does not offer a worktree switch for the active worktree", async ({ page }) => {
-    await page.route("**/api/events", (route) => route.abort());
-    const projection = { available: true, worktrees: [
-      { path: "/workspace", branch: "main", commit: "123456789abc" },
-      { path: "/tmp/current-worktree", branch: "codex/current-worktree", commit: "abcdef123456", active: true },
-    ] };
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+  test("does not expose a retired worktree switch", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
-    await page.evaluate((fixture) => window.renderWorkspaceWorktrees(fixture), projection);
-
-    await expect(page.locator(".workspace-worktrees__active")).toBeVisible();
     await expect(page.getByRole("button", { name: "Schakel naar worktree" })).toHaveCount(0);
   });
 
@@ -1083,6 +1006,20 @@ test.describe("Engineering Status browser smoke", () => {
       (buttons) => [...new Set(buttons.map((button) => getComputedStyle(button).fontWeight))],
     );
     expect(weights).toEqual(["400"]);
+  });
+
+  test("gives every visible dashboard action a filled surface in both themes", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    const transparentActions = () => page.evaluate(() => [...document.querySelectorAll("button")]
+      .filter((button) => getComputedStyle(button).display !== "none")
+      // These are semantic hyperlinks or switch tracks, not conventional buttons.
+      .filter((button) => !button.matches(".local-folder-link,.telemetry-run-link,.theme-toggle,.section-state-toggle"))
+      .filter((button) => getComputedStyle(button).backgroundColor === "rgba(0, 0, 0, 0)")
+      .map((button) => button.id || button.className || button.textContent?.trim()));
+    expect(await transparentActions()).toEqual([]);
+    await page.locator("#themeToggle").click();
+    expect(await transparentActions()).toEqual([]);
   });
 
   test("uses the language pulldown style for every single-choice select", async ({ page }) => {
@@ -1107,6 +1044,10 @@ test.describe("Engineering Status browser smoke", () => {
   test("fills the component log picker from the initial platform-health model", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await waitForDashboardReady(page);
+    await page.evaluate(
+      ({ components, component_model }) => renderPlatformHealth({ components, component_model }),
+      { components: canonicalPlatformComponents(), component_model: canonicalPlatformComponentModel() },
+    );
     const select = page.locator("#logComponentFilter");
     const nativeOptionCount = await select.locator("option").count();
     expect(nativeOptionCount).toBeGreaterThan(1);
@@ -4087,7 +4028,9 @@ test.describe("Engineering Status browser smoke", () => {
       }));
 
     expect(surfaces.length).toBeGreaterThan(0);
-    expect(surfaces.every((surface) => surface.backgroundImage === "none")).toBe(true);
+    // A solid or category-tinted gradient is an opaque surface. Remote image
+    // chrome would be a regression on mobile, but is not required for fill.
+    expect(surfaces.every((surface) => !surface.backgroundImage.startsWith("url("))).toBe(true);
     expect(surfaces.every((surface) => surface.backdropFilter === "none")).toBe(true);
     const optionsToggle = await page.getByTestId("titlebar-options-toggle").evaluate((element) => {
       const style = getComputedStyle(element);
@@ -4308,13 +4251,13 @@ test.describe("Engineering Status browser smoke", () => {
       json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const expectations = [
-      ["en", "Workspace location", "Specialist reviewers", "Run cumulative input tokens", "Use reset"],
-      ["nl", "Werkruimtelocatie", "Specialistische reviewers", "Cumulatieve invoertokens van de run", "Gebruik reset"],
-      ["de", "Arbeitsbereichspfad", "Spezialisierte Reviewer", "Kumulative Eingabetoken des Durchlaufs", "Zurücksetzung verwenden"],
-      ["fr", "Emplacement de l’espace de travail", "Évaluateurs spécialisés", "Jetons d’entrée cumulés de l’exécution", "Utiliser la réinitialisation"],
-      ["es", "Ubicación del espacio de trabajo", "Revisores especializados", "Tokens de entrada acumulados de la ejecución", "Usar restablecimiento"],
+      ["en", "Specialist reviewers", "Run cumulative input tokens", "Use reset"],
+      ["nl", "Specialistische reviewers", "Cumulatieve invoertokens van de run", "Gebruik reset"],
+      ["de", "Spezialisierte Reviewer", "Kumulative Eingabetoken des Durchlaufs", "Zurücksetzung verwenden"],
+      ["fr", "Évaluateurs spécialisés", "Jetons d’entrée cumulés de l’exécution", "Utiliser la réinitialisation"],
+      ["es", "Revisores especializados", "Tokens de entrada acumulados de la ejecución", "Usar restablecimiento"],
     ];
-    for (const [language, workspaceLocation, reviewers, inputTokens, reset] of expectations) {
+    for (const [language, reviewers, inputTokens, reset] of expectations) {
       const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       // Do not inject the localized runtime projection before the initial
@@ -4340,7 +4283,7 @@ test.describe("Engineering Status browser smoke", () => {
         usage: { input_tokens: 42 },
         rate_limits: { provider: "codex_cli", reset_credits: 1 },
       }));
-      await expect(page.locator("#workspaceCard .field .label").nth(1)).toHaveText(workspaceLocation);
+      await expect(page.locator("#workspaceCard")).toHaveCount(0);
       await expect(page.locator("#activeReviewerAgents strong")).toHaveText(reviewers);
       await expect(page.locator("#usageDetails")).toContainText(inputTokens);
       await expect(page.locator("#rateLimitReset")).toHaveText(reset);
@@ -6227,13 +6170,16 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(allSections).toHaveAttribute("aria-checked", "false");
     await touch(allSections);
     await expect(allSections).toHaveAttribute("aria-checked", "true");
-    for (const id of ["workspaceCard", "queueItems", "promptHistory", "platformHealth", "technicalDetails", "componentLogs"])
+    for (const id of ["queueItems", "promptHistory", "platformHealth", "technicalDetails", "componentLogs"])
       await expect(page.locator(`#${id}`)).toHaveAttribute("open", "");
     await expect.poll(storedState).toMatchObject({ allSectionsOpen: true });
     await expect.poll(() => page.evaluate(() => localStorage.getItem("engineering-dashboard-all-sections-open-v1"))).toBe("true");
 
     await expect(autoRefresh).toBeChecked();
-    await touch(autoRefresh);
+    // On a touch device the labelled control is the intended hit target,
+    // including its deliberately spacious mobile row; tapping the native
+    // checkbox's painted pseudo-element is browser-engine dependent.
+    await touch(page.locator(".auto-refresh-toggle"));
     await expect(autoRefresh).not.toBeChecked();
     await expect.poll(storedState).toMatchObject({ autoRefresh: false });
 
@@ -6505,7 +6451,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("src", "/assets/operations-console/icon-transparent.png");
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("aria-hidden", "true");
-    await expect(page.locator(".dashboard-splash__version")).toContainText("2.0.0");
+    await expect(page.locator(".dashboard-splash__version")).toHaveAttribute("data-platform-version", /^2\.1\.\d+$/);
     await expect(page.locator(".dashboard-splash__loading")).toHaveText("Gegevens laden…");
     await expect(page.locator(".dashboard-splash__version")).toHaveCSS("color", "rgb(240, 182, 106)");
     await expect(page.locator(".dashboard-splash__spinner")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
@@ -7317,10 +7263,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
       document.documentElement.dataset.theme = "dark";
-      document.getElementById("workspaceCard").open = true;
+      document.getElementById("queueItems").open = true;
     });
 
-    const surfaces = await page.locator("#workspaceCard").evaluate((element) => {
+    const surfaces = await page.locator("#queueItems").evaluate((element) => {
       const summary = element.querySelector("summary");
       return {
         content: getComputedStyle(element).backgroundColor,
@@ -7333,16 +7279,16 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps main-category descriptions visible inside collapsed headings", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    const workspace = page.locator("#workspaceCard");
-    await workspace.evaluate((element) => { element.open = false; });
+    const category = page.locator("#queueItems");
+    await category.evaluate((element) => { element.open = false; });
 
-    const description = workspace.locator(":scope > summary > .category-description");
-    await expect(description).toHaveText("De lokale werkruimte en opslag die voor dit project worden gebruikt.");
+    const description = category.locator(":scope > summary > .category-description");
+    await expect(description).toHaveText("Nieuwe opdrachten wachten op uitvoering in volgorde van aanmaakdatum.");
     await expect(description).toBeVisible();
-    await expect(workspace.locator(":scope > summary")).toHaveCSS("border-bottom-width", "0px");
-    await expect(workspace.locator(":scope > summary")).toHaveCSS("margin-bottom", "0px");
-    await workspace.evaluate((element) => { element.open = true; });
-    await expect(workspace.locator(":scope > summary")).toHaveCSS("border-bottom-width", "1px");
+    await expect(category.locator(":scope > summary")).toHaveCSS("border-bottom-width", "0px");
+    await expect(category.locator(":scope > summary")).toHaveCSS("margin-bottom", "0px");
+    await category.evaluate((element) => { element.open = true; });
+    await expect(category.locator(":scope > summary")).toHaveCSS("border-bottom-width", "1px");
   });
 
   test("refines the active duration indication with comparable runtime history", async ({ page }) => {
@@ -7740,7 +7686,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(gap).toBeGreaterThanOrEqual(10);
   });
 
-  test("keeps vertical spacing before the dismiss action without restart support", async ({ page }) => {
+  test("keeps the dismiss action in its stable grid position without restart support", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
       component: "lifecycle_worker",
@@ -7749,7 +7695,8 @@ test.describe("Engineering Status browser smoke", () => {
       launchd: {},
       restart_supported: false,
     }));
-    await expect(page.locator("#componentModalDismiss")).toHaveCSS("margin-top", "18px");
+    await expect(page.locator("#componentModalDismiss")).toHaveCSS("min-height", "44px");
+    await expect(page.locator("#componentModalActions")).toHaveCSS("grid-template-columns", /\d+px \d+px/);
   });
 
   test("keeps the confirmation cancel action dark in dark mode", async ({ page }) => {
@@ -7832,7 +7779,7 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#platformHealth").evaluate((element) => { element.open = true; });
-    await dispatchDashboardPointerClick(page.locator(".platform-health__component").filter({ hasText: "EP-server" }));
+    await dispatchDashboardPointerClick(page.getByRole("button", { name: "Meer informatie over EP-server" }));
 
     await expect(page.locator("#componentModalContent")).toContainText("Uptime10s");
     await expect(page.locator("#componentModalContent")).toContainText("PID 42: 1.0 MiB");
@@ -8577,7 +8524,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(styles.buttonBackground).toBe("rgb(37, 37, 48)");
     expect(styles.buttonColor).toBe("rgb(247, 243, 238)");
     expect(styles.menuBackground).toBe("rgb(37, 37, 48)");
-    expect(styles.optionBackground).toBe("rgb(37, 37, 48)");
+    expect(styles.optionBackground).not.toBe("rgba(0, 0, 0, 0)");
     expect(styles.optionColor).toBe("rgb(247, 243, 238)");
   });
 
@@ -8800,18 +8747,16 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator('#dashboardFavicon')).toHaveAttribute("href", "/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2");
     await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2");
     await expect(page.getByTestId("dashboard-app-icon")).toHaveAttribute("src", "/assets/operations-console/icon-transparent.png");
-    await expect(page.getByTestId("engineering-workspace")).not.toHaveAttribute("open", "");
-    expect(await page.getByTestId("engineering-workspace").evaluate((element) => element.parentElement.id)).toBe("engineering-dashboard-content");
+    await expect(page.getByTestId("engineering-workspace")).toHaveCount(0);
     await expect(page.getByTestId("engineering-inbox-queue")).not.toHaveAttribute("open", "");
     await expect(page.getByTestId("platform-health")).not.toHaveAttribute("open", "");
     await expect(page.locator("#queueItems > summary .category-icon")).toHaveText("☷");
-    await expect(page.locator("#workspaceCard > summary .category-icon")).toHaveText("⌂");
     await expect(page.locator("#rateLimits > summary .category-icon")).toHaveText("◔");
     await expect(page.locator("#technicalDetails > summary .category-icon")).toHaveText("⌘");
     await expect(page.locator("#componentLogs > summary .category-icon")).toHaveText("≡");
     await expect(page.locator("#configuration > summary .category-icon")).toHaveText("⚙︎");
     await expect(page.locator("#configuration > summary .category-description")).toHaveText("Huidige lokale instellingen en controle-intervallen van het Engineering Platform.");
-    for (const selector of ["#workspaceCard > summary", "#queueItems > summary", "#rateLimits > summary", "#componentLogs > summary"]) {
+    for (const selector of ["#queueItems > summary", "#rateLimits > summary", "#componentLogs > summary"]) {
       expect(await page.locator(selector).evaluate((summary) => getComputedStyle(summary, "::before").right)).toBe("0px");
     }
     const arrowGeometry = await page.locator("#queueItems").evaluate((category) => {
@@ -8856,10 +8801,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#executionTelemetryRows tr td").first()).toHaveText("01-08-2026");
     expect(await page.evaluate(() => [
       document.getElementById("technicalDetails").nextElementSibling.id,
-      document.getElementById("workspaceCard").nextElementSibling.id,
       document.getElementById("executionTelemetry").nextElementSibling.id,
       document.getElementById("platformHealth").nextElementSibling.id,
-    ])).toEqual(["workspaceCard", "executionTelemetry", "platformHealth", "componentLogs"]);
+    ])).toEqual(["executionTelemetry", "platformHealth", "componentLogs"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
     expect(await page.evaluate(() => {
       const mainCategory = document.getElementById("componentLogs");
@@ -9712,16 +9656,15 @@ test.describe("Engineering Status browser smoke", () => {
     await toggle.evaluate((button) => button.click());
     await expect(toggle).toHaveAttribute("aria-checked", "true");
     await expect(toggle).toHaveAttribute("aria-label", "Alle secties sluiten");
-    for (const id of ["workspaceCard", "configuration", "promptHistory", "platformHealth", "componentLogs"]) {
+    for (const id of ["configuration", "promptHistory", "platformHealth", "componentLogs"]) {
       await expect(page.locator(`#${id}`)).toHaveAttribute("open", "");
     }
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(toggle).toHaveAttribute("aria-checked", "true");
-    await expect(page.locator("#workspaceCard")).toHaveAttribute("open", "");
 
     await toggle.evaluate((button) => button.click());
     await expect(toggle).toHaveAttribute("aria-checked", "false");
-    for (const id of ["workspaceCard", "configuration", "platformHealth", "componentLogs"]) {
+    for (const id of ["configuration", "platformHealth", "componentLogs"]) {
       await expect(page.locator(`#${id}`)).not.toHaveAttribute("open", "");
     }
   });
@@ -10108,7 +10051,7 @@ test.describe("Engineering Status browser smoke", () => {
       json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await dispatchDashboardPointerClick(page.locator("#workspaceCard > summary"));
+    await expect(page.locator("#workspaceCard")).toHaveCount(0);
     await expect(page.locator("#workspaceBranchCleanup")).toHaveCount(0);
     await expect(page.locator("#workspaceBranchCleanupResultModal")).toHaveCount(0);
   });
@@ -10468,16 +10411,18 @@ test.describe("Engineering Status browser smoke", () => {
     const card = page.locator("#platformHealth .platform-health__component").filter({ hasText: "EP-server" });
     await expect(card).toHaveAttribute("data-health", "true");
     await expect(card).not.toContainText("Inbox-watcher");
-    await expect(page.locator("#platformHealth .platform-health__component-name")).toHaveText([
+    const names = await page.locator("#platformHealth .platform-health__component-name").allTextContents();
+    expect(names).toEqual(expect.arrayContaining([
       "EP-server",
       "Platformdatabase",
       "Lifecycle Worker",
       "Operations Console",
-      "Server Relay↗",
+      "Server Relay",
       "HTTP/API-ingang",
       "CLI-ingang",
       "Bestandsinbox-ingang",
-    ]);
+    ]));
+    expect(names).not.toContain("Server Relay↗");
   });
 
   test("opens canonical ingress details from the status popout", async ({ page }) => {
@@ -10589,5 +10534,30 @@ test.describe("Engineering Status browser smoke", () => {
       return target === element || element.contains(target);
     });
     expect(frontmost).toBe(true);
+  });
+
+  test("refreshes logs immediately after automatic refresh is re-enabled", async ({ page }) => {
+    let snapshots = 0, logQueries = 0;
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => {
+      snapshots += 1;
+      return route.fulfill({ json: {
+        status: { watcher_state: "WATCHER_IDLE" },
+        component_log_versions: { operations_console: String(snapshots) },
+      } });
+    });
+    await page.route("**/api/logs/**", (route) => {
+      logQueries += 1;
+      return route.fulfill({ json: {
+        entries: [], total: 0, events: [], page: 1, page_size: 50,
+      } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => componentLogsLoaded === true);
+    await page.locator("#autoRefresh").uncheck();
+    const beforeReenable = { snapshots, logQueries };
+    await page.locator("#autoRefresh").check();
+    await expect.poll(() => snapshots).toBeGreaterThan(beforeReenable.snapshots);
+    await expect.poll(() => logQueries).toBeGreaterThan(beforeReenable.logQueries);
   });
 });

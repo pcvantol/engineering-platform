@@ -99,6 +99,52 @@ def wait_for_file(path: Path, timeout: float = 15) -> None:
         raise RuntimeError(f"timed out waiting for {path}")
 
 
+def wait_for_platform_health(base: str, timeout: float = 15) -> dict[str, object]:
+    """Require aggregate health from the installed Server after startup."""
+    expected_components = {
+        "ep_server", "platform_database", "lifecycle_worker", "operations_console",
+        "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress",
+        "dependabot_producer",
+    }
+    deadline = time.monotonic() + timeout
+    last: dict[str, object] | None = None
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(base + "/health", timeout=.5) as response:  # nosec B310
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise RuntimeError("PLATFORM_HEALTH_PAYLOAD_INVALID")
+            components = payload.get("components")
+            if not isinstance(components, dict) or set(components) != expected_components:
+                raise RuntimeError("PLATFORM_HEALTH_COMPONENT_INVENTORY_INVALID")
+            if any(
+                not isinstance(component, dict) or not isinstance(component.get("healthy"), bool)
+                for component in components.values()
+            ):
+                raise RuntimeError("PLATFORM_HEALTH_COMPONENT_STATUS_INVALID")
+            # The endpoint must account for every observed component, not
+            # merely expose an aggregate.  Optional adapters can be reported
+            # degraded without making the critical Server contract unavailable.
+            observed_unhealthy = {
+                component_id for component_id, component in components.items()
+                if component["healthy"] is False
+            }
+            if set(payload.get("unhealthy_components", [])) != observed_unhealthy:
+                raise RuntimeError("PLATFORM_HEALTH_UNHEALTHY_COMPONENTS_INVALID")
+            if payload.get("health") == "ok" and payload.get("healthy") is True:
+                return payload
+            last = payload
+        except HTTPError as error:
+            try:
+                last = json.loads(error.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                last = {"http_status": error.code}
+        except OSError:
+            pass
+        time.sleep(.1)
+    raise RuntimeError(f"PLATFORM_HEALTH_SMOKE_FAILED: {last}")
+
+
 def isolated_port() -> int:
     """Ask the OS for an ephemeral loopback port for this isolated fixture."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -203,6 +249,12 @@ def main(argv: list[str] | None = None) -> int:
                             break
                     except OSError:
                         time.sleep(.1)
+                health = wait_for_platform_health(base)
+                evidence.setdefault("PLATFORM_HEALTH_SMOKE", {
+                    "pass": True,
+                    "health": health["health"],
+                    "component_count": len(health["components"]),
+                })
                 item = payload(repository, mode, f"installed-{ordinal}")
                 if transport == "HTTP":
                     request = Request(base + f"/v1/projects/{project}/submissions", data=json.dumps(item).encode(), method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {credential}"})

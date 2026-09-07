@@ -1660,6 +1660,26 @@ class LocalAgentRunnerTest(unittest.TestCase):
         recorded = runner._append_verified_commit_evidence(state, phase="EXECUTE_AGENT", commit_sha=sha, description="implementation_agent_commit_verified")
         self.assertEqual(len(recorded.commit_evidence), 1)
         self.assertEqual(runner._append_verified_commit_evidence(recorded, phase="EXECUTE_AGENT", commit_sha=sha, description="implementation_agent_commit_verified"), recorded)
+        saturated = TransactionState(
+            "saturated-commit-evidence", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            commit_evidence=tuple(
+                {"phase": "EXECUTE_AGENT", "commit_sha": f"{index:040x}"}
+                for index in range(execution_host.MAX_COMMIT_EVIDENCE_RECORDS)
+            ),
+        )
+        self.assertEqual(
+            runner._append_verified_commit_evidence(
+                saturated, phase="EXECUTE_AGENT", commit_sha="b" * 40, description="capacity reached",
+            ),
+            saturated,
+        )
+        with patch("engineering_platform.execution_host.verified_commit_evidence_record", side_effect=StateError("invalid evidence")):
+            self.assertEqual(
+                runner._append_verified_commit_evidence(
+                    state, phase="EXECUTE_AGENT", commit_sha="c" * 40, description="invalid evidence",
+                ),
+                state,
+            )
         audit = runner._audit_record(iteration=1, failed_checks="suite", proposed_action="repair", result=None, outcome="planned", empty_summary="none")
         self.assertEqual(audit["agent_summary"], "none")
 
@@ -3797,8 +3817,6 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_incompatible_admitted_storage_schema_is_rejected_before_state_is_saved(self) -> None:
         compatibility = RunnerCompatibility(
-            platform_version="2.0.0",
-            runner_version="2.0.0",
             bootstrap_contract="2026.12",
             checkpoint_formats=frozenset({1}),
             memory_formats=frozenset({2}),
@@ -4675,9 +4693,9 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         self.assertEqual(success.exit_code, 0)
         self.assertTrue(success.diagnostic_capture_available)
         self.assertIsNotNone(process.environment)
-        # Keep the configured launcher itself first.  Resolving a symlink here
-        # would replace an installed EP virtual-environment launcher with its
-        # base interpreter and let child validation escape the EP runtime.
+        # Keep the configured launcher itself first. Resolving a symlink here
+        # would select the framework Python and let a validation child escape
+        # the installed EP virtual environment.
         self.assertTrue(str(process.environment["PATH"]).startswith(str(Path(sys.executable).absolute().parent)))
         self.assertFalse((self.root / ".engineering" / "artifacts").exists())
         record_validation_profile(

@@ -38,6 +38,7 @@ from .engineering_memory import (
 )
 from .live_status import print_live_status, write_live_status, write_runner_process
 from .platform_version import (
+    CURRENT_PLATFORM_VERSION,
     EngineeringPlatformCompatibilityError,
     EngineeringPlatformManifest,
     RunnerCompatibility,
@@ -3192,7 +3193,7 @@ def main(argv: list[str] | None = None) -> int:
     # Execution is hosted by the canonical lifecycle worker; it must not
     # create an ad-hoc component identity in CENTRAL operational logs.
     logger = component_logger(root, "lifecycle_worker", central_database=central_database)
-    lifecycle_context = {"application_version": "2.0.0", "target_component": "lifecycle_worker"}
+    lifecycle_context = {"application_version": CURRENT_PLATFORM_VERSION, "target_component": "lifecycle_worker"}
     try:
         with shutdown_signal_logging(logger, lifecycle_context):
             state = runner.run(

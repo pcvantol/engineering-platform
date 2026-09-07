@@ -12,6 +12,7 @@ from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION
 
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 CONTRACT = re.compile(r"^(\d{4})\.(0[1-9]|1[0-2])$")
+CURRENT_PLATFORM_VERSION = "2.1.6"
 MANIFEST_FIELDS = frozenset(
     {
         "platform_version",
@@ -106,8 +107,8 @@ class EngineeringPlatformManifest:
 
 @dataclass(frozen=True)
 class RunnerCompatibility:
-    platform_version: str = "2.0.0"
-    runner_version: str = "2.0.0"
+    platform_version: str = CURRENT_PLATFORM_VERSION
+    runner_version: str = CURRENT_PLATFORM_VERSION
     bootstrap_contract: str = "2026.12"
     checkpoint_formats: frozenset[int] = frozenset({1})
     memory_formats: frozenset[int] = frozenset({1, 2})

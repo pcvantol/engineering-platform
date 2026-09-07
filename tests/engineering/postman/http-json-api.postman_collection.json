@@ -8,6 +8,11 @@
   "variable": [{"key": "baseUrl", "value": "http://127.0.0.1:8765"}],
   "item": [
     {
+      "name": "Aggregated platform health before runtime starts",
+      "request": {"method": "GET", "url": "{{baseUrl}}/health"},
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('critical component health is degraded before runtime start', () => pm.response.to.have.status(503));"]}}]
+    },
+    {
       "name": "Health",
       "request": {"method": "GET", "url": "{{baseUrl}}/healthz"},
       "event": [{"listen": "test", "script": {"exec": ["pm.test('health is available', () => pm.response.to.have.status(200));"]}}]
