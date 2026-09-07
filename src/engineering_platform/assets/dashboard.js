@@ -3431,10 +3431,15 @@ const LEGACY_TRANSPORT_DETAIL_CODES = Object.freeze({
   "File Inbox adapter heartbeat": "FILE_INBOX_HEARTBEAT",
   "File Inbox adapter heartbeat unavailable": "FILE_INBOX_HEARTBEAT_MISSING",
 });
-const TRANSPORT_DETAIL_CODES = new Set([
+const COMPONENT_DETAIL_CODES = new Set([
   "CENTRAL_LISTENER_ENDPOINT", "CENTRAL_LISTENER_UNAVAILABLE",
   "CANONICAL_SUBMISSION_COMPATIBILITY", "CENTRAL_ENDPOINT_UNAVAILABLE",
   "FILE_INBOX_HEARTBEAT", "FILE_INBOX_HEARTBEAT_MISSING",
+  "DEPENDABOT_HEARTBEAT", "DEPENDABOT_HEARTBEAT_MISSING",
+  "EP_SERVER_ENDPOINT", "PLATFORM_DATABASE_STORAGE",
+  "LIFECYCLE_WORKER_SERVER_HOSTED", "OPERATIONS_CONSOLE_SERVER_NATIVE",
+  "DASHBOARD_RELAY_TAILSCALE_AVAILABLE", "DASHBOARD_RELAY_LAUNCH_AGENT_UNLOADED",
+  "DASHBOARD_RELAY_PROCESS_INACTIVE", "DASHBOARD_RELAY_LIFECYCLE_UNAVAILABLE",
 ]);
 function transportState(code) {
   const raw = String(code || ""), normalized = LEGACY_TRANSPORT_STATUS_CODES[raw] || raw;
@@ -3444,17 +3449,16 @@ function transportState(code) {
 }
 function transportDetail(code) {
   const normalized = LEGACY_TRANSPORT_DETAIL_CODES[String(code)] || String(code || "");
-  const key = "transport.detail." + normalized;
   // Detail codes are a closed Server contract. Never turn an arbitrary
   // diagnostic string into a localization key (or leak it into the UI).
-  return TRANSPORT_DETAIL_CODES.has(normalized)
-    ? t(key)
-    : t("ui.no_component_explanation");
+  return COMPONENT_DETAIL_CODES.has(normalized)
+    ? t("component.detail." + normalized)
+    : "";
 }
 function transportComponentStatus(payload) {
   const state = transportState(payload.status_code || payload.state);
   const detail = transportDetail(payload.detail_code || payload.detail || payload.state);
-  return state + " · " + detail;
+  return [state, detail].filter(Boolean).join(" · ");
 }
 const DASHBOARD_HEALTH_VALUE_KEYS = new Set([
   "active", "blocked", "error", "none_active", "not_running", "queue_empty", "queue_waiting", "ready", "running", "unknown",
@@ -3787,13 +3791,13 @@ function renderPlatformHealth(payload) {
       Number.isFinite(Number(component?.quarantine_count)) ? t("transport.quarantine") + " " + component.quarantine_count : "",
       (component?.reason_code || component?.recent_error) ? t("transport.recent_error") + " " + t("transport.reason." + (component.reason_code || "FILE_INBOX_DIAGNOSTIC")) : "",
     ].filter(Boolean).join(" · ");
-    detail.textContent =
-      transportState(component?.status_code || component?.state || (componentHealthy ? "HTTP_INGRESS_HEALTHY" : "HTTP_INGRESS_DOWN")) +
-      " · " +
-      transportDetail(component?.detail_code || component?.detail || (componentHealthy ? "CENTRAL_LISTENER_ENDPOINT" : "CENTRAL_LISTENER_UNAVAILABLE")) +
-      version +
-      (uptime ? " · " + t("component.uptime") + " " + uptime : "") +
-      (transportFacts ? " · " + transportFacts : "");
+    detail.textContent = [
+      transportState(component?.status_code || component?.state || (componentHealthy ? "HTTP_INGRESS_HEALTHY" : "HTTP_INGRESS_DOWN")),
+      transportDetail(component?.detail_code || component?.detail || (componentHealthy ? "CENTRAL_LISTENER_ENDPOINT" : "CENTRAL_LISTENER_UNAVAILABLE")),
+      version ? version.slice(3) : "",
+      uptime ? t("component.uptime") + " " + uptime : "",
+      transportFacts,
+    ].filter(Boolean).join(" · ");
     info.className = "component-info";
     info.textContent = "i";
     info.setAttribute("aria-hidden", "true");

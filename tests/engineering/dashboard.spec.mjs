@@ -6709,6 +6709,28 @@ test.describe("Engineering Status browser smoke", () => {
     expect(componentText).not.toContain("Statusopslag");
   });
 
+  test("renders every canonical component detail without an explanation fallback", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const rendered = await page.evaluate(() => {
+      renderPlatformHealth({ components: {
+        ep_server: { healthy: true, status_code: "EP_SERVER_ACTIVE", detail_code: "EP_SERVER_ENDPOINT" },
+        platform_database: { healthy: true, status_code: "PLATFORM_DATABASE_HEALTHY", detail_code: "PLATFORM_DATABASE_STORAGE" },
+        lifecycle_worker: { healthy: true, status_code: "LIFECYCLE_WORKER_ACTIVE", detail_code: "LIFECYCLE_WORKER_SERVER_HOSTED" },
+        operations_console: { healthy: true, status_code: "OPERATIONS_CONSOLE_AVAILABLE", detail_code: "OPERATIONS_CONSOLE_SERVER_NATIVE" },
+        dashboard_relay: { healthy: true, status_code: "DASHBOARD_RELAY_ACTIVE", detail_code: "DASHBOARD_RELAY_TAILSCALE_AVAILABLE" },
+        unrecognized_component: { healthy: true, status_code: "EP_SERVER_ACTIVE", detail_code: "UNRECOGNIZED_DETAIL_CODE" },
+      }});
+      return document.querySelector("#platformHealthComponents")?.textContent || "";
+    });
+    expect(rendered).toContain("Via Tailscale beschikbaar");
+    expect(rendered).toContain("Host voor platformcomponenten");
+    expect(rendered).not.toContain("Geen toelichting");
+    for (const language of SUPPORTED_LOCALES) {
+      expect(DASHBOARD_MESSAGES[language]["component.detail.DASHBOARD_RELAY_TAILSCALE_AVAILABLE"]).toBeTruthy();
+      expect(DASHBOARD_MESSAGES[language]["component.detail.EP_SERVER_ENDPOINT"]).toBeTruthy();
+    }
+  });
+
   test("centres component information actions and balances component-card text padding", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#platformHealth").evaluate((element) => { element.open = true; });

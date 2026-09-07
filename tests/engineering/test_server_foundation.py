@@ -574,6 +574,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(component["status_code"], "DASHBOARD_RELAY_ACTIVE")
         self.assertEqual(component["lifecycle_state"], "RUNNING")
         self.assertEqual(component["uptime_seconds"], 30)
+        self.assertEqual(component["detail_code"], "DASHBOARD_RELAY_TAILSCALE_AVAILABLE")
 
         with patch("engineering_platform.server._runtime", return_value={"pid": 73}), patch(
             "engineering_platform.server._alive", return_value=True
@@ -581,9 +582,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             launchd.return_value.runtime_status.return_value = ProviderStatus(
                 "launchd", "configured", False, "LaunchAgent is not loaded"
             )
+            launchd.return_value.runtime_details.return_value = LaunchdRuntimeDetails(
+                "com.engineeringplatform.dashboard-relay", False, False, None, None,
+            )
             component = server.status(self.root)["components"]["dashboard_relay"]
         self.assertFalse(component["healthy"])
         self.assertEqual(component["status_code"], "DASHBOARD_RELAY_UNAVAILABLE")
+        self.assertEqual(component["detail_code"], "DASHBOARD_RELAY_LAUNCH_AGENT_UNLOADED")
 
     def test_only_the_canonical_relay_lifecycle_can_be_restarted(self) -> None:
         server.initialize(self.root)

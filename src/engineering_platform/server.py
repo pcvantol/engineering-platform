@@ -1282,10 +1282,18 @@ def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
     except OSError:
         observed, relay_running, detail = None, False, "lifecycle owner unavailable"
     healthy = server_running and relay_running
+    if healthy:
+        detail_code = "DASHBOARD_RELAY_TAILSCALE_AVAILABLE"
+    elif observed is not None and not observed.loaded:
+        detail_code = "DASHBOARD_RELAY_LAUNCH_AGENT_UNLOADED"
+    elif observed is not None and not observed.active:
+        detail_code = "DASHBOARD_RELAY_PROCESS_INACTIVE"
+    else:
+        detail_code = "DASHBOARD_RELAY_LIFECYCLE_UNAVAILABLE"
     return {
         "healthy": healthy,
         "status_code": definition.active_status if healthy else definition.inactive_status,
-        "detail_code": definition.detail_code,
+        "detail_code": detail_code,
         "lifecycle_label": label,
         "lifecycle_state": "RUNNING" if relay_running else "STOPPED",
         # A Relay has its own LaunchAgent process.  Never substitute a
