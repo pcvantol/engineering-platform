@@ -27,7 +27,9 @@ class DeterministicQualificationAgent:
         return AgentResult("COMPLETE", branch="qualification-managed", pull_request=1, commit_sha=sha)
 
     def available(self) -> bool: return True
-    def version(self) -> str: return "qualification-deterministic-v1"
+    # Keep the public provider-version contract valid so the normal installed
+    # compatibility gate remains part of qualification.
+    def version(self) -> str: return "0.153.4"
     def review(self, _root: Path, selection: object, _objective: str, evidence: object = None) -> ReviewerResult:
         return ReviewerResult(getattr(selection, "reviewer"), "Deterministic read-only assurance passed.")
 
