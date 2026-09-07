@@ -3244,6 +3244,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, result)
             return
         if method == "do_POST" and request.path == "/api/queue-disposition":
+            if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                self._send(403, {"error": "INVALID_ORIGIN"})
+                return
             if not isinstance(selected, str) or selected not in project_ids:
                 self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
                 return
