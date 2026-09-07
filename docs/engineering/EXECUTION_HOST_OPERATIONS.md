@@ -144,6 +144,24 @@ once consumed it cannot be disarmed or fired again. Prompt text and submission
 provenance cannot create this control, and it never creates a retry submission
 or new root run.
 
+For qualification, run the control together with the recovery tests rather
+than treating an armed marker as a passing result. The required evidence is:
+`ARMED` before the boundary, one `CONSUMED` control artifact at
+`QUALITY_CONTROL_AGENT`, one recovery/retry lineage, and one terminal outcome.
+The deterministic Genesis/Managed installed E2E lives in
+`tools/qualification/p_deterministic_execution_e2e.py`; it uses an isolated
+CENTRAL root and local Git fixture, and deliberately does not use this operator
+fault control. The dedicated provider-recovery test suite qualifies the armed
+one-shot and retry semantics.
+
+## CENTRAL project lanes
+
+CENTRAL retains a FIFO lane per project. It permits at most one active,
+blocked-with-open-resolution, or retry-pending run in that project. The
+Lifecycle Worker may dispatch one eligible run from each different project in
+parallel, so a Genesis and a Managed run in separate projects may overlap; a
+second run in either same project cannot.
+
 ## Local repository validation gate
 
 Validation is selected from the actual bounded-branch diff. Documentation and

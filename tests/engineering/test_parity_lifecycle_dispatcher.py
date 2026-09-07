@@ -151,6 +151,23 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertFalse((self.roots["alpha"] / ".engineering" / "engineering.db").exists())
         self.assertFalse((self.roots["alpha"] / ".engineering" / "engineering-runs").exists())
 
+    def test_initialize_only_dispatch_materializes_input_on_normal_resume(self) -> None:
+        """A visible pre-run dispatch remains resumable after qualification pauses it."""
+        submission = self._submission("alpha")
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        with patch.dict(os.environ, {"EP_QUALIFICATION_INITIALIZE_ONLY": "1"}, clear=False):
+            initialized = dispatcher.dispatch(submission)
+        prompt = self.data / "artifacts" / "projects" / "alpha" / "runs" / initialized.run_id / "submission.md"
+        self.assertEqual(initialized.state, "RUNNING")
+        self.assertFalse(prompt.exists())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            resumed = dispatcher.dispatch(submission)
+        self.assertTrue(resumed.duplicate_claim)
+        self.assertEqual(resumed.state, "COMPLETE")
+        self.assertTrue(prompt.is_file())
+
     def test_context_never_crosses_project_binding(self) -> None:
         alpha, beta = self._submission("alpha"), self._submission("beta")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
