@@ -133,6 +133,20 @@ class InstallationRelocationTest(unittest.TestCase):
         self.assertFalse(self.root.exists())
         self.assertEqual((destination / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
 
+    def test_cross_volume_copy_keeps_the_source_when_verification_fails(self) -> None:
+        """No source data may be removed until the destination inventory matches."""
+        destination = self.target / self.root.name
+        with patch("engineering_platform.installation_relocation._same_filesystem", return_value=False), patch(
+            "engineering_platform.installation_relocation._destination_filesystem", return_value="apfs"
+        ):
+            installation_relocation.prepare(self.root, str(self.target))
+            installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
+            with patch("engineering_platform.installation_relocation._file_checksums", side_effect=[{"proof": "source"}, {"proof": "different"}]):
+                with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_COPY_VERIFICATION_FAILED"):
+                    installation_relocation.apply_pending(self.root)
+        self.assertTrue((self.root / "artifacts/proof.txt").is_file())
+        self.assertFalse(destination.exists())
+
     def test_relocation_is_atomic_without_creating_a_compatibility_link(self) -> None:
         """A completed move has one canonical location and no old-path link."""
         destination = self.target / self.root.name

@@ -752,7 +752,10 @@ starting writers; it leaves no compatibility copy or symlink behind.
   example `…/central`), creates that empty directory and verifies it is
   writable. A target on another APFS-formatted disk, partition or mounted
   volume is supported: the Server copies and verifies the complete root before
-  it removes the source. A same-filesystem move remains an atomic rename.
+  it removes the source. If copying or verification fails, the source stays
+  authoritative and the incomplete destination is removed. A non-APFS
+  cross-volume target is refused before a destination folder is prepared. A
+  same-filesystem move remains an atomic rename.
   Closing the modal without relocating removes only that prepared,
   still-empty directory. An installed EP LaunchAgent is rewritten to the new
   root.
