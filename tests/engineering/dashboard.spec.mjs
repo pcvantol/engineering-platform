@@ -8224,6 +8224,16 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#centralDatabaseRelocateModal")).toBeVisible();
   });
 
+  test("keeps platform-data location links free of selected borders", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    const location = page.locator(".configuration-central-database__location-link");
+    await location.focus();
+    await expect(location).toHaveCSS("border-top-width", "0px");
+    await expect(location).toHaveCSS("outline-style", "none");
+    await expect(location).toHaveCSS("box-shadow", "none");
+  });
+
   test("uses shared semantic classes for download, copy and destructive actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download"]) {

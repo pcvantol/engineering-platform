@@ -408,7 +408,8 @@ An absolute local file or folder is evidence, never a navigation destination.
 Use the canonical `local-folder-link` text button: it is underlined, wraps
 safely, copies its displayed absolute path to the clipboard and confirms that
 action with the existing bottom-of-page copy toast. It must not open Finder,
-use `file:` URLs, or invoke a local-path server route.
+use `file:` URLs, invoke a local-path server route, or show a selected border
+or focus outline; its underline is the complete visual affordance.
 
 Server-rendered values use `data-local-path`; dynamic values use
 `window.__engineeringPlatformLocalFilesystemLink(value)`. Both paths resolve

@@ -970,7 +970,7 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
 /* Keep the input contract last: individual cards may colour their content,
    but they must never replace the selected-control border. */
 :where(input,select,textarea):is(:focus,:focus-visible){border-color:var(--dashboard-input-focus-border)!important;outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
-:where(button,summary,[role="button"],[tabindex]):not(#engineering-dashboard-content):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.log-sortable,.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll)):is(:focus,:focus-visible){outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
+:where(button,summary,[role="button"],[tabindex]):not(#engineering-dashboard-content):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.local-folder-link,.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.log-sortable,.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll)):is(:focus,:focus-visible){outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
 /* Every dialog owns a full-viewport, safe-area-aware shell. The visible panel
    is therefore always separated from iPhone edges, including modal families
    added after the original report/detail implementations. */
@@ -1036,7 +1036,7 @@ dialog.dashboard-modal-shell,dialog.dashboard-modal-shell:is(:focus,:focus-visib
    every visible interactive focus treatment in the house-style orange,
    including anchor actions inside dialogs. Deliberately non-focusing shells,
    table-row selection surfaces and lifecycle geometry remain excluded above. */
-:where(a[href],button,input,select,textarea,[role="button"],[tabindex]):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.log-sortable,.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll)):is(:focus,:focus-visible){border-color:var(--house-style)!important;outline-color:var(--house-style)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
+:where(a[href],button,input,select,textarea,[role="button"],[tabindex]):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.local-folder-link,.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.log-sortable,.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll)):is(:focus,:focus-visible){border-color:var(--house-style)!important;outline-color:var(--house-style)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
 /* Table scrollers are keyboard-scroll targets, not selected controls. Their
    outer surface never receives a focus ring; only independently interactive
    sortable headers retain their contained focus edge. */
@@ -1093,7 +1093,7 @@ html[data-theme="light"] .prompt-detail-modal__content .execution-lifecycle--his
 .workspace-worktrees__active{color:#69e6ad;display:inline-block;font:700 14px/1 system-ui;margin-right:7px;vertical-align:1px}html[data-theme="light"] .workspace-worktrees__active{color:#187843}
 /* Local paths remain text controls. Their only action is copying the displayed
    path, so the dashboard neither opens Finder nor follows file:// URLs. */
-.local-folder-link{-webkit-appearance:none;appearance:none;background:transparent!important;border:0;color:var(--modal-secondary-accent)!important;cursor:pointer;font:inherit;overflow-wrap:anywhere;padding:0;text-align:left;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}.local-folder-link:is(:hover,:active,:focus,:focus-visible):not(:disabled){background:transparent!important;box-shadow:none!important;color:var(--modal-secondary-accent)!important;text-decoration-thickness:2px}.local-folder-link:focus-visible{outline:2px solid var(--category-color);outline-offset:3px}.local-folder-link:disabled{cursor:default;opacity:1;text-decoration:none}.workspace-database__content .local-folder-link,.rate-limit-provider-path .local-folder-link{display:block;min-width:0;white-space:pre-wrap}
+.local-folder-link{-webkit-appearance:none;appearance:none;background:transparent!important;border:0;color:var(--modal-secondary-accent)!important;cursor:pointer;font:inherit;overflow-wrap:anywhere;padding:0;text-align:left;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}.local-folder-link:is(:hover,:active,:focus,:focus-visible):not(:disabled){background:transparent!important;box-shadow:none!important;color:var(--modal-secondary-accent)!important;outline:0!important;outline-offset:0!important;text-decoration-thickness:2px}.local-folder-link:disabled{cursor:default;opacity:1;text-decoration:none}.workspace-database__content .local-folder-link,.rate-limit-provider-path .local-folder-link{display:block;min-width:0;white-space:pre-wrap}
 .runtime-directory-link{font-family:ui-monospace,SFMono-Regular,Menlo,monospace!important}
 
 /* The Inbox location chooser inherits the exact indigo accent of its queue. */
@@ -1257,7 +1257,7 @@ html[data-theme="light"] #componentLogControls :is(input[type="date"],input[type
 /* Controls whose visible shape is a pseudo-element or a native checkbox have
    no normal border to recolour, so receive the same one-pixel edge directly. */
 :is(.dashboard-titlebar .theme-toggle,.dashboard-titlebar .section-state-toggle):is(:focus,:focus-visible)::before,
-:is(.dashboard-health__button,.auto-refresh-toggle input,.local-folder-link):is(:focus,:focus-visible){
+:is(.dashboard-health__button,.auto-refresh-toggle input):is(:focus,:focus-visible){
   box-shadow:none!important;
   outline:1px solid var(--house-style)!important;
   outline-offset:0!important;
