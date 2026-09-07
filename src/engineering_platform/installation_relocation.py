@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+from . import central_database
+
 
 class RelocationError(ValueError):
     """A requested local relocation cannot be safely completed."""
@@ -73,7 +75,7 @@ def _remove_prepared_destination(destination: Path) -> None:
 def prepare(data_root: Path, directory: object) -> dict[str, str]:
     """Create and prove write access to the exact future data-root folder."""
     root = Path(data_root).expanduser().resolve()
-    if not (root / "engineering.db").is_file():
+    if not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     destination = _destination(root, directory)
     if destination.exists():
@@ -105,7 +107,7 @@ def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
     if kind != "PLATFORM_DATA":
         raise RelocationError("RELOCATION_KIND_RETIRED")
     root = data_root.resolve()
-    if not (root / "engineering.db").is_file():
+    if not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     destination = _destination(root, directory)
     if destination.exists() and not _prepared_marker(destination).is_file() and destination.resolve() != root:
@@ -130,7 +132,7 @@ def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]
     destination = parent / root.name
     if destination == root or root in destination.parents or destination in root.parents:
         raise RelocationError("PLATFORM_DATA_DESTINATION_INVALID")
-    if not root.is_dir() or not (root / "engineering.db").is_file():
+    if not root.is_dir() or not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     if destination.exists() and not _prepared_marker(destination).is_file():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")

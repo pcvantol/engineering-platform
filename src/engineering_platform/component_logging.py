@@ -14,6 +14,7 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping
 
 from .agent_state import redact_diagnostic
+from . import central_database as central_database_module
 from .storage import EngineeringStorageError, open_storage
 from .providers import GitProvider
 from .platform_components import PLATFORM_COMPONENT_IDS
@@ -134,7 +135,7 @@ def component_logger(
     if central_database is None:
         configured_root = os.environ.get(SERVER_DATA_ROOT_ENVIRONMENT)
         if configured_root:
-            candidate = Path(configured_root).resolve() / "engineering.db"
+            candidate = central_database_module.path(Path(configured_root))
             if candidate.is_file():
                 central_database = candidate
     logger = logging.getLogger(f"engineering_platform.{component}")

@@ -713,6 +713,10 @@ The Configuration surface presents CENTRAL persistence as one **platform data**
 unit. It must not offer separate database or File Inbox relocation: both are
 durable parts of the same state and a partial move is unsafe.
 
+The only canonical CENTRAL database filename is `epdata.sqlite`. During an
+upgrade the Server promotes an existing `engineering.db` to that name before
+starting writers; it leaves no compatibility copy or symlink behind.
+
 - The displayed location is a `local-folder-link`, including its canonical
   copy-to-clipboard feedback.
 - Export is the filled text action **Exporteer platformgegevens** with the

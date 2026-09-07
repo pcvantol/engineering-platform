@@ -10,7 +10,8 @@ import sqlite3
 import tempfile
 
 
-DATABASE_FILENAME = "engineering.db"
+DATABASE_FILENAME = "epdata.sqlite"
+LEGACY_DATABASE_FILENAME = "engineering.db"
 MAINTENANCE_INTERVAL_KEY = "central_database.maintenance_interval_seconds"
 MAINTENANCE_LAST_ATTEMPT_KEY = "central_database.maintenance_last_attempt_at"
 PROVIDER_CAPACITY_HISTORY_KEY = "ep.provider_capacity_history.v1"
@@ -30,6 +31,27 @@ CONSOLE_CONFIGURATION_DEFAULTS = {"log_retention_days":30,"telemetry_retention_d
 
 def path(data_root: Path) -> Path:
     return data_root.resolve() / DATABASE_FILENAME
+
+
+def migrate_legacy_database(data_root: Path) -> None:
+    """Atomically promote the former CENTRAL filename before any writer starts."""
+    root = data_root.resolve()
+    database, legacy = path(root), root / LEGACY_DATABASE_FILENAME
+    if database.exists() and legacy.exists():
+        raise RuntimeError("CENTRAL_DATABASE_NAMES_AMBIGUOUS")
+    if database.exists() or not legacy.exists():
+        return
+    candidate = database.with_name(f".{DATABASE_FILENAME}.migrating")
+    try:
+        with sqlite3.connect(f"file:{legacy}?mode=ro", uri=True) as source, sqlite3.connect(candidate) as target:
+            source.backup(target)
+        candidate.chmod(0o600)
+        os.replace(candidate, database)
+        legacy.unlink()
+        for suffix in ("-journal", "-shm", "-wal"):
+            legacy.with_name(f"{legacy.name}{suffix}").unlink(missing_ok=True)
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 def _schema_version(connection: sqlite3.Connection) -> int:

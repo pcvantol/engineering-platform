@@ -9,12 +9,15 @@ import zipfile
 from engineering_platform import central_data_transfer
 
 
+DATABASE_FILENAME = central_data_transfer.central_database.DATABASE_FILENAME
+
+
 class CentralDataTransferTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "central"
         self.root.mkdir()
-        with sqlite3.connect(self.root / "engineering.db") as connection:
+        with sqlite3.connect(self.root / DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE proof (value TEXT)")
             connection.execute("INSERT INTO proof VALUES ('exported')")
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
@@ -35,7 +38,7 @@ class CentralDataTransferTest(unittest.TestCase):
         archive.write_bytes(content)
         details = central_data_transfer.inspect_archive(archive)
         with zipfile.ZipFile(archive) as snapshot:
-            self.assertIn("engineering.db", snapshot.namelist())
+            self.assertIn(DATABASE_FILENAME, snapshot.namelist())
             self.assertIn("file-inbox/accepted/receipt.json", snapshot.namelist())
             self.assertIn("artifacts/report.md", snapshot.namelist())
             self.assertNotIn("runtime/runtime-only.txt", snapshot.namelist())
@@ -49,7 +52,7 @@ class CentralDataTransferTest(unittest.TestCase):
         archive.write_bytes(content)
         target = Path(self.temporary.name) / "target"
         target.mkdir()
-        with sqlite3.connect(target / "engineering.db") as connection:
+        with sqlite3.connect(target / DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE stale (value TEXT)")
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
             connection.execute("INSERT INTO engineering_schema_migrations VALUES (53)")
@@ -61,7 +64,7 @@ class CentralDataTransferTest(unittest.TestCase):
         self.assertFalse((target / "obsolete.txt").exists())
         self.assertEqual((target / "runtime/installed-runtime.txt").read_text(encoding="utf-8"), "keep")
         self.assertEqual((target / "artifacts/report.md").read_text(encoding="utf-8"), "evidence")
-        with sqlite3.connect(target / "engineering.db") as connection:
+        with sqlite3.connect(target / DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "exported")
 
     def test_import_rejects_an_archive_from_a_different_schema(self) -> None:
@@ -70,10 +73,10 @@ class CentralDataTransferTest(unittest.TestCase):
         archive.write_bytes(content)
         with zipfile.ZipFile(archive) as original:
             manifest = __import__("json").loads(original.read(central_data_transfer.MANIFEST_NAME))
-            database = original.read("engineering.db")
-            other_entries = {name: original.read(name) for name in original.namelist() if name not in {central_data_transfer.MANIFEST_NAME, "engineering.db"}}
+            database = original.read(DATABASE_FILENAME)
+            other_entries = {name: original.read(name) for name in original.namelist() if name not in {central_data_transfer.MANIFEST_NAME, DATABASE_FILENAME}}
         with tempfile.TemporaryDirectory() as database_directory:
-            database_path = Path(database_directory) / "engineering.db"
+            database_path = Path(database_directory) / DATABASE_FILENAME
             database_path.write_bytes(database)
             with sqlite3.connect(database_path) as connection:
                 connection.execute("DELETE FROM engineering_schema_migrations")
@@ -81,12 +84,12 @@ class CentralDataTransferTest(unittest.TestCase):
             database = database_path.read_bytes()
         manifest["schema_version"] = 40
         manifest["entries"] = [
-            {**entry, "sha256": __import__("hashlib").sha256(database).hexdigest(), "size": len(database)} if entry["path"] == "engineering.db" else entry
+            {**entry, "sha256": __import__("hashlib").sha256(database).hexdigest(), "size": len(database)} if entry["path"] == DATABASE_FILENAME else entry
             for entry in manifest["entries"]
         ]
         manifest["content_sha256"] = central_data_transfer._content_checksum(manifest["entries"])
         with zipfile.ZipFile(archive, "w") as rewritten:
-            rewritten.writestr("engineering.db", database)
+            rewritten.writestr(DATABASE_FILENAME, database)
             for name, value in other_entries.items():
                 rewritten.writestr(name, value)
             rewritten.writestr(central_data_transfer.MANIFEST_NAME, __import__("json").dumps(manifest))

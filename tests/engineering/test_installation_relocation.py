@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from engineering_platform import installation_relocation
+from engineering_platform.central_database import DATABASE_FILENAME
 
 
 class InstallationRelocationTest(unittest.TestCase):
@@ -16,7 +17,7 @@ class InstallationRelocationTest(unittest.TestCase):
         self.root.mkdir()
         self.target = Path(self.temporary.name) / "selected"
         self.target.mkdir()
-        with sqlite3.connect(self.root / "engineering.db") as connection:
+        with sqlite3.connect(self.root / DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE proof (value TEXT)")
             connection.execute("INSERT INTO proof VALUES ('retained')")
         (self.root / "file-inbox" / "incoming").mkdir(parents=True)
@@ -43,7 +44,7 @@ class InstallationRelocationTest(unittest.TestCase):
         self.assertFalse(self.root.is_symlink())
         self.assertTrue((destination / "file-inbox/incoming").is_dir())
         self.assertEqual((destination / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
-        with sqlite3.connect(destination / "engineering.db") as connection:
+        with sqlite3.connect(destination / DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "retained")
         self.assertFalse((destination / "runtime/pending-platform-data-relocation.json").exists())
 
@@ -118,6 +119,6 @@ class InstallationRelocationTest(unittest.TestCase):
         installation_relocation.relocate_platform_data(self.root, str(self.target))
         self.assertFalse(self.root.exists())
         self.assertFalse(self.root.is_symlink())
-        self.assertTrue((destination / "engineering.db").is_file())
+        self.assertTrue((destination / DATABASE_FILENAME).is_file())
         with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_UNAVAILABLE"):
             installation_relocation.relocate_platform_data(self.root, str(self.target))

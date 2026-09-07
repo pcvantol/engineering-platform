@@ -94,7 +94,7 @@ def export_snapshot(data_root: Path) -> tuple[str, bytes]:
     with tempfile.SpooledTemporaryFile(max_size=32 * 1024 * 1024, mode="w+b") as output:
         with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             for logical, source in _durable_files(root):
-                content = database if logical.as_posix() == "engineering.db" else source.read_bytes()
+                content = database if logical.as_posix() == central_database.DATABASE_FILENAME else source.read_bytes()
                 archive.writestr(logical.as_posix(), content)
                 entries.append({"path": logical.as_posix(), "sha256": _sha256(content), "size": len(content)})
             manifest = {
@@ -142,13 +142,13 @@ def inspect_archive(path: Path) -> dict[str, object]:
             checksum = manifest.get("content_sha256")
             if not isinstance(checksum, str) or len(checksum) != 64 or checksum != _content_checksum(entries):
                 raise CentralDataTransferError("CENTRAL_ARCHIVE_INTEGRITY_INVALID")
-            if set(expected) != names - {MANIFEST_NAME} or "engineering.db" not in expected:
+            if set(expected) != names - {MANIFEST_NAME} or central_database.DATABASE_FILENAME not in expected:
                 raise CentralDataTransferError("CENTRAL_ARCHIVE_MANIFEST_INVALID")
             for name, entry in expected.items():
                 content = archive.read(name)
                 if len(content) != entry["size"] or _sha256(content) != entry["sha256"]:
                     raise CentralDataTransferError("CENTRAL_ARCHIVE_INTEGRITY_INVALID")
-            if _database_schema_version(archive.read("engineering.db")) != schema_version:
+            if _database_schema_version(archive.read(central_database.DATABASE_FILENAME)) != schema_version:
                 raise CentralDataTransferError("CENTRAL_ARCHIVE_SCHEMA_INVALID")
     except (OSError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CentralDataTransferError("CENTRAL_ARCHIVE_INVALID") from error

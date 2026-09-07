@@ -85,7 +85,7 @@ from .resources import package_path
 SERVER_CONFIGURATION_FILENAME = "server.json"
 SERVER_IDENTITY_FILENAME = "runtime-identity.json"
 SERVER_RUNTIME_FILENAME = "runtime.json"
-SERVER_DATABASE_FILENAME = "engineering.db"
+SERVER_DATABASE_FILENAME = central_database.DATABASE_FILENAME
 SERVER_CONFIGURATION_VERSION = 2
 # ADR-0026 defines the first standalone store as the canonical schema-40
 # product definitions plus immutable control provenance.  This server-owned
@@ -1192,6 +1192,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
     """Create or validate an empty, installation-owned server instance."""
     data_root = data_root.resolve()
     data_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    central_database.migrate_legacy_database(data_root)
     config_path = data_root / SERVER_CONFIGURATION_FILENAME
     if not config_path.exists():
         if bind_host != "127.0.0.1" or not 1 <= bind_port <= 65535:
@@ -3540,7 +3541,7 @@ def start(data_root: Path) -> dict[str, object]:
         environment["HOME"] = home
     # Unit tests exercise the lifecycle from an unpackaged source tree.  This
     # explicit test-only bridge is never inherited by an installed process.
-    if "unittest" in sys.argv[0]:
+    if "unittest" in sys.argv[0] or "pytest" in sys.modules:
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     child = subprocess.Popen([sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(runtime_root)], cwd=str(runtime_root), env=environment, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603
     _CHILDREN[child.pid] = child

@@ -69,9 +69,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn("launch_agent_path", details["installation"])
         self.assertEqual(database["installation"], {
             "central_data_path": str(self.root.resolve()),
-            "database_path": str((self.root / "engineering.db").resolve()),
+            "database_path": str((self.root / server.SERVER_DATABASE_FILENAME).resolve()),
         })
-        self.assertEqual(database["database_size_bytes"], (self.root / "engineering.db").stat().st_size)
+        self.assertEqual(database["database_size_bytes"], (self.root / server.SERVER_DATABASE_FILENAME).stat().st_size)
         self.assertIn("relay_binary_path", relay["installation"])
         self.assertIn("launch_agent_path", relay["installation"])
 
@@ -534,7 +534,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
         server._audit_dashboard_provider_action(self.root, "CODEX", "install", "COMPLETED")
 
-        with sqlite3.connect(self.root / "engineering.db") as connection:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
             ).fetchone()
@@ -717,12 +717,12 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.start(self.root)
         with urlopen(f"http://127.0.0.1:{port}/api/central-data/export") as response:
             backup = response.read()
-            self.assertEqual(response.headers.get_content_type(), "application/zip")
+            self.assertEqual(response.headers.get_content_type(), "application/vnd.engineering-platform.epdata+zip")
         with tempfile.NamedTemporaryFile(suffix=".zip") as file:
             file.write(backup); file.flush()
             import zipfile
             with zipfile.ZipFile(file.name) as archive, tempfile.NamedTemporaryFile(suffix=".db") as database:
-                database.write(archive.read("engineering.db")); database.flush()
+                database.write(archive.read(server.SERVER_DATABASE_FILENAME)); database.flush()
                 with sqlite3.connect(database.name) as connection:
                     self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
         request = Request(
