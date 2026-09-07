@@ -1539,6 +1539,9 @@ function localFilesystemLink(value) {
   configureLocalFilesystemLink(link, value);
   return link;
 }
+document.querySelectorAll("[data-local-path]").forEach((link) =>
+  configureLocalFilesystemLink(link, link.dataset.localPath),
+);
 function replaceWithLocalFilesystemLink(element, replacementValue = element?.textContent.trim()) {
   if (!element) return null;
   if (!String(replacementValue || "").trim().startsWith("/")) return element;
