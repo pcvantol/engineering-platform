@@ -2939,6 +2939,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(state.genesis_repository_path, str(target))
         self.assertEqual(state.genesis_commit_sha, commit)
         self.assertIsNone(state.pull_request)
+        self.assertEqual([review["reviewer"] for review in state.assurance_reviews], ["quality", "security"])
+        self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
 
     def test_genesis_selects_its_target_before_managed_cleanliness_checks(self) -> None:
         target = self.root.parent / f"genesis-clean-{self.root.name}"

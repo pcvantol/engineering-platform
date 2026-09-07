@@ -1733,7 +1733,7 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
         return self._save_terminal(validation, "BLOCKED", "local_validation_attempt_limit_reached", "Required local repository validation did not pass after 3 bounded iterations."), implementation
 
     def _run_quality_assurance(
-        self, state: TransactionState, implementation: AgentResult
+        self, state: TransactionState, implementation: AgentResult, *, assurance_root: Path | None = None,
     ) -> tuple[TransactionState, AgentResult]:
         """Run independent, sandboxed quality and security reviews.
 
@@ -1750,7 +1750,7 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
             next_action="quality_and_security_review",
         )
         try:
-            candidate = self.repository.inspect(self.root)
+            candidate = self.repository.inspect(assurance_root or self.root)
         except RunnerError:
             return self._save_terminal(quality, "BLOCKED", "assurance_candidate_unavailable", "The assurance candidate could not be inspected."), implementation
         if not candidate.clean or not re.fullmatch(r"[0-9a-f]{40}", candidate.head_sha):
@@ -1778,9 +1778,9 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 f"candidate {candidate.head_sha}. Report only concrete, bounded findings against the action acceptance criteria. "
                 + Path(quality.prompt_path).read_text(encoding="utf-8")
             )
-            result = run_reviews(self.root, (selection,), assurance_objective, self.agent if hasattr(self.agent, "review") else None, evidence=evidence)[0]
+            result = run_reviews(assurance_root or self.root, (selection,), assurance_objective, self.agent if hasattr(self.agent, "review") else None, evidence=evidence)[0]
             try:
-                unchanged = self.repository.inspect(self.root)
+                unchanged = self.repository.inspect(assurance_root or self.root)
             except RunnerError:
                 unchanged = None
             status = "UNRESOLVED" if result.failed or unchanged is None or unchanged.head_sha != candidate.head_sha else ("FAIL" if result.recommendations else "PASS")
@@ -1860,6 +1860,12 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
     ) -> TransactionState:
         """Shared post-provider transition for live and recovered results."""
         if state.execution_mode == "GENESIS":
+            target = Path(result.repository_path).expanduser() if result.repository_path else None
+            if not target or not target.is_absolute() or target_repository_authorization(self.root, target):
+                return self._reconcile_genesis_result(state, result)
+            state, result = self._run_quality_assurance(state, result, assurance_root=target)
+            if state.terminal or state.phase in {"REPAIR_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"}:
+                return state
             return self._reconcile_genesis_result(state, result)
         recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
         if state.transaction_kind == "IMPLEMENTATION" and state.action_intent == "MUTATING_DELIVERY" and (
