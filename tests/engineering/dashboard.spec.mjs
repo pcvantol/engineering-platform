@@ -8331,6 +8331,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#centralDataImportFile").setInputFiles({ name: "platform.epdata", mimeType: "application/vnd.engineering-platform.epdata+zip", buffer: Buffer.from("package") });
     await page.locator("#centralDataImportConfirm").click();
     await expect(page.locator("#centralDataImportWarningModal")).toBeVisible();
+    await expect(page.locator("#centralDataImportWarningModal")).toHaveClass(/dashboard-modal-shell--destructive/);
+    await expect(page.locator("#centralDataImportWarningModal h2").evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"!"');
+    await expect(page.locator("#centralDataImportWarningModal .dashboard-modal-shell__panel")).toHaveCSS("border-color", "rgb(255, 113, 143)");
+    await expect(page.locator("#centralDataImportProceed")).toHaveCSS("background-color", "rgb(58, 32, 40)");
     await page.locator("#centralDataImportProceed").click();
     await expect(page.locator("#centralDataImportStatus")).toHaveText("Import staat klaar; de server start opnieuw.");
   });
