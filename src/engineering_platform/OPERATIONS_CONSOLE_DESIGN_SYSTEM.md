@@ -372,6 +372,29 @@ All round controls have the shared elevation shadow. Glyphs and button text
 are non-selectable. A button uses a semantic class (`--download`, `--copy`,
 `--destructive`, etc.) rather than a one-off colour override.
 
+### Filled actions and text actions
+
+Every visible action has a fill in both themes. The fill is a restrained mix
+of the action's own foreground/border colour with the current standard
+content surface; its border, foreground, hover and focus state retain the
+same semantic colour. An unfilled outlined control is not an allowed default.
+This applies equally to native buttons and links styled as actions.
+
+Each component owns the fill for any action pattern it introduces. Shared
+button tokens may provide the common surface, but a component must not rely on
+a late global selector to complete its visual contract. This keeps a control's
+dark-mode, light-mode and responsive presentation stable when global button
+rules evolve.
+
+When an action needs a label, use a compact **text action**: one short
+localized label with a leading purpose glyph, horizontally centred as one
+group. Do not replace it with an unexplained circular icon. The CENTRAL
+platform-data controls are the reference pattern: **Exporteer
+platformgegevens** uses `↓`; **Importeer platformgegevens** and **Verplaats
+platformgegevens** use `↗`. A location-bound relocation action sits beside
+the canonical location on wide screens and wraps directly below it, full
+width, at phone width.
+
 ### Local files and folders
 
 An absolute local file or folder is evidence, never a navigation destination.
@@ -391,6 +414,24 @@ In a relocation modal, both **Huidige map** and a selected **Nieuwe map** use
 that control. The new destination remains hidden until the folder chooser
 returns a value; it is never shown as a raw text field. This rule applies
 equally to database and File Inbox relocation.
+
+### Toast feedback
+
+Transient feedback appears in the shared bottom-of-page toast. A toast always
+has a leading glyph that describes its outcome, followed by localized text;
+the glyph supplements rather than replaces the text in the live region.
+
+| Outcome | Glyph | Example |
+| --- | --- | --- |
+| Copy succeeded | `⧉` | Path gekopieerd naar klembord |
+| Refresh or retry | `↻` | Gegevens vernieuwd |
+| Work queued or handed off | `↗` | Actie in wachtrij geplaatst |
+| Information | `ℹ` | Instelling opgeslagen |
+| Error | `!` | Actie kon niet worden voltooid |
+
+Toasts are confirmation or concise recovery feedback, never the only place
+where critical state or a validation failure is explained. They must not use
+an arbitrary decorative glyph or expose raw implementation values.
 
 ### Glyphs
 
@@ -666,10 +707,14 @@ durable parts of the same state and a partial move is unsafe.
 
 - The displayed location is a `local-folder-link`, including its canonical
   copy-to-clipboard feedback.
-- Export is a normal download action for a ZIP snapshot of all durable
-  CENTRAL state. Installed runtime files and live process state are excluded.
+- Export is the filled text action **Exporteer platformgegevens** with the
+  `↓` glyph. It creates a ZIP snapshot of all durable CENTRAL state; installed
+  runtime files and live process state are excluded.
 - Import uses the same modal family, a local ZIP chooser, an explicit warning
-  and a separate affirmative action. It always says that current state will be
-  replaced and the Server will restart.
+  and a separate affirmative action. Its entry action is the filled text
+  action **Importeer platformgegevens** with the `↗` glyph. It always says
+  that current state will be replaced and the Server will restart.
 - Relocation chooses a parent directory and moves the complete data root in
-  one restart-bound operation. The existing stable launch path remains valid.
+  one restart-bound operation. Its filled text action uses the `↗` glyph and
+  follows the location responsively. The existing stable launch path remains
+  valid.
