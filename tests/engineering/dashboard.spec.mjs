@@ -9941,6 +9941,7 @@ test.describe("Engineering Status browser smoke", () => {
     ], 1));
     await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
     await page.locator("#queueItems").evaluate((element) => { element.open = true; });
+    await expect(page.locator("#queueList .queue-item__actions")).toHaveCount(1);
     const messages = DASHBOARD_MESSAGES[await page.locator("html").getAttribute("lang")];
     expect(await page.locator("#queueList button").allTextContents()).toEqual([messages["queue.resume_action"]]);
     const resume = page.getByRole("button", { name: messages["queue.resume_action"], exact: true });
@@ -9970,6 +9971,7 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(page.locator("#confirmationModalConfirm")).toHaveText(action);
       await page.locator("#confirmationModalCancel").click();
     }
+    await expect(page.locator("#queueList .queue-item__actions .queue-defer")).toHaveCount(3);
   });
 
   test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {

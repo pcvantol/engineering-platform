@@ -914,6 +914,7 @@ function queueItems(x, queueDepth) {
     const row = document.createElement("li"),
       number = document.createElement("span"),
       body = document.createElement("div"),
+      actions = document.createElement("div"),
       title = document.createElement("span"),
       meta = document.createElement("div"),
       modified = Date.parse(item.modified_at || ""),
@@ -928,6 +929,7 @@ function queueItems(x, queueDepth) {
     number.textContent = String(index + 1);
     title.className = "queue-item__title";
     meta.className = "queue-item__meta";
+    actions.className = "queue-item__actions";
     title.textContent = displayTitle;
     meta.textContent = t("queue.filename", {
       filename,
@@ -954,7 +956,7 @@ function queueItems(x, queueDepth) {
     }
     body.append(title, meta);
     row.append(number, body);
-    if (defer) row.append(defer);
+    if (defer) actions.append(defer);
     if (item.queue_source === "CENTRAL" && item.queue_state === "QUEUED") {
       [["QUARANTINED", "queue.quarantine", "Operator quarantined this submission from Operations Console."],
        ["DECLINED", "queue.decline", "Operator declined this submission from Operations Console."]].forEach(([disposition, actionKey, reason]) => {
@@ -966,9 +968,10 @@ function queueItems(x, queueDepth) {
           event.preventDefault(); event.stopPropagation();
           queueDisposition(item, disposition, reason, action);
         });
-        row.append(action);
+        actions.append(action);
       });
     }
+    if (actions.childElementCount) row.append(actions);
     container.append(row);
   });
 }
