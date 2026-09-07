@@ -3581,7 +3581,6 @@ function showComponentModal(payload) {
   componentDetailField(fields, t("component.launchd_label"), launchd.label);
   componentDetailField(fields, t("component.lifecycle_owner"), launchd.label ? t("component.launch_agent") : null);
   componentDetailField(fields, t("component.lifecycle_status"), launchdLifecycleState(launchd));
-  componentDetailField(fields, t("component.process_id"), launchd.pid);
   componentDetailField(fields, t("component.last_stopped"), launchdLastStopped(launchd));
   componentDetailField(fields, t("component.launch_agent"), launchd.plist_path);
   componentDetailField(
