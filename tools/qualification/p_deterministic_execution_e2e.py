@@ -22,6 +22,9 @@ import time
 from urllib.request import Request, urlopen
 
 
+CENTRAL_DATABASE_FILENAME = "epdata.sqlite"
+
+
 def command(binary: Path, *args: str) -> dict[str, object]:
     result = subprocess.run((str(binary), *args), check=True, text=True, capture_output=True)  # nosec B603
     return json.loads(result.stdout)
@@ -74,7 +77,10 @@ def verify_receipt(data_root: Path, project: str, run_id: str) -> dict[str, obje
     observed = [(item.get("reviewer"), item.get("status")) for item in reviews] if isinstance(reviews, list) else []
     if observed != [("quality", "PASS"), ("security", "PASS")]:
         raise RuntimeError(f"ASSURANCE_RECEIPT_INVALID: {observed}")
-    with sqlite3.connect(data_root / "engineering.db") as connection:
+    # The standalone Server owns epdata.sqlite.  The former engineering.db
+    # name is deliberately retired and must never become an accidental second
+    # lifecycle authority during qualification.
+    with sqlite3.connect(data_root / CENTRAL_DATABASE_FILENAME) as connection:
         row = connection.execute("SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (run_id,)).fetchone()
     if row is None or row[0] != "COMPLETE":
         raise RuntimeError("TERMINAL_CHECKPOINT_UNAVAILABLE")
@@ -127,7 +133,11 @@ def main(argv: list[str] | None = None) -> int:
             if project == "managed" and args.managed_repository:
                 raise RuntimeError("MANAGED_GITHUB_FIXTURE_NEEDS_MATCHING_DECLARATION")
             command(server, "bind-repository", "--data-root", str(data), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
-        env = {**os.environ, "EP_QUALIFICATION_DETERMINISTIC_FLOW": "1", "EP_CENTRAL_OPERATIONAL_DATABASE": str(data / "engineering.db")}
+        env = {
+            **os.environ,
+            "EP_QUALIFICATION_DETERMINISTIC_FLOW": "1",
+            "EP_CENTRAL_OPERATIONAL_DATABASE": str(data / CENTRAL_DATABASE_FILENAME),
+        }
         process = subprocess.Popen((str(server), "serve", "--data-root", str(data)), env=env)  # nosec B603
         try:
             base = f"http://127.0.0.1:{bind_port}"
