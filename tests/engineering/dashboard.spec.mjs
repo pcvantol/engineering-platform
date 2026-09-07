@@ -1068,6 +1068,20 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(picker.locator("[role=option]")).toHaveText(["Informatie", "Debug"]);
   });
 
+  test("fills the component log picker from the initial platform-health model", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    const select = page.locator("#logComponentFilter");
+    const nativeOptionCount = await select.locator("option").count();
+    expect(nativeOptionCount).toBeGreaterThan(1);
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+    const picker = select.locator("+ .dashboard-select-picker");
+    await openDashboardPicker(picker);
+    await expect(picker.locator("[role=option]")).toHaveCount(nativeOptionCount);
+    await expect(picker.locator('[data-dashboard-select-value="ep_server"]')).toBeVisible();
+    await expect(picker.locator('[data-dashboard-select-value="file_inbox_ingress"]')).toBeVisible();
+  });
+
   test("does not move focus after a pointer chooses a log-settings pulldown value", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await waitForDashboardReady(page);
