@@ -118,7 +118,13 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> Capability
     started, checks = monotonic(), []
     requirements = _requirements(prompt)
     mode = requirements.get("execution_mode", "MANAGED").strip().upper()
-    required_providers = provider_readiness_failures(root, require_github=mode != "GENESIS")
+    # Installed deterministic qualification replaces GitHub with the local
+    # adapter before any lifecycle work.  Its admission must therefore test
+    # the adapter composition, not require an unrelated live GitHub session.
+    qualification_local_github = os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1"
+    required_providers = provider_readiness_failures(
+        root, require_github=mode != "GENESIS" and not qualification_local_github,
+    )
     checks.append(
         _check(
             "provider_readiness",
