@@ -67,6 +67,25 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             events = [row[0] for row in connection.execute("SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,))]
             self.assertEqual(events[-2:], ["OPERATOR_QUEUE_QUARANTINED", "OPERATOR_QUEUE_QUEUED"])
 
+            deferred = submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="DEFERRED", reason="Schedule later",
+            )
+            self.assertEqual(deferred["state"], "DEFERRED")
+            self.assertEqual(submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="QUEUED", reason="Schedule resumed",
+            )["state"], "QUEUED")
+            self.assertEqual(submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="DECLINED", reason="No longer wanted",
+            )["state"], "DECLINED")
+            with self.assertRaisesRegex(submission_service.SubmissionError, "QUEUE_DISPOSITION_CONFLICT"):
+                submission_service.operator_queue_disposition(
+                    connection, project_id="djconnect", submission_id=submitted.submission_id,
+                    disposition="QUEUED", reason="Must not revive a decline",
+                )
+
     def test_http_auth_scope_and_acceptance(self) -> None:
         server.start(self.root)
         request = Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions", data=json.dumps(self.payload("http")).encode(), headers={"Authorization": f"Bearer {self.credential}", "Content-Type": "application/json"}, method="POST")
