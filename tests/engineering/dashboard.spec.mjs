@@ -127,6 +127,20 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/events", (route) => route.abort());
 });
 
+test("dismisses the no-project banner for the current browser", async ({ page }) => {
+  const noProjectUrl = new URL(dashboardUrl);
+  noProjectUrl.search = "";
+  await page.goto(noProjectUrl.href, { waitUntil: "domcontentloaded" });
+  const banner = page.getByTestId("no-project-selected");
+  await expect(banner).toBeVisible();
+  const dismiss = page.locator("#noProjectSelectedDismiss");
+  await expect(dismiss).toHaveAttribute("aria-label", DASHBOARD_MESSAGES.en["action.close"]);
+  await dismiss.click();
+  await expect(banner).toBeHidden();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(banner).toBeHidden();
+});
+
 test.afterAll(async () => {
   if (dashboard && dashboard.exitCode === null && dashboard.signalCode === null) {
     const exited = new Promise((resolve) => dashboard.once("exit", resolve));
