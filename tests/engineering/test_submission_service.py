@@ -95,6 +95,14 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(terminal["evidence"]["terminal_report"], "central-report:run-readback")
         self.assertNotIn("/private", json.dumps(terminal))
 
+        # The projection is CENTRAL state, not a process-local cache: a Server
+        # restart preserves the exact submission/run/evidence correlation.
+        server.stop(self.root)
+        server.start(self.root)
+        with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+            recovered = json.loads(response.read())
+        self.assertEqual(recovered, terminal)
+
         with self.assertRaises(HTTPError) as unauthenticated:
             urlopen(endpoint)  # nosec B310
         self.assertEqual(unauthenticated.exception.code, 401)
@@ -104,3 +112,14 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 headers={"Authorization": f"Bearer {self.credential}"},
             ))  # nosec B310
         self.assertEqual(cross_project.exception.code, 401)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            now = "2026-01-01T00:00:00+00:00"
+            connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", ("other", "{}", "ACTIVE", now, now))
+            connection.execute("INSERT INTO ep_repository_registrations VALUES(?,?,?,?,?,?,?)", ("other", "other", "other", "authority", "{}", now, now))
+            other_credential = submission_service.issue_consumer_credential(connection, consumer_id="other-client", project_id="other")["credential"]
+        with self.assertRaises(HTTPError) as isolated:
+            urlopen(Request(
+                f"http://127.0.0.1:{self.port}/v1/projects/other/submissions/{submission_id}",
+                headers={"Authorization": f"Bearer {other_credential}"},
+            ))  # nosec B310
+        self.assertEqual(isolated.exception.code, 404)
