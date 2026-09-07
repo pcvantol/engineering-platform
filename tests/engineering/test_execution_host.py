@@ -1324,7 +1324,7 @@ class ClientContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.execution_host.Path.cwd", return_value=Path(temporary)):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            central = Path(temporary) / "engineering.db"
+            central = Path(temporary) / "epdata.sqlite"
             central.touch()
             with sqlite3.connect(central) as connection:
                 connection.execute("CREATE TABLE execution_phase_spans(phase_id TEXT,run_id TEXT,phase_name TEXT,phase_category TEXT,parent_phase_id TEXT,attempt INTEGER,ordinal INTEGER,started_at TEXT,completed_at TEXT,duration_ms INTEGER,outcome TEXT,metadata TEXT)")
@@ -1336,7 +1336,7 @@ class ClientContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.execution_host.Path.cwd", return_value=Path(temporary)):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            central = Path(temporary) / "engineering.db"
+            central = Path(temporary) / "epdata.sqlite"
             central.touch()
             self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt), "--central-database", str(central)]), 2)
 
@@ -1494,7 +1494,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            central = Path(temporary) / "engineering.db"
+            central = Path(temporary) / "epdata.sqlite"
             central.touch()
             with sqlite3.connect(central) as connection:
                 connection.execute("CREATE TABLE execution_phase_spans(phase_id TEXT,run_id TEXT,phase_name TEXT,phase_category TEXT,parent_phase_id TEXT,attempt INTEGER,ordinal INTEGER,started_at TEXT,completed_at TEXT,duration_ms INTEGER,outcome TEXT,metadata TEXT)")
@@ -3239,8 +3239,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
             root = Path(temporary)
             central = root / "central"
             initialize(central)
-            record_redacted_codex_cli_diagnostic(root, "cli-run", "Bearer private-token", central_database=central / "engineering.db")
-            with sqlite3.connect(central / "engineering.db") as connection:
+            record_redacted_codex_cli_diagnostic(root, "cli-run", "Bearer private-token", central_database=central / "epdata.sqlite")
+            with sqlite3.connect(central / "epdata.sqlite") as connection:
                 component, payload = connection.execute(
                     "SELECT component,payload FROM engineering_component_logs"
                 ).fetchone()

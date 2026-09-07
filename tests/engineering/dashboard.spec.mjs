@@ -52,7 +52,7 @@ async function startDashboard(root, environment) {
       "python3",
       [
         "-c",
-        "from http.server import ThreadingHTTPServer; from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'engineering.db'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
+        "from http.server import ThreadingHTTPServer; from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'epdata.sqlite'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
       { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] },
@@ -6376,7 +6376,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(Math.round(box.y + box.height / 2)).toBe(422);
   });
 
-  test("keeps every modal panel inside iPhone safe outer padding and focuses only a primary action", async ({ page }) => {
+  test("keeps every modal panel inside iPhone safe outer padding and focuses a safe initial action", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
@@ -6390,14 +6390,16 @@ test.describe("Engineering Status browser smoke", () => {
       const layout = await modal.evaluate((element) => {
         const panel = element.querySelector(".dashboard-modal-shell__panel");
         const primary = element.querySelector("button.dashboard-modal-shell__action--primary:not([disabled]), a.dashboard-modal-shell__action--primary[href]");
+        const secondary = element.querySelector("button.dashboard-modal-shell__action:not(.dashboard-modal-shell__action--primary):not([disabled]), a.dashboard-modal-shell__action:not(.dashboard-modal-shell__action--primary)[href]");
+        const initial = element.classList.contains("dashboard-modal-shell--destructive") && secondary ? secondary : primary;
         const panelBox = panel.getBoundingClientRect();
         return {
-          focusedPrimary: primary ? document.activeElement === primary : false,
+          focusedInitial: initial ? document.activeElement === initial : false,
           focusedWithinModal: element.contains(document.activeElement),
           panel: { bottom: panelBox.bottom, left: panelBox.left, right: panelBox.right, top: panelBox.top },
         };
       });
-      expect(layout.focusedWithinModal, selector).toBe(layout.focusedPrimary);
+      expect(layout.focusedWithinModal, selector).toBe(layout.focusedInitial);
       expect(layout.panel.left, selector).toBeGreaterThanOrEqual(16);
       expect(layout.panel.right, selector).toBeLessThanOrEqual(374);
       expect(layout.panel.top, selector).toBeGreaterThanOrEqual(16);
@@ -8198,6 +8200,176 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(action.evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↓"');
   });
 
+  test("keeps platform-data actions aligned and makes transfer controls work without a selected project", async ({ page }) => {
+    const noProjectUrl = new URL(dashboardUrl);
+    noProjectUrl.search = "";
+    await page.setViewportSize({ width: 500, height: 844 });
+    await page.goto(noProjectUrl.href, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+
+    const [exportAction, importAction] = [
+      page.locator('a[href="/api/central-data/export"]'),
+      page.locator("#centralDataImport"),
+    ];
+    const dimensions = await Promise.all([exportAction, importAction].map((action) => action.evaluate((element) => {
+      const { height, width } = element.getBoundingClientRect();
+      return { height, width };
+    })));
+    expect(dimensions[0]).toEqual(dimensions[1]);
+    await expect(importAction.evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↑"');
+
+    await importAction.click();
+    await expect(page.locator("#centralDataImportModal")).toBeVisible();
+    await page.locator("[data-close-central-import]").click();
+    await expect(page.locator("#centralDataImportModal")).toBeHidden();
+
+    await page.locator("#centralDatabaseRelocate").click();
+    await expect(page.locator("#centralDatabaseRelocateModal")).toBeVisible();
+    await expect(page.locator("#centralDatabaseRelocateModal h2").evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↗"');
+    await expect(page.locator("#centralDatabaseRelocateSave")).toHaveCSS("background-color", "rgb(53, 53, 61)");
+  });
+
+  test("prepares the visible central destination and discards it on relocation cancel", async ({ page }) => {
+    await page.route("**/api/central-data/relocate/browse", async (route) => {
+      await route.fulfill({ json: { directory: "/Volumes/Archive", value: "/Volumes/Archive/central" } });
+    });
+    const discarded = page.waitForRequest((request) => request.url().endsWith("/api/central-data/relocate/discard"));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDatabaseRelocate").click();
+    await page.locator("#centralDatabaseRelocateBrowse").click();
+    await expect(page.locator("#centralDatabaseRelocateDestinationValue")).toHaveText("/Volumes/Archive/central");
+    await page.locator("[data-close-relocation]").first().click();
+    const request = await discarded;
+    expect(JSON.parse(request.postData() || "{}")).toEqual({ directory: "/Volumes/Archive" });
+  });
+
+  test("allows a prepared platform-data relocation to another APFS volume", async ({ page }) => {
+    await page.route("**/api/central-data/relocate/browse", async (route) => {
+      await route.fulfill({ json: { directory: "/Volumes/Archive", value: "/Volumes/Archive/central" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDatabaseRelocate").click();
+    await page.locator("#centralDatabaseRelocateBrowse").click();
+    await expect(page.locator("#centralDatabaseRelocateDestinationValue")).toHaveText("/Volumes/Archive/central");
+    await expect(page.locator("#centralDatabaseRelocateSave")).toBeEnabled();
+  });
+
+  test("explains why a non-APFS relocation destination is unavailable", async ({ page }) => {
+    await page.route("**/api/central-data/relocate/browse", async (route) => {
+      await route.fulfill({ status: 400, json: { error: "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDatabaseRelocate").click();
+    await page.locator("#centralDatabaseRelocateBrowse").click();
+    await expect(page.locator("#centralDatabaseRelocateStatus")).toHaveText("Kies voor verplaatsing naar een andere schijf of volume een APFS-geformatteerde map.");
+    await expect(page.locator("#centralDatabaseRelocateSave")).toBeDisabled();
+  });
+
+  test("gives the platform-data import filename a wide modal", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    await expect(page.locator("#centralDataImportModal .dashboard-modal-shell__panel")).toHaveCSS("max-width", "1100px");
+    await expect(page.locator("#centralDataImportModal h2").evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↑"');
+    await expect(page.locator("#centralDataImportFile")).toHaveAttribute("accept", ".epdata,application/vnd.engineering-platform.epdata+zip");
+  });
+
+  test("clears a selected platform-data archive when its modal is closed", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    const archive = page.locator("#centralDataImportFile");
+    await archive.setInputFiles({ name: "previous-export.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
+    await expect(page.locator("#centralDataImportConfirm")).toBeEnabled();
+    await page.locator("[data-close-central-import]").click();
+    await page.locator("#centralDataImport").click();
+    await expect(archive).toHaveValue("");
+    await expect(page.locator("#centralDataImportConfirm")).toBeDisabled();
+  });
+
+  test("translates platform-data import errors and marks them red", async ({ page }) => {
+    await page.route("**/api/central-data/import", async (route) => {
+      await route.fulfill({ status: 409, json: { error: "CENTRAL_ARCHIVE_MEMBER_INVALID" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    await page.locator("#centralDataImportFile").setInputFiles({ name: "invalid.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
+    await page.locator("#centralDataImportConfirm").click();
+    await page.locator("#centralDataImportProceed").click();
+    const status = page.locator("#centralDataImportStatus");
+    await expect(status).toHaveText("Dit ZIP-bestand bevat niet-ondersteunde of onveilige bestanden.");
+    await expect(status).toHaveCSS("color", "rgb(255, 113, 143)");
+  });
+
+  test("clears an earlier platform-data import error when a new archive is selected", async ({ page }) => {
+    await page.route("**/api/central-data/import", async (route) => {
+      await route.fulfill({ status: 409, json: { error: "CENTRAL_ARCHIVE_MEMBER_INVALID" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    const archive = page.locator("#centralDataImportFile");
+    await archive.setInputFiles({ name: "invalid.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
+    await page.locator("#centralDataImportConfirm").click();
+    await page.locator("#centralDataImportProceed").click();
+    const status = page.locator("#centralDataImportStatus");
+    await expect(status).not.toHaveText("");
+    await archive.setInputFiles({ name: "replacement.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
+    await expect(status).toHaveText("");
+    await expect(status).not.toHaveClass(/configuration-central-data-import__error/);
+  });
+
+  test("uses an import-specific restart message after accepting platform data", async ({ page }) => {
+    await page.route("**/api/central-data/import", async (route) => {
+      await route.fulfill({ status: 202, json: { restarting: true } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    await page.locator("#centralDataImportFile").setInputFiles({ name: "platform.epdata", mimeType: "application/vnd.engineering-platform.epdata+zip", buffer: Buffer.from("package") });
+    await page.locator("#centralDataImportConfirm").click();
+    await expect(page.locator("#centralDataImportWarningModal")).toBeVisible();
+    await expect(page.locator("#centralDataImportWarningModal")).toHaveClass(/dashboard-modal-shell--destructive/);
+    await expect(page.locator("#centralDataImportWarningModal h2").evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"!"');
+    await expect(page.locator("#centralDataImportWarningModal .dashboard-modal-shell__panel")).toHaveCSS("border-color", "rgb(255, 113, 143)");
+    await expect(page.locator("#centralDataImportProceed")).toHaveCSS("background-color", "rgb(58, 32, 40)");
+    await page.locator("#centralDataImportProceed").click();
+    await expect(page.locator("#centralDataImportStatus")).toHaveText("Import staat klaar; de server start opnieuw.");
+  });
+
+  test("requires destructive confirmation before replacing platform data", async ({ page }) => {
+    let importRequests = 0;
+    await page.route("**/api/central-data/import", async (route) => {
+      importRequests += 1;
+      await route.fulfill({ status: 202, json: { restarting: true } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    await page.locator("#centralDataImportFile").setInputFiles({ name: "platform.epdata", mimeType: "application/vnd.engineering-platform.epdata+zip", buffer: Buffer.from("package") });
+    await page.locator("#centralDataImportConfirm").click();
+    await expect(page.locator("#centralDataImportWarningModal")).toBeVisible();
+    await expect(page.locator("#centralDataImportWarningModal")).toContainText("Alle bestaande platformgegevens worden definitief vervangen en kunnen verloren gaan.");
+    await expect.poll(() => importRequests).toBe(0);
+    await page.locator("[data-close-central-import-warning]").last().click();
+    await expect(page.locator("#centralDataImportWarningModal")).toBeHidden();
+    await expect.poll(() => importRequests).toBe(0);
+  });
+
+  test("keeps platform-data location links free of selected borders", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    const location = page.locator(".configuration-central-database__location-link");
+    await location.focus();
+    await expect(location).toHaveCSS("border-top-width", "0px");
+    await expect(location).toHaveCSS("outline-style", "none");
+    await expect(location).toHaveCSS("box-shadow", "none");
+  });
+
   test("uses shared semantic classes for download, copy and destructive actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download"]) {
@@ -8535,8 +8707,8 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps title-bar switch focus on the compact track", () => {
     const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
-    expect(stylesheet).toContain(".execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle");
-    expect(stylesheet).toContain("Unified focus contract: one product-coloured, one-pixel edge.");
+    expect(stylesheet).toContain(":is(.dashboard-titlebar .theme-toggle,.dashboard-titlebar .section-state-toggle):is(:focus,:focus-visible)::before");
+    expect(stylesheet).toContain(":is(.dashboard-health__button,.auto-refresh-toggle input):is(:focus,:focus-visible)");
     expect(stylesheet).toContain("border-color:var(--house-style)!important;");
     expect(stylesheet).toContain("outline:1px solid var(--house-style)!important;");
   });
@@ -10531,7 +10703,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/components/http_ingress/details", (route) => route.fulfill({ json: {
       component: "http_ingress", kind: "TRANSPORT", healthy: true,
       status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT",
-      swagger_endpoint: "/openapi.json",
+      swagger_endpoint: "/v1/openapi.json",
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
@@ -10544,8 +10716,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentModalContent")).not.toContainText("dashboard.health");
     await expect(page.locator("#componentModalContent")).toContainText("Server-luisterendpoint");
     const openapi = page.locator("#componentModalContent .component-modal__endpoint");
-    await expect(openapi).toHaveText("/openapi.json");
-    await expect(openapi).toHaveAttribute("href", "/openapi.json");
+    await expect(openapi).toHaveText("/v1/openapi.json");
+    await expect(openapi).toHaveAttribute("href", "/v1/openapi.json");
     await expect(page.locator("#componentModalContent")).not.toContainText("CENTRAL");
   });
 

@@ -8599,3 +8599,67 @@ if (NO_PROJECT_SELECTED) {
 // Hydrate that same shared shell so footer facts are factual rather than
 // permanently displaying loading placeholders; it contains no project state.
 startDashboardUpdates();
+
+document.addEventListener("change", (event) => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.id !== "centralDataImportFile") return;
+  const status = $("centralDataImportStatus");
+  if (!status) return;
+  status.textContent = "";
+  status.classList.remove("configuration-central-data-import__error");
+  delete status.dataset.importErrorMessage;
+}, true);
+
+document.addEventListener("DOMContentLoaded", () => {
+  const warning = document.getElementById("centralDataImportWarningModal");
+  const confirm = document.getElementById("centralDataImportConfirm");
+  const proceed = document.getElementById("centralDataImportProceed");
+  if (!warning || !confirm || !proceed) return;
+  if (warning.parentElement !== document.body) document.body.append(warning);
+  document.querySelectorAll("[data-close-central-import-warning]").forEach((control) => {
+    control.addEventListener("click", () => warning.close());
+  });
+  confirm.addEventListener("click", (event) => {
+    if (confirm.dataset.importConfirmed === "true") {
+      delete confirm.dataset.importConfirmed;
+      return;
+    }
+    event.stopImmediatePropagation();
+    warning.showModal();
+  }, true);
+  proceed.addEventListener("click", () => {
+    confirm.dataset.importConfirmed = "true";
+    warning.close();
+    confirm.click();
+  });
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+  const status = $("centralDataImportStatus");
+  const archive = $("centralDataImportFile");
+  if (archive) archive.accept = ".epdata,application/vnd.engineering-platform.epdata+zip";
+  if (!status) return;
+  const errors = new Set(["CENTRAL_IMPORT_BLOCKED","CENTRAL_IMPORT_UPLOAD_INCOMPLETE","CENTRAL_IMPORT_ALREADY_PENDING","CENTRAL_IMPORT_REQUEST_INVALID","CENTRAL_IMPORT_FAILED","CENTRAL_DATABASE_UNAVAILABLE","CENTRAL_ARCHIVE_SIZE_INVALID","CENTRAL_ARCHIVE_MEMBER_INVALID","CENTRAL_ARCHIVE_MANIFEST_INVALID","CENTRAL_ARCHIVE_SCHEMA_INVALID","CENTRAL_ARCHIVE_SCHEMA_INCOMPATIBLE","CENTRAL_ARCHIVE_INTEGRITY_INVALID","CENTRAL_ARCHIVE_INVALID"]);
+  new MutationObserver(() => {
+    const code = status.textContent?.trim() || "";
+    const failed = Boolean(code)
+      && code !== t("configuration.relocation_restarting")
+      && code !== t("configuration.central_data_import_restarting");
+    status.classList.toggle("configuration-central-data-import__error", failed);
+    if (failed && status.dataset.importErrorMessage !== code) {
+      const message = t(`configuration.central_data_import_error.${errors.has(code) ? code : "CENTRAL_IMPORT_FAILED"}`);
+      status.dataset.importErrorMessage = message;
+      status.textContent = message;
+    }
+    if (!failed) delete status.dataset.importErrorMessage;
+  }).observe(status, { childList: true, characterData: true, subtree: true });
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+  const status = $("centralDatabaseRelocateStatus");
+  if (!status) return;
+  new MutationObserver(() => {
+    if (status.textContent?.trim() === "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED") {
+      status.textContent = t("configuration.relocation_filesystem_unsupported");
+    }
+  }).observe(status, { childList: true, characterData: true, subtree: true });
+});

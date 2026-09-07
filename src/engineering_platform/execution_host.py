@@ -19,6 +19,7 @@ import re
 import sqlite3
 
 from .validation_identity import is_canonical_dashboard_command
+from .central_database import DATABASE_FILENAME as CENTRAL_DATABASE_FILENAME
 
 from .agent_state import MAX_COMMIT_EVIDENCE_RECORDS, StateError, StateStore, TransactionState, redact_diagnostic, verified_commit_evidence_record
 from .capability_review import (
@@ -3185,7 +3186,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id")
     parser.add_argument(
         "--central-database", type=Path,
-        help="installation-owned engineering.db selected by the lifecycle composition root",
+        help="installation-owned epdata.sqlite selected by the lifecycle composition root",
     )
     parser.add_argument(
         "--transaction-kind",
@@ -3221,8 +3222,8 @@ def main(argv: list[str] | None = None) -> int:
     central_database = args.central_database.resolve() if args.central_database is not None else None
     if central_database is None:
         raise SystemExit("CENTRAL_OPERATIONAL_DATABASE_REQUIRED")
-    if central_database is not None and central_database.name != "engineering.db":
-        raise SystemExit("--central-database must name engineering.db")
+    if central_database is not None and central_database.name != CENTRAL_DATABASE_FILENAME:
+        raise SystemExit(f"--central-database must name {CENTRAL_DATABASE_FILENAME}")
     if central_database is not None and not central_database.is_file():
         raise SystemExit("--central-database does not exist")
     prompt_path = args.prompt.resolve()

@@ -1,5 +1,18 @@
 # Engineering Platform Roadmap
 
+## Server deployment and discovery sequencing
+
+EP's target server is headless, launchd-managed on macOS, with one EP-owned
+CENTRAL runtime root outside source/Git and versioned HTTP application ingress.
+It retains EP-only execution authority. Stable instance identity, configured
+and authenticated Forge peer binding, and restart-safe CENTRAL/evidence are
+minimum seams for the first Forge→EP→Forge canary. LAN DNS-SD/mDNS discovery,
+configured/unicast/tailnet bootstrap, general server-peer pairing UX and
+installer composition are later productization work and do not block that
+canary. Discovery is never authorization and may not silently move a binding.
+
+See [EP Server deployment and discovery](../engineering/EP_SERVER_DEPLOYMENT_AND_DISCOVERY.md).
+
 ## Current standalone/bootstrap critical path — 2026-09-06
 
 This section is the current sequencing authority where older roadmap prose or derived cross-product projections conflict with the post-P-TRANSPORT decisions.

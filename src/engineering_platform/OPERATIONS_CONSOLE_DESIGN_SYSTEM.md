@@ -408,7 +408,8 @@ An absolute local file or folder is evidence, never a navigation destination.
 Use the canonical `local-folder-link` text button: it is underlined, wraps
 safely, copies its displayed absolute path to the clipboard and confirms that
 action with the existing bottom-of-page copy toast. It must not open Finder,
-use `file:` URLs, or invoke a local-path server route.
+use `file:` URLs, invoke a local-path server route, or show a selected border
+or focus outline; its underline is the complete visual affordance.
 
 Server-rendered values use `data-local-path`; dynamic values use
 `window.__engineeringPlatformLocalFilesystemLink(value)`. Both paths resolve
@@ -712,16 +713,57 @@ The Configuration surface presents CENTRAL persistence as one **platform data**
 unit. It must not offer separate database or File Inbox relocation: both are
 durable parts of the same state and a partial move is unsafe.
 
+The only canonical CENTRAL database filename is `epdata.sqlite`. During an
+upgrade the Server promotes an existing `engineering.db` to that name before
+starting writers; it leaves no compatibility copy or symlink behind.
+
 - The displayed location is a `local-folder-link`, including its canonical
   copy-to-clipboard feedback.
 - Export is the filled text action **Exporteer platformgegevens** with the
-  `↓` glyph. It creates a ZIP snapshot of all durable CENTRAL state; installed
-  runtime files and live process state are excluded.
-- Import uses the same modal family, a local ZIP chooser, an explicit warning
-  and a separate affirmative action. Its entry action is the filled text
-  action **Importeer platformgegevens** with the `↗` glyph. It always says
-  that current state will be replaced and the Server will restart.
+  `↓` glyph. It creates an `.epdata` package (a ZIP container with the EP
+  media type) of all durable CENTRAL state; installed runtime files and live
+  process state are excluded.
+- Every `.epdata` package is a fixed outer container containing exactly one
+  inner data archive and its SHA-256 digest. The inner archive contains a
+  manifest with the exact schema version, one SHA-256 digest and size per
+  durable member, and a canonical checksum of that member list. Import first
+  validates the outer container and complete inner-archive digest, then the
+  inner manifest, safe member names, member set, sizes, digests and embedded
+  database schema before it stages anything. This detects incomplete or
+  accidentally changed packages; the package is an integrity check, not a
+  signature or a trust boundary.
+- Import uses the same modal family, a local `.epdata` chooser, an explicit
+  warning and a separate affirmative action. Its entry action is the filled
+  text action **Importeer platformgegevens** with the `↑` glyph, which is also
+  used in the modal header. It always says that current state will be replaced
+  and the Server will restart. The archive database schema must exactly equal
+  the active installation schema; imports never perform migrations. Schema
+  upgrades belong to EP installation. On a failed import the translated error
+  is red; choosing another file or closing the modal clears that prior error.
+- An accepted import or relocation first replies that a restart is pending,
+  then shuts down cleanly and starts the same Server command again. An
+  installed EP LaunchAgent continues this lifecycle under `launchd`; the
+  command also restarts itself when it was started manually for qualification.
+- Every completed dashboard export, import and relocation writes one distinct
+  `operations_console` audit event to the combined log table:
+  `platform_data_export`, `platform_data_import` or
+  `platform_data_relocate`. Each event records the local dashboard initiator
+  as `DASHBOARD_USER`, the completed outcome and only bounded operation
+  metadata (package format, import entry/schema count, or old/new location).
+  The Console has no authenticated human identity at this boundary, so this
+  is an initiator classification rather than a claimed person identity.
 - Relocation chooses a parent directory and moves the complete data root in
   one restart-bound operation. Its filled text action uses the `↗` glyph and
-  follows the location responsively. The existing stable launch path remains
-  valid.
+  follows the location responsively. The selected directory becomes the only
+  canonical location: no symlink or compatibility directory remains at the
+  old location. The chooser immediately displays the exact future root (for
+  example `…/central`), creates that empty directory and verifies it is
+  writable. A target on another APFS-formatted disk, partition or mounted
+  volume is supported: the Server copies and verifies the complete root before
+  it removes the source. If copying or verification fails, the source stays
+  authoritative and the incomplete destination is removed. A non-APFS
+  cross-volume target is refused before a destination folder is prepared. A
+  same-filesystem move remains an atomic rename.
+  Closing the modal without relocating removes only that prepared,
+  still-empty directory. An installed EP LaunchAgent is rewritten to the new
+  root.

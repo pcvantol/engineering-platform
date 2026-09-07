@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from engineering_platform import component_logging
+from engineering_platform import component_logging, server
 from engineering_platform.platform_components import RETIRED_COMPONENT_ALIASES
 from tools.qualification import logging_retirement_guard
 
@@ -22,7 +22,7 @@ class ComponentLoggingTest(unittest.TestCase):
             data_root = root / "central"
             initialize(data_root)
             logger = component_logging.component_logger(
-                root, "file_inbox_ingress", level="DEBUG", central_database=data_root / "engineering.db",
+                root, "file_inbox_ingress", level="DEBUG", central_database=data_root / server.SERVER_DATABASE_FILENAME,
             )
             component_logging.log_event(
                 logger,
@@ -31,7 +31,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 run_id="operations_console-example",
                 diagnostic="authorization: secret-value",
             )
-            with sqlite3.connect(data_root / "engineering.db") as connection:
+            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 payload = connection.execute(
                     "SELECT payload FROM engineering_component_logs WHERE component='file_inbox_ingress'"
                 ).fetchone()[0]
@@ -52,7 +52,7 @@ class ComponentLoggingTest(unittest.TestCase):
             root.mkdir()
             data_root = Path(temporary) / "data"
             initialize(data_root)
-            central = data_root / "engineering.db"
+            central = data_root / server.SERVER_DATABASE_FILENAME
             logger = component_logging.component_logger(
                 root, "lifecycle_worker", central_database=central,
             )
@@ -78,7 +78,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 logger = component_logging.component_logger(checkout, "operations_console")
                 component_logging.log_event(logger, logging.INFO, "normal_console_event")
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
-            with sqlite3.connect(data_root / "engineering.db") as connection:
+            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 component, payload = connection.execute(
                     "SELECT component,payload FROM engineering_component_logs"
                 ).fetchone()
@@ -94,8 +94,8 @@ class ComponentLoggingTest(unittest.TestCase):
             initialize(data_root)
             for alias in RETIRED_COMPONENT_ALIASES:
                 with self.subTest(alias=alias), self.assertRaisesRegex(ValueError, "Unsupported Platform component"):
-                    component_logging.component_logger(root, alias, central_database=data_root / "engineering.db")
-            with sqlite3.connect(data_root / "engineering.db") as connection:
+                    component_logging.component_logger(root, alias, central_database=data_root / server.SERVER_DATABASE_FILENAME)
+            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM engineering_component_logs").fetchone()[0],
                     0,
@@ -129,15 +129,22 @@ class ComponentLoggingTest(unittest.TestCase):
                 launch_agent_path=Path("/Users/example/Library/LaunchAgents/com.example.engineering.plist"),
             )
             logger = component_logging.component_logger(
-                root, "operations_console", central_database=data_root / "engineering.db",
+                root, "operations_console", central_database=data_root / server.SERVER_DATABASE_FILENAME,
             )
             component_logging.log_event(
                 logger,
                 logging.INFO,
                 "component_restart_trigger_received",
-                context={**context, "target_component": "inbox_watcher", "secret": "must-not-persist"},
+                context={
+                    **context,
+                    "target_component": "inbox_watcher",
+                    "audit_action": "EXPORT",
+                    "audit_actor": "DASHBOARD_USER",
+                    "package_format": "EPDATA",
+                    "secret": "must-not-persist",
+                },
             )
-            with sqlite3.connect(data_root / "engineering.db") as connection:
+            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 payload = connection.execute(
                     "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
                 ).fetchone()[0]
@@ -146,6 +153,9 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertEqual(record["git_commit"], "abc123def456")
             self.assertEqual(record["launchd_label"], "com.example.engineering")
             self.assertEqual(record["target_component"], "inbox_watcher")
+            self.assertEqual(record["audit_action"], "EXPORT")
+            self.assertEqual(record["audit_actor"], "DASHBOARD_USER")
+            self.assertEqual(record["package_format"], "EPDATA")
             self.assertNotIn("secret", record)
 
     def test_invalid_level_fails_closed_without_creating_a_local_log_fallback(self) -> None:

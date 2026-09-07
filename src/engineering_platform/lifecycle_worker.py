@@ -81,7 +81,7 @@ class LifecycleWorker:
 
     def eligible_submission_ids(self) -> list[str]:
         """Return one FIFO candidate per project; claims remain dispatcher-owned."""
-        with sqlite3.connect(self.data_root / "engineering.db") as connection:
+        with sqlite3.connect(central_database.path(self.data_root)) as connection:
             rows = connection.execute("""SELECT s.submission_id,s.project_id,d.state,d.claimed_at,s.created_at
                 FROM ep_submissions s
                 LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id
