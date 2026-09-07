@@ -2129,7 +2129,6 @@ def _central_database_section(data_root: Path) -> str:
         'data-i18n="configuration.ep_database_download" data-i18n-aria-label="configuration.ep_database_download" '
         'aria-label="Download EP-database">Download EP-database</a></div></header>'
         '<dl class="configuration-central-database__facts">'
-        '<div><dt class="label" data-i18n="configuration.database_owner">Database-eigendom</dt><dd data-i18n="configuration.ep_database_owner">Engineering Platform</dd></div>'
         f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.database_location">Databaselocatie</dt><dd class="configuration-central-database__location-value"><span class="configuration-central-database__location-link">{escape(str(details["path"]))}</span><button class="configuration-central-database__relocate" id="centralDatabaseRelocate" type="button" data-i18n="configuration.relocate_database">Verplaats database</button></dd></div>'
         f'<div><dt class="label" data-i18n="configuration.database_size">Databasegrootte</dt><dd>{size}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.schema_version">Schema-versie</dt><dd>{details["schema_version"]}</dd></div>'
