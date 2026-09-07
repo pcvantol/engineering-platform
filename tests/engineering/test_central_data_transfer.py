@@ -41,6 +41,7 @@ class CentralDataTransferTest(unittest.TestCase):
             self.assertNotIn("runtime/runtime-only.txt", snapshot.namelist())
         self.assertGreaterEqual(details["entries"], 3)
         self.assertEqual(details["schema_version"], 53)
+        self.assertEqual(archive.suffix, ".epdata")
 
     def test_import_replaces_durable_state_and_preserves_target_runtime(self) -> None:
         _, content = central_data_transfer.export_snapshot(self.root)
@@ -83,6 +84,7 @@ class CentralDataTransferTest(unittest.TestCase):
             {**entry, "sha256": __import__("hashlib").sha256(database).hexdigest(), "size": len(database)} if entry["path"] == "engineering.db" else entry
             for entry in manifest["entries"]
         ]
+        manifest["content_sha256"] = central_data_transfer._content_checksum(manifest["entries"])
         with zipfile.ZipFile(archive, "w") as rewritten:
             rewritten.writestr("engineering.db", database)
             for name, value in other_entries.items():
@@ -97,4 +99,19 @@ class CentralDataTransferTest(unittest.TestCase):
             snapshot.writestr("../outside", "bad")
             snapshot.writestr(central_data_transfer.MANIFEST_NAME, '{"format_version":1,"kind":"engineering-platform-central-data","entries":[]}')
         with self.assertRaisesRegex(central_data_transfer.CentralDataTransferError, "CENTRAL_ARCHIVE"):
+            central_data_transfer.inspect_archive(archive)
+
+    def test_archive_rejects_a_tampered_complete_content_checksum(self) -> None:
+        _, content = central_data_transfer.export_snapshot(self.root)
+        archive = Path(self.temporary.name) / "tampered.epdata"
+        archive.write_bytes(content)
+        with zipfile.ZipFile(archive) as original:
+            manifest = __import__("json").loads(original.read(central_data_transfer.MANIFEST_NAME))
+            files = {name: original.read(name) for name in original.namelist() if name != central_data_transfer.MANIFEST_NAME}
+        manifest["content_sha256"] = "0" * 64
+        with zipfile.ZipFile(archive, "w") as rewritten:
+            for name, value in files.items():
+                rewritten.writestr(name, value)
+            rewritten.writestr(central_data_transfer.MANIFEST_NAME, __import__("json").dumps(manifest))
+        with self.assertRaisesRegex(central_data_transfer.CentralDataTransferError, "CENTRAL_ARCHIVE_INTEGRITY_INVALID"):
             central_data_transfer.inspect_archive(archive)

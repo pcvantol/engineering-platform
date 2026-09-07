@@ -2651,7 +2651,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self.server.dependabot_service.start()  # type: ignore[attr-defined]
                 self.server.central_data_transfer_active = False  # type: ignore[attr-defined]
         self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Type", "application/vnd.engineering-platform.epdata+zip")
         self.send_header("Content-Disposition", _attachment_content_disposition(filename))
         self.send_header("Content-Length", str(len(snapshot)))
         self.send_header("Cache-Control", "no-store")
@@ -2704,7 +2704,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("CENTRAL_IMPORT_BLOCKED")
                 imports = self.server.data_root / "runtime" / "central-data-imports"  # type: ignore[attr-defined]
                 imports.mkdir(mode=0o700, parents=True, exist_ok=True)
-                upload = imports / f"upload-{uuid4().hex}.zip"
+                upload = imports / f"upload-{uuid4().hex}{central_data_transfer.PACKAGE_EXTENSION}"
                 with upload.open("wb") as output:
                     remaining = length
                     while remaining:

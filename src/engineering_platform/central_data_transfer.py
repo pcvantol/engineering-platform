@@ -22,6 +22,7 @@ from . import central_database
 
 FORMAT_VERSION = 1
 MANIFEST_NAME = "central-data-manifest.json"
+PACKAGE_EXTENSION = ".epdata"
 EXCLUDED_TOP_LEVEL = frozenset({"runtime"})
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 100_000
@@ -33,6 +34,12 @@ class CentralDataTransferError(ValueError):
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _content_checksum(entries: list[dict[str, object]]) -> str:
+    """Checksum the complete canonical manifest of every durable file."""
+    canonical = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return _sha256(canonical)
 
 
 def _safe_member(name: str) -> PurePosixPath:
@@ -96,11 +103,12 @@ def export_snapshot(data_root: Path) -> tuple[str, bytes]:
                 "kind": "engineering-platform-central-data",
                 "schema_version": central_database.details(root)["schema_version"],
                 "entries": entries,
+                "content_sha256": _content_checksum(entries),
             }
             archive.writestr(MANIFEST_NAME, json.dumps(manifest, sort_keys=True, separators=(",", ":")))
         output.seek(0)
         content = output.read()
-    filename = f"engineering-platform-central-data-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.zip"
+    filename = f"engineering-platform-central-data-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}{PACKAGE_EXTENSION}"
     return filename, content
 
 
@@ -131,6 +139,9 @@ def inspect_archive(path: Path) -> dict[str, object]:
                     raise CentralDataTransferError("CENTRAL_ARCHIVE_MANIFEST_INVALID")
                 name = _safe_member(entry["path"]).as_posix()
                 expected[name] = entry
+            checksum = manifest.get("content_sha256")
+            if not isinstance(checksum, str) or len(checksum) != 64 or checksum != _content_checksum(entries):
+                raise CentralDataTransferError("CENTRAL_ARCHIVE_INTEGRITY_INVALID")
             if set(expected) != names - {MANIFEST_NAME} or "engineering.db" not in expected:
                 raise CentralDataTransferError("CENTRAL_ARCHIVE_MANIFEST_INVALID")
             for name, entry in expected.items():
@@ -149,7 +160,7 @@ def stage_import(data_root: Path, source: Path) -> dict[str, object]:
     root = data_root.resolve()
     imports = root / "runtime" / "central-data-imports"
     imports.mkdir(mode=0o700, parents=True, exist_ok=True)
-    target = imports / f"{uuid4().hex}.zip"
+    target = imports / f"{uuid4().hex}{PACKAGE_EXTENSION}"
     shutil.copyfile(source, target)
     target.chmod(0o600)
     details = inspect_archive(target)

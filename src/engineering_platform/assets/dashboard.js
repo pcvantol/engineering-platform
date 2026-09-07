@@ -8544,6 +8544,8 @@ document.addEventListener("change", (event) => {
 
 document.addEventListener("DOMContentLoaded", () => {
   const status = $("centralDataImportStatus");
+  const archive = $("centralDataImportFile");
+  if (archive) archive.accept = ".epdata,application/vnd.engineering-platform.epdata+zip";
   if (!status) return;
   const errors = new Set(["CENTRAL_IMPORT_BLOCKED","CENTRAL_IMPORT_UPLOAD_INCOMPLETE","CENTRAL_IMPORT_ALREADY_PENDING","CENTRAL_IMPORT_REQUEST_INVALID","CENTRAL_IMPORT_FAILED","CENTRAL_DATABASE_UNAVAILABLE","CENTRAL_ARCHIVE_SIZE_INVALID","CENTRAL_ARCHIVE_MEMBER_INVALID","CENTRAL_ARCHIVE_MANIFEST_INVALID","CENTRAL_ARCHIVE_SCHEMA_INVALID","CENTRAL_ARCHIVE_SCHEMA_INCOMPATIBLE","CENTRAL_ARCHIVE_INTEGRITY_INVALID","CENTRAL_ARCHIVE_INVALID"]);
   new MutationObserver(() => {
