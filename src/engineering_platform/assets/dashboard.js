@@ -3757,7 +3757,6 @@ function renderPlatformHealth(payload) {
     detail.className = "platform-health__component-detail";
     const transportFacts = [
       component?.last_successful_submission ? t("transport.last_submission") + " " + component.last_successful_submission : "",
-      component?.watched_location ? t("transport.location") + " " + component.watched_location : "",
       (component?.delivery_retry_code || component?.delivery_retry) ? t("transport.delivery_retry") + " " + t("transport.retry." + (component.delivery_retry_code || `FILE_INGRESS_DELIVERY_RETRY_${component.delivery_retry}`)) : "",
       Number.isFinite(Number(component?.quarantine_count)) ? t("transport.quarantine") + " " + component.quarantine_count : "",
       (component?.reason_code || component?.recent_error) ? t("transport.recent_error") + " " + t("transport.reason." + (component.reason_code || "FILE_INBOX_DIAGNOSTIC")) : "",

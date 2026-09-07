@@ -6912,6 +6912,7 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.delivery_retry"]);
       await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.quarantine"]);
       await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.recent_error"]);
+      await expect(fileCard).not.toContainText("/private/tmp/qualification/file-inbox");
     }
   });
 
