@@ -4,6 +4,12 @@
 
 **Scope:** EP Server/CENTRAL scheduling, generic Engineering Platform Agents, capability placement, delivery ownership, Agent installation/security contexts, provider connections, runtime/tool ownership, health telemetry, priority scheduling, Agent-local concurrency and telemetry-driven placement.
 
+> **Deployment/DAG boundary:** stable EP Server identity, central installed
+> storage, authenticated pinned peer binding and restart-safe operation are
+> minimum seams for the first Forge→EP→Forge canary. LAN discovery, general
+> topology bootstrap and installer productization are later nodes; see
+> [EP Server deployment and discovery](EP_SERVER_DEPLOYMENT_AND_DISCOVERY.md).
+
 ## Purpose
 
 EP is modeled as a sorting centre. Engineering Actions arrive through multiple transports and are normalized into CENTRAL. CENTRAL determines when an Action is eligible and which Agent is best able to deliver it. Once an Agent accepts an Action, the Agent owns delivery until it succeeds or exhausts its bounded recovery policy and reports the Action as undeliverable.

@@ -6,6 +6,11 @@
 
 ## Purpose
 
+The installed-server/discovery target is specified in
+[EP Server deployment and discovery](EP_SERVER_DEPLOYMENT_AND_DISCOVERY.md).
+It refines deployment and peer bootstrap while preserving CENTRAL and the
+existing Server/Project-Agent execution boundary.
+
 Engineering Platform is the stable, producer-neutral execution platform for
 engineering work. It accepts compliant Engineering Actions from a
 Human Architect, Forge or a future Producer and applies one generic execution
