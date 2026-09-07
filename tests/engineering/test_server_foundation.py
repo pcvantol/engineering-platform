@@ -111,6 +111,20 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "component": "ep_server", "pid": 321, "uptime_seconds": 61,
         })
 
+    @patch("engineering_platform.server.os.getpid", return_value=4321)
+    @patch("engineering_platform.server.LaunchdProvider")
+    def test_in_process_components_report_the_current_server_pid_without_launchd(self, launchd: object, _pid: object) -> None:
+        """Manual and qualification starts still have an authoritative host PID."""
+        launchd.return_value.runtime_details.return_value = None
+        server.initialize(self.root)
+
+        worker = server._platform_component_detail(self.root, "lifecycle_worker")
+
+        self.assertEqual(worker["process_state"], "IN_PROCESS")
+        self.assertEqual(worker["process_host"], {
+            "component": "ep_server", "pid": 4321, "uptime_seconds": None,
+        })
+
     def test_launchagent_configuration_projects_boolean_and_dictionary_policies(self) -> None:
         plist_path = self.root / "agent.plist"
         plist_path.parent.mkdir(parents=True)

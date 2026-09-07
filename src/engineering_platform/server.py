@@ -1535,7 +1535,10 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
         detail["process_state"] = "IN_PROCESS"
         detail["process_host"] = {
             "component": "ep_server",
-            "pid": host.pid if host is not None and host.active else None,
+            # In-process components always run in this Server process.  A
+            # manually started qualification server has no LaunchAgent to
+            # inspect, but its current PID is still authoritative.
+            "pid": host.pid if host is not None and host.active else os.getpid(),
             "uptime_seconds": host.uptime_seconds if host is not None and host.active else None,
         }
     return detail
