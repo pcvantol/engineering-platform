@@ -1405,10 +1405,14 @@ function copyText(value, successMessage = t("copy.success")) {
   }
 }
 let copyToastTimer;
-function showDashboardToast(message) {
+const DASHBOARD_TOAST_GLYPHS = Object.freeze({
+  copy: "⧉", error: "!", info: "ℹ", refresh: "↻", queued: "↗",
+});
+function showDashboardToast(message, glyph = DASHBOARD_TOAST_GLYPHS.info) {
   const toast = $("copyToast");
   if (!toast) return;
   clearTimeout(copyToastTimer);
+  toast.dataset.toastGlyph = glyph;
   toast.textContent = message;
   toast.hidden = false;
   if (typeof toast.showPopover === "function" && !toast.matches(":popover-open"))
@@ -1423,7 +1427,7 @@ function showDashboardToast(message) {
     }, 180);
   }, 2200);
 }
-function showCopyToast(message = t("copy.success")) { showDashboardToast(message); }
+function showCopyToast(message = t("copy.success")) { showDashboardToast(message, DASHBOARD_TOAST_GLYPHS.copy); }
 const PREFLIGHT_PRESENTATIONS = Object.freeze([
   ["host_preflight", [
     ["hostPreflightStatus", "outcome"],
@@ -2692,7 +2696,7 @@ function scheduleOpenPullRequestMonitor(pullRequests) {
 }
 async function refreshOpenPullRequests({ announce = false } = {}) {
   if (openPullRequestMonitorInFlight) return;
-  if (announce) showDashboardToast(t("workspace.open_pull_requests_refreshing"));
+  if (announce) showDashboardToast(t("workspace.open_pull_requests_refreshing"), DASHBOARD_TOAST_GLYPHS.refresh);
   openPullRequestMonitorInFlight = true;
   const refreshButton = $("workspaceOpenPullRequestsRefresh");
   if (refreshButton) refreshButton.disabled = true;
@@ -2743,10 +2747,10 @@ async function requestOpenPullRequestOwnerAuthorization(button) {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw Error(payload?.error);
-    showDashboardToast(t("workspace.open_pull_request.owner_authorization_queued"));
+    showDashboardToast(t("workspace.open_pull_request.owner_authorization_queued"), DASHBOARD_TOAST_GLYPHS.queued);
     refreshOpenPullRequestsAfterAction();
   } catch (error) {
-    showDashboardToast(openPullRequestActionErrorMessage(error?.message));
+    showDashboardToast(openPullRequestActionErrorMessage(error?.message), DASHBOARD_TOAST_GLYPHS.error);
   } finally {
     button.disabled = false;
   }
@@ -2784,10 +2788,10 @@ async function requestOpenPullRequestCheckRepair(button) {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw Error(payload?.error);
-    showDashboardToast(t("workspace.open_pull_request.repair_failed_checks_queued"));
+    showDashboardToast(t("workspace.open_pull_request.repair_failed_checks_queued"), DASHBOARD_TOAST_GLYPHS.queued);
     refreshOpenPullRequestsAfterAction();
   } catch (error) {
-    showDashboardToast(openPullRequestActionErrorMessage(error?.message));
+    showDashboardToast(openPullRequestActionErrorMessage(error?.message), DASHBOARD_TOAST_GLYPHS.error);
   } finally {
     button.disabled = false;
   }
@@ -4086,7 +4090,7 @@ async function clearExecutionTelemetry() {
     executionTelemetry([]);
     void recordUserAction("telemetry_cleared");
   } catch (error) {
-    showDashboardToast(error instanceof Error && error.message ? error.message : t("telemetry.clear_failed"));
+    showDashboardToast(error instanceof Error && error.message ? error.message : t("telemetry.clear_failed"), DASHBOARD_TOAST_GLYPHS.error);
   }
 }
 function executionTelemetry(rows) {
@@ -8122,7 +8126,7 @@ function checkOperatorMergeStatus(button) {
       const reason = String(result.body?.reason || "github_evidence_unavailable");
       if (result.body?.verified) {
         if ($("operatorMergeWaitModal").open) $("operatorMergeWaitModal").close();
-        showDashboardToast(t("merge_wait.continuation_scheduled"));
+        showDashboardToast(t("merge_wait.continuation_scheduled"), DASHBOARD_TOAST_GLYPHS.refresh);
         return refreshMergeContinuation();
       }
       // Re-read the authoritative snapshot before retaining a failure modal:
@@ -8466,6 +8470,7 @@ Object.assign(window, {
   scheduleOpenPullRequestMonitor,
   showComponentModal,
   showDashboardError,
+  showDashboardToast,
   showCopyToast,
   startPullRefresh,
   structuredLogEntries,

@@ -8368,6 +8368,19 @@ test.describe("Engineering Status browser smoke", () => {
     expect(box.y + box.height).toBeLessThanOrEqual(844);
   });
 
+  test("gives every dashboard toast a semantic glyph without polluting its live text", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const toast = page.getByTestId("copy-toast");
+    await page.evaluate(() => showCopyToast());
+    await expect(toast).toHaveAttribute("data-toast-glyph", "⧉");
+    await expect(toast.evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"⧉"');
+    await page.evaluate(() => showDashboardToast("Vernieuwen", "↻"));
+    await expect(toast).toHaveText("Vernieuwen");
+    await expect(toast).toHaveAttribute("data-toast-glyph", "↻");
+    await page.evaluate(() => showDashboardToast("Mislukt", "!"));
+    await expect(toast).toHaveAttribute("data-toast-glyph", "!");
+  });
+
   test("uses the house-orange focus contract and a light mobile options surface", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
