@@ -100,8 +100,8 @@ jobs:
           measured_modules = {Path(path).resolve() for path in files}
           unmeasured = [str(path) for path in production_modules if path not in measured_modules]
           aggregate = report["totals"]["percent_covered"]
-          if len(production_modules) != 107:
-              failures.append(f"production module inventory changed: {len(production_modules)} (expected 107)")
+if len(production_modules) != 108:
+    failures.append(f"production module inventory changed: {len(production_modules)} (expected 108)")
           if unmeasured:
               failures.append("unmeasured production modules: " + ", ".join(unmeasured))
           if aggregate < 80.00:

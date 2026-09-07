@@ -478,6 +478,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(result["result"], "INSTALLED")
         self.assertEqual(result["component"], "dashboard_relay")
 
+    def test_server_cli_installs_server_launchagent_through_server_owned_lifecycle(self) -> None:
+        with patch("engineering_platform.server.server_service.install", return_value={
+            "state": "installed", "label": "com.engineeringplatform.server", "plist": "/Library/LaunchAgents/com.engineeringplatform.server.plist", "data_root": "/installation",
+        }) as install, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(server.main(["service-install", "--data-root", str(self.root)]), 0)
+        install.assert_called_once_with(self.root)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["result"], "INSTALLED")
+        self.assertEqual(result["label"], "com.engineeringplatform.server")
+
     def test_live_file_inbox_with_quarantine_is_degraded_without_execution_state(self) -> None:
         server.initialize(self.root)
         inbox = self.root / server.FILE_INBOX_DIRECTORY
