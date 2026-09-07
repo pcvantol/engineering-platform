@@ -47,6 +47,22 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertEqual(http.submission_id, cli.submission_id)
             self.assertEqual(connection.execute("SELECT count(*) FROM ep_submission_prompt_history").fetchone()[0], 1)
 
+    def test_operator_dispositions_are_audited_and_only_resumable_from_hold_states(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("operator"), transport="HTTP"))
+            held = submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="QUARANTINED", reason="Needs operator review",
+            )
+            self.assertEqual(held["state"], "QUARANTINED")
+            resumed = submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="QUEUED", reason="Review completed",
+            )
+            self.assertEqual(resumed["state"], "QUEUED")
+            events = [row[0] for row in connection.execute("SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,))]
+            self.assertEqual(events[-2:], ["OPERATOR_QUEUE_QUARANTINED", "OPERATOR_QUEUE_QUEUED"])
+
     def test_http_auth_scope_and_acceptance(self) -> None:
         server.start(self.root)
         request = Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions", data=json.dumps(self.payload("http")).encode(), headers={"Authorization": f"Bearer {self.credential}", "Content-Type": "application/json"}, method="POST")

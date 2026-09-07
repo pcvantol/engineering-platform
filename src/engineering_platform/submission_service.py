@@ -22,6 +22,7 @@ MAX_FIELD_LENGTH = 128
 MAX_CONSTRAINT_BYTES = 8192
 VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "FILE_INBOX", "DEPENDABOT", "LEGACY_FILE"})
 VALID_EXECUTION_MODES = frozenset({"MANAGED", "GENESIS"})
+OPERATOR_QUEUE_STATES = frozenset({"DEFERRED", "QUARANTINED", "DECLINED"})
 
 # This is the complete B8D lifecycle.  The final value deliberately says what
 # CENTRAL has *not* done: admission makes a submission eligible for a later
@@ -42,6 +43,31 @@ class SubmissionError(ValueError):
     def __init__(self, code: str, status: int = 400) -> None:
         super().__init__(code)
         self.code, self.status = code, status
+
+
+def operator_queue_disposition(connection: sqlite3.Connection, *, project_id: str,
+                               submission_id: str, disposition: str, reason: str) -> dict[str, str]:
+    """Apply one auditable CENTRAL queue disposition; never delete intent."""
+    if disposition not in OPERATOR_QUEUE_STATES | {"QUEUED"} or not reason.strip() or len(reason) > 500:
+        raise SubmissionError("INVALID_QUEUE_DISPOSITION")
+    row = connection.execute(
+        "SELECT state FROM ep_submissions WHERE project_id=? AND submission_id=?", (project_id, submission_id)
+    ).fetchone()
+    if row is None:
+        raise SubmissionError("SUBMISSION_NOT_FOUND", 404)
+    current = str(row[0])
+    allowed = (current == "QUEUED" and disposition in OPERATOR_QUEUE_STATES) or (
+        current in {"DEFERRED", "QUARANTINED"} and disposition == "QUEUED"
+    )
+    if not allowed:
+        raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
+    now = _now()
+    connection.execute("UPDATE ep_submissions SET state=? WHERE project_id=? AND submission_id=?", (disposition, project_id, submission_id))
+    connection.execute(
+        "INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)",
+        (submission_id, "OPERATOR_QUEUE_" + disposition, json.dumps({"state": disposition, "reason": reason.strip()}, sort_keys=True), now),
+    )
+    return {"submission_id": submission_id, "state": disposition, "reason": reason.strip(), "recorded_at": now}
 
 
 def _lifecycle_payload(*, transport: str, producer_id: str) -> dict[str, str]:

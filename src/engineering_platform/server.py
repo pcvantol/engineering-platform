@@ -92,7 +92,7 @@ SERVER_CONFIGURATION_VERSION = 2
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 53
+SERVER_STORE_SCHEMA_VERSION = 54
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/openapi.json"
@@ -703,7 +703,7 @@ def _migrate_schema_43(connection: sqlite3.Connection) -> None:
         transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','FILE_INBOX','LEGACY_FILE')),
         prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL,
         idempotency_key TEXT, correlation_id TEXT, mission_id TEXT, engineering_action_id TEXT,
-        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED')), admission TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED','DEFERRED','QUARANTINED','DECLINED')), admission TEXT NOT NULL,
         created_at TEXT NOT NULL)""")
     connection.execute("CREATE INDEX ep_submissions_project_lookup ON ep_submissions(project_id,state,created_at DESC)")
     connection.execute("CREATE UNIQUE INDEX ep_submissions_idempotency_lookup ON ep_submissions(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
@@ -920,7 +920,7 @@ def _migrate_schema_51(connection: sqlite3.Connection) -> None:
         prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL,
         idempotency_key TEXT, correlation_id TEXT, mission_id TEXT, engineering_action_id TEXT,
         transport_receipt_id TEXT, transport_received_at TEXT,
-        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED')), admission TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED','DEFERRED','QUARANTINED','DECLINED')), admission TEXT NOT NULL,
         created_at TEXT NOT NULL)""")
     connection.execute("""INSERT INTO ep_submissions(
         submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,transport_receipt_id,transport_received_at,state,admission,created_at)
@@ -1167,6 +1167,38 @@ def _migrate_schema_53(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=53")
 
 
+def _migrate_schema_54(connection: sqlite3.Connection) -> None:
+    """Widen CENTRAL submission state for audited operator handling."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema53")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54)))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,54 FROM ep_installations_schema53")
+    connection.execute("DROP TABLE ep_installations_schema53")
+    for table in ("ep_submission_events", "ep_submission_prompt_history", "ep_parity_lifecycle_dispatches", "ep_submissions"):
+        connection.execute(f"ALTER TABLE {table} RENAME TO {table}_schema53")
+    connection.execute("""CREATE TABLE ep_submissions (
+        submission_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id), producer_id TEXT NOT NULL,
+        producer_type TEXT NOT NULL, producer_version TEXT, transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','FILE_INBOX','DEPENDABOT','LEGACY_FILE')),
+        prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL, idempotency_key TEXT, correlation_id TEXT,
+        mission_id TEXT, engineering_action_id TEXT, transport_receipt_id TEXT, transport_received_at TEXT,
+        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED','DEFERRED','QUARANTINED','DECLINED')), admission TEXT NOT NULL, created_at TEXT NOT NULL)""")
+    connection.execute("INSERT INTO ep_submissions SELECT * FROM ep_submissions_schema53")
+    connection.execute("CREATE TABLE ep_submission_events (event_id INTEGER PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id), event_kind TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)")
+    connection.execute("INSERT INTO ep_submission_events SELECT * FROM ep_submission_events_schema53")
+    connection.execute("CREATE TABLE ep_submission_prompt_history (submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id), prompt_digest TEXT NOT NULL, recorded_at TEXT NOT NULL)")
+    connection.execute("INSERT INTO ep_submission_prompt_history SELECT * FROM ep_submission_prompt_history_schema53")
+    connection.execute("""CREATE TABLE ep_parity_lifecycle_dispatches (submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id), project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id), repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id), run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id), state TEXT NOT NULL CHECK(state IN ('CLAIMED','RUNNING','COMPLETE','BLOCKED','FAILED')), prompt_path TEXT NOT NULL, claimed_at TEXT NOT NULL, updated_at TEXT NOT NULL, operator_resolution TEXT NOT NULL DEFAULT 'NONE' CHECK(operator_resolution IN ('NONE','OPEN','DISMISSED','RETRIED')), resolution_submission_id TEXT REFERENCES ep_submissions(submission_id))""")
+    connection.execute("INSERT INTO ep_parity_lifecycle_dispatches SELECT * FROM ep_parity_lifecycle_dispatches_schema53")
+    for table in ("ep_submission_events_schema53", "ep_submission_prompt_history_schema53", "ep_parity_lifecycle_dispatches_schema53", "ep_submissions_schema53"):
+        connection.execute(f"DROP TABLE {table}")
+    connection.execute("CREATE INDEX ep_submissions_project_lookup ON ep_submissions(project_id,state,created_at DESC)")
+    connection.execute("CREATE UNIQUE INDEX ep_submissions_idempotency_lookup ON ep_submissions(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
+    connection.execute("CREATE INDEX ep_parity_lifecycle_dispatches_run_lookup ON ep_parity_lifecycle_dispatches(run_id,state)")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(54)")
+    connection.execute("UPDATE engineering_metadata SET value='54' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=54")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -1231,14 +1263,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
@@ -1265,7 +1297,9 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_51(connection)
                             if current_schema != 52:
                                 _migrate_schema_52(connection)
-                            _migrate_schema_53(connection)
+                            if current_schema != 53:
+                                _migrate_schema_53(connection)
+                            _migrate_schema_54(connection)
                             connection.execute("COMMIT")
                             connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
@@ -1292,6 +1326,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_51(connection)
         _migrate_schema_52(connection)
         _migrate_schema_53(connection)
+        _migrate_schema_54(connection)
         connection.execute("COMMIT")
         connection.execute("PRAGMA legacy_alter_table=OFF")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -3207,6 +3242,28 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": str(error)})
                 return
             self._send(200, result)
+            return
+        if method == "do_POST" and request.path == "/api/queue-disposition":
+            if not isinstance(selected, str) or selected not in project_ids:
+                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 2 <= length <= 1024:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(payload, dict) or set(payload) != {"submission_id", "disposition", "reason"}:
+                    raise ValueError
+                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    result = submission_service.operator_queue_disposition(
+                        connection, project_id=selected, submission_id=str(payload["submission_id"]),
+                        disposition=str(payload["disposition"]), reason=str(payload["reason"]),
+                    )
+                self._send(200, result)
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(400, {"error": "INVALID_REQUEST"})
+            except submission_service.SubmissionError as error:
+                self._send(error.status, {"error": error.code})
             return
         if isinstance(selected, str) and selected in project_ids:
             # No supported CENTRAL Console route may fall through to the

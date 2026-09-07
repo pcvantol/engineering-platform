@@ -935,7 +935,7 @@ function queueItems(x, queueDepth) {
         ? locale.dateTime(new Date(modified))
         : t("format.timestamp_unavailable"),
     });
-    const defer = item.queue_source === "CENTRAL" ? null : document.createElement("button");
+    const defer = document.createElement("button");
     if (defer) {
       defer.className = "queue-defer";
       defer.type = "button";
@@ -945,7 +945,9 @@ function queueItems(x, queueDepth) {
       defer.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        deferQueueItem(item, defer);
+        if (item.queue_source === "CENTRAL") {
+          queueDisposition(item, "DEFERRED", "Operator deferred this submission from Operations Console.", defer);
+        } else deferQueueItem(item, defer);
       });
     }
     body.append(title, meta);
@@ -953,6 +955,21 @@ function queueItems(x, queueDepth) {
     if (defer) row.append(defer);
     container.append(row);
   });
+}
+function queueDisposition(item, disposition, reason, button) {
+  const submissionId = String(item?.submission_id || item?.filename || "");
+  if (!submissionId) return;
+  confirmDashboardAction(t("queue.defer_title"), t("queue.defer_description", { title: submissionId }), t("queue.defer_action"))
+    .then((confirmed) => {
+      if (!confirmed) return;
+      button.disabled = true;
+      return fetch("/api/queue-disposition", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submission_id: submissionId, disposition, reason }) })
+        .then(async (response) => ({ ok: response.ok, body: await response.json().catch(() => ({})) }))
+        .then((result) => { if (!result.ok) throw Error(result.body.error || t("queue.defer_failed")); return refreshDashboard(); })
+        .catch((error) => showDashboardError(error.message, t("queue.defer_failed")))
+        .finally(() => { button.disabled = false; });
+    });
 }
 function deferQueueItem(item, button) {
   const filename = String(item?.filename || "");
