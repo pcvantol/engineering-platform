@@ -102,8 +102,8 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertIn("pip-audit", workflow)
         self.assertIn("bandit", workflow)
         self.assertIn("pypa/gh-action-pypi-publish", workflow)
-        self.assertIn("secrets.PYPI_API_TOKEN", workflow)
-        self.assertNotIn("id-token: write", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertNotIn("secrets.PYPI_API_TOKEN", workflow)
         self.assertTrue(qualifier.is_file())
 
     def test_packaging_allowlists_runtime_assets_instead_of_repository_files(self) -> None:
