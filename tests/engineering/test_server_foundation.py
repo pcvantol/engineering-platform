@@ -528,6 +528,41 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(logger.call_count, 2)
 
     @patch("engineering_platform.server.log_event")
+    @patch("engineering_platform.server.component_logger")
+    def test_platform_data_actions_write_distinct_dashboard_audit_events(
+        self, logger: object, logged: object,
+    ) -> None:
+        server._audit_platform_data_action(
+            self.root,
+            action="EXPORT",
+            outcome="COMPLETED",
+            details={"package_format": "EPDATA"},
+        )
+        server._audit_platform_data_action(
+            self.root,
+            action="IMPORT",
+            outcome="COMPLETED",
+            details={"package_format": "EPDATA", "entry_count": 3, "schema_version": 53},
+        )
+        server._audit_platform_data_action(
+            self.root,
+            action="RELOCATE",
+            outcome="COMPLETED",
+            details={"previous_location": "/old/central", "new_location": "/new/central"},
+        )
+
+        self.assertEqual([call.args[2] for call in logged.call_args_list], [
+            "platform_data_export", "platform_data_import", "platform_data_relocate",
+        ])
+        self.assertEqual(logged.call_args_list[0].kwargs["context"], {
+            "audit_action": "EXPORT", "audit_actor": "DASHBOARD_USER",
+            "audit_outcome": "COMPLETED", "package_format": "EPDATA",
+        })
+        self.assertEqual(logged.call_args_list[1].kwargs["context"]["entry_count"], 3)
+        self.assertEqual(logged.call_args_list[2].kwargs["context"]["new_location"], "/new/central")
+        self.assertEqual(logger.call_count, 3)
+
+    @patch("engineering_platform.server.log_event")
     @patch("engineering_platform.server._central_provider_readiness")
     def test_failed_dashboard_provider_action_is_audited_without_diagnostic_output(
         self, readiness: object, logged: object,

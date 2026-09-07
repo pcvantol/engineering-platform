@@ -1629,6 +1629,33 @@ def _audit_configuration_change(
     )
 
 
+def _audit_platform_data_action(
+    data_root: Path,
+    *,
+    action: str,
+    outcome: str,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    """Persist one secret-free, dashboard-initiated platform-data audit fact."""
+    context: dict[str, object] = {
+        "audit_action": action,
+        "audit_actor": "DASHBOARD_USER",
+        "audit_outcome": outcome,
+    }
+    if details:
+        context.update(details)
+    log_event(
+        component_logger(
+            data_root,
+            "operations_console",
+            central_database=data_root / SERVER_DATABASE_FILENAME,
+        ),
+        logging.INFO,
+        f"platform_data_{action.lower()}",
+        context=context,
+    )
+
+
 def status(data_root: Path) -> dict[str, object]:
     identity = initialize(data_root)
     config = ServerConfiguration.load(data_root)
@@ -2652,6 +2679,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if _central_execution_active(self.server.data_root):  # type: ignore[attr-defined]
                     raise central_data_transfer.CentralDataTransferError("CENTRAL_DATA_TRANSFER_BLOCKED")
                 filename, snapshot = central_data_transfer.export_snapshot(self.server.data_root)  # type: ignore[attr-defined]
+                _audit_platform_data_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="EXPORT",
+                    outcome="COMPLETED",
+                    details={"package_format": "EPDATA"},
+                )
             except (OSError, sqlite3.DatabaseError, central_data_transfer.CentralDataTransferError) as error:
                 self._send(409, {"error": str(error)})
                 return
@@ -3427,6 +3460,15 @@ def serve(data_root: Path) -> int:
     data_root = data_root.resolve()
     identity = initialize(data_root)
     if relocation is not None:
+        _audit_platform_data_action(
+            data_root,
+            action="RELOCATE",
+            outcome="COMPLETED",
+            details={
+                "previous_location": relocation["previous"],
+                "new_location": relocation["value"],
+            },
+        )
         _audit_configuration_change(
             data_root,
             scope="PLATFORM_DATA",
@@ -3439,6 +3481,16 @@ def serve(data_root: Path) -> int:
         # rather than leaving a compatibility link at the old data location.
         server_service.repoint_after_relocation(Path(relocation["previous"]), data_root)
     if imported is not None:
+        _audit_platform_data_action(
+            data_root,
+            action="IMPORT",
+            outcome="COMPLETED",
+            details={
+                "package_format": "EPDATA",
+                "entry_count": imported["entries"],
+                "schema_version": imported["schema_version"],
+            },
+        )
         _audit_configuration_change(
             data_root, scope="PLATFORM_DATA", key="import", previous="REPLACED",
             value=f"{imported['entries']}_ENTRIES",

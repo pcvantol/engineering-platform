@@ -744,6 +744,14 @@ starting writers; it leaves no compatibility copy or symlink behind.
   then shuts down cleanly and starts the same Server command again. An
   installed EP LaunchAgent continues this lifecycle under `launchd`; the
   command also restarts itself when it was started manually for qualification.
+- Every completed dashboard export, import and relocation writes one distinct
+  `operations_console` audit event to the combined log table:
+  `platform_data_export`, `platform_data_import` or
+  `platform_data_relocate`. Each event records the local dashboard initiator
+  as `DASHBOARD_USER`, the completed outcome and only bounded operation
+  metadata (package format, import entry/schema count, or old/new location).
+  The Console has no authenticated human identity at this boundary, so this
+  is an initiator classification rather than a claimed person identity.
 - Relocation chooses a parent directory and moves the complete data root in
   one restart-bound operation. Its filled text action uses the `↗` glyph and
   follows the location responsively. The selected directory becomes the only
