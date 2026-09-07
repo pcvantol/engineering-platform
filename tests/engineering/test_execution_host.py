@@ -174,6 +174,10 @@ class FakeAgent:
     def version(self) -> str:
         return "0.146.0"
 
+    def review(self, _: Path, selection: object, __: str, evidence: object = None) -> ReviewerResult:
+        """Default post-implementation assurance fixture: clean, read-only pass."""
+        return ReviewerResult(getattr(selection, "reviewer"), "No blocking finding.")
+
 
 class ReviewCapableFakeAgent(FakeAgent):
     def __init__(self, result: AgentResult) -> None:
@@ -1553,12 +1557,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("do not rerun the development-host bootstrap", agent.prompts[0])
         self.assertIn(f"The only repository checkout for this transaction is `{self.root.resolve()}`", agent.prompts[0])
         self.assertIn("producer provenance only", agent.prompts[0])
-        self.assertEqual(agent.roots, [self.root, self.root])
-        self.assertIn("Mandatory autonomous refactor and quality-control stage", agent.prompts[1])
-        self.assertIn("Assess test coverage for every changed behavior", agent.prompts[1])
-        self.assertIn("Assess the applicable operator, contract, and implementation documentation", agent.prompts[1])
-        self.assertIn("In quality_evidence, record only work actually performed", agent.prompts[1])
-        self.assertEqual(state.quality_evidence, quality_evidence)
+        self.assertEqual(agent.roots, [self.root])
+        self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
+        self.assertEqual(state.assurance_profile["candidate_sha"], "a" * 40)
         self.assertEqual(repository.synchronize_calls, [self.root])
 
     def test_provider_recovery_preflight_rejects_every_ambiguous_restart_condition(self) -> None:
@@ -1902,7 +1903,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
         ).run(self.prompt, run_id="managed-target-boundary")
 
-        self.assertEqual(agent.roots, [self.root, self.root])
+        self.assertEqual(agent.roots, [self.root])
         self.assertIn(
             f"The only repository checkout for this transaction is `{self.root.resolve()}`",
             agent.prompts[0],
@@ -2326,21 +2327,24 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent = LiveStatusFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
         runner.run(self.prompt, run_id="live-phase-run")
-        self.assertEqual(agent.live_phase, "QUALITY_CONTROL_AGENT")
-        self.assertEqual(agent.live_action, "autonomous_refactor_and_quality_control")
+        self.assertEqual(agent.live_phase, "EXECUTE_AGENT")
+        self.assertEqual(agent.live_action, "invoke_agent")
         self.assertEqual(agent.activity_action, "Codex bewerkt bestanden")
 
-    def test_autonomous_quality_control_cannot_replace_the_implementation_pr(self) -> None:
+    def test_quality_assurance_does_not_create_or_replace_the_implementation_pr(self) -> None:
         agent = SequencedFakeAgent([
             AgentResult("COMPLETE", "codex/implementation", 701),
             AgentResult("COMPLETE", "codex/implementation", 702),
         ])
         state = EngineeringRunner(
-            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
+            self.root, self.store, FakeRepository(), FakeGitHub([
+                PullRequestEvidence(701, "OPEN", True, True, head_branch="codex/implementation", base_branch="main"),
+            ]), agent, lambda _: None
         ).run(self.prompt, run_id="quality-scope-run")
 
-        self.assertEqual(state.phase, "BLOCKED")
-        self.assertEqual(state.next_action, "autonomous_quality_control_scope")
+        self.assertEqual(state.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(len(agent.prompts), 1)
+        self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
 
     def test_local_repository_validation_iterates_before_creating_the_implementation_pr(self) -> None:
         agent = SequencedFakeAgent([
@@ -2440,7 +2444,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(state.terminal)
         self.assertEqual(state.local_validation_iterations, 1)
         self.assertEqual(state.local_validation_audit[0]["outcome"], "validated")
-        self.assertEqual(len(agent.prompts), 3)
+        self.assertEqual(len(agent.prompts), 2)
         self.assertIn("Local repository validation gate — iteration 1 of 3", agent.prompts[1])
 
     def test_unverified_or_external_implementation_failure_never_starts_local_repair(self) -> None:

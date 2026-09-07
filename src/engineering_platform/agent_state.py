@@ -135,6 +135,11 @@ class TransactionState:
     agent_execution_seconds: float | None = None
     validation_evidence: tuple[dict[str, str], ...] = ()
     quality_evidence: tuple[dict[str, str], ...] = ()
+    # Versioned post-implementation assurance.  These records are immutable
+    # observations; a later review appends a new record instead of changing an
+    # earlier finding into a pass.
+    assurance_profile: dict[str, str] | None = None
+    assurance_reviews: tuple[dict[str, object], ...] = ()
     repair_iterations: int = 0
     repair_audit: tuple[dict[str, str], ...] = ()
     local_validation_iterations: int = 0
@@ -172,6 +177,8 @@ class TransactionState:
             "agent_execution_seconds": None,
             "validation_evidence": (),
             "quality_evidence": (),
+            "assurance_profile": None,
+            "assurance_reviews": (),
             "repair_iterations": 0,
             "repair_audit": (),
             "local_validation_iterations": 0,
@@ -194,6 +201,8 @@ class TransactionState:
             raw = {**raw, "validation_evidence": tuple(raw["validation_evidence"])}
         if isinstance(raw.get("quality_evidence"), list):
             raw = {**raw, "quality_evidence": tuple(raw["quality_evidence"])}
+        if isinstance(raw.get("assurance_reviews"), list):
+            raw = {**raw, "assurance_reviews": tuple(raw["assurance_reviews"])}
         if isinstance(raw.get("repair_audit"), list):
             raw = {**raw, "repair_audit": tuple(raw["repair_audit"])}
         if isinstance(raw.get("local_validation_audit"), list):
@@ -357,6 +366,41 @@ class TransactionState:
             )
         ):
             raise StateError("checkpoint quality evidence is invalid or unsafe")
+        profile_fields = {"version", "digest", "candidate_sha"}
+        if state.assurance_profile is not None and (
+            not isinstance(state.assurance_profile, dict)
+            or set(state.assurance_profile) != profile_fields
+            or not all(isinstance(value, str) and value for value in state.assurance_profile.values())
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", state.assurance_profile["digest"])
+            or not re.fullmatch(r"[0-9a-f]{40}", state.assurance_profile["candidate_sha"])
+        ):
+            raise StateError("checkpoint assurance profile is invalid")
+        review_fields = {"reviewer", "status", "candidate_sha", "profile_digest", "invocation_id", "findings"}
+        finding_fields = {"id", "fingerprint", "category", "criterion", "observation", "severity", "confidence", "blocking", "disposition"}
+        if (
+            not isinstance(state.assurance_reviews, tuple)
+            or len(state.assurance_reviews) > 16
+            or any(
+                not isinstance(review, dict) or set(review) != review_fields
+                or review.get("reviewer") not in {"quality", "security"}
+                or review.get("status") not in {"PASS", "FAIL", "UNRESOLVED"}
+                or not isinstance(review.get("candidate_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", review["candidate_sha"])
+                or not isinstance(review.get("profile_digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", review["profile_digest"])
+                or not isinstance(review.get("invocation_id"), str) or not review["invocation_id"]
+                or not isinstance(review.get("findings"), list) or len(review["findings"]) > 12
+                or any(
+                    not isinstance(finding, dict) or set(finding) != finding_fields
+                    or not all(isinstance(value, str) and value and len(value) <= 240 and value == redact_diagnostic(value, limit=240) for key, value in finding.items() if key != "blocking")
+                    or finding.get("severity") not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+                    or finding.get("confidence") not in {"LOW", "MEDIUM", "HIGH"}
+                    or finding.get("disposition") not in {"OPEN", "RESOLVED", "REJECTED", "NON_BLOCKING"}
+                    or not isinstance(finding.get("blocking"), bool)
+                    for finding in review["findings"]
+                )
+                for review in state.assurance_reviews
+            )
+        ):
+            raise StateError("checkpoint assurance review evidence is invalid")
         if not isinstance(state.terminal, bool) or state.terminal != (state.phase in {"COMPLETE", "BLOCKED", "FAILED"}):
             raise StateError("checkpoint terminal flag conflicts with phase")
         return state

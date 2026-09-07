@@ -3298,7 +3298,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except sqlite3.Error:
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
-        artifact = re.fullmatch(r"/v1/projects/([^/]+)/artifacts/(terminal-evidence:[^/]+)", request.path)
+        artifact = re.fullmatch(r"/v1/projects/([^/]+)/artifacts/((?:terminal-evidence|assurance-findings):[^/]+)", request.path)
         if artifact:
             project_id, artifact_id = artifact.groups()
             authorization = self.headers.get("Authorization", "")

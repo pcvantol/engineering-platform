@@ -1971,6 +1971,30 @@ function lifecycleQualityEvidence(step) {
   void localizeDynamicEvidence(dynamicRows);
   return section;
 }
+function lifecycleAssuranceEvidence(step) {
+  const reviews = Array.isArray(step?.assurance_reviews) ? step.assurance_reviews : [];
+  if (!reviews.length) return null;
+  const section = document.createElement("section");
+  section.className = "lifecycle-detail-modal__quality-evidence";
+  const rounds = step?.repair_rounds || {};
+  section.append(Object.assign(document.createElement("h3"), { textContent: t("lifecycle.detail_assurance") }));
+  if (Number.isFinite(Number(rounds.used))) section.append(Object.assign(document.createElement("p"), {
+    className: "estimate-meta", textContent: t("lifecycle.repair_rounds", { used: rounds.used, maximum: rounds.maximum || 3 }),
+  }));
+  const list = document.createElement("ol"); list.className = "lifecycle-detail-modal__phase-list";
+  for (const review of reviews) {
+    if (!review || typeof review !== "object") continue;
+    const findings = Array.isArray(review.findings) ? review.findings : [];
+    const item = document.createElement("li");
+    const role = String(review.reviewer || ""); const status = String(review.status || "UNRESOLVED");
+    item.append(Object.assign(document.createElement("strong"), { textContent: `${reviewerLabel(role, role)} · ${status}` }));
+    const summary = findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean).join("; ");
+    item.append(Object.assign(document.createElement("span"), { textContent: summary || t("lifecycle.assurance_no_findings") }));
+    list.append(item);
+  }
+  if (!list.childElementCount) return null;
+  section.append(list); return section;
+}
 function lifecycleRepairEvidence(step) {
   const audit = Array.isArray(step?.repair_audit) ? step.repair_audit : [];
   if (!audit.length) return null;
@@ -2060,6 +2084,8 @@ function openLifecycleDetail(step, trigger) {
   content.append(phaseTiming);
   const qualityEvidence = lifecycleQualityEvidence(step);
   if (qualityEvidence) content.append(qualityEvidence);
+  const assuranceEvidence = lifecycleAssuranceEvidence(step);
+  if (assuranceEvidence) content.append(assuranceEvidence);
   const repairEvidence = lifecycleRepairEvidence(step);
   if (repairEvidence) content.append(repairEvidence);
   if (!modal.open) modal.showModal();

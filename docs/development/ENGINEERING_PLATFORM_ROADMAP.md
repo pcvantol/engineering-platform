@@ -243,6 +243,13 @@ one bounded Forge Action still enter through HTTP, receive durable identity,
 be admitted, mutate its repository, validate/review/repair/finalize, retain
 terminal evidence, and reconcile after Forge restart?
 
+`EP_RUN_QUALITY_ASSURANCE_V1` is a bounded EP execution-contract increment:
+reuse the existing quality lifecycle step for pinned, independent read-only
+quality and security assurance, structured findings/readback and one shared
+three-round repair budget. It is not a second orchestrator, generalized Agent
+topology, or a claim of installed qualification until exact-head delivery and
+installed evidence are retained.
+
 | Umbrella gate | Exact first-loop capability | Evidence state at this proposal | First-loop disposition |
 | --- | --- | --- | --- |
 | Phase-3 package/install | A clean installed Server/CENTRAL/runtime that can run the canary | Historical dependency authority says incomplete; no current installed-proof claim is made here | `AUTONOMY_CRITICAL` bounded capability; full historical phase needs reconciliation |

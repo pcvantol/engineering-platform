@@ -333,7 +333,7 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
 
 
 PRODUCER_READBACK_CONTRACT_VERSION = "1.1"
-TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.1"
+TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.2"
 _TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
@@ -375,6 +375,10 @@ def _read_constraints(value: object) -> dict[str, object] | None:
 
 def _terminal_artifact_id(run_id: str) -> str:
     return f"terminal-evidence:{run_id}"
+
+
+def _findings_artifact_id(run_id: str) -> str:
+    return f"assurance-findings:{run_id}"
 
 
 def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]:
@@ -439,6 +443,23 @@ def write_terminal_evidence(
     revision, delivery_qualified = _repository_revision(checkpoint, outcome)
     artifact_id = _terminal_artifact_id(run_id)
     report_id = f"report:{run_id}"
+    reviews = list(checkpoint.assurance_reviews)
+    findings = [finding for review in reviews for finding in review.get("findings", [])]
+    findings_id = _findings_artifact_id(run_id) if checkpoint.assurance_profile is not None else None
+    if findings_id is not None:
+        findings_payload = {
+            "artifact_type": "EP_ASSURANCE_FINDINGS", "contract_version": "1.0",
+            "run_id": run_id, "project_id": str(row[1]), "repository_id": str(row[2]),
+            "profile": checkpoint.assurance_profile, "reviews": reviews,
+        }
+        findings_target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "assurance-findings-v1.json"
+        findings_target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        findings_target.write_bytes(_canonical_json_bytes(findings_payload))
+        findings_target.chmod(0o600)
+        record_artifact(repository_root, findings_target, artifact_id=findings_id, artifact_type="EP_ASSURANCE_FINDINGS",
+                        content_type="application/json", created_at=_now(), run_id=run_id, submission_id=str(row[0]),
+                        mission_id=str(row[10]) if row[10] is not None else None, producer_id=str(row[4]),
+                        central_database=database, artifact_root=data_root / "artifacts")
     payload = {
         "artifact_type": "EP_TERMINAL_EVIDENCE", "contract_version": TERMINAL_EVIDENCE_CONTRACT_VERSION,
         "submission": {"id": str(row[0]), "project_id": str(row[1]), "repository_id": str(row[2]),
@@ -453,6 +474,14 @@ def write_terminal_evidence(
         "references": {
             "validation": list(checkpoint.validation_evidence), "quality": list(checkpoint.quality_evidence),
             "repair": list(checkpoint.repair_audit), "finalization": checkpoint.latest_repository_evidence,
+        },
+        "assurance": {
+            "status": "NOT_RECORDED" if checkpoint.assurance_profile is None else ("PASS" if all(review.get("status") == "PASS" for review in reviews) else "UNRESOLVED" if any(review.get("status") == "UNRESOLVED" for review in reviews) else "FAIL"),
+            "profile": checkpoint.assurance_profile,
+            "quality_review": next((review.get("status") for review in reversed(reviews) if review.get("reviewer") == "quality"), "NOT_RECORDED"),
+            "security_review": next((review.get("status") for review in reversed(reviews) if review.get("reviewer") == "security"), "NOT_RECORDED"),
+            "repair_rounds": {"used": checkpoint.repair_iterations, "maximum": 3},
+            "findings": {"open_blocking": sum(1 for finding in findings if finding.get("blocking") and finding.get("disposition") == "OPEN"), "open_non_blocking": sum(1 for finding in findings if not finding.get("blocking") and finding.get("disposition") == "OPEN"), "artifact": None if findings_id is None else {"id": findings_id}},
         },
     }
     target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "terminal-evidence-v1.json"
@@ -608,12 +637,12 @@ def producer_readback(
 def producer_evidence_artifact(
     connection: sqlite3.Connection, *, project_id: str, artifact_id: str,
 ) -> bytes | None:
-    """Return only a verified, project-scoped terminal evidence payload."""
+    """Return a verified, project-scoped terminal or assurance artifact."""
     row = connection.execute(
         """SELECT a.digest_algorithm,a.digest,a.storage_location
              FROM execution_artifact_records a
              JOIN ep_parity_lifecycle_dispatches d ON d.run_id=a.run_id
-            WHERE d.project_id=? AND a.artifact_id=? AND a.artifact_type='EP_TERMINAL_EVIDENCE'""",
+            WHERE d.project_id=? AND a.artifact_id=? AND a.artifact_type IN ('EP_TERMINAL_EVIDENCE','EP_ASSURANCE_FINDINGS')""",
         (project_id, artifact_id),
     ).fetchone()
     if row is None or row[0] != "sha256" or not isinstance(row[1], str):

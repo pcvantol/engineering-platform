@@ -29,6 +29,8 @@ REVIEWER_ORDER = (
     "finalization",
 )
 REVIEWER_LABELS = {
+    "quality": "Quality Reviewer",
+    "security": "Security Reviewer",
     "apple_platform": "Apple Platform Reviewer",
     "windows_platform": "Windows Platform Reviewer",
     "home_assistant_integration": "Home Assistant Integration Reviewer",

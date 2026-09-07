@@ -68,6 +68,22 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(by_id["LOCAL_REPOSITORY_VALIDATION"]["iteration_count"], 2)
         self.assertEqual(by_id["LOCAL_REPOSITORY_VALIDATION"]["repair_audit"], list(audit))
 
+    def test_assurance_projects_two_pinned_reviews_and_one_run_wide_counter(self) -> None:
+        profile = {"version": "validation-profile@1", "digest": "sha256:" + "a" * 64, "candidate_sha": "b" * 40}
+        finding = {"id": "security-1", "fingerprint": "f" * 32, "category": "SECURITY", "criterion": "post_implementation_assurance", "observation": "Missing project isolation test.", "severity": "HIGH", "confidence": "MEDIUM", "blocking": True, "disposition": "OPEN"}
+        reviews = (
+            {"reviewer": "quality", "status": "PASS", "candidate_sha": "b" * 40, "profile_digest": profile["digest"], "invocation_id": "quality-1", "findings": []},
+            {"reviewer": "security", "status": "FAIL", "candidate_sha": "b" * 40, "profile_digest": profile["digest"], "invocation_id": "security-1", "findings": [finding]},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._state(root, "QUALITY_CONTROL_AGENT", repair_iterations=2, assurance_profile=profile, assurance_reviews=reviews)
+            value = projection(root, "inbox-flow")
+        quality = next(step for step in value["steps"] if step["id"] == "QUALITY_CONTROL_AGENT")
+        self.assertEqual(quality["repair_rounds"], {"used": 2, "maximum": 3})
+        self.assertEqual(quality["assurance_reviews"], list(reviews))
+        self.assertEqual(value["repair_rounds"], {"used": 2, "maximum": 3})
+
     def test_genesis_has_its_own_canonical_path(self) -> None:
         self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", intended_path("GENESIS"))
         self.assertIn("WAIT_FOR_OPERATOR_MERGE", intended_path("MANAGED"))

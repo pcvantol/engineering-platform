@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from datetime import datetime, timezone
 from dataclasses import replace
 import json
@@ -125,7 +126,10 @@ REPAIR_AGENT_MAX_SECONDS = REPAIR.seconds
 # A repair remains scoped to its original PR, but it must also have a finite
 # attempt budget. This prevents a persistently failing required check from
 # repeatedly invoking the provider without an operator decision.
-MAX_PR_CHECK_REPAIR_ATTEMPTS = 3
+# One run-wide operational budget.  It is intentionally not scoped to a
+# provider, PR, candidate SHA, or lifecycle phase.
+MAX_TOTAL_REPAIR_ROUNDS_PER_RUN = 3
+MAX_PR_CHECK_REPAIR_ATTEMPTS = MAX_TOTAL_REPAIR_ROUNDS_PER_RUN
 MAX_LOCAL_REPOSITORY_VALIDATION_ATTEMPTS = 3
 
 
@@ -1614,6 +1618,20 @@ class EngineeringRunner:
             local_validation_audit=(),
         )
         for iteration in range(1, MAX_LOCAL_REPOSITORY_VALIDATION_ATTEMPTS + 1):
+            # The initial local check is not a repair. Every subsequent
+            # corrective validation dispatch consumes the same durable budget
+            # used by assurance, hosted-check and finalization repairs.
+            if iteration > 1:
+                if validation.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
+                    return self._save_terminal(
+                        validation, "BLOCKED", "repair_budget_exhausted",
+                        "Local validation still requires correction after the run-wide repair budget was exhausted.",
+                    ), implementation
+                validation = replace(validation, repair_iterations=validation.repair_iterations + 1)
+                validation = self._record_repair_audit(
+                    validation, failed_checks="validation: required local control", objective="Repair bounded local validation findings.",
+                    result=None, outcome="planned",
+                )
             try:
                 profile = classify(changed_paths(self.root, "main"))
             except OSError:
@@ -1669,6 +1687,12 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 self.console_detail = error.console_detail
                 validation = self._record_local_validation_audit(validation, result=None, outcome="agent_failed", profile=profile)
                 return self._terminalize_provider_invocation_error(validation, error), implementation
+            if iteration > 1:
+                validation = self._record_repair_audit(
+                    validation, failed_checks="validation: required local control", objective="Repair bounded local validation findings.",
+                    result=result,
+                    outcome="agent_failed" if result.terminal_state in {"BLOCKED", "FAILED"} else "submitted_for_recheck",
+                )
             if result.terminal_state in {"BLOCKED", "FAILED"}:
                 if (
                     result.terminal_state == "FAILED"
@@ -1708,84 +1732,84 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 ), implementation
         return self._save_terminal(validation, "BLOCKED", "local_validation_attempt_limit_reached", "Required local repository validation did not pass after 3 bounded iterations."), implementation
 
-    def _run_autonomous_quality_control(
+    def _run_quality_assurance(
         self, state: TransactionState, implementation: AgentResult
     ) -> tuple[TransactionState, AgentResult]:
-        """Run the required post-implementation refactor and quality boundary.
+        """Run independent, sandboxed quality and security reviews.
 
-        The controller is autonomous but cannot widen delivery scope: it may
-        amend only the current transaction branch and its existing PR.
+        This deliberately replaces the former mutating "quality control"
+        provider turn. Reviewers receive a pinned candidate and use the
+        provider's read-only sandbox; only ``_repair`` can subsequently
+        mutate the bounded branch.
         """
         quality = replace(
             state,
             phase="QUALITY_CONTROL_AGENT",
             branch=implementation.branch or state.branch,
             pull_request=implementation.pull_request or state.pull_request,
-            next_action="autonomous_refactor_and_quality_control",
+            next_action="quality_and_security_review",
         )
+        try:
+            candidate = self.repository.inspect(self.root)
+        except RunnerError:
+            return self._save_terminal(quality, "BLOCKED", "assurance_candidate_unavailable", "The assurance candidate could not be inspected."), implementation
+        if not candidate.clean or not re.fullmatch(r"[0-9a-f]{40}", candidate.head_sha):
+            return self._save_terminal(quality, "BLOCKED", "assurance_candidate_invalid", "Quality assurance requires one clean, pinned candidate."), implementation
+        profile_version = f"validation-profile@{VALIDATION_PROFILE_VERSION}"
+        profile_digest = "sha256:" + hashlib.sha256(
+            f"{profile_version}:{candidate.head_sha}".encode("utf-8")
+        ).hexdigest()
+        quality = replace(quality, assurance_profile={
+            "version": profile_version, "digest": profile_digest, "candidate_sha": candidate.head_sha,
+        })
         self.store.save(quality)
         write_live_status(self.root, quality, quality.next_action)
-        prompt = assemble_prompt(
-            Path(quality.prompt_path), quality,
-            managed_target=self.root if quality.execution_mode == "MANAGED" else None,
-        ) + """
-
-Mandatory autonomous refactor and quality-control stage:
-- Inspect the implementation now present on this transaction branch.
-- Autonomously make only demonstrable maintainability, clarity, safety, or
-  test-coverage improvements within the original bounded objective.
-- Assess test coverage for every changed behavior. Add or strengthen focused
-  regression tests whenever existing coverage does not prove that behavior.
-- Assess the applicable operator, contract, and implementation documentation.
-  Update it whenever the bounded change affects documented behavior; only
-  leave documentation unchanged when the inspection proves it is unaffected.
-- Run the relevant focused validation, including the added or affected tests,
-  and `git diff --check`.
-- Preserve the existing transaction branch and pull request. If changes are
-  needed, commit and push them to that same branch; do not create another PR,
-  merge, alter authority, or expand scope.
-- Return the same pull-request number and branch after the quality boundary.
-- In quality_evidence, record only work actually performed in this stage. Use
-  activity values REFACTOR, TEST_COVERAGE, DOCUMENTATION, VALIDATION, or
-  NO_CHANGE_REQUIRED and a short safe result for each. Do not include raw
-  commands, output, prompts, source content, paths, secrets, or reasoning.
-"""
-        try:
-            result = self._invoke_agent_with_timing(quality, prompt, quality=True)
-            quality = self._record_agent_execution_time(quality)
-            quality = self._record_validation_evidence(quality, result)
-            quality = replace(quality, quality_evidence=result.quality_evidence)
-            quality = self._record_verified_result_commit(
-                quality,
-                result,
-                phase="QUALITY_CONTROL_AGENT",
-                description="quality_control_commit_verified",
-            )
-            self._persist_agent_usage(quality.run_id)
-        except ProviderReadinessBlocked as blocked:
-            return blocked.state, implementation
-        except CodexInvocationError as error:
-            quality = self._record_agent_execution_time(quality)
-            self.console_detail = error.console_detail
-            return self._terminalize_provider_invocation_error(quality, error), implementation
-        return self._advance_after_quality_control_agent_result(quality, implementation, result)
-
-    def _advance_after_quality_control_agent_result(
-        self, quality: TransactionState, implementation: AgentResult, result: AgentResult,
-    ) -> tuple[TransactionState, AgentResult]:
-        """Apply live or recovered QC success without provider-session state."""
-        if result.terminal_state in {"BLOCKED", "FAILED"}:
-            return self._save_terminal(quality, result.terminal_state, "autonomous_quality_control_failed", result.diagnostic or "Autonomous quality control did not complete."), implementation
-        if implementation.pull_request and result.pull_request and result.pull_request != implementation.pull_request:
-            return self._save_terminal(quality, "BLOCKED", "autonomous_quality_control_scope", "Autonomous quality control returned a different pull request."), implementation
-        if implementation.branch and result.branch and result.branch != implementation.branch:
-            return self._save_terminal(quality, "BLOCKED", "autonomous_quality_control_scope", "Autonomous quality control returned a different branch."), implementation
-        return quality, replace(
-            implementation,
-            branch=result.branch or implementation.branch,
-            pull_request=result.pull_request or implementation.pull_request,
-            validation_evidence=implementation.validation_evidence + result.validation_evidence,
+        evidence = ReviewerEvidence.from_repository(quality.run_id, quality.execution_mode, candidate)
+        selections = tuple(
+            ReviewerSelection(role, f"mandatory post-implementation {role} assurance", 1.0)
+            for role in ("quality", "security")
         )
+        records: list[dict[str, object]] = []
+        # Run sequentially: each is still a distinct sandboxed invocation, and
+        # this avoids sharing mutable CLI telemetry between parallel calls.
+        for selection in selections:
+            assurance_objective = (
+                f"Mandatory {selection.reviewer} assurance. Profile {profile_version} ({profile_digest}); "
+                f"candidate {candidate.head_sha}. Report only concrete, bounded findings against the action acceptance criteria. "
+                + Path(quality.prompt_path).read_text(encoding="utf-8")
+            )
+            result = run_reviews(self.root, (selection,), assurance_objective, self.agent if hasattr(self.agent, "review") else None, evidence=evidence)[0]
+            try:
+                unchanged = self.repository.inspect(self.root)
+            except RunnerError:
+                unchanged = None
+            status = "UNRESOLVED" if result.failed or unchanged is None or unchanged.head_sha != candidate.head_sha else ("FAIL" if result.recommendations else "PASS")
+            findings = [
+                {
+                    "id": f"{selection.reviewer}-{index + 1}", "fingerprint": hashlib.sha256(note.encode("utf-8")).hexdigest()[:32],
+                    "category": selection.reviewer.upper(), "criterion": "post_implementation_assurance",
+                    "observation": redact_diagnostic(note, limit=240), "severity": "HIGH", "confidence": "MEDIUM",
+                    "blocking": True, "disposition": "OPEN",
+                }
+                for index, note in enumerate(result.recommendations[:3])
+            ]
+            records.append({
+                "reviewer": selection.reviewer, "status": status, "candidate_sha": candidate.head_sha,
+                "profile_digest": profile_digest, "invocation_id": f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + len(records)}",
+                "findings": findings,
+            })
+        quality = replace(quality, assurance_reviews=quality.assurance_reviews + tuple(records))
+        self.store.save(quality)
+        unresolved = [record for record in records if record["status"] == "UNRESOLVED"]
+        if unresolved:
+            return self._save_terminal(quality, "BLOCKED", "mandatory_assurance_unresolved", "A required quality or security review was unavailable, malformed, or candidate-mismatched."), implementation
+        findings = [finding for record in records for finding in record["findings"]]
+        if findings:
+            if quality.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
+                return self._save_terminal(quality, "BLOCKED", "repair_budget_exhausted", "Mandatory assurance blockers remain after the run-wide repair budget was exhausted."), implementation
+            repaired = self._repair(quality, "quality/security review findings failed. Repair all listed bounded findings in one implementation repair round.")
+            return repaired, implementation
+        return quality, implementation
 
     def _reject_historical_agent_pull_request(
         self, state: TransactionState
@@ -1845,8 +1869,10 @@ Mandatory autonomous refactor and quality-control stage:
                 state, result = self._run_local_repository_validation(state, result)
                 if state.terminal:
                     return state
-            state, result = self._run_autonomous_quality_control(state, result)
+            state, result = self._run_quality_assurance(state, result)
             if state.terminal:
+                return state
+            if state.phase in {"REPAIR_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"}:
                 return state
         return self._continue_after_quality_control(state, result, evidence)
 
@@ -1883,9 +1909,10 @@ Mandatory autonomous refactor and quality-control stage:
         if lifecycle_phase == "EXECUTE_AGENT":
             return self._advance_after_primary_agent_result(state, result, evidence)
         if lifecycle_phase == "QUALITY_CONTROL_AGENT":
-            implementation = AgentResult("COMPLETE", branch=state.branch, pull_request=state.pull_request)
-            quality, implementation = self._advance_after_quality_control_agent_result(state, implementation, result)
-            return quality if quality.terminal else self._continue_after_quality_control(quality, implementation, evidence)
+            # The assurance phase has no mutating provider invocation to
+            # recover. A legacy interrupted quality-control run remains
+            # evidence-incomplete rather than being reinterpreted as PASS.
+            return self._save_terminal(state, "BLOCKED", "legacy_quality_recovery_unresolved", "Interrupted legacy quality control cannot satisfy the required read-only assurance.")
         if lifecycle_phase == "REPAIR_AGENT":
             return self._advance_after_repair_agent_result(state, result)
         if lifecycle_phase == "FINALIZE_AGENT":
