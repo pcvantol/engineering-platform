@@ -431,6 +431,7 @@ class EngineeringRunner:
         """
         return consume_controlled_interruption_hook(
             self.root, run_id=state.run_id, phase=state.phase,
+            central_database=self.store.central_database,
         )
 
     def _recovery_state(self, run_id: str) -> dict[str, object] | None:
@@ -2109,6 +2110,12 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
             state = replace(state, action_intent=context.action_intent)
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
+        qualification_control_wait = getattr(self.agent, "wait_for_controlled_interruption_arm", None)
+        if callable(qualification_control_wait) and state.phase == "INITIALIZE":
+            # Only the deterministic installed-qualification adapter exposes
+            # this bounded rendezvous. Production adapters have no such
+            # method, so an operator control can never delay normal work.
+            qualification_control_wait(self.root, state)
         # This envelope is deliberately persisted once and can be resumed
         # after process restart.  It is excluded from bottleneck ranking.
         self._total_phase = self._resume_phase(

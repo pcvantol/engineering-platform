@@ -6,14 +6,40 @@ opts in explicitly, so no real Codex or GitHub write can escape its fixture.
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
 import subprocess
+import time
 
 from .capability_review import ReviewerResult
 from .execution_models import AgentResult, PullRequestEvidence
 
 
 class DeterministicQualificationAgent:
+    def __init__(self) -> None:
+        self._process_callback = None
+
+    def set_process_callback(self, callback: object) -> None:
+        self._process_callback = callback
+
+    def wait_for_controlled_interruption_arm(self, _root: Path, state: object) -> None:
+        """Offer the installed recovery E2E one bounded, non-production arm window."""
+        ready = os.environ.get("EP_QUALIFICATION_CONTROL_ARM_READY_FILE")
+        if not ready or not Path(ready).with_suffix(Path(ready).suffix + ".enable").is_file():
+            return
+        ready_path = Path(ready)
+        ready_path.write_text(json.dumps({"run_id": getattr(state, "run_id", None), "phase": "EXECUTE_AGENT"}), encoding="utf-8")
+        continue_path = ready_path.with_suffix(ready_path.suffix + ".continue")
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if continue_path.is_file():
+                return
+            time.sleep(.02)
+        raise RuntimeError("QUALIFICATION_CONTROL_ARM_TIMED_OUT")
+
     def invoke(self, root: Path, prompt: str) -> AgentResult:
+        if callable(self._process_callback):
+            self._process_callback({"pid": os.getpid(), "process_group": os.getpgrp()})
         if "sole automatic post-finalization reconciliation" in prompt.lower():
             sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
             return AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha=sha)

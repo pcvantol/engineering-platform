@@ -127,12 +127,13 @@ terminal date, and a repeated recovery cannot add a second run or count.
 ## Controlled provider-interruption qualification proof
 
 For the dedicated, one-shot recovery proof, an operator may arm only an
-already-admitted, non-terminal run before it reaches `QUALITY_CONTROL_AGENT`:
+already-admitted, non-terminal run before it reaches `EXECUTE_AGENT`:
 
 ```sh
 python3 -m tools.engineering.provider_recovery arm-controlled-interruption \
   --repo /Users/pcvantol/Documents/GitHub/djconnect \
-  --run-id <run-id> --phase QUALITY_CONTROL_AGENT
+  --run-id <run-id> --phase EXECUTE_AGENT \
+  --central-database <CENTRAL_DATA_ROOT>/epdata.sqlite
 ```
 
 Inspect the exact control with `controlled-interruption-status` and cancel an
@@ -147,12 +148,16 @@ or new root run.
 For qualification, run the control together with the recovery tests rather
 than treating an armed marker as a passing result. The required evidence is:
 `ARMED` before the boundary, one `CONSUMED` control artifact at
-`QUALITY_CONTROL_AGENT`, one recovery/retry lineage, and one terminal outcome.
-The deterministic Genesis/Managed installed E2E lives in
-`tools/qualification/p_deterministic_execution_e2e.py`; it uses an isolated
-CENTRAL root and local Git fixture, and deliberately does not use this operator
-fault control. The dedicated provider-recovery test suite qualifies the armed
-one-shot and retry semantics.
+`EXECUTE_AGENT`, one recovery/retry lineage, and one terminal outcome.
+The deterministic installed E2E lives in
+`tools/qualification/p_deterministic_execution_e2e.py`. It uses an isolated
+CENTRAL root and local Git fixture to exercise Genesis, Managed, and a third
+controlled-recovery lane. The third lane pauses only its deterministic
+qualification adapter after the canonical `INITIALIZE` checkpoint, arms the
+real run-bound control through the installed CLI, and verifies `CONSUMED`, one
+same-run `RECOVERED` lineage, terminal assurance evidence, and the run in the
+dashboard's project-scoped history. The dedicated provider-recovery unit suite
+additionally qualifies unsafe and ambiguous recovery branches.
 
 ## CENTRAL project lanes
 

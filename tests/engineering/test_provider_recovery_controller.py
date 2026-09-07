@@ -177,34 +177,34 @@ class ProviderRecoveryControllerTests(unittest.TestCase):
     def test_operator_arm_status_disarm_and_durable_consumption(self) -> None:
         run_id = "operator-control-run"
         self.store.save(TransactionState(run_id, "pcvantol/djconnect", "prompt.md", "LOCAL_REPOSITORY_VALIDATION"))
-        self.assertEqual(controlled_interruption_status(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT"), "NOT_ARMED")
-        armed = arm_controlled_interruption(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT", armed_by="operator")
+        self.assertEqual(controlled_interruption_status(self.root, run_id=run_id, phase="EXECUTE_AGENT"), "NOT_ARMED")
+        armed = arm_controlled_interruption(self.root, run_id=run_id, phase="EXECUTE_AGENT", armed_by="operator")
         self.assertEqual(armed["state"], "ARMED")
-        self.assertEqual(controlled_interruption_status(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT"), "ARMED")
-        self.assertTrue(consume_controlled_interruption_hook(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT"))
-        self.assertEqual(controlled_interruption_status(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT"), "CONSUMED")
-        self.assertFalse(consume_controlled_interruption_hook(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT"))
+        self.assertEqual(controlled_interruption_status(self.root, run_id=run_id, phase="EXECUTE_AGENT"), "ARMED")
+        self.assertTrue(consume_controlled_interruption_hook(self.root, run_id=run_id, phase="EXECUTE_AGENT"))
+        self.assertEqual(controlled_interruption_status(self.root, run_id=run_id, phase="EXECUTE_AGENT"), "CONSUMED")
+        self.assertFalse(consume_controlled_interruption_hook(self.root, run_id=run_id, phase="EXECUTE_AGENT"))
         with self.assertRaises(ControlledInterruptionControlError):
-            disarm_controlled_interruption(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT")
+            disarm_controlled_interruption(self.root, run_id=run_id, phase="EXECUTE_AGENT")
 
     def test_operator_control_rejects_unsafe_targets(self) -> None:
         with self.assertRaises(ControlledInterruptionControlError):
-            arm_controlled_interruption(self.root, run_id="unknown-run", phase="QUALITY_CONTROL_AGENT")
+            arm_controlled_interruption(self.root, run_id="unknown-run", phase="EXECUTE_AGENT")
         with self.assertRaises(ControlledInterruptionControlError):
             arm_controlled_interruption(self.root, run_id=self.run_id, phase="EXECUTE_AGENT")
         self.store.save(TransactionState(self.run_id, "pcvantol/djconnect", "prompt.md", "QUALITY_CONTROL_AGENT"))
         with self.assertRaises(ControlledInterruptionControlError):
-            arm_controlled_interruption(self.root, run_id=self.run_id, phase="QUALITY_CONTROL_AGENT")
+            arm_controlled_interruption(self.root, run_id=self.run_id, phase="EXECUTE_AGENT")
         terminal_run = "terminal-operator-control-run"
         self.store.save(TransactionState(terminal_run, "pcvantol/djconnect", "prompt.md", "COMPLETE", terminal=True))
         with self.assertRaises(ControlledInterruptionControlError):
-            arm_controlled_interruption(self.root, run_id=terminal_run, phase="QUALITY_CONTROL_AGENT")
+            arm_controlled_interruption(self.root, run_id=terminal_run, phase="EXECUTE_AGENT")
 
     def test_operator_disarm_preserves_unconsumed_and_wrong_run_cannot_consume(self) -> None:
         run_id = "operator-disarm-run"
         self.store.save(TransactionState(run_id, "pcvantol/djconnect", "prompt.md", "LOCAL_REPOSITORY_VALIDATION"))
-        arm_controlled_interruption(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT")
-        self.assertFalse(consume_controlled_interruption_hook(self.root, run_id="unrelated-run", phase="QUALITY_CONTROL_AGENT"))
+        arm_controlled_interruption(self.root, run_id=run_id, phase="EXECUTE_AGENT")
+        self.assertFalse(consume_controlled_interruption_hook(self.root, run_id="unrelated-run", phase="EXECUTE_AGENT"))
         self.assertFalse(consume_controlled_interruption_hook(self.root, run_id=run_id, phase="REPAIR_AGENT"))
-        self.assertEqual(disarm_controlled_interruption(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT"), "DISARMED")
-        self.assertEqual(controlled_interruption_status(self.root, run_id=run_id, phase="QUALITY_CONTROL_AGENT"), "NOT_ARMED")
+        self.assertEqual(disarm_controlled_interruption(self.root, run_id=run_id, phase="EXECUTE_AGENT"), "DISARMED")
+        self.assertEqual(controlled_interruption_status(self.root, run_id=run_id, phase="EXECUTE_AGENT"), "NOT_ARMED")

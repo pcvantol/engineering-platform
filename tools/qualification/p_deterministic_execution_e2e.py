@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Installed CENTRAL execution qualification for Genesis and Managed.
+"""Installed CENTRAL execution qualification for Genesis, Managed and recovery.
 
 The default Managed fixture uses a local bare Git remote.  Pass
 ``--managed-repository`` with a clean checkout of the explicitly approved
@@ -87,6 +87,24 @@ def verify_receipt(data_root: Path, project: str, run_id: str) -> dict[str, obje
     return {"run_id": run_id, "assurance_reviews": observed, "terminal_phase": row[0]}
 
 
+def verify_controlled_recovery(data_root: Path, checkout: Path, run_id: str, base: str) -> dict[str, object]:
+    control = checkout / ".engineering" / "artifacts" / "provider-recovery-fault-injection" / f"{run_id}-EXECUTE_AGENT.json"
+    consumed = json.loads(control.read_text(encoding="utf-8"))
+    if consumed.get("kind") != "CONTROLLED_PROVIDER_INTERRUPTION" or consumed.get("phase") != "EXECUTE_AGENT":
+        raise RuntimeError(f"CONTROLLED_INTERRUPTION_EVIDENCE_INVALID: {consumed}")
+    with sqlite3.connect(data_root / CENTRAL_DATABASE_FILENAME) as connection:
+        recovery = connection.execute(
+            "SELECT lifecycle_phase,state,result FROM provider_recovery_attempts WHERE run_id=?", (run_id,)
+        ).fetchone()
+    if recovery != ("EXECUTE_AGENT", "RECOVERED", "SUCCESS"):
+        raise RuntimeError(f"CONTROLLED_RECOVERY_LINEAGE_INVALID: {recovery}")
+    with urlopen(base + "/api/prompt-history?project=recovery", timeout=5) as response:  # nosec B310
+        history = json.loads(response.read())
+    if not isinstance(history, list) or not any(item.get("run_id") == run_id for item in history if isinstance(item, dict)):
+        raise RuntimeError("CONTROLLED_RECOVERY_DASHBOARD_HISTORY_UNAVAILABLE")
+    return {"run_id": run_id, "control": "CONSUMED", "recovery": "RECOVERED", "dashboard_history": "VISIBLE"}
+
+
 def submit(base: str, credential: str, project: str, repository: str, prompt: str, key: str) -> str:
     body = {"repository_id": repository, "producer": {"id": "installed-e2e", "type": "HUMAN", "version": "1"}, "prompt": prompt, "idempotency_key": key, "constraints": {"mode": "GENESIS" if "Genesis" in prompt else "MANAGED"}}
     request = Request(base + f"/v1/projects/{project}/submissions", data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {credential}"})
@@ -133,10 +151,12 @@ def main(argv: list[str] | None = None) -> int:
             if project == "managed" and args.managed_repository:
                 raise RuntimeError("MANAGED_GITHUB_FIXTURE_NEEDS_MATCHING_DECLARATION")
             command(server, "bind-repository", "--data-root", str(data), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        control_ready = root / "controlled-recovery-ready.json"
         env = {
             **os.environ,
             "EP_QUALIFICATION_DETERMINISTIC_FLOW": "1",
             "EP_CENTRAL_OPERATIONAL_DATABASE": str(data / CENTRAL_DATABASE_FILENAME),
+            "EP_QUALIFICATION_CONTROL_ARM_READY_FILE": str(control_ready),
         }
         process = subprocess.Popen((str(server), "serve", "--data-root", str(data)), env=env)  # nosec B603
         try:
@@ -152,6 +172,33 @@ def main(argv: list[str] | None = None) -> int:
                 submission = submit(base, credential, project, repository, prompt, f"{mode}-e2e")
                 _, run_id = wait_terminal(server, data, submission)
                 evidence[mode] = verify_receipt(data, project, run_id)
+            recovery = root / "controlled-recovery"
+            create_repository(recovery, origin=root / "controlled-recovery-origin.git")
+            command(server, "bootstrap-topology", "--data-root", str(data), "--project-id", "recovery", "--repository-id", "recovery-repo")
+            command(server, "provision-declaration", "--data-root", str(data), "--project-id", "recovery", "--repository-id", "recovery-repo", "--path", str(recovery))
+            git(recovery, "add", ".engineering-platform")
+            git(recovery, "commit", "-qm", "bind recovery qualification project")
+            git(recovery, "push", "-q", "origin", "main")
+            command(server, "bind-repository", "--data-root", str(data), "--project-id", "recovery", "--repository-id", "recovery-repo", "--path", str(recovery))
+            control_ready.with_suffix(control_ready.suffix + ".enable").write_text("enabled\n", encoding="utf-8")
+            credential = str(command(server, "issue-consumer-credential", "--data-root", str(data), "--project-id", "recovery", "--consumer-id", "recovery-e2e")["credential"])
+            submission = submit(base, credential, "recovery", "recovery-repo", "Execution Mode: Managed\n\nInstalled controlled recovery qualification.", "controlled-recovery-e2e")
+            deadline = time.monotonic() + 30
+            while not control_ready.is_file() and time.monotonic() < deadline:
+                time.sleep(.05)
+            if not control_ready.is_file():
+                raise RuntimeError("CONTROLLED_RECOVERY_ARM_WINDOW_UNAVAILABLE")
+            control = json.loads(control_ready.read_text(encoding="utf-8"))
+            run_id = control.get("run_id")
+            if not isinstance(run_id, str) or control.get("phase") != "EXECUTE_AGENT":
+                raise RuntimeError(f"CONTROLLED_RECOVERY_ARM_WINDOW_INVALID: {control}")
+            subprocess.run((str(venv / "bin" / "python"), "-m", "engineering_platform.provider_recovery", "arm-controlled-interruption", "--repo", str(recovery), "--run-id", run_id, "--phase", "EXECUTE_AGENT", "--central-database", str(data / CENTRAL_DATABASE_FILENAME)), check=True, capture_output=True, text=True)  # nosec B603
+            control_ready.with_suffix(control_ready.suffix + ".continue").write_text("armed\n", encoding="utf-8")
+            _, terminal_run_id = wait_terminal(server, data, submission)
+            if terminal_run_id != run_id:
+                raise RuntimeError("CONTROLLED_RECOVERY_RUN_ID_CHANGED")
+            verify_receipt(data, "recovery", run_id)
+            evidence["controlled_recovery"] = verify_controlled_recovery(data, recovery, run_id, base)
         finally:
             process.terminate(); process.wait(timeout=10)
         print(json.dumps({"result": "PASS", "managed_fixture": "github" if args.managed_repository else "local-origin", "evidence": evidence}, sort_keys=True))

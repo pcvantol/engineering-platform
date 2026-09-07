@@ -1223,18 +1223,18 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_controlled_provider_interruption_is_run_bound_single_use_and_redacted(self) -> None:
         root = self.root.parent / "recovery-control"
-        state = SimpleNamespace(terminal=False, phase="EXECUTE_AGENT")
+        state = SimpleNamespace(terminal=False, phase="INITIALIZE")
         with patch("engineering_platform.provider_recovery.StateStore") as states:
             states.return_value.load.return_value = state
-            armed = provider_recovery.arm_controlled_interruption(root, run_id="run-a", phase="QUALITY_CONTROL_AGENT", armed_by="user\nsecret", reason="reason\nsecret")
+            armed = provider_recovery.arm_controlled_interruption(root, run_id="run-a", phase="EXECUTE_AGENT", armed_by="user\nsecret", reason="reason\nsecret")
         self.assertEqual(armed["state"], "ARMED")
-        self.assertEqual(provider_recovery.controlled_interruption_status(root, run_id="run-a", phase="QUALITY_CONTROL_AGENT"), "ARMED")
-        self.assertEqual(provider_recovery.disarm_controlled_interruption(root, run_id="run-a", phase="QUALITY_CONTROL_AGENT"), "DISARMED")
-        self.assertEqual(provider_recovery.disarm_controlled_interruption(root, run_id="run-a", phase="QUALITY_CONTROL_AGENT"), "NOT_ARMED")
+        self.assertEqual(provider_recovery.controlled_interruption_status(root, run_id="run-a", phase="EXECUTE_AGENT"), "ARMED")
+        self.assertEqual(provider_recovery.disarm_controlled_interruption(root, run_id="run-a", phase="EXECUTE_AGENT"), "DISARMED")
+        self.assertEqual(provider_recovery.disarm_controlled_interruption(root, run_id="run-a", phase="EXECUTE_AGENT"), "NOT_ARMED")
         with patch("engineering_platform.provider_recovery.StateStore") as states:
             states.return_value.load.return_value = SimpleNamespace(terminal=True, phase="EXECUTE_AGENT")
             with self.assertRaisesRegex(provider_recovery.ControlledInterruptionControlError, "terminal"):
-                provider_recovery.arm_controlled_interruption(root, run_id="run-b", phase="QUALITY_CONTROL_AGENT")
+                provider_recovery.arm_controlled_interruption(root, run_id="run-b", phase="EXECUTE_AGENT")
 
     def test_recovery_reconciliation_fails_closed_for_absent_or_ambiguous_receipts(self) -> None:
         with patch("engineering_platform.provider_recovery.load_recovery_state", return_value=None):
@@ -1284,18 +1284,18 @@ class InstallationBoundaryTests(unittest.TestCase):
             "engineering_platform.provider_recovery.controlled_interruption_status", return_value="ARMED"), patch(
             "engineering_platform.provider_recovery.disarm_controlled_interruption", return_value="DISARMED"
         ), redirect_stdout(output):
-            self.assertEqual(provider_recovery.main(["arm-controlled-interruption", "--repo", str(self.root), "--run-id", "run-a", "--phase", "QUALITY_CONTROL_AGENT"]), 0)
-            self.assertEqual(provider_recovery.main(["controlled-interruption-status", "--repo", str(self.root), "--run-id", "run-a", "--phase", "QUALITY_CONTROL_AGENT"]), 0)
-            self.assertEqual(provider_recovery.main(["disarm-controlled-interruption", "--repo", str(self.root), "--run-id", "run-a", "--phase", "QUALITY_CONTROL_AGENT"]), 0)
+            self.assertEqual(provider_recovery.main(["arm-controlled-interruption", "--repo", str(self.root), "--run-id", "run-a", "--phase", "EXECUTE_AGENT"]), 0)
+            self.assertEqual(provider_recovery.main(["controlled-interruption-status", "--repo", str(self.root), "--run-id", "run-a", "--phase", "EXECUTE_AGENT"]), 0)
+            self.assertEqual(provider_recovery.main(["disarm-controlled-interruption", "--repo", str(self.root), "--run-id", "run-a", "--phase", "EXECUTE_AGENT"]), 0)
         self.assertIn("DISARMED", output.getvalue())
 
     def test_controlled_interruption_hook_consumes_once_and_records_artifact(self) -> None:
-        with patch.dict("os.environ", {"ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE": "run-a:QUALITY_CONTROL_AGENT"}, clear=False), patch(
+        with patch.dict("os.environ", {"ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE": "run-a:EXECUTE_AGENT"}, clear=False), patch(
             "engineering_platform.provider_recovery.load_recovery_state", return_value=None
         ), patch("engineering_platform.provider_recovery.record_artifact") as recorded:
-            self.assertTrue(provider_recovery.consume_controlled_interruption_hook(self.root, run_id="run-a", phase="QUALITY_CONTROL_AGENT"))
+            self.assertTrue(provider_recovery.consume_controlled_interruption_hook(self.root, run_id="run-a", phase="EXECUTE_AGENT"))
         self.assertTrue(recorded.called)
-        self.assertFalse(provider_recovery.consume_controlled_interruption_hook(self.root, run_id="run-a", phase="QUALITY_CONTROL_AGENT"))
+        self.assertFalse(provider_recovery.consume_controlled_interruption_hook(self.root, run_id="run-a", phase="EXECUTE_AGENT"))
 
     def test_provider_recovery_transition_is_compare_and_swap_and_rejects_unknown_states(self) -> None:
         with self.assertRaises(ValueError):
