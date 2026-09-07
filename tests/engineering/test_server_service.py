@@ -31,13 +31,16 @@ class ServerServiceTests(unittest.TestCase):
         self.assertEqual(payload["Label"], server_service.LABEL)
         self.assertEqual(payload["ProgramArguments"], ["/runtime/bin/python", "-m", "engineering_platform.server", "serve", "--data-root", str(self.root.resolve())])
         self.assertEqual(payload["WorkingDirectory"], str(self.root.resolve()))
+        self.assertEqual(payload["StandardErrorPath"], str(self.root.resolve() / "runtime" / "server-launchagent.err.log"))
         self.assertNotIn("PYTHONPATH", payload["EnvironmentVariables"])
 
     def test_install_is_idempotent_and_writes_only_owned_plist(self) -> None:
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
             result = server_service.install(self.root, interpreter=Path(sys.executable), home=self.home, runner=self.runner)
         self.assertEqual(result["label"], server_service.LABEL)
+        self.assertEqual(result["stderr_log"], str(self.root.resolve() / "runtime" / "server-launchagent.err.log"))
         self.assertTrue((self.home / "Library" / "LaunchAgents" / f"{server_service.LABEL}.plist").is_file())
+        self.assertTrue((self.root / "runtime").is_dir())
 
     def test_uninitialized_data_root_fails_closed(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "initialized"):
