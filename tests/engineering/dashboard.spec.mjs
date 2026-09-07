@@ -7726,6 +7726,7 @@ test.describe("Engineering Status browser smoke", () => {
       restart_supported: true,
     }));
     await page.locator("#componentModalRestart").click();
+    await page.mouse.move(0, 0);
 
     await expect(page.locator("#confirmationModal")).toHaveAttribute("data-theme-mode", "light");
     await expect(page.locator("#confirmationModal .confirmation-modal__panel")).toHaveCSS("background-color", "rgb(247, 251, 255)");
@@ -7733,7 +7734,11 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#confirmationModalText")).toHaveCSS("color", "rgb(24, 34, 48)");
     await expect(page.locator("#confirmationModalTitle")).toHaveCSS("color", "rgb(240, 182, 106)");
     await expect(page.locator("#confirmationModal .confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
-    expect(await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe("rgb(240, 182, 106)");
+    const cancelFill = await page.locator("#confirmationModalCancel").evaluate((element) => getComputedStyle(element).backgroundColor);
+    const confirmFill = await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor);
+    expect(cancelFill).toMatch(/^color\(srgb /);
+    expect(confirmFill).toMatch(/^color\(srgb /);
+    expect(confirmFill).not.toBe(cancelFill);
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await page.locator("#confirmationModalCancel").hover();
     await expect(page.locator("#confirmationModalCancel")).toHaveCSS("background-color", "rgb(240, 182, 106)");

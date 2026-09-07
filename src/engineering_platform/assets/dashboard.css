@@ -824,8 +824,8 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
 .dashboard-modal-shell__close{align-items:center;background:#24242d!important;border:1px solid #92919b!important;border-radius:50%;color:#f7f3ee!important;cursor:pointer;display:inline-flex;font:18px/1 system-ui;grid-column:2;grid-row:1;height:32px;justify-content:center;min-height:32px;min-width:32px;padding:0;position:static;width:32px}
 .dashboard-modal-shell__close:hover{background:#4a4a55!important;border-color:#b9b6c0!important;color:#fff!important}
 .dashboard-modal-shell__actions{align-items:center;display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
-.dashboard-modal-shell__action{align-self:center;background:var(--modal-surface)!important;border:1px solid var(--modal-accent)!important;border-radius:8px;box-sizing:border-box;color:var(--dashboard-modal-ink)!important;cursor:pointer;font:13px system-ui;height:var(--modal-action-height);min-height:var(--modal-action-height);padding:8px 14px}
-.dashboard-modal-shell__action--primary{background:color-mix(in srgb,var(--modal-accent) 22%,#24242d)!important;color:#f7f3ee!important}
+.dashboard-modal-shell__action{align-self:center;background:color-mix(in srgb,var(--modal-accent) 12%,var(--modal-surface))!important;border:1px solid var(--modal-accent)!important;border-radius:8px;box-sizing:border-box;color:var(--dashboard-modal-ink)!important;cursor:pointer;font:13px system-ui;height:var(--modal-action-height);min-height:var(--modal-action-height);padding:8px 14px}
+.dashboard-modal-shell__action--primary{background:color-mix(in srgb,var(--modal-accent) 22%,var(--modal-surface))!important;color:var(--dashboard-modal-ink)!important}
 .dashboard-modal-shell__action:hover:not(:disabled){background:var(--modal-accent)!important;border-color:var(--modal-accent)!important;color:#201812!important}
 #dashboardErrorModalRecover:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
 html[data-theme="light"] .dashboard-modal-shell{--modal-surface:var(--dashboard-modal-document-surface);color:#182230}
@@ -836,8 +836,8 @@ html[data-theme="light"] .dashboard-modal-shell__close:hover{background:#e9eef6!
    the house-style orange hover rather than its surrounding category colour. */
 :is(.component-modal__close,.report-view-modal__close,.dashboard-modal-shell__close):hover{background:var(--house-style)!important;border-color:var(--house-style)!important;color:var(--button-ink)!important}
 html[data-theme="light"] :is(.component-modal__close,.report-view-modal__close,.dashboard-modal-shell__close):hover{background:var(--house-style)!important;border-color:var(--house-style)!important;color:var(--button-ink)!important}
-html[data-theme="light"] .dashboard-modal-shell__action{background:#fff!important;color:#7a4912!important}
-html[data-theme="light"] .dashboard-modal-shell__action--primary{background:color-mix(in srgb,var(--modal-accent) 16%,#fff)!important}
+html[data-theme="light"] .dashboard-modal-shell__action{background:color-mix(in srgb,var(--modal-accent) 12%,var(--modal-surface))!important;color:var(--dashboard-modal-ink)!important}
+html[data-theme="light"] .dashboard-modal-shell__action--primary{background:color-mix(in srgb,var(--modal-accent) 22%,var(--modal-surface))!important}
 /* Secondary modal text and embedded containers stay within their parent
    accent family; no modal may fall back to the dashboard's purple label. */
 .dashboard-modal-shell :is(.label,.field>.label){color:var(--modal-secondary-accent)}

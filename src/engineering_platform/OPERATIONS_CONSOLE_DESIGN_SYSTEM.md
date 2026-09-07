@@ -380,6 +380,13 @@ content surface; its border, foreground, hover and focus state retain the
 same semantic colour. An unfilled outlined control is not an allowed default.
 This applies equally to native buttons and links styled as actions.
 
+Standard modal actions use that restrained fill for the secondary/safe action;
+their primary counterpart uses a visibly stronger tint of the same modal
+accent. A focus ring is additive feedback and must never be the only visible
+fill. Modal families with a distinct semantic purpose (for example destructive
+or authorization confirmation) may provide their own tint, while preserving
+the same secondary-versus-primary hierarchy.
+
 Each component owns the fill for any action pattern it introduces. Shared
 button tokens may provide the common surface, but a component must not rely on
 a late global selector to complete its visual contract. This keeps a control's
