@@ -301,6 +301,95 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
     return {"credential_id": credential_id, "consumer_id": consumer_id, "project_id": project_id, "credential": token}
 
 
+PRODUCER_READBACK_CONTRACT_VERSION = "1.0"
+
+
+def producer_readback(
+    connection: sqlite3.Connection, *, project_id: str, submission_id: str,
+) -> dict[str, object] | None:
+    """Project one canonical producer-visible submission/readback record.
+
+    This is deliberately a read-only projection over existing CENTRAL rows.  It
+    never consults a checkout, invokes a provider, or reconstructs identity
+    from a prompt.  ``None`` covers both an unknown ID and an ID outside the
+    authenticated project scope, so the HTTP adapter does not disclose another
+    project's submission identities.
+    """
+    row = connection.execute(
+        """SELECT s.repository_id,s.producer_id,s.producer_type,s.producer_version,
+                  s.correlation_id,s.mission_id,s.engineering_action_id,s.state,
+                  s.admission,s.transport,s.created_at,d.run_id,d.state,
+                  d.operator_resolution,d.updated_at
+             FROM ep_submissions AS s
+             LEFT JOIN ep_parity_lifecycle_dispatches AS d
+               ON d.submission_id=s.submission_id
+            WHERE s.project_id=? AND s.submission_id=?""",
+        (project_id, submission_id),
+    ).fetchone()
+    if row is None:
+        return None
+    (
+        repository_id, producer_id, producer_type, producer_version,
+        correlation_id, mission_id, engineering_action_id, submission_state,
+        admission, transport, created_at, run_id, dispatch_state,
+        operator_resolution, updated_at,
+    ) = row
+    result: dict[str, object] = {"state": "NOT_STARTED", "terminal": False}
+    evidence: dict[str, object] = {"submission_lifecycle": f"central-submission:{submission_id}"}
+    run: dict[str, object] | None = None
+    if run_id is not None:
+        transaction = connection.execute(
+            "SELECT phase,payload,updated_at FROM engineering_transactions WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        terminal_state = None
+        if transaction is not None:
+            try:
+                payload = json.loads(str(transaction[1]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                candidate = payload.get("phase")
+                if isinstance(candidate, str) and candidate in {"COMPLETE", "BLOCKED", "FAILED"}:
+                    terminal_state = candidate
+                elif payload.get("terminal") is True and isinstance(payload.get("terminal_state"), str):
+                    terminal_state = payload["terminal_state"]
+        state = terminal_state or str(dispatch_state)
+        terminal = state in {"COMPLETE", "BLOCKED", "FAILED"}
+        run = {
+            "run_id": str(run_id), "state": state, "terminal": terminal,
+            "operator_resolution": str(operator_resolution), "updated_at": str(updated_at),
+        }
+        result = {"state": state, "terminal": terminal}
+        evidence["run_receipt"] = f"central-run:{run_id}"
+        if terminal:
+            evidence["terminal_checkpoint"] = f"central-transaction:{run_id}"
+            report = connection.execute(
+                "SELECT 1 FROM prompt_execution_history WHERE run_id=? AND terminal_state=?",
+                (run_id, state),
+            ).fetchone()
+            if report is not None:
+                evidence["terminal_report"] = f"central-report:{run_id}"
+    return {
+        "contract_version": PRODUCER_READBACK_CONTRACT_VERSION,
+        "submission": {
+            "id": submission_id, "project_id": project_id,
+            "repository_id": str(repository_id), "state": str(submission_state),
+            "admission": str(admission), "transport": str(transport),
+            "created_at": str(created_at),
+        },
+        "producer": {
+            "id": str(producer_id), "type": str(producer_type),
+            "version": producer_version,
+        },
+        "correlation": {
+            "correlation_id": correlation_id, "mission_id": mission_id,
+            "engineering_action_id": engineering_action_id,
+        },
+        "run": run, "result": result, "evidence": evidence,
+    }
+
+
 def submit_legacy_file(connection: sqlite3.Connection, path: object) -> SubmissionResult:
     """Compatibility adapter: a bounded JSON envelope with explicit project scope."""
     from pathlib import Path

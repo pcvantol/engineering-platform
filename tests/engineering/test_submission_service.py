@@ -56,3 +56,51 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with self.assertRaises(HTTPError) as rejected:
             urlopen(wrong)  # nosec B310
         self.assertEqual(rejected.exception.code, 401)
+
+    def test_authenticated_producer_readback_is_exactly_correlated_and_terminal_evidence_backed(self) -> None:
+        server.start(self.root)
+        payload = self.payload("readback")
+        payload.update({
+            "correlation_id": "forge-correlation-1", "mission_id": "mission-1",
+            "engineering_action_id": "action-1",
+        })
+        submit = Request(
+            f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {self.credential}", "Content-Type": "application/json"}, method="POST",
+        )
+        with urlopen(submit) as response:  # nosec B310
+            accepted = json.loads(response.read())
+        submission_id = accepted["submission_id"]
+        endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions/{submission_id}"
+        with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+            initial = json.loads(response.read())
+        self.assertEqual(initial["contract_version"], "1.0")
+        self.assertEqual(initial["correlation"], {
+            "correlation_id": "forge-correlation-1", "mission_id": "mission-1", "engineering_action_id": "action-1",
+        })
+        self.assertIsNone(initial["run"])
+        self.assertEqual(initial["result"], {"state": "NOT_STARTED", "terminal": False})
+
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-readback", "djconnect", "COMPLETE", "now", "now", "MANAGED"))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submission_id, "djconnect", "djconnect", "run-readback", "COMPLETE", "/private/prompt", "now", "now", "NONE"))
+            connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps({"phase": "COMPLETE", "terminal": True}), "COMPLETE", "now"))
+            connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)", ("run-readback", "COMPLETE", "safe", "now", None, "/private/report", "now"))
+        with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+            terminal = json.loads(response.read())
+        self.assertEqual(terminal["run"]["run_id"], "run-readback")
+        self.assertEqual(terminal["result"], {"state": "COMPLETE", "terminal": True})
+        self.assertEqual(terminal["evidence"]["terminal_checkpoint"], "central-transaction:run-readback")
+        self.assertEqual(terminal["evidence"]["terminal_report"], "central-report:run-readback")
+        self.assertNotIn("/private", json.dumps(terminal))
+
+        with self.assertRaises(HTTPError) as unauthenticated:
+            urlopen(endpoint)  # nosec B310
+        self.assertEqual(unauthenticated.exception.code, 401)
+        with self.assertRaises(HTTPError) as cross_project:
+            urlopen(Request(
+                f"http://127.0.0.1:{self.port}/v1/projects/other/submissions/{submission_id}",
+                headers={"Authorization": f"Bearer {self.credential}"},
+            ))  # nosec B310
+        self.assertEqual(cross_project.exception.code, 401)

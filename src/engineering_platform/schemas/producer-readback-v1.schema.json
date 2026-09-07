@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/producer-readback-v1.schema.json",
+  "title": "Engineering Platform producer readback v1",
+  "type": "object",
+  "required": ["contract_version", "submission", "producer", "correlation", "run", "result", "evidence"],
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "submission": {"type": "object"},
+    "producer": {"type": "object"},
+    "correlation": {"type": "object"},
+    "run": {"type": ["object", "null"]},
+    "result": {"type": "object"},
+    "evidence": {"type": "object"}
+  }
+}
