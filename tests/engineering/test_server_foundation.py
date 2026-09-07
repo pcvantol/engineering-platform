@@ -77,8 +77,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def test_service_components_expose_their_launchagent_as_host_detail(self, launchd: object) -> None:
         server.initialize(self.root)
         launchd.return_value.runtime_details.side_effect = (
-            LaunchdRuntimeDetails("com.engineeringplatform.server", True, True, 321, "(never exited)"),
-            LaunchdRuntimeDetails("com.engineeringplatform.dashboard-relay", True, True, 654, "1"),
+            LaunchdRuntimeDetails("com.engineeringplatform.server", True, True, 321, "(never exited)", 2048, 61),
+            LaunchdRuntimeDetails("com.engineeringplatform.dashboard-relay", True, True, 654, "1", 1024, 30),
+            LaunchdRuntimeDetails("com.engineeringplatform.server", True, True, 321, "(never exited)", 2048, 61),
         )
 
         ep_server = server._platform_component_detail(self.root, "ep_server")
@@ -92,6 +93,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(relay["launchd"]["pid"], 654)
         self.assertEqual(relay["launchd"]["last_exit_code"], "1")
         self.assertEqual(worker["launchd"], {})
+        self.assertEqual(ep_server["processes"], [{"pid": 321, "memory_kib": 2048}])
+        self.assertEqual(ep_server["uptime_seconds"], 61)
+        self.assertEqual(relay["processes"], [{"pid": 654, "memory_kib": 1024}])
+        self.assertEqual(worker["process_state"], "IN_PROCESS")
+        self.assertEqual(worker["process_host"], {"component": "ep_server", "pid": 321})
 
     def test_register_topology_cli_reads_the_versioned_json_declaration(self) -> None:
         declaration_path = Path(self.temporary.name) / "repository.json"

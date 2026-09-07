@@ -1316,28 +1316,46 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
             "launch_agent_path": str(server_relay.launch_agent_path()),
             "relay_binary_path": str(server_relay.relay_binary(data_root)),
         }
-    lifecycle_label = (
-        server_service.LABEL if component_id == "ep_server" else definition.lifecycle_label
-    )
-    launchd: dict[str, object] = {}
+    lifecycle_label = server_service.LABEL if component_id == "ep_server" else definition.lifecycle_label
+    observed: LaunchdRuntimeDetails | None = None
     if lifecycle_label:
-        observed = LaunchdProvider().runtime_details(lifecycle_label)
-        if isinstance(observed, LaunchdRuntimeDetails):
-            launchd = {
-                "label": observed.label,
-                "loaded": observed.loaded,
-                "active": observed.active,
-                "pid": observed.pid,
-                "last_exit_code": observed.last_exit_code,
-            }
-    return {
+        candidate = LaunchdProvider().runtime_details(lifecycle_label)
+        observed = candidate if isinstance(candidate, LaunchdRuntimeDetails) else None
+    detail: dict[str, object] = {
         "component": component_id,
         "machine": os.uname().nodename,
         "restart_supported": definition.restart_supported,
         "installation": installation,
-        "launchd": launchd,
         **component,
     }
+    if observed is not None:
+        detail["launchd"] = {
+            "label": observed.label,
+            "loaded": observed.loaded,
+            "active": observed.active,
+            "pid": observed.pid,
+            "last_exit_code": observed.last_exit_code,
+        }
+        detail["process_state"] = "OWNED_PROCESS"
+        detail["processes"] = ([{
+            "pid": observed.pid,
+            "memory_kib": observed.memory_kib,
+        }] if observed.active and observed.pid is not None else [])
+        if observed.uptime_seconds is not None:
+            detail["uptime_seconds"] = observed.uptime_seconds
+    elif component_id == "platform_database":
+        detail["launchd"] = {}
+        detail["process_state"] = "STORAGE"
+    else:
+        host = LaunchdProvider().runtime_details(server_service.LABEL)
+        host = host if isinstance(host, LaunchdRuntimeDetails) else None
+        detail["launchd"] = {}
+        detail["process_state"] = "IN_PROCESS"
+        detail["process_host"] = {
+            "component": "ep_server",
+            "pid": host.pid if host is not None and host.active else None,
+        }
+    return detail
 
 
 def _restart_platform_component(data_root: Path, component_id: str) -> dict[str, object]:
