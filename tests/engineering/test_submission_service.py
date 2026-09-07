@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from engineering_platform import server, submission_service
+from engineering_platform.agent_state import TransactionState
 
 
 class CanonicalSubmissionServiceTest(unittest.TestCase):
@@ -60,10 +61,16 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
     def test_authenticated_producer_readback_is_exactly_correlated_and_terminal_evidence_backed(self) -> None:
         server.start(self.root)
         payload = self.payload("readback")
-        payload.update({
-            "correlation_id": "forge-correlation-1", "mission_id": "mission-1",
-            "engineering_action_id": "action-1",
-        })
+        payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "1.0"},
+                        "correlation_id": "forge-correlation-1", "mission_id": "mission-1",
+                        "engineering_action_id": "action-1", "constraints": {"forge_execution": {
+                            "contract_version": "1.0", "host_id": "engineering-platform",
+                            "repository_id": "djconnect", "correlation_id": "forge-correlation-1",
+                            "mission_id": "mission-1", "mission_revision": "1", "intent_id": "intent-1",
+                            "intent_revision": "1", "action_id": "action-1",
+                            "runtime_prompt": {"id": "prompt-1", "content_digest": "sha256:" + "a" * 64},
+                            "retry_of_correlation_id": None,
+                        }}})
         submit = Request(
             f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions",
             data=json.dumps(payload).encode(),
@@ -75,25 +82,40 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions/{submission_id}"
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             initial = json.loads(response.read())
-        self.assertEqual(initial["contract_version"], "1.0")
+        self.assertEqual(initial["contract_version"], "1.1")
         self.assertEqual(initial["correlation"], {
             "correlation_id": "forge-correlation-1", "mission_id": "mission-1", "engineering_action_id": "action-1",
         })
         self.assertIsNone(initial["run"])
-        self.assertEqual(initial["result"], {"state": "NOT_STARTED", "terminal": False})
+        self.assertEqual(initial["result"], {"outcome": "NOT_STARTED", "terminal": False, "delivery_qualified": False})
+        self.assertEqual(initial["provenance"]["status"], "PERSISTED")
 
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-readback", "djconnect", "COMPLETE", "now", "now", "MANAGED"))
+            connection.execute("INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("run-readback", "2026-01-01", "now", "now", "now", 0, 0, "COMPLETE", None, None, None, "MANAGED", "djconnect", "djconnect", "test"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submission_id, "djconnect", "djconnect", "run-readback", "COMPLETE", "/private/prompt", "now", "now", "NONE"))
-            connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps({"phase": "COMPLETE", "terminal": True}), "COMPLETE", "now"))
+            checkpoint = TransactionState(run_id="run-readback", repository="djconnect", prompt_path="prompt", phase="COMPLETE", terminal=True, action_intent="VALIDATION_ONLY")
+            connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps(checkpoint.to_dict()), "COMPLETE", "now"))
             connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)", ("run-readback", "COMPLETE", "safe", "now", None, "/private/report", "now"))
+        artifact_id = submission_service.write_terminal_evidence(self.root, repository_root=self.root, run_id="run-readback")
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            direct = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submission_id)
+            self.assertIsNotNone(direct)
+            stored_artifact = submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id=artifact_id)
+            self.assertIsNotNone(stored_artifact)
+            self.assertEqual(json.loads(stored_artifact or b"{}")['run']['id'], "run-readback")
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             terminal = json.loads(response.read())
-        self.assertEqual(terminal["run"]["run_id"], "run-readback")
-        self.assertEqual(terminal["result"], {"state": "COMPLETE", "terminal": True})
-        self.assertEqual(terminal["evidence"]["terminal_checkpoint"], "central-transaction:run-readback")
-        self.assertEqual(terminal["evidence"]["terminal_report"], "central-report:run-readback")
+        self.assertEqual(terminal["run"]["id"], "run-readback")
+        self.assertEqual(terminal["result"], {"outcome": "COMPLETE", "terminal": True, "delivery_qualified": True})
+        self.assertEqual(terminal["evidence"]["status"], "AVAILABLE")
+        self.assertEqual(terminal["evidence"]["terminal_artifact"]["id"], artifact_id)
+        self.assertEqual(terminal["evidence"]["repository"]["revision"], None)
         self.assertNotIn("/private", json.dumps(terminal))
+        with urlopen(Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/artifacts/{artifact_id}", headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+            artifact = json.loads(response.read())
+        self.assertEqual(artifact["submission"]["id"], submission_id)
+        self.assertEqual(artifact["run"]["id"], "run-readback")
 
         # The projection is CENTRAL state, not a process-local cache: a Server
         # restart preserves the exact submission/run/evidence correlation.
@@ -123,3 +145,32 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 headers={"Authorization": f"Bearer {other_credential}"},
             ))  # nosec B310
         self.assertEqual(isolated.exception.code, 404)
+        artifact_path = self.root / "artifacts" / "projects" / "djconnect" / "runs" / "run-readback" / "terminal-evidence-v1.json"
+        artifact_path.write_text("{}\n", encoding="utf-8")
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            corrupt = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submission_id)
+            self.assertEqual(corrupt["evidence"]["status"], "CORRUPT")  # type: ignore[index]
+            self.assertFalse(corrupt["result"]["delivery_qualified"])  # type: ignore[index]
+            self.assertIsNone(submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id=artifact_id))
+
+    def test_forge_provenance_is_required_and_part_of_idempotency_identity(self) -> None:
+        payload = self.payload("forge-replay")
+        payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "1.0"},
+                        "correlation_id": "corr-1", "mission_id": "mission-1", "engineering_action_id": "action-1",
+                        "constraints": {"forge_execution": {"contract_version": "1.0", "host_id": "engineering-platform",
+                            "repository_id": "djconnect", "correlation_id": "corr-1", "mission_id": "mission-1",
+                            "mission_revision": "1", "intent_id": "intent-1", "intent_revision": "1", "action_id": "action-1",
+                            "runtime_prompt": {"id": "prompt-1", "content_digest": "sha256:" + "b" * 64},
+                            "retry_of_correlation_id": None}}})
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            first = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", payload, transport="HTTP"))
+            replay = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", payload, transport="HTTP"))
+            self.assertTrue(replay.duplicate)
+            payload["constraints"]["forge_execution"]["runtime_prompt"]["id"] = "prompt-2"  # type: ignore[index]
+            with self.assertRaisesRegex(submission_service.SubmissionError, "IDEMPOTENCY_CONFLICT"):
+                submission_service.submit(connection, submission_service.request_from_mapping("djconnect", payload, transport="HTTP"))
+            self.assertEqual(first.submission_id, replay.submission_id)
+            malformed = self.payload("missing-forge")
+            malformed["producer"] = {"id": "forge", "type": "FORGE", "version": "1.0"}
+            with self.assertRaisesRegex(submission_service.SubmissionError, "FORGE_PROVENANCE_REQUIRED"):
+                submission_service.request_from_mapping("djconnect", malformed, transport="HTTP")

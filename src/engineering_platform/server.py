@@ -221,7 +221,7 @@ def _http_json_openapi_document() -> dict[str, object]:
                          "schema": {"type": "string"}},
                     ],
                     "responses": {
-                        "200": {"description": "Canonical project-scoped producer readback v1.0"},
+                        "200": {"description": "Canonical project-scoped producer readback v1.1"},
                         "401": {"description": "Missing or invalid consumer credential"},
                         "404": {"description": "Submission absent from the authenticated project"},
                     },
@@ -3296,6 +3296,26 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     self._send(200, projection, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+            return
+        artifact = re.fullmatch(r"/v1/projects/([^/]+)/artifacts/(terminal-evidence:[^/]+)", request.path)
+        if artifact:
+            project_id, artifact_id = artifact.groups()
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    if _authenticated_consumer(connection, token, project_id) is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    payload = submission_service.producer_evidence_artifact(
+                        connection, project_id=project_id, artifact_id=artifact_id,
+                    )
+                if payload is None:
+                    self._send(404, {"error": "EVIDENCE_ARTIFACT_NOT_FOUND"})
+                else:
+                    self._send(200, json.loads(payload), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except (sqlite3.Error, ValueError, json.JSONDecodeError):
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
         if request.path == "/" or request.path.startswith("/api/") or request.path.startswith("/assets/") or request.path in {"/health", "/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"}:

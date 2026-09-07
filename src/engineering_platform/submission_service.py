@@ -144,6 +144,34 @@ def _validate_execution_mode(request: SubmissionRequest) -> None:
             raise SubmissionError("INVALID_GENESIS_TARGET")
 
 
+def _forge_provenance(request: SubmissionRequest) -> None:
+    """Validate the optional Forge envelope without imposing it on other producers."""
+    if request.producer_type != "FORGE":
+        return
+    raw = (request.constraints or {}).get("forge_execution")
+    if not isinstance(raw, Mapping):
+        raise SubmissionError("FORGE_PROVENANCE_REQUIRED")
+    expected = {"contract_version", "host_id", "repository_id", "correlation_id", "mission_id",
+                "mission_revision", "intent_id", "intent_revision", "action_id", "runtime_prompt",
+                "retry_of_correlation_id"}
+    if set(raw) != expected or raw.get("contract_version") != "1.0":
+        raise SubmissionError("INVALID_FORGE_PROVENANCE")
+    prompt = raw.get("runtime_prompt")
+    if not isinstance(prompt, Mapping) or set(prompt) != {"id", "content_digest"}:
+        raise SubmissionError("INVALID_FORGE_PROVENANCE")
+    digest = prompt.get("content_digest")
+    values = (raw.get("host_id"), raw.get("repository_id"), raw.get("correlation_id"), raw.get("mission_id"),
+              raw.get("mission_revision"), raw.get("intent_id"), raw.get("intent_revision"), raw.get("action_id"), prompt.get("id"))
+    if (not all(isinstance(value, str) and value and len(value) <= MAX_FIELD_LENGTH for value in values)
+            or not isinstance(digest, str) or not __import__("re").fullmatch(r"sha256:[0-9a-f]{64}", digest)
+            or raw.get("repository_id") != request.repository_id
+            or raw.get("correlation_id") != request.correlation_id
+            or raw.get("mission_id") != request.mission_id
+            or raw.get("action_id") != request.engineering_action_id
+            or (raw.get("retry_of_correlation_id") is not None and not isinstance(raw.get("retry_of_correlation_id"), str))):
+        raise SubmissionError("INVALID_FORGE_PROVENANCE")
+
+
 def request_from_mapping(project_id: str, payload: object, *, transport: str) -> SubmissionRequest:
     if not isinstance(payload, Mapping):
         raise SubmissionError("MALFORMED_REQUEST")
@@ -156,7 +184,7 @@ def request_from_mapping(project_id: str, payload: object, *, transport: str) ->
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or "\x00" in prompt or len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
         raise SubmissionError("INVALID_PROMPT")
-    return SubmissionRequest(
+    request = SubmissionRequest(
         project_id=_token(project_id, "project_id") or "",
         repository_id=_token(payload.get("repository_id"), "repository_id") or "",
         producer_id=_token(producer.get("id"), "producer_id") or "",
@@ -171,6 +199,8 @@ def request_from_mapping(project_id: str, payload: object, *, transport: str) ->
         transport_receipt_id=_token(payload.get("transport_receipt_id"), "transport_receipt_id", optional=True),
         transport_received_at=_token(payload.get("transport_received_at"), "transport_received_at", optional=True),
     )
+    _forge_provenance(request)
+    return request
 
 
 def _same_idempotent_request(row: tuple[object, ...], request: SubmissionRequest) -> bool:
@@ -238,6 +268,7 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> Submis
     """Persist and admit one request; no provider or Agent is selected here."""
     _transport(request.transport)
     _validate_execution_mode(request)
+    _forge_provenance(request)
     project = connection.execute("SELECT status FROM ep_project_registrations WHERE project_id=?", (request.project_id,)).fetchone()
     if project is None:
         raise SubmissionError("UNKNOWN_PROJECT", 404)
@@ -301,7 +332,142 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
     return {"credential_id": credential_id, "consumer_id": consumer_id, "project_id": project_id, "credential": token}
 
 
-PRODUCER_READBACK_CONTRACT_VERSION = "1.0"
+PRODUCER_READBACK_CONTRACT_VERSION = "1.1"
+TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.1"
+_TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    """The one serialization covered by producer evidence digests."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8") + b"\n"
+
+
+def _sha256(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _accepted_request_digest(*, repository_id: str, producer_id: str,
+                             producer_type: str, producer_version: object,
+                             prompt_digest: str, constraints: object,
+                             correlation_id: object, mission_id: object,
+                             engineering_action_id: object) -> str:
+    """Bind the exact accepted request, excluding replay transport metadata."""
+    return _sha256(_canonical_json_bytes({
+        "repository_id": repository_id, "producer": {
+            "id": producer_id, "type": producer_type, "version": producer_version,
+        },
+        "prompt_digest": prompt_digest, "constraints": constraints,
+        "correlation_id": correlation_id, "mission_id": mission_id,
+        "engineering_action_id": engineering_action_id,
+    }))
+
+
+def _read_constraints(value: object) -> dict[str, object] | None:
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _terminal_artifact_id(run_id: str) -> str:
+    return f"terminal-evidence:{run_id}"
+
+
+def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]:
+    """Return a run-bound delivery revision, never an ambient checkout HEAD."""
+    if outcome != "COMPLETE":
+        return None, True
+    if getattr(state, "action_intent", None) == "VALIDATION_ONLY":
+        return None, True
+    revision = getattr(state, "finalization_merge_commit", None) or getattr(state, "implementation_merge_commit", None)
+    evidence = getattr(state, "commit_evidence", ())
+    if not isinstance(revision, str) or not __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
+        return None, False
+    if not any(isinstance(item, dict) and item.get("commit_sha") == revision for item in evidence):
+        return None, False
+    return revision, True
+
+
+def write_terminal_evidence(
+    data_root: Path, *, repository_root: Path, run_id: str,
+) -> str:
+    """Persist one immutable, run-bound terminal evidence artifact.
+
+    This is called only by the lifecycle finalizer.  It validates the durable
+    checkpoint and its submission/dispatch binding before writing, so a reader
+    can never manufacture evidence for an otherwise terminal-looking row.
+    """
+    from .agent_state import StateError, TransactionState
+    from .storage import record_artifact
+
+    database = data_root / "engineering.db"
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            """SELECT d.submission_id,d.project_id,d.repository_id,d.state,
+                      s.producer_id,s.producer_type,s.producer_version,s.prompt_digest,
+                      s.constraints,s.correlation_id,s.mission_id,s.engineering_action_id,
+                      t.payload,h.terminal_state
+                 FROM ep_parity_lifecycle_dispatches d
+                 JOIN ep_submissions s ON s.submission_id=d.submission_id
+                 JOIN engineering_transactions t ON t.run_id=d.run_id
+                 LEFT JOIN prompt_execution_history h ON h.run_id=d.run_id
+                WHERE d.run_id=?""", (run_id,),
+        ).fetchone()
+    if row is None:
+        raise SubmissionError("TERMINAL_EVIDENCE_BINDING_UNAVAILABLE", 500)
+    try:
+        checkpoint = TransactionState.from_dict(json.loads(str(row[12])))
+    except (StateError, TypeError, ValueError, json.JSONDecodeError):
+        raise SubmissionError("TERMINAL_CHECKPOINT_INVALID", 500) from None
+    outcome = checkpoint.phase
+    if checkpoint.run_id != run_id or not checkpoint.terminal or outcome not in _TERMINAL_OUTCOMES:
+        raise SubmissionError("TERMINAL_CHECKPOINT_INVALID", 500)
+    if str(row[3]) not in {"RUNNING", outcome} or row[13] != outcome:
+        raise SubmissionError("TERMINAL_EVIDENCE_BINDING_UNAVAILABLE", 500)
+    constraints = _read_constraints(row[8])
+    if constraints is None:
+        raise SubmissionError("SUBMISSION_PROVENANCE_INVALID", 500)
+    request_digest = _accepted_request_digest(
+        repository_id=str(row[2]), producer_id=str(row[4]), producer_type=str(row[5]),
+        producer_version=row[6], prompt_digest=str(row[7]), constraints=constraints,
+        correlation_id=row[9], mission_id=row[10], engineering_action_id=row[11],
+    )
+    revision, delivery_qualified = _repository_revision(checkpoint, outcome)
+    artifact_id = _terminal_artifact_id(run_id)
+    report_id = f"report:{run_id}"
+    payload = {
+        "artifact_type": "EP_TERMINAL_EVIDENCE", "contract_version": TERMINAL_EVIDENCE_CONTRACT_VERSION,
+        "submission": {"id": str(row[0]), "project_id": str(row[1]), "repository_id": str(row[2]),
+                       "accepted_request_digest": request_digest},
+        "producer": {"id": str(row[4]), "type": str(row[5]), "version": row[6]},
+        "correlation": {"correlation_id": row[9], "mission_id": row[10], "engineering_action_id": row[11]},
+        "provenance": constraints.get("forge_execution"),
+        "run": {"id": run_id, "outcome": outcome, "delivery_qualified": delivery_qualified},
+        "repository": {"id": str(row[2]), "revision": revision,
+                       "revision_required": checkpoint.action_intent != "VALIDATION_ONLY" and outcome == "COMPLETE"},
+        "report": {"id": report_id, "terminal_state": outcome},
+        "references": {
+            "validation": list(checkpoint.validation_evidence), "quality": list(checkpoint.quality_evidence),
+            "repair": list(checkpoint.repair_audit), "finalization": checkpoint.latest_repository_evidence,
+        },
+    }
+    target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "terminal-evidence-v1.json"
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_bytes(_canonical_json_bytes(payload))
+    temporary.chmod(0o600)
+    temporary.replace(target)
+    record_artifact(
+        repository_root, target, artifact_id=artifact_id, artifact_type="EP_TERMINAL_EVIDENCE",
+        content_type="application/json", created_at=_now(), run_id=run_id,
+        submission_id=str(row[0]), mission_id=str(row[10]) if row[10] is not None else None,
+        producer_id=str(row[4]), central_database=database, artifact_root=data_root / "artifacts",
+    )
+    return artifact_id
 
 
 def producer_readback(
@@ -317,9 +483,9 @@ def producer_readback(
     """
     row = connection.execute(
         """SELECT s.repository_id,s.producer_id,s.producer_type,s.producer_version,
-                  s.correlation_id,s.mission_id,s.engineering_action_id,s.state,
-                  s.admission,s.transport,s.created_at,d.run_id,d.state,
-                  d.operator_resolution,d.updated_at
+                  s.prompt_digest,s.constraints,s.correlation_id,s.mission_id,
+                  s.engineering_action_id,s.state,s.admission,s.transport,s.created_at,
+                  d.run_id,d.state,d.operator_resolution,d.updated_at
              FROM ep_submissions AS s
              LEFT JOIN ep_parity_lifecycle_dispatches AS d
                ON d.submission_id=s.submission_id
@@ -329,54 +495,102 @@ def producer_readback(
     if row is None:
         return None
     (
-        repository_id, producer_id, producer_type, producer_version,
-        correlation_id, mission_id, engineering_action_id, submission_state,
+        repository_id, producer_id, producer_type, producer_version, prompt_digest,
+        raw_constraints, correlation_id, mission_id, engineering_action_id, submission_state,
         admission, transport, created_at, run_id, dispatch_state,
         operator_resolution, updated_at,
     ) = row
-    result: dict[str, object] = {"state": "NOT_STARTED", "terminal": False}
-    evidence: dict[str, object] = {"submission_lifecycle": f"central-submission:{submission_id}"}
+    constraints = _read_constraints(raw_constraints)
+    if constraints is None:
+        # Existing data is retained, but cannot be represented as qualified
+        # provenance when its canonical constraints record is corrupt.
+        constraints = {}
+        provenance_status = "INVALID"
+    else:
+        provenance_status = "PERSISTED"
+    request_digest = _accepted_request_digest(
+        repository_id=str(repository_id), producer_id=str(producer_id), producer_type=str(producer_type),
+        producer_version=producer_version, prompt_digest=str(prompt_digest), constraints=constraints,
+        correlation_id=correlation_id, mission_id=mission_id, engineering_action_id=engineering_action_id,
+    )
+    result: dict[str, object] = {"outcome": "NOT_STARTED", "terminal": False, "delivery_qualified": False}
+    evidence: dict[str, object] = {"status": "NOT_TERMINAL", "terminal_artifact": None,
+                                    "repository": {"id": str(repository_id), "revision": None}}
     run: dict[str, object] | None = None
     if run_id is not None:
         transaction = connection.execute(
             "SELECT phase,payload,updated_at FROM engineering_transactions WHERE run_id=?",
             (run_id,),
         ).fetchone()
-        terminal_state = None
+        terminal_state: str | None = None
+        checkpoint_valid = False
         if transaction is not None:
             try:
-                payload = json.loads(str(transaction[1]))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                payload = None
-            if isinstance(payload, dict):
-                candidate = payload.get("phase")
-                if isinstance(candidate, str) and candidate in {"COMPLETE", "BLOCKED", "FAILED"}:
-                    terminal_state = candidate
-                elif payload.get("terminal") is True and isinstance(payload.get("terminal_state"), str):
-                    terminal_state = payload["terminal_state"]
-        state = terminal_state or str(dispatch_state)
-        terminal = state in {"COMPLETE", "BLOCKED", "FAILED"}
+                from .agent_state import TransactionState
+                checkpoint = TransactionState.from_dict(json.loads(str(transaction[1])))
+                if checkpoint.run_id == run_id and checkpoint.terminal and checkpoint.phase in _TERMINAL_OUTCOMES:
+                    terminal_state, checkpoint_valid = checkpoint.phase, True
+            except (Exception,):  # corrupt/legacy checkpoint is evidence-incomplete, never terminal proof.
+                checkpoint_valid = False
+        state = terminal_state if checkpoint_valid else str(dispatch_state)
+        terminal = checkpoint_valid and state in _TERMINAL_OUTCOMES
         run = {
-            "run_id": str(run_id), "state": state, "terminal": terminal,
+            "id": str(run_id), "state": state, "terminal": terminal,
             "operator_resolution": str(operator_resolution), "updated_at": str(updated_at),
         }
-        result = {"state": state, "terminal": terminal}
-        evidence["run_receipt"] = f"central-run:{run_id}"
-        if terminal:
-            evidence["terminal_checkpoint"] = f"central-transaction:{run_id}"
-            report = connection.execute(
-                "SELECT 1 FROM prompt_execution_history WHERE run_id=? AND terminal_state=?",
-                (run_id, state),
+        result = {"outcome": state, "terminal": terminal, "delivery_qualified": False}
+        if not checkpoint_valid and str(dispatch_state) in _TERMINAL_OUTCOMES:
+            evidence["status"] = "INCOMPLETE"
+        elif terminal:
+            artifact = connection.execute(
+                """SELECT artifact_id,digest_algorithm,digest,content_type,integrity_status,storage_location
+                     FROM execution_artifact_records WHERE artifact_id=? AND run_id=?""",
+                (_terminal_artifact_id(str(run_id)), run_id),
             ).fetchone()
-            if report is not None:
-                evidence["terminal_report"] = f"central-report:{run_id}"
+            if artifact is None:
+                evidence["status"] = "MISSING"
+            elif artifact[1] != "sha256" or not isinstance(artifact[2], str) or len(str(artifact[2])) != 64:
+                evidence["status"] = "CORRUPT"
+            else:
+                try:
+                    database_path = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+                    artifact_root = database_path.parent / "artifacts"
+                    payload_path = (artifact_root / str(artifact[5])).resolve()
+                    payload_path.relative_to(artifact_root.resolve())
+                    verified = hashlib.sha256(payload_path.read_bytes()).hexdigest() == str(artifact[2])
+                except (OSError, ValueError, sqlite3.Error):
+                    verified = False
+                if not verified:
+                    evidence["status"] = "CORRUPT"
+                else:
+                    evidence["status"] = "AVAILABLE"
+                    evidence["terminal_artifact"] = {
+                        "id": str(artifact[0]), "digest_algorithm": "sha256",
+                        "digest": "sha256:" + str(artifact[2]), "content_type": str(artifact[3]),
+                    }
+                    try:
+                        document = json.loads((artifact_root / str(artifact[5])).read_text(encoding="utf-8"))
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        evidence["status"] = "CORRUPT"
+                    else:
+                        if (document.get("run", {}).get("id") != run_id or
+                                document.get("submission", {}).get("id") != submission_id or
+                                document.get("submission", {}).get("project_id") != project_id or
+                                document.get("submission", {}).get("accepted_request_digest") != request_digest):
+                            evidence["status"] = "CORRUPT"
+                        else:
+                            repository = document.get("repository")
+                            if isinstance(repository, dict):
+                                evidence["repository"] = {"id": repository.get("id"), "revision": repository.get("revision")}
+                            qualified = bool(document.get("run", {}).get("delivery_qualified"))
+                            result["delivery_qualified"] = qualified and evidence["status"] == "AVAILABLE"
     return {
         "contract_version": PRODUCER_READBACK_CONTRACT_VERSION,
         "submission": {
             "id": submission_id, "project_id": project_id,
             "repository_id": str(repository_id), "state": str(submission_state),
             "admission": str(admission), "transport": str(transport),
-            "created_at": str(created_at),
+            "created_at": str(created_at), "accepted_request_digest": request_digest,
         },
         "producer": {
             "id": str(producer_id), "type": str(producer_type),
@@ -386,8 +600,33 @@ def producer_readback(
             "correlation_id": correlation_id, "mission_id": mission_id,
             "engineering_action_id": engineering_action_id,
         },
+        "provenance": {"status": provenance_status, "forge_execution": constraints.get("forge_execution")},
         "run": run, "result": result, "evidence": evidence,
     }
+
+
+def producer_evidence_artifact(
+    connection: sqlite3.Connection, *, project_id: str, artifact_id: str,
+) -> bytes | None:
+    """Return only a verified, project-scoped terminal evidence payload."""
+    row = connection.execute(
+        """SELECT a.digest_algorithm,a.digest,a.storage_location
+             FROM execution_artifact_records a
+             JOIN ep_parity_lifecycle_dispatches d ON d.run_id=a.run_id
+            WHERE d.project_id=? AND a.artifact_id=? AND a.artifact_type='EP_TERMINAL_EVIDENCE'""",
+        (project_id, artifact_id),
+    ).fetchone()
+    if row is None or row[0] != "sha256" or not isinstance(row[1], str):
+        return None
+    try:
+        database_path = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+        artifact_root = (database_path.parent / "artifacts").resolve()
+        target = (artifact_root / str(row[2])).resolve()
+        target.relative_to(artifact_root)
+        payload = target.read_bytes()
+    except (OSError, ValueError, sqlite3.Error):
+        return None
+    return payload if hashlib.sha256(payload).hexdigest() == row[1] else None
 
 
 def submit_legacy_file(connection: sqlite3.Connection, path: object) -> SubmissionResult:

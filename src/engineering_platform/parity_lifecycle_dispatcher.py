@@ -322,7 +322,13 @@ class ParityLifecycleDispatcher:
             producer_id=candidate.producer_id, producer_type=candidate.producer_type,
             producer_version=candidate.producer_version, contract_version="1.0",
             prompt_content=candidate.prompt,
-            prompt_metadata={"filename": prompt.name, "digest": candidate.prompt_digest, "title": "CENTRAL parity submission"},
+            prompt_metadata={
+                "filename": prompt.name, "digest": candidate.prompt_digest,
+                "title": "CENTRAL parity submission",
+                # This is provenance copied verbatim from the already admitted
+                # CENTRAL request; it grants no Forge execution authority.
+                "constraints": candidate.constraints,
+            },
             target_identity={"project_id": candidate.context.project_id, "repository_id": candidate.context.repository_id, "path": str(repository_root)},
             original_envelope=candidate.producer_envelope(), correlation_id=candidate.correlation_id,
             mission_id=candidate.mission_id, engineering_action_id=candidate.engineering_action_id,
@@ -401,6 +407,20 @@ class ParityLifecycleDispatcher:
             created_at=_utcnow(), run_id=state.run_id,
             central_database=data_root / "engineering.db", artifact_root=data_root / "artifacts",
         )
+        # Write the producer-facing receipt from the verified terminal
+        # checkpoint and stored report, never from a later HTTP projection.
+        # A failure here leaves the dispatch non-terminal rather than exposing
+        # a successful-looking run without its required evidence artifact.
+        try:
+            submission_service.write_terminal_evidence(
+                data_root, repository_root=repository_root, run_id=state.run_id,
+            )
+        except submission_service.SubmissionError as error:
+            # Historical terminal rows can predate a retained checkpoint. They
+            # keep their truthful dispatch history, but receive no invented
+            # checkpoint/artifact or delivery qualification.
+            if error.code not in {"TERMINAL_EVIDENCE_BINDING_UNAVAILABLE", "TERMINAL_CHECKPOINT_INVALID"}:
+                raise
         analyze_terminal_report(repository_root, state.run_id, report)
 
     def reconcile_terminal_history(self) -> None:
