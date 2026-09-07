@@ -724,5 +724,6 @@ durable parts of the same state and a partial move is unsafe.
   that current state will be replaced and the Server will restart.
 - Relocation chooses a parent directory and moves the complete data root in
   one restart-bound operation. Its filled text action uses the `↗` glyph and
-  follows the location responsively. The existing stable launch path remains
-  valid.
+  follows the location responsively. The selected directory becomes the only
+  canonical location: no symlink or compatibility directory remains at the
+  old location. An installed EP LaunchAgent is rewritten to the new root.

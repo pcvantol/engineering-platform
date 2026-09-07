@@ -3395,6 +3395,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
 def serve(data_root: Path) -> int:
     relocation = installation_relocation.apply_pending(data_root)
+    if relocation is not None:
+        data_root = Path(relocation["value"])
     imported = central_data_transfer.apply_pending_import(data_root)
     data_root = data_root.resolve()
     identity = initialize(data_root)
@@ -3406,6 +3408,10 @@ def serve(data_root: Path) -> int:
             previous=relocation["previous"],
             value=relocation["value"],
         )
+        # An installed LaunchAgent owns an explicit data-root argument.  Once
+        # the audit record is durable, rewrite and reload that owned service
+        # rather than leaving a compatibility link at the old data location.
+        server_service.repoint_after_relocation(Path(relocation["previous"]), data_root)
     if imported is not None:
         _audit_configuration_change(
             data_root, scope="PLATFORM_DATA", key="import", previous="REPLACED",

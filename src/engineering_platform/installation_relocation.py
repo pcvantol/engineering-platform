@@ -69,21 +69,14 @@ def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
 
 
 def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]:
-    """Move the entire data root, retaining its stable launchd entry path.
+    """Move the entire data root to its new canonical location.
 
-    launchd continues to start the stable original path. That path becomes a
-    symlink only after the complete directory rename succeeds, so the DB,
-    inbox, artifacts and configuration never end up on different volumes.
+    A relocation is a real move: no symlink is retained at the old location.
+    The service supervisor is repointed separately after this atomic rename.
     """
-    original = Path(data_root).expanduser()
-    root = original.resolve()
+    root = Path(data_root).expanduser().resolve()
     parent = _directory(directory)
-    # A repeated restart may replay the same request through the stable
-    # launchd symlink.  Recognize that exact completed move before applying
-    # the nested-destination guard below.
-    destination = parent / original.name
-    if original.is_symlink() and destination.exists() and original.resolve() == destination.resolve():
-        return {"previous": str(root), "value": str(destination.resolve())}
+    destination = parent / root.name
     if destination == root or root in destination.parents or destination in root.parents:
         raise RelocationError("PLATFORM_DATA_DESTINATION_INVALID")
     if not root.is_dir() or not (root / "engineering.db").is_file():
@@ -91,17 +84,7 @@ def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]
     if destination.exists():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        os.replace(root, destination)
-        # A later relocation starts through the stable, already-symlinked
-        # launch path.  Its old link is now dangling and must be replaced.
-        if original.is_symlink():
-            original.unlink()
-        original.symlink_to(destination, target_is_directory=True)
-    except Exception:
-        if destination.exists() and not original.exists():
-            os.replace(destination, original)
-        raise
+    os.replace(root, destination)
     return {"previous": str(root), "value": str(destination.resolve())}
 
 
@@ -118,5 +101,7 @@ def apply_pending(data_root: Path) -> dict[str, str] | None:
         result = relocate_platform_data(data_root, directory)
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise RelocationError("RELOCATION_REQUEST_INVALID") from error
-    _pending_path(data_root).unlink(missing_ok=True)
+    # The request file moved with the data root, so remove it there rather
+    # than recreating an old location merely to clear it.
+    _pending_path(Path(result["value"])).unlink(missing_ok=True)
     return {**result, "kind": "PLATFORM_DATA"}
