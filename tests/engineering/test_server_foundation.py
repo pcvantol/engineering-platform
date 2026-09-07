@@ -46,6 +46,24 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
 
+    def test_register_topology_cli_reads_the_versioned_json_declaration(self) -> None:
+        declaration_path = Path(self.temporary.name) / "repository.json"
+        declaration_path.write_text(json.dumps({
+            "schema_version": "1.0",
+            "project": {"id": "cli-topology", "authority_repository_id": "cli-topology"},
+            "repository": {"id": "cli-topology", "role": "authority"},
+            "validation": {"kind": "none"},
+        }), encoding="utf-8")
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = server.main([
+                "register-topology", "--data-root", str(self.root), "--declaration", str(declaration_path),
+            ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue())["result"], "REGISTERED")
+
     def test_server_import_does_not_load_retired_inbox_watcher_runtime(self) -> None:
         """The Server Console must not resurrect the retired watcher by import."""
         repository = Path(__file__).resolve().parents[2]
