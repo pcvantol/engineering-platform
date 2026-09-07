@@ -55,6 +55,10 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 disposition="QUARANTINED", reason="Needs operator review",
             )
             self.assertEqual(held["state"], "QUARANTINED")
+            self.assertEqual(
+                submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)["submission"]["state"],
+                "QUARANTINED",
+            )
             resumed = submission_service.operator_queue_disposition(
                 connection, project_id="djconnect", submission_id=submitted.submission_id,
                 disposition="QUEUED", reason="Review completed",
