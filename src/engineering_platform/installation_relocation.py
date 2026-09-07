@@ -54,6 +54,12 @@ def _destination(root: Path, directory: object) -> Path:
     return target
 
 
+def _require_same_filesystem(root: Path, destination: Path) -> None:
+    """Keep the relocation an atomic rename, never a cross-volume copy."""
+    if os.stat(root).st_dev != os.stat(destination.parent).st_dev:
+        raise RelocationError("PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM")
+
+
 def _prepared_marker(destination: Path) -> Path:
     return destination / _PREPARED
 
@@ -78,6 +84,7 @@ def prepare(data_root: Path, directory: object) -> dict[str, str]:
     if not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     destination = _destination(root, directory)
+    _require_same_filesystem(root, destination)
     if destination.exists():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     destination.mkdir(mode=0o700)
@@ -110,6 +117,7 @@ def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
     if not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     destination = _destination(root, directory)
+    _require_same_filesystem(root, destination)
     if destination.exists() and not _prepared_marker(destination).is_file() and destination.resolve() != root:
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     if not _prepared_marker(destination).is_file():
@@ -134,6 +142,7 @@ def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]
         raise RelocationError("PLATFORM_DATA_DESTINATION_INVALID")
     if not root.is_dir() or not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
+    _require_same_filesystem(root, destination)
     if destination.exists() and not _prepared_marker(destination).is_file():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     if destination.exists():

@@ -8242,6 +8242,18 @@ test.describe("Engineering Status browser smoke", () => {
     expect(JSON.parse(request.postData() || "{}")).toEqual({ directory: "/Volumes/Archive" });
   });
 
+  test("blocks a platform-data relocation to another filesystem before enabling it", async ({ page }) => {
+    await page.route("**/api/central-data/relocate/browse", async (route) => {
+      await route.fulfill({ status: 400, json: { error: "PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDatabaseRelocate").click();
+    await page.locator("#centralDatabaseRelocateBrowse").click();
+    await expect(page.locator("#centralDatabaseRelocateStatus")).toHaveText("Kies een map op dezelfde schijf of hetzelfde volume als de huidige platformgegevens.");
+    await expect(page.locator("#centralDatabaseRelocateSave")).toBeDisabled();
+  });
+
   test("gives the platform-data import filename a wide modal", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#configuration").evaluate((element) => { element.open = true; });

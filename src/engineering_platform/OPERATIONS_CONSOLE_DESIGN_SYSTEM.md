@@ -747,6 +747,8 @@ starting writers; it leaves no compatibility copy or symlink behind.
   canonical location: no symlink or compatibility directory remains at the
   old location. The chooser immediately displays the exact future root (for
   example `…/central`), creates that empty directory and verifies it is
-  writable. Closing the modal without relocating removes only that prepared,
+  writable and on the same filesystem as the current data root; another disk
+  or volume is blocked before the relocation action becomes available.
+  Closing the modal without relocating removes only that prepared,
   still-empty directory. An installed EP LaunchAgent is rewritten to the new
   root.

@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from engineering_platform import installation_relocation
@@ -111,6 +112,20 @@ class InstallationRelocationTest(unittest.TestCase):
         pending.write_text('{"kind":"DATABASE","directory":"/tmp"}', encoding="utf-8")
         with self.assertRaisesRegex(installation_relocation.RelocationError, "RELOCATION_KIND_RETIRED"):
             installation_relocation.apply_pending(self.root)
+
+    def test_relocation_rejects_a_destination_on_another_filesystem_before_preparing_it(self) -> None:
+        """The UI can only enable an atomic same-volume relocation."""
+        destination = self.target / self.root.name
+        with patch("engineering_platform.installation_relocation._require_same_filesystem", side_effect=installation_relocation.RelocationError("PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM")):
+            with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM"):
+                installation_relocation.prepare(self.root, str(self.target))
+        self.assertFalse(destination.exists())
+
+    def test_same_filesystem_guard_compares_device_identifiers(self) -> None:
+        destination = self.target / self.root.name
+        with patch("engineering_platform.installation_relocation.os.stat", side_effect=[SimpleNamespace(st_dev=1), SimpleNamespace(st_dev=2)]):
+            with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM"):
+                installation_relocation._require_same_filesystem(self.root, destination)
 
     def test_relocation_is_atomic_without_creating_a_compatibility_link(self) -> None:
         """A completed move has one canonical location and no old-path link."""

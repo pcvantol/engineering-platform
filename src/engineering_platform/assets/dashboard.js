@@ -8586,3 +8586,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!failed) delete status.dataset.importErrorMessage;
   }).observe(status, { childList: true, characterData: true, subtree: true });
 });
+
+document.addEventListener("DOMContentLoaded", () => {
+  const status = $("centralDatabaseRelocateStatus");
+  if (!status) return;
+  new MutationObserver(() => {
+    if (status.textContent?.trim() === "PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM") {
+      status.textContent = t("configuration.relocation_different_filesystem");
+    }
+  }).observe(status, { childList: true, characterData: true, subtree: true });
+});
