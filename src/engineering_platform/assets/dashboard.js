@@ -3598,6 +3598,13 @@ function showComponentModal(payload) {
     componentDetailField(fields, t("component.current_memory"), componentMemory(payload.processes));
   } else {
     componentDetailField(fields, t("component.process_status"), componentProcessStatus(payload));
+    if (payload.process_state === "IN_PROCESS") {
+      componentDetailField(
+        fields,
+        t("component.ep_server_uptime"),
+        formatComponentUptime(payload.process_host?.uptime_seconds),
+      );
+    }
   }
   componentDetailField(fields, t("component.runtime_path"), installation.runtime_path);
   componentDetailField(fields, t("component.central_data_path"), installation.central_data_path);
