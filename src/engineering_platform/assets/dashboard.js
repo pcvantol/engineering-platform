@@ -8533,6 +8533,15 @@ if (NO_PROJECT_SELECTED) {
 // permanently displaying loading placeholders; it contains no project state.
 startDashboardUpdates();
 
+document.addEventListener("change", (event) => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.id !== "centralDataImportFile") return;
+  const status = $("centralDataImportStatus");
+  if (!status) return;
+  status.textContent = "";
+  status.classList.remove("configuration-central-data-import__error");
+  delete status.dataset.importErrorMessage;
+}, true);
+
 document.addEventListener("DOMContentLoaded", () => {
   const status = $("centralDataImportStatus");
   if (!status) return;

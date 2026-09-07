@@ -8273,6 +8273,23 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(status).toHaveCSS("color", "rgb(255, 113, 143)");
   });
 
+  test("clears an earlier platform-data import error when a new archive is selected", async ({ page }) => {
+    await page.route("**/api/central-data/import", async (route) => {
+      await route.fulfill({ status: 409, json: { error: "CENTRAL_ARCHIVE_MEMBER_INVALID" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    const archive = page.locator("#centralDataImportFile");
+    await archive.setInputFiles({ name: "invalid.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
+    await page.locator("#centralDataImportConfirm").click();
+    const status = page.locator("#centralDataImportStatus");
+    await expect(status).not.toHaveText("");
+    await archive.setInputFiles({ name: "replacement.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
+    await expect(status).toHaveText("");
+    await expect(status).not.toHaveClass(/configuration-central-data-import__error/);
+  });
+
   test("keeps platform-data location links free of selected borders", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
