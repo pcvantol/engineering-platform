@@ -8245,6 +8245,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
     await page.locator("#centralDataImport").click();
     await expect(page.locator("#centralDataImportModal .dashboard-modal-shell__panel")).toHaveCSS("max-width", "1100px");
+    await expect(page.locator("#centralDataImportModal h2").evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↑"');
     await expect(page.locator("#centralDataImportFile")).toHaveAttribute("accept", ".epdata,application/vnd.engineering-platform.epdata+zip");
   });
 
