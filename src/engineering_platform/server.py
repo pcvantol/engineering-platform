@@ -1293,11 +1293,11 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_49(connection)
                             if current_schema in {42, 43, 44, 45, 46, 47, 48, 49}:
                                 _migrate_schema_50(connection)
-                            if current_schema != 51:
+                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50}:
                                 _migrate_schema_51(connection)
-                            if current_schema != 52:
+                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51}:
                                 _migrate_schema_52(connection)
-                            if current_schema != 53:
+                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52}:
                                 _migrate_schema_53(connection)
                             _migrate_schema_54(connection)
                             connection.execute("COMMIT")
