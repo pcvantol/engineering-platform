@@ -7782,6 +7782,32 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentModalContent")).toContainText("Databasegrootte12,5 MB");
   });
 
+  test("keeps the component-modal header inside its panel while details scroll", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "ep_server", healthy: true, machine: "MBP-van-Peter",
+      installation: {
+        runtime_path: "/private/tmp/" + "runtime/".repeat(50),
+        central_data_path: "/private/tmp/" + "central/".repeat(50),
+        database_path: "/private/tmp/" + "database/".repeat(50),
+        error_log_path: "/private/tmp/" + "logs/".repeat(50),
+      },
+      launchd: { label: "com.engineeringplatform.server", loaded: true, active: true, pid: 321 },
+      process_state: "OWNED_PROCESS", processes: [{ pid: 321, memory_kib: 2048 }],
+    }));
+    const geometry = await page.locator(".component-modal__panel").evaluate((panel) => {
+      const header = panel.querySelector(".component-modal__header");
+      const content = panel.querySelector("#componentModalContent");
+      content.scrollTop = content.scrollHeight;
+      const panelRect = panel.getBoundingClientRect();
+      const headerRect = header.getBoundingClientRect();
+      return { panelTop: panelRect.top, panelBottom: panelRect.bottom, headerTop: headerRect.top, headerBottom: headerRect.bottom, contentScrollTop: content.scrollTop };
+    });
+    expect(geometry.contentScrollTop).toBeGreaterThan(0);
+    expect(geometry.headerTop).toBeGreaterThanOrEqual(geometry.panelTop);
+    expect(geometry.headerBottom).toBeLessThanOrEqual(geometry.panelBottom);
+  });
+
   test("renders prompt-history report actions as light surfaces in light mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#themeToggle").click();
