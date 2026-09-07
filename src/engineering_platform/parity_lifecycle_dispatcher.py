@@ -492,7 +492,12 @@ class ParityLifecycleDispatcher:
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, "RUNNING", duplicate)
         try:
             with _historical_admission_environment(repository_root, self.data_root):
-                if not duplicate:
+                # INITIALIZE_ONLY qualification deliberately allocates the
+                # canonical dispatch before writing the runner input.  A
+                # later normal resume refers to that same dispatch, but must
+                # still materialize the input exactly once before invoking
+                # the runner.
+                if not duplicate or not prompt.is_file():
                     self._persist_historical_input(repository_root, candidate, run_id, prompt)
                 runner = self.runner_factory(repository_root)
                 state = runner.run(
