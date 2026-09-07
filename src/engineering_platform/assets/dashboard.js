@@ -3514,6 +3514,22 @@ function componentDetailField(list, label, value) {
   entry.append(term, description);
   list.append(entry);
 }
+function componentDetailEndpoint(list, label, endpoint) {
+  if (!endpoint) return;
+  const term = document.createElement("dt"),
+    description = document.createElement("dd"),
+    entry = document.createElement("div"),
+    link = document.createElement("a");
+  term.textContent = label;
+  link.className = "component-modal__endpoint";
+  link.href = endpoint;
+  link.textContent = endpoint;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  description.append(link);
+  entry.append(term, description);
+  list.append(entry);
+}
 function componentMemory(processes) {
   if (!Array.isArray(processes) || !processes.length)
     return t("component.owned_process_unavailable");
@@ -3565,6 +3581,8 @@ function showComponentModal(payload) {
   componentDetailField(fields, t("component.version"), payload.version);
   if (payload.kind === "TRANSPORT") {
     const transportTimestamp = (value) => value ? formatTimestamp(value) : null;
+    if (payload.component === "http_ingress")
+      componentDetailEndpoint(fields, t("transport.swagger_endpoint"), payload.swagger_endpoint);
     componentDetailField(fields, t("transport.last_submission"), transportTimestamp(payload.last_successful_submission));
     componentDetailField(fields, t("transport.location"), payload.watched_location);
     componentDetailField(fields, t("transport.heartbeat"), transportTimestamp(payload.heartbeat));

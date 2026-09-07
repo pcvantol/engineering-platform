@@ -252,6 +252,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/readyz") as response:
             readiness = json.loads(response.read().decode("utf-8"))
         self.assertEqual(readiness["lifecycle_worker"]["state"], "RUNNING")
+        for path in ("/openapi.json", "/swagger.json"):
+            with urlopen(f"http://127.0.0.1:{port}{path}") as response:
+                document = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(document["openapi"], "3.0.3")
+            self.assertIn("/v1/projects/{project_id}/submissions", document["paths"])
         stopped = server.stop(self.root)
         self.assertFalse(stopped["running"])
 
@@ -557,6 +562,22 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(components["file_inbox_ingress"]["status_code"], "FILE_INGRESS_STOPPED")
         self.assertEqual(components["dependabot_producer"]["status_code"], "DEPENDABOT_DEGRADED")
         self.assertNotIn("credential", repr(components).lower())
+
+    def test_http_json_openapi_document_describes_the_canonical_submission_ingress(self) -> None:
+        document = server._http_json_openapi_document()
+
+        self.assertEqual(document["openapi"], "3.0.3")
+        submission = document["paths"]["/v1/projects/{project_id}/submissions"]["post"]
+        self.assertEqual(submission["security"], [{"consumerBearer": []}])
+        self.assertIn("application/json", submission["requestBody"]["content"])
+        self.assertIn("415", submission["responses"])
+
+    def test_http_ingress_detail_publishes_its_openapi_endpoint(self) -> None:
+        server.initialize(self.root)
+
+        detail = server._platform_component_detail(self.root, "http_ingress")
+
+        self.assertEqual(detail["swagger_endpoint"], "/openapi.json")
 
     def test_dashboard_relay_requires_the_real_launch_agent_and_server(self) -> None:
         server.initialize(self.root)

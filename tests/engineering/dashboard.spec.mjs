@@ -10511,6 +10511,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/components/http_ingress/details", (route) => route.fulfill({ json: {
       component: "http_ingress", kind: "TRANSPORT", healthy: true,
       status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT",
+      swagger_endpoint: "/openapi.json",
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
@@ -10522,6 +10523,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentModalContent")).toContainText("Gezond");
     await expect(page.locator("#componentModalContent")).not.toContainText("dashboard.health");
     await expect(page.locator("#componentModalContent")).toContainText("Server-luisterendpoint");
+    const openapi = page.locator("#componentModalContent .component-modal__endpoint");
+    await expect(openapi).toHaveText("/openapi.json");
+    await expect(openapi).toHaveAttribute("href", "/openapi.json");
     await expect(page.locator("#componentModalContent")).not.toContainText("CENTRAL");
   });
 
