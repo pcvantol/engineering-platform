@@ -33,6 +33,14 @@ class ServicePaths:
     def plist_path(self) -> Path:
         return self.launch_agents_dir / f"{LABEL}.plist"
 
+    @property
+    def log_dir(self) -> Path:
+        return self.data_root / "runtime"
+
+    @property
+    def stderr_log(self) -> Path:
+        return self.log_dir / "server-launchagent.err.log"
+
 
 def default_paths(data_root: Path, home: Path | None = None) -> ServicePaths:
     return ServicePaths(data_root.resolve(), (home or Path.home()).expanduser() / "Library" / "LaunchAgents")
@@ -73,12 +81,13 @@ def plist_payload(paths: ServicePaths, interpreter: Path) -> dict[str, object]:
             "EP_SERVER_DATA_ROOT": str(paths.data_root),
         },
         "StandardOutPath": "/dev/null",
-        "StandardErrorPath": "/dev/null",
+        "StandardErrorPath": str(paths.stderr_log),
     }
 
 
 def write_plist(paths: ServicePaths, interpreter: Path) -> Path:
     paths.launch_agents_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    paths.log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     content = plistlib.dumps(plist_payload(paths, interpreter), fmt=plistlib.FMT_XML, sort_keys=True)
     temporary = paths.plist_path.with_suffix(".plist.tmp")
     temporary.write_bytes(content)
@@ -97,7 +106,7 @@ def install(data_root: Path, *, interpreter: str | Path | None = None, home: Pat
     result = _launchctl(("bootstrap", _domain(), str(plist)), runner)
     if result.returncode and "service already loaded" not in (result.stderr or "").lower():
         raise ServerServiceError("Unable to bootstrap EP Server LaunchAgent.")
-    return {"state": "installed", "label": LABEL, "plist": str(plist), "data_root": str(paths.data_root)}
+    return {"state": "installed", "label": LABEL, "plist": str(plist), "data_root": str(paths.data_root), "stderr_log": str(paths.stderr_log)}
 
 
 def uninstall(data_root: Path, *, home: Path | None = None, runner: Runner | None = None) -> Mapping[str, str]:
