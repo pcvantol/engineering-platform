@@ -8246,6 +8246,19 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#centralDataImportModal .dashboard-modal-shell__panel")).toHaveCSS("max-width", "1100px");
   });
 
+  test("clears a selected platform-data archive when its modal is closed", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    const archive = page.locator("#centralDataImportFile");
+    await archive.setInputFiles({ name: "previous-export.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
+    await expect(page.locator("#centralDataImportConfirm")).toBeEnabled();
+    await page.locator("[data-close-central-import]").click();
+    await page.locator("#centralDataImport").click();
+    await expect(archive).toHaveValue("");
+    await expect(page.locator("#centralDataImportConfirm")).toBeDisabled();
+  });
+
   test("keeps platform-data location links free of selected borders", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
