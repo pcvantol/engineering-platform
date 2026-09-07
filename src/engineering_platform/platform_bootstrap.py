@@ -356,6 +356,21 @@ def _provision_workspace_paths(root: Path, workspace: Path) -> dict[str, Path]:
         paths["runs"] = workspace / "engineering-runs"
     for path in paths.values():
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # A shared runtime workspace may be represented in a checkout by the
+    # platform-owned `.engineering` symlink.  Keep that implementation detail
+    # out of Git's untracked-worktree evidence; tracked project files are
+    # unaffected by an info/exclude rule.
+    local_workspace = root / WORKSPACE_DIRECTORY
+    git_directory = root / ".git"
+    if local_workspace.is_symlink() and git_directory.is_dir() and local_workspace.resolve() == workspace.resolve():
+        exclude = git_directory / "info" / "exclude"
+        try:
+            existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+            if ".engineering/" not in existing.splitlines():
+                exclude.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                exclude.write_text(existing.rstrip("\n") + "\n.engineering/\n", encoding="utf-8")
+        except OSError:
+            pass
     return paths
 
 
