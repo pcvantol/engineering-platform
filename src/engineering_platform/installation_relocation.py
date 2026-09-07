@@ -56,6 +56,20 @@ def _prepared_marker(destination: Path) -> Path:
     return destination / _PREPARED
 
 
+def _remove_prepared_destination(destination: Path) -> None:
+    """Remove exactly the empty, EP-owned destination prepared for a move."""
+    marker = _prepared_marker(destination)
+    if not marker.is_file() or marker.read_text(encoding="utf-8") != "prepared":
+        raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_PREPARED")
+    marker.unlink()
+    try:
+        destination.rmdir()
+    except OSError as error:
+        # Never remove a directory to which an operator added content.
+        marker.write_text("prepared", encoding="utf-8")
+        raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_EMPTY") from error
+
+
 def prepare(data_root: Path, directory: object) -> dict[str, str]:
     """Create and prove write access to the exact future data-root folder."""
     root = Path(data_root).expanduser().resolve()
@@ -83,13 +97,7 @@ def discard_prepared(data_root: Path, directory: object) -> None:
     marker = _prepared_marker(destination)
     if not marker.is_file() or marker.read_text(encoding="utf-8") != "prepared":
         return
-    marker.unlink()
-    try:
-        destination.rmdir()
-    except OSError:
-        # Never delete a directory that gained user content after preparation.
-        marker.write_text("prepared", encoding="utf-8")
-        raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_EMPTY")
+    _remove_prepared_destination(destination)
 
 
 def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
@@ -127,15 +135,7 @@ def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]
     if destination.exists() and not _prepared_marker(destination).is_file():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     if destination.exists():
-        marker = _prepared_marker(destination)
-        if marker.read_text(encoding="utf-8") != "prepared":
-            raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
-        marker.unlink()
-        try:
-            destination.rmdir()
-        except OSError as error:
-            marker.write_text("prepared", encoding="utf-8")
-            raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_EMPTY") from error
+        _remove_prepared_destination(destination)
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.replace(root, destination)
     return {"previous": str(root), "value": str(destination.resolve())}
