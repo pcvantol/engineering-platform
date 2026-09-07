@@ -8242,16 +8242,16 @@ test.describe("Engineering Status browser smoke", () => {
     expect(JSON.parse(request.postData() || "{}")).toEqual({ directory: "/Volumes/Archive" });
   });
 
-  test("blocks a platform-data relocation to another filesystem before enabling it", async ({ page }) => {
+  test("allows a prepared platform-data relocation to another APFS volume", async ({ page }) => {
     await page.route("**/api/central-data/relocate/browse", async (route) => {
-      await route.fulfill({ status: 400, json: { error: "PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM" } });
+      await route.fulfill({ json: { directory: "/Volumes/Archive", value: "/Volumes/Archive/central" } });
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
     await page.locator("#centralDatabaseRelocate").click();
     await page.locator("#centralDatabaseRelocateBrowse").click();
-    await expect(page.locator("#centralDatabaseRelocateStatus")).toHaveText("Kies een map op dezelfde schijf of hetzelfde volume als de huidige platformgegevens.");
-    await expect(page.locator("#centralDatabaseRelocateSave")).toBeDisabled();
+    await expect(page.locator("#centralDatabaseRelocateDestinationValue")).toHaveText("/Volumes/Archive/central");
+    await expect(page.locator("#centralDatabaseRelocateSave")).toBeEnabled();
   });
 
   test("gives the platform-data import filename a wide modal", async ({ page }) => {

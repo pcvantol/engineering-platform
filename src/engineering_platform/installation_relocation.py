@@ -6,9 +6,12 @@ the legacy per-resource relocation requests are deliberately retired.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 from uuid import uuid4
 
 from . import central_database
@@ -54,10 +57,40 @@ def _destination(root: Path, directory: object) -> Path:
     return target
 
 
-def _require_same_filesystem(root: Path, destination: Path) -> None:
-    """Keep the relocation an atomic rename, never a cross-volume copy."""
-    if os.stat(root).st_dev != os.stat(destination.parent).st_dev:
-        raise RelocationError("PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM")
+def _same_filesystem(root: Path, destination: Path) -> bool:
+    return os.stat(root).st_dev == os.stat(destination.parent).st_dev
+
+
+def _destination_filesystem(destination: Path) -> str:
+    """Return the macOS filesystem type for a selected destination parent."""
+    try:
+        return subprocess.run(
+            ["stat", "-f", "%T", str(destination.parent)],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip().lower()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RelocationError("PLATFORM_DATA_DESTINATION_FILESYSTEM_UNAVAILABLE") from error
+
+
+def _require_supported_destination(root: Path, destination: Path) -> None:
+    """Allow atomic local moves and verified cross-volume APFS moves."""
+    if not _same_filesystem(root, destination) and _destination_filesystem(destination) != "apfs":
+        raise RelocationError("PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED")
+
+
+def _file_checksums(root: Path) -> dict[Path, str]:
+    """Produce a complete content inventory before deleting a copied source."""
+    return {
+        item.relative_to(root): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in sorted(root.rglob("*")) if item.is_file()
+    }
+
+
+def _copy_verified(source: Path, destination: Path) -> None:
+    """Copy a cross-volume root and prove it matches before removing source."""
+    shutil.copytree(source, destination, copy_function=shutil.copy2)
+    if _file_checksums(source) != _file_checksums(destination):
+        raise RelocationError("PLATFORM_DATA_COPY_VERIFICATION_FAILED")
 
 
 def _prepared_marker(destination: Path) -> Path:
@@ -84,7 +117,7 @@ def prepare(data_root: Path, directory: object) -> dict[str, str]:
     if not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     destination = _destination(root, directory)
-    _require_same_filesystem(root, destination)
+    _require_supported_destination(root, destination)
     if destination.exists():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     destination.mkdir(mode=0o700)
@@ -117,7 +150,7 @@ def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
     if not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     destination = _destination(root, directory)
-    _require_same_filesystem(root, destination)
+    _require_supported_destination(root, destination)
     if destination.exists() and not _prepared_marker(destination).is_file() and destination.resolve() != root:
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     if not _prepared_marker(destination).is_file():
@@ -142,13 +175,21 @@ def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]
         raise RelocationError("PLATFORM_DATA_DESTINATION_INVALID")
     if not root.is_dir() or not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
-    _require_same_filesystem(root, destination)
+    _require_supported_destination(root, destination)
     if destination.exists() and not _prepared_marker(destination).is_file():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     if destination.exists():
         _remove_prepared_destination(destination)
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.replace(root, destination)
+    if _same_filesystem(root, destination):
+        os.replace(root, destination)
+    else:
+        try:
+            _copy_verified(root, destination)
+        except Exception:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+        shutil.rmtree(root)
     return {"previous": str(root), "value": str(destination.resolve())}
 
 

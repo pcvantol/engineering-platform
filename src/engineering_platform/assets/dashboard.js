@@ -8591,8 +8591,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const status = $("centralDatabaseRelocateStatus");
   if (!status) return;
   new MutationObserver(() => {
-    if (status.textContent?.trim() === "PLATFORM_DATA_DESTINATION_DIFFERENT_FILESYSTEM") {
-      status.textContent = t("configuration.relocation_different_filesystem");
+    if (status.textContent?.trim() === "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED") {
+      status.textContent = t("configuration.relocation_filesystem_unsupported");
     }
   }).observe(status, { childList: true, characterData: true, subtree: true });
 });
