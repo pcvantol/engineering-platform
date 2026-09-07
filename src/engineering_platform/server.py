@@ -95,7 +95,7 @@ SERVER_CONFIGURATION_VERSION = 2
 SERVER_STORE_SCHEMA_VERSION = 53
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
-HTTP_JSON_OPENAPI_PATH = "/openapi.json"
+HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
 _CENTRAL_LOG_SORT_COLUMNS = {
     "line": "id",
     "timestamp": "created_at",
@@ -3289,7 +3289,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         request = urlsplit(self.path)
-        if request.path in {HTTP_JSON_OPENAPI_PATH, "/swagger.json"}:
+        if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
             return
         if request.path == "/diagnostics/topology":

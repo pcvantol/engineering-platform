@@ -285,7 +285,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/readyz") as response:
             readiness = json.loads(response.read().decode("utf-8"))
         self.assertEqual(readiness["lifecycle_worker"]["state"], "RUNNING")
-        for path in ("/openapi.json", "/swagger.json"):
+        for path in ("/v1/openapi.json", "/openapi.json", "/swagger.json"):
             with urlopen(f"http://127.0.0.1:{port}{path}") as response:
                 document = json.loads(response.read().decode("utf-8"))
             self.assertEqual(document["openapi"], "3.0.3")
@@ -610,7 +610,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
         detail = server._platform_component_detail(self.root, "http_ingress")
 
-        self.assertEqual(detail["swagger_endpoint"], "/openapi.json")
+        self.assertEqual(detail["swagger_endpoint"], "/v1/openapi.json")
 
     def test_dashboard_relay_requires_the_real_launch_agent_and_server(self) -> None:
         server.initialize(self.root)
