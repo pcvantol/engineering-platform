@@ -599,7 +599,7 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
     !windows.length && credits === null && provider === t("format.not_available");
   $("rateLimitProvider").textContent = provider + " · " + version;
   let providerPathElement = $("rateLimitProviderPath");
-  if (!(providerPathElement instanceof HTMLAnchorElement)) {
+  if (!(providerPathElement instanceof HTMLButtonElement)) {
     providerPathElement = replaceWithLocalFilesystemLink(providerPathElement, providerPath);
   }
   configureLocalFilesystemLink(providerPathElement, providerPath);
@@ -1361,7 +1361,7 @@ function isIOSBrowser() {
   return /iPad|iPhone|iPod/.test(navigator.platform || navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
-function copyText(value) {
+function copyText(value, successMessage = t("copy.success")) {
   const modernClipboard = navigator.clipboard && window.isSecureContext;
   // iOS Safari permits the legacy copy command only while the original tap is
   // still being handled. Other browsers use the Clipboard API first: some of
@@ -1369,21 +1369,21 @@ function copyText(value) {
   if (isIOSBrowser()) {
     try {
       fallbackCopy(value);
-      showCopyToast();
+      showCopyToast(successMessage);
       return Promise.resolve();
     } catch (fallbackError) {
       if (!modernClipboard) return Promise.reject(fallbackError);
-      return navigator.clipboard.writeText(value).then(() => showCopyToast());
+      return navigator.clipboard.writeText(value).then(() => showCopyToast(successMessage));
     }
   }
   if (modernClipboard)
-    return navigator.clipboard.writeText(value).then(showCopyToast, () => {
+    return navigator.clipboard.writeText(value).then(() => showCopyToast(successMessage), () => {
       fallbackCopy(value);
-      showCopyToast();
+      showCopyToast(successMessage);
     });
   try {
     fallbackCopy(value);
-    showCopyToast();
+    showCopyToast(successMessage);
     return Promise.resolve();
   } catch (fallbackError) {
     return Promise.reject(fallbackError);
@@ -1408,7 +1408,7 @@ function showDashboardToast(message) {
     }, 180);
   }, 2200);
 }
-function showCopyToast() { showDashboardToast(t("copy.success")); }
+function showCopyToast(message = t("copy.success")) { showDashboardToast(message); }
 const PREFLIGHT_PRESENTATIONS = Object.freeze([
   ["host_preflight", [
     ["hostPreflightStatus", "outcome"],
@@ -1490,27 +1490,45 @@ function configureLocalFilesystemLink(link, value) {
   const path = typeof value === "string" ? value.trim() : "";
   link.classList.add("local-folder-link");
   link.textContent = path || t("format.not_available");
-  link.removeAttribute("href");
-  link.removeAttribute("target");
-  link.removeAttribute("rel");
+  if (link instanceof HTMLAnchorElement) {
+    link.removeAttribute("href");
+    link.removeAttribute("target");
+    link.removeAttribute("rel");
+    link.setAttribute("role", "button");
+    link.tabIndex = 0;
+  }
   link.removeAttribute("aria-disabled");
+  link.dataset.localPath = path;
   if (!path.startsWith("/")) {
     link.setAttribute("aria-disabled", "true");
     return;
   }
-  link.href = new URL(path, "file:///").href;
-  link.target = "_blank";
-  link.rel = "noopener";
+  if (link.dataset.copyLocalPathBound) return;
+  link.dataset.copyLocalPathBound = "true";
+  link.addEventListener("click", () => {
+    const currentPath = link.dataset.localPath || "";
+    if (!currentPath.startsWith("/")) return;
+    copyText(currentPath, t("copy.path_success")).catch(() => {
+      link.title = t("copy.failed");
+    });
+  });
+  link.addEventListener("keydown", (event) => {
+    if (event.key !== " " && event.key !== "Enter") return;
+    event.preventDefault();
+    link.click();
+  });
 }
 function localFilesystemLink(value) {
-  const link = document.createElement("a");
+  const link = document.createElement("button");
+  link.type = "button";
   configureLocalFilesystemLink(link, value);
   return link;
 }
 function replaceWithLocalFilesystemLink(element, replacementValue = element?.textContent.trim()) {
   if (!element) return null;
   if (!String(replacementValue || "").trim().startsWith("/")) return element;
-  const link = document.createElement("a");
+  const link = document.createElement("button");
+  link.type = "button";
   configureLocalFilesystemLink(link, replacementValue);
   if (element.id) link.id = element.id;
   element.replaceWith(link);
@@ -3454,13 +3472,15 @@ function formatComponentUptime(value) {
         ? minutes + "m"
         : total + "s";
 }
-function componentDetailField(list, label, value) {
+function componentDetailField(list, label, value, { localPath = false } = {}) {
   if (value === null || value === undefined || value === "") return;
   const term = document.createElement("dt"),
     description = document.createElement("dd"),
     entry = document.createElement("div");
   term.textContent = label;
-  description.textContent = String(value);
+  if (localPath && typeof value === "string" && value.startsWith("/"))
+    description.append(localFilesystemLink(value));
+  else description.textContent = String(value);
   entry.append(term, description);
   list.append(entry);
 }
@@ -3516,7 +3536,7 @@ function showComponentModal(payload) {
   if (payload.kind === "TRANSPORT") {
     const transportTimestamp = (value) => value ? formatTimestamp(value) : null;
     componentDetailField(fields, t("transport.last_submission"), transportTimestamp(payload.last_successful_submission));
-    componentDetailField(fields, t("transport.location"), payload.watched_location);
+    componentDetailField(fields, t("transport.location"), payload.watched_location, { localPath: true });
     componentDetailField(fields, t("transport.heartbeat"), transportTimestamp(payload.heartbeat));
     componentDetailField(fields, t("transport.delivery_retry"), payload.delivery_retry ? t("transport.retry." + payload.delivery_retry, {}, String(payload.delivery_retry)) : null);
     componentDetailField(fields, t("transport.quarantine"), payload.quarantine_count);
@@ -3534,13 +3554,14 @@ function showComponentModal(payload) {
     Array.isArray(launchd.program_arguments) && launchd.program_arguments.length
       ? launchd.program_arguments[0]
       : payload.executable_path,
+    { localPath: true },
   );
   componentDetailField(fields, t("component.launchd_label"), launchd.label);
   componentDetailField(fields, t("component.lifecycle_owner"), launchd.label ? t("component.launch_agent") : null);
   componentDetailField(fields, t("component.lifecycle_status"), launchdLifecycleState(launchd));
   componentDetailField(fields, t("component.process_id"), launchd.pid);
   componentDetailField(fields, t("component.last_stopped"), launchdLastStopped(launchd));
-  componentDetailField(fields, t("component.launch_agent"), launchd.plist_path);
+  componentDetailField(fields, t("component.launch_agent"), launchd.plist_path, { localPath: true });
   componentDetailField(
     fields,
     t("component.launchd_configuration"),
@@ -3557,12 +3578,12 @@ function showComponentModal(payload) {
   } else {
     componentDetailField(fields, t("component.process_status"), componentProcessStatus(payload));
   }
-  componentDetailField(fields, t("component.runtime_path"), installation.runtime_path);
-  componentDetailField(fields, t("component.central_data_path"), installation.central_data_path);
-  componentDetailField(fields, t("component.database_path"), installation.database_path);
-  componentDetailField(fields, t("component.launch_agent"), installation.launch_agent_path);
-  componentDetailField(fields, t("component.error_log_path"), installation.error_log_path);
-  componentDetailField(fields, t("component.relay_binary_path"), installation.relay_binary_path);
+  componentDetailField(fields, t("component.runtime_path"), installation.runtime_path, { localPath: true });
+  componentDetailField(fields, t("component.central_data_path"), installation.central_data_path, { localPath: true });
+  componentDetailField(fields, t("component.database_path"), installation.database_path, { localPath: true });
+  componentDetailField(fields, t("component.launch_agent"), installation.launch_agent_path, { localPath: true });
+  componentDetailField(fields, t("component.error_log_path"), installation.error_log_path, { localPath: true });
+  componentDetailField(fields, t("component.relay_binary_path"), installation.relay_binary_path, { localPath: true });
   content.append(fields);
   restart.hidden = !payload.restart_supported;
   restart.dataset.component = payload.component;

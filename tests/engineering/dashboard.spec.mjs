@@ -335,8 +335,11 @@ test.describe("Engineering Status browser smoke", () => {
     await configuration.evaluate((element) => { element.open = true; });
     const serverSettings = configuration.locator("#configurationServerSettings");
     await expect(serverSettings).toContainText("Serverinstellingen");
+    await expect(serverSettings).toHaveCSS("border-top-style", "solid");
     await expect(serverSettings.locator("#configurationInboxScanInterval")).toBeVisible();
     await expect(serverSettings.locator("#configurationOpenPrInterval")).toBeVisible();
+    await expect(serverSettings.locator('label[for="configurationInboxScanInterval"] > span[data-i18n]'))
+      .toHaveCSS("text-transform", "uppercase");
     await expect(page.locator("#queueItems #configurationOpenPrInterval")).toHaveCount(0);
     for (const selector of [
       "#configurationInboxOpen",
@@ -446,10 +449,12 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(block.locator('[data-provider="CODEX"]')).toHaveAttribute("data-provider-state", "READY");
     await expect(block.locator('[data-provider="GITHUB"]')).toHaveAttribute("data-provider-state", "AUTH_REQUIRED");
     await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveText("/ep/codex/bin/codex");
-    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveAttribute("href", "file:///ep/codex/bin/codex");
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveAttribute("role", "button");
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).not.toHaveAttribute("href", /file:/);
     await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-version]')).toHaveText("0.152.1");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveText("/opt/homebrew/bin/gh");
-    await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveAttribute("href", "file:///opt/homebrew/bin/gh");
+    await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveAttribute("role", "button");
+    await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).not.toHaveAttribute("href", /file:/);
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-version]')).toHaveText("2.82.1");
     const login = block.locator('[data-provider="GITHUB"] [data-provider-repair]');
     await expect(login).toBeVisible();
@@ -466,7 +471,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(runtime).toContainText(DASHBOARD_MESSAGES.nl["configuration.execution_runtime_status.READY"]);
     await expect(runtime.locator(".configuration-provider-status__dot")).toHaveCSS("background-color", "rgb(84, 214, 160)");
     await expect(validation.locator("[data-execution-runtime-path]")).toHaveText("/opt/engineering-platform/bin/python");
-    await expect(validation.locator("[data-execution-runtime-path]")).toHaveAttribute("href", "file:///opt/engineering-platform/bin/python");
+    await expect(validation.locator("[data-execution-runtime-path]")).not.toHaveAttribute("href", /file:/);
     await expect(validation.locator("[data-execution-runtime-version]")).toHaveText("3.14.1");
     await expect(validation.locator("[data-execution-runtime-repair]")).toBeHidden();
     await expect(page.locator("#executionRuntimeBanner")).toBeHidden();
@@ -776,7 +781,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees).not.toContainText("codex/polish");
   });
 
-  test("keeps local filesystem links free of a Finder route", async ({ page }) => {
+  test("copies local filesystem paths without a Finder route", async ({ page }) => {
     const requestedDirectories = [];
     await page.route("**/api/open-local-directory", async (route) => {
       requestedDirectories.push(JSON.parse(route.request().postData()).directory_path);
@@ -798,7 +803,8 @@ test.describe("Engineering Status browser smoke", () => {
       windows: [], reset_credits: 0,
     }));
     const installationPath = page.locator("#rateLimitProviderPath");
-    await expect(installationPath).toHaveAttribute("href", "file:///Users/example/.local/share/engineering-platform/codex-cli");
+    await expect(installationPath).toHaveAttribute("type", "button");
+    await expect(installationPath).not.toHaveAttribute("href", /file:/);
     await expect(installationPath).toHaveText("/Users/example/.local/share/engineering-platform/codex-cli");
 
     await page.evaluate(() => r({
@@ -810,16 +816,16 @@ test.describe("Engineering Status browser smoke", () => {
       checkout_path: "/Users/example/Documents/GitHub/djconnect",
       active_branch: "main",
     }, {}));
-    const checkout = page.locator("#executionContext .field").filter({ hasText: "/Users/example/Documents/GitHub/djconnect" }).locator("a");
+    const checkout = page.locator("#executionContext .field").filter({ hasText: "/Users/example/Documents/GitHub/djconnect" }).locator("button");
     await expect(checkout).toHaveText("/Users/example/Documents/GitHub/djconnect");
-    await expect(checkout).toHaveAttribute("href", "file:///Users/example/Documents/GitHub/djconnect");
+    await expect(checkout).not.toHaveAttribute("href", /file:/);
 
     await page.evaluate(() => renderWorkspaceWorktrees({ available: true, worktrees: [
       { path: "/Users/example/Documents/GitHub/djconnect", branch: "main", commit: "123456789abc" },
     ] }));
-    await expect(page.locator("#workspaceWorktrees .workspace-worktrees__path")).toHaveAttribute(
-      "href", "file:///Users/example/Documents/GitHub/djconnect",
-    );
+    const worktreePath = page.locator("#workspaceWorktrees .workspace-worktrees__path");
+    await expect(worktreePath).toHaveAttribute("type", "button");
+    await expect(worktreePath).not.toHaveAttribute("href", /file:/);
     await expect.poll(() => requestedDirectories).toEqual([]);
   });
 
@@ -4414,6 +4420,19 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentModalContent")).toContainText(
       "Heartbeatvrijdag 4 september 2026 om 08:41:05",
     );
+  });
+
+  test("copies a local File Inbox path and confirms it in the dashboard language", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "file_inbox_ingress", kind: "TRANSPORT", state: "FILE_INGRESS_RUNNING", healthy: true,
+      watched_location: "/private/tmp/file-inbox", launchd: {},
+    }));
+    const path = page.locator("#componentModalContent .local-folder-link");
+    await expect(path).toHaveText("/private/tmp/file-inbox");
+    await expect(path).toHaveAttribute("type", "button");
+    await path.click();
+    await expect(page.locator("#copyToast")).toHaveText("Pad gekopieerd naar klembord");
   });
 
   test("puts preflight diagnostic clauses on separate lines", async ({ page }) => {
