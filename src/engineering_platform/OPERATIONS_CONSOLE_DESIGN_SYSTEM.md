@@ -723,12 +723,15 @@ starting writers; it leaves no compatibility copy or symlink behind.
   `↓` glyph. It creates an `.epdata` package (a ZIP container with the EP
   media type) of all durable CENTRAL state; installed runtime files and live
   process state are excluded.
-- Every `.epdata` package contains a manifest with the exact schema version,
-  one SHA-256 digest and size per durable member, and a canonical checksum of
-  that member list. Import validates the manifest, safe member names, member
-  set, sizes, digests and embedded database schema before it stages anything.
-  This detects incomplete or accidentally changed packages; the package is an
-  integrity check, not a signature or a trust boundary.
+- Every `.epdata` package is a fixed outer container containing exactly one
+  inner data archive and its SHA-256 digest. The inner archive contains a
+  manifest with the exact schema version, one SHA-256 digest and size per
+  durable member, and a canonical checksum of that member list. Import first
+  validates the outer container and complete inner-archive digest, then the
+  inner manifest, safe member names, member set, sizes, digests and embedded
+  database schema before it stages anything. This detects incomplete or
+  accidentally changed packages; the package is an integrity check, not a
+  signature or a trust boundary.
 - Import uses the same modal family, a local `.epdata` chooser, an explicit
   warning and a separate affirmative action. Its entry action is the filled
   text action **Importeer platformgegevens** with the `↑` glyph, which is also

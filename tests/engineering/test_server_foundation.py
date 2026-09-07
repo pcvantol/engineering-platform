@@ -721,8 +721,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".zip") as file:
             file.write(backup); file.flush()
             import zipfile
-            with zipfile.ZipFile(file.name) as archive, tempfile.NamedTemporaryFile(suffix=".db") as database:
-                database.write(archive.read(server.SERVER_DATABASE_FILENAME)); database.flush()
+            with zipfile.ZipFile(file.name) as package, tempfile.NamedTemporaryFile(suffix=".db") as database:
+                with zipfile.ZipFile(io.BytesIO(package.read(server.central_data_transfer.PAYLOAD_NAME))) as archive:
+                    database.write(archive.read(server.SERVER_DATABASE_FILENAME)); database.flush()
                 with sqlite3.connect(database.name) as connection:
                     self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
         request = Request(
