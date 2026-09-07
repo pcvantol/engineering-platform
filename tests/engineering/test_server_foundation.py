@@ -46,6 +46,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
 
+    def test_execution_runtime_status_preserves_the_virtual_environment_launcher(self) -> None:
+        launcher = Path(self.temporary.name) / "venv" / "bin" / "python"
+        launcher.parent.mkdir(parents=True)
+        launcher.symlink_to(Path(sys.executable))
+
+        with patch("engineering_platform.server.sys.executable", str(launcher)):
+            status = server._execution_runtime_status()
+
+        self.assertEqual(status["executable"], str(launcher.absolute()))
+
     def test_register_topology_cli_reads_the_versioned_json_declaration(self) -> None:
         declaration_path = Path(self.temporary.name) / "repository.json"
         declaration_path.write_text(json.dumps({

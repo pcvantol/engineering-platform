@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import sqlite3
+import sys
 from http.client import HTTPConnection
 from pathlib import Path
 import tempfile
@@ -221,6 +222,15 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(status["state"], "READY")
         self.assertIn("executable", status)
         self.assertRegex(status["version"], r"^\d+\.\d+\.\d+")
+
+    def test_execution_runtime_status_preserves_the_virtual_environment_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            launcher = Path(temporary) / "venv" / "bin" / "python"
+            launcher.parent.mkdir(parents=True)
+            launcher.symlink_to(Path(sys.executable))
+            with patch("engineering_platform.server_console_services.sys.executable", str(launcher)):
+                status = _execution_runtime_status()
+        self.assertEqual(status["executable"], str(launcher.absolute()))
 
     @patch("engineering_platform.server_console_services._provider_login_status", return_value={"codex": {"state": "AUTH_REQUIRED"}})
     @patch("engineering_platform.server_console_services.managed_codex_runtime.provision")

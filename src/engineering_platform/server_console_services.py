@@ -1683,7 +1683,8 @@ def _provider_login_status(root: Path) -> dict[str, dict[str, str]]:
 
 def _execution_runtime_status() -> dict[str, str]:
     """Project a token-free readiness check for the installed Server Python."""
-    executable = Path(sys.executable).resolve()
+    # Preserve the installed venv launcher rather than its base interpreter.
+    executable = Path(sys.executable).expanduser().absolute()
     ready = executable.is_file() and os.access(executable, os.X_OK)
     return {
         "state": "READY" if ready else "UNAVAILABLE",

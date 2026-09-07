@@ -134,7 +134,10 @@ def _report_content_disposition(report_id: object) -> str:
 
 def _execution_runtime_status() -> dict[str, str]:
     """Project installed Server Python readiness without Dashboard ownership."""
-    executable = Path(sys.executable).resolve()
+    # ``sys.executable`` is the installed venv launcher.  Do not resolve its
+    # symlink to the base interpreter: the Console must report the runtime
+    # that actually owns EP and its validation environment.
+    executable = Path(sys.executable).expanduser().absolute()
     ready = executable.is_file() and os.access(executable, os.X_OK)
     return {
         "state": "READY" if ready else "UNAVAILABLE",
