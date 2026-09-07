@@ -3780,14 +3780,6 @@ function renderPlatformHealth(payload) {
     indicator.setAttribute("aria-hidden", "true");
     name.className = "platform-health__component-name";
     name.textContent = healthComponentLabel(key);
-    if (key === "dashboard_relay") {
-      const linkIcon = document.createElement("span");
-      linkIcon.className = "platform-health__component-link-icon";
-      linkIcon.dataset.testid = "component-details-link-icon";
-      linkIcon.setAttribute("aria-hidden", "true");
-      linkIcon.textContent = "↗";
-      name.append(linkIcon);
-    }
     detail.className = "platform-health__component-detail";
     const transportFacts = [
       component?.last_successful_submission ? t("transport.last_submission") + " " + component.last_successful_submission : "",
