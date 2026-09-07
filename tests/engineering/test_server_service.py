@@ -42,6 +42,13 @@ class ServerServiceTests(unittest.TestCase):
         self.assertTrue((self.home / "Library" / "LaunchAgents" / f"{server_service.LABEL}.plist").is_file())
         self.assertTrue((self.root / "runtime").is_dir())
 
+    def test_installed_interpreter_preserves_virtual_environment_launcher(self) -> None:
+        target = Path(sys.executable)
+        launcher = Path(self.temporary.name) / "venv-python"
+        launcher.symlink_to(target)
+
+        self.assertEqual(server_service._installed_interpreter(launcher), launcher.absolute())
+
     def test_uninitialized_data_root_fails_closed(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "initialized"):
             server_service.install(self.root.parent / "missing", interpreter=Path(__file__).resolve(), home=self.home, runner=self.runner)
