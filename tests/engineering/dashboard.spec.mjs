@@ -4450,6 +4450,26 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#copyToast")).toHaveText("Pad gekopieerd naar klembord");
   });
 
+  test("makes every local component-installation path a copy action", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "ep_server", healthy: true,
+      launchd: { program_arguments: ["/private/tmp/ep-server"], plist_path: "/private/tmp/server.plist" },
+      installation: {
+        runtime_path: "/private/tmp/runtime",
+        central_data_path: "/private/tmp/central",
+        database_path: "/private/tmp/engineering.db",
+        launch_agent_path: "/private/tmp/installed-server.plist",
+        error_log_path: "/private/tmp/server.log",
+      },
+    }));
+    const paths = page.locator("#componentModalContent .local-folder-link");
+    await expect(paths).toHaveCount(7);
+    expect(await paths.evaluateAll((elements) => elements.every((element) => element.getAttribute("type") === "button"))).toBe(true);
+    await paths.filter({ hasText: "/private/tmp/engineering.db" }).click();
+    await expect(page.locator("#copyToast")).toHaveText("Pad gekopieerd naar klembord");
+  });
+
   test("puts preflight diagnostic clauses on separate lines", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.abort());
