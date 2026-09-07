@@ -94,6 +94,7 @@ SERVER_CONFIGURATION_VERSION = 2
 SERVER_STORE_SCHEMA_VERSION = 53
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
+HTTP_JSON_OPENAPI_PATH = "/openapi.json"
 _CENTRAL_LOG_SORT_COLUMNS = {
     "line": "id",
     "timestamp": "created_at",
@@ -111,6 +112,100 @@ _CODEX_RATE_LIMIT_CACHE: tuple[float, bytes] | None = None
 _CODEX_RATE_LIMIT_CACHE_LOCK = Lock()
 _CODEX_IDENTITY_CACHE: tuple[float, dict[str, str]] | None = None
 _CODEX_IDENTITY_CACHE_LOCK = Lock()
+
+
+def _http_json_openapi_document() -> dict[str, object]:
+    """Return the published contract for the canonical HTTP JSON ingress.
+
+    The document is intentionally local and versioned with the Server: it is
+    an interface description, not a separate dashboard-owned API surface.
+    """
+    submission_properties: dict[str, object] = {
+        "repository_id": {"type": "string"},
+        "producer": {
+            "type": "object",
+            "required": ["id", "type"],
+            "properties": {
+                "id": {"type": "string"},
+                "type": {"type": "string"},
+                "version": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        "prompt": {"type": "string"},
+        "idempotency_key": {"type": "string"},
+        "correlation_id": {"type": "string"},
+        "mission_id": {"type": "string"},
+        "engineering_action_id": {"type": "string"},
+        "constraints": {"type": "object", "additionalProperties": True},
+        "transport_receipt_id": {"type": "string"},
+        "transport_received_at": {"type": "string", "format": "date-time"},
+    }
+    return {
+        "openapi": "3.0.3",
+        "info": {
+            "title": "Engineering Platform HTTP JSON API",
+            "version": "1",
+            "description": "Canonical authenticated submission ingress.",
+        },
+        "paths": {
+            "/healthz": {
+                "get": {
+                    "summary": "Read server health and readiness",
+                    "responses": {"200": {"description": "Server health"}},
+                },
+            },
+            "/readyz": {
+                "get": {
+                    "summary": "Read server readiness",
+                    "responses": {"200": {"description": "Server readiness"}},
+                },
+            },
+            "/v1/projects/{project_id}/submissions": {
+                "post": {
+                    "summary": "Submit a canonical Engineering Platform request",
+                    "security": [{"consumerBearer": []}],
+                    "parameters": [
+                        {
+                            "name": "project_id", "in": "path", "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "EP-Submission-Transport", "in": "header", "required": False,
+                            "schema": {"type": "string", "default": "HTTP"},
+                        },
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["repository_id", "producer", "prompt"],
+                                    "properties": submission_properties,
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                    },
+                    "responses": {
+                        "200": {"description": "Submission accepted or idempotently repeated"},
+                        "400": {"description": "Malformed or invalid submission"},
+                        "401": {"description": "Missing or invalid consumer credential"},
+                        "404": {"description": "Unknown project"},
+                        "409": {"description": "Project unavailable or idempotency conflict"},
+                        "413": {"description": "Payload exceeds 128 KiB"},
+                        "415": {"description": "Content type is not application/json"},
+                    },
+                },
+            },
+        },
+        "components": {
+            "securitySchemes": {
+                "consumerBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque"},
+            },
+        },
+    }
 
 
 def _attachment_content_disposition(filename: object) -> str:
@@ -1376,6 +1471,8 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
         "installation": installation,
         **component,
     }
+    if component_id == "http_ingress":
+        detail["swagger_endpoint"] = HTTP_JSON_OPENAPI_PATH
     if observed is not None:
         detail["launchd"] = {
             "label": observed.label,
@@ -3087,6 +3184,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         request = urlsplit(self.path)
+        if request.path in {HTTP_JSON_OPENAPI_PATH, "/swagger.json"}:
+            self._send(200, _http_json_openapi_document())
+            return
         if request.path == "/diagnostics/topology":
             try:
                 self._send(200, operations_projection(self.server.data_root), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
