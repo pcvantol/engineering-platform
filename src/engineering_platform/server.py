@@ -210,6 +210,23 @@ def _http_json_openapi_document() -> dict[str, object]:
                     },
                 },
             },
+            "/v1/projects/{project_id}/submissions/{submission_id}": {
+                "get": {
+                    "summary": "Read canonical submission, run, result and evidence references",
+                    "security": [{"consumerBearer": []}],
+                    "parameters": [
+                        {"name": "project_id", "in": "path", "required": True,
+                         "schema": {"type": "string"}},
+                        {"name": "submission_id", "in": "path", "required": True,
+                         "schema": {"type": "string"}},
+                    ],
+                    "responses": {
+                        "200": {"description": "Canonical project-scoped producer readback v1.1"},
+                        "401": {"description": "Missing or invalid consumer credential"},
+                        "404": {"description": "Submission absent from the authenticated project"},
+                    },
+                },
+            },
         },
         "components": {
             "securitySchemes": {
@@ -3260,6 +3277,46 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(200, operations_projection(self.server.data_root), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except ServerConfigurationError:
                 self._send(503, {"error": "operations projection unavailable"})
+            return
+        readback = re.fullmatch(r"/v1/projects/([^/]+)/submissions/([^/]+)", request.path)
+        if readback:
+            project_id, submission_id = readback.groups()
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    if _authenticated_consumer(connection, token, project_id) is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    projection = submission_service.producer_readback(
+                        connection, project_id=project_id, submission_id=submission_id,
+                    )
+                if projection is None:
+                    self._send(404, {"error": "SUBMISSION_NOT_FOUND"})
+                else:
+                    self._send(200, projection, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+            return
+        artifact = re.fullmatch(r"/v1/projects/([^/]+)/artifacts/(terminal-evidence:[^/]+)", request.path)
+        if artifact:
+            project_id, artifact_id = artifact.groups()
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    if _authenticated_consumer(connection, token, project_id) is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    payload = submission_service.producer_evidence_artifact(
+                        connection, project_id=project_id, artifact_id=artifact_id,
+                    )
+                if payload is None:
+                    self._send(404, {"error": "EVIDENCE_ARTIFACT_NOT_FOUND"})
+                else:
+                    self._send(200, json.loads(payload), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except (sqlite3.Error, ValueError, json.JSONDecodeError):
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
         if request.path == "/" or request.path.startswith("/api/") or request.path.startswith("/assets/") or request.path in {"/health", "/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"}:
             self._delegate_dashboard("do_GET")
