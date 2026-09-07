@@ -8239,6 +8239,13 @@ test.describe("Engineering Status browser smoke", () => {
     expect(JSON.parse(request.postData() || "{}")).toEqual({ directory: "/Volumes/Archive" });
   });
 
+  test("gives the platform-data import filename a wide modal", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    await expect(page.locator("#centralDataImportModal .dashboard-modal-shell__panel")).toHaveCSS("max-width", "1100px");
+  });
+
   test("keeps platform-data location links free of selected borders", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
