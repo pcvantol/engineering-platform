@@ -1,16 +1,22 @@
-"""Crash-safe, installation-owned relocation of the database and File Inbox."""
+"""Crash-safe relocation of the one canonical platform-data directory.
+
+The data root is one unit of persistence. Splitting the database and File
+Inbox across arbitrary folders made a restore impossible to reason about, so
+the legacy per-resource relocation requests are deliberately retired.
+"""
 from __future__ import annotations
 
-import os
 import json
+import os
 from pathlib import Path
-import sqlite3
-import tempfile
 from uuid import uuid4
 
 
 class RelocationError(ValueError):
     """A requested local relocation cannot be safely completed."""
+
+
+_PENDING = "runtime/pending-platform-data-relocation.json"
 
 
 def _directory(value: object) -> Path:
@@ -20,10 +26,6 @@ def _directory(value: object) -> Path:
     if not path.is_absolute() or not path.is_dir() or not os.access(path, os.W_OK | os.X_OK):
         raise RelocationError("LOCATION_NOT_WRITABLE")
     return path.resolve()
-
-
-_PENDING = "runtime/pending-relocation.json"
-_INBOX_SYSTEM_ENTRIES = {"file-inbox-heartbeat.json", "incoming", "accepted", "processing", "quarantine"}
 
 
 def _write_json_atomically(path: Path, value: dict[str, str]) -> None:
@@ -41,118 +43,74 @@ def _pending_path(data_root: Path) -> Path:
     return data_root.resolve() / _PENDING
 
 
-def _inbox_has_items(source: Path) -> bool:
-    if any(item.name not in _INBOX_SYSTEM_ENTRIES for item in source.iterdir()):
-        return True
-    return any(any((source / name).iterdir()) for name in ("incoming", "accepted", "processing", "quarantine") if (source / name).is_dir())
+def _destination(root: Path, directory: object) -> Path:
+    parent = _directory(directory)
+    target = parent / root.name
+    if target == root or root in target.parents or target in root.parents:
+        raise RelocationError("PLATFORM_DATA_DESTINATION_INVALID")
+    return target
 
 
 def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
-    """Validate and persist a move request; it runs on the next clean startup."""
-    destination_directory = _directory(directory)
+    """Persist one whole-platform move for the next clean Server startup."""
+    if kind != "PLATFORM_DATA":
+        raise RelocationError("RELOCATION_KIND_RETIRED")
     root = data_root.resolve()
-    if kind == "DATABASE":
-        source, destination = root / "engineering.db", destination_directory / "engineering.db"
-        if not source.is_file():
-            raise RelocationError("DATABASE_UNAVAILABLE")
-        if destination.exists() and destination.resolve() != source.resolve():
-            raise RelocationError("DATABASE_DESTINATION_EXISTS")
-    elif kind == "FILE_INBOX":
-        source, destination = root / "file-inbox", destination_directory / "file-inbox"
-        if not source.is_dir():
-            raise RelocationError("INBOX_UNAVAILABLE")
-        if _inbox_has_items(source):
-            raise RelocationError("INBOX_NOT_EMPTY")
-        if destination.exists() and any(destination.iterdir()):
-            raise RelocationError("INBOX_DESTINATION_NOT_EMPTY")
-    else:
-        raise RelocationError("RELOCATION_KIND_UNKNOWN")
+    if not (root / "engineering.db").is_file():
+        raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
+    destination = _destination(root, directory)
+    if destination.exists() and destination.resolve() != root:
+        raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     pending = _pending_path(root)
     if pending.exists():
         raise RelocationError("RELOCATION_ALREADY_PENDING")
-    _write_json_atomically(pending, {"kind": kind, "directory": str(destination_directory)})
-    return {"previous": str(source.resolve()), "value": str(destination.resolve())}
+    _write_json_atomically(pending, {"kind": kind, "directory": str(_directory(directory))})
+    return {"previous": str(root), "value": str(destination)}
 
 
-def _replace_with_link(source: Path, destination: Path) -> None:
-    candidate = source.with_name(f".{source.name}.relocating-{uuid4().hex}")
-    candidate.symlink_to(destination, target_is_directory=destination.is_dir())
-    os.replace(candidate, source)
+def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]:
+    """Move the entire data root, retaining its stable launchd entry path.
 
-
-def _replace_directory_with_link(source: Path, destination: Path) -> None:
-    """macOS cannot replace a directory with a symlink in one rename."""
-    retired = source.with_name(f".{source.name}.relocated-{uuid4().hex}")
-    os.replace(source, retired)
-    try:
-        _replace_with_link(source, destination)
-    except Exception:
-        os.replace(retired, source)
-        raise
-
-
-def relocate_database(data_root: Path, directory: object) -> dict[str, str]:
-    """Copy via SQLite backup, verify it, then atomically repoint the live path."""
-    destination_directory = _directory(directory)
-    source = data_root.resolve() / "engineering.db"
-    previous = str(source.resolve())
-    destination = destination_directory / "engineering.db"
-    if not source.is_file():
-        raise RelocationError("DATABASE_UNAVAILABLE")
-    if destination.exists() and destination.resolve() == source.resolve():
-        return {"previous": previous, "value": str(destination.resolve())}
+    launchd continues to start the stable original path. That path becomes a
+    symlink only after the complete directory rename succeeds, so the DB,
+    inbox, artifacts and configuration never end up on different volumes.
+    """
+    original = Path(data_root).expanduser()
+    root = original.resolve()
+    destination = _destination(root, directory)
+    if not root.is_dir() or not (root / "engineering.db").is_file():
+        raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     if destination.exists():
-        raise RelocationError("DATABASE_DESTINATION_EXISTS")
-    with tempfile.NamedTemporaryFile(prefix=".engineering-platform-", suffix=".db", dir=destination_directory, delete=False) as temporary:
-        candidate = Path(temporary.name)
+        if original.is_symlink() and original.resolve() == destination.resolve():
+            return {"previous": str(root), "value": str(destination.resolve())}
+        raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as old, sqlite3.connect(candidate) as copy:
-            old.backup(copy)
-        with sqlite3.connect(f"file:{candidate}?mode=ro", uri=True) as verify:
-            if verify.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                raise RelocationError("DATABASE_INTEGRITY_FAILED")
-        os.replace(candidate, destination)
-        _replace_with_link(source, destination)
+        os.replace(root, destination)
+        # A later relocation starts through the stable, already-symlinked
+        # launch path.  Its old link is now dangling and must be replaced.
+        if original.is_symlink():
+            original.unlink()
+        original.symlink_to(destination, target_is_directory=True)
     except Exception:
-        candidate.unlink(missing_ok=True)
+        if destination.exists() and not original.exists():
+            os.replace(destination, original)
         raise
-    return {"previous": previous, "value": str(destination.resolve())}
-
-
-def relocate_inbox(data_root: Path, directory: object) -> dict[str, str]:
-    """Create the destination and atomically repoint an empty File Inbox."""
-    destination_directory = _directory(directory)
-    source = data_root.resolve() / "file-inbox"
-    previous = str(source.resolve())
-    destination = destination_directory / "file-inbox"
-    if not source.is_dir():
-        raise RelocationError("INBOX_UNAVAILABLE")
-    if _inbox_has_items(source):
-        raise RelocationError("INBOX_NOT_EMPTY")
-    if destination.exists() and any(destination.iterdir()):
-        raise RelocationError("INBOX_DESTINATION_NOT_EMPTY")
-    destination.mkdir(mode=0o700, exist_ok=True)
-    for name in ("incoming", "accepted", "processing", "quarantine"):
-        (destination / name).mkdir(mode=0o700, exist_ok=True)
-    _replace_directory_with_link(source, destination)
-    return {"previous": previous, "value": str(destination.resolve())}
+    return {"previous": str(root), "value": str(destination.resolve())}
 
 
 def apply_pending(data_root: Path) -> dict[str, str] | None:
-    """Perform the durable request before any writer services are started."""
+    """Perform a durable whole-directory request before writers are started."""
     pending = _pending_path(data_root)
     if not pending.exists():
         return None
     try:
         request_data = json.loads(pending.read_text(encoding="utf-8"))
         kind, directory = request_data["kind"], request_data["directory"]
-        if kind == "DATABASE":
-            result = relocate_database(data_root, directory)
-        elif kind == "FILE_INBOX":
-            result = relocate_inbox(data_root, directory)
-        else:
-            raise RelocationError("RELOCATION_KIND_UNKNOWN")
+        if kind != "PLATFORM_DATA":
+            raise RelocationError("RELOCATION_KIND_RETIRED")
+        result = relocate_platform_data(data_root, directory)
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise RelocationError("RELOCATION_REQUEST_INVALID") from error
-    pending.unlink()
-    return {**result, "kind": kind}
+    _pending_path(data_root).unlink(missing_ok=True)
+    return {**result, "kind": "PLATFORM_DATA"}

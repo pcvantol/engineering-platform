@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "engineering-platform"
-version = "2.0.0"
+version = "2.1.6"
 description = "Local-first Engineering Platform execution operations runtime"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,10 +21,12 @@ engineering-project-agent = "engineering_platform.project_agent:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-include-package-data = true
+# The production wheel includes only the explicit runtime asset allowlist below;
+# repository documentation and development artifacts never become package data.
+include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-engineering_platform = ["*.json", "*.swift", "assets/**/*", "templates/*", "schemas/*.json"]
+engineering_platform = ["*.json", "*.swift", "assets/*.css", "assets/*.js", "assets/*.mjs", "assets/operations-console/*.png", "assets/operations-console/*.webmanifest", "templates/*", "schemas/*.json"]

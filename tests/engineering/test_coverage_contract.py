@@ -18,6 +18,18 @@ class EngineeringPlatformCoverageContractTests(unittest.TestCase):
         self.assertIn('minimum 80.20%', workflow)
         self.assertIn("covered is None or covered < minimum", workflow)
         self.assertIn("coverage run --branch --source=engineering_platform", workflow)
+        self.assertIn("len(production_modules) != 109", workflow)
+
+    def test_coverage_documentation_matches_the_per_module_gate(self) -> None:
+        supervisor = Path("docs/engineering/LOCAL_DASHBOARD_SUPERVISOR.md").read_text(
+            encoding="utf-8"
+        )
+        requirements = Path(
+            "docs/engineering/ENGINEERING_PLATFORM_NON_FUNCTIONAL_REQUIREMENTS.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("Every shipped Python\nmodule must reach at least 80.20% branch coverage", supervisor)
+        self.assertIn("Every shipped Python module maintains at least **80.20% branch coverage**", requirements)
 
     def test_browser_dashboard_validation_uses_four_parallel_shards(self) -> None:
         workflow = Path(".github/workflows/engineering-platform-validation.yml").read_text(

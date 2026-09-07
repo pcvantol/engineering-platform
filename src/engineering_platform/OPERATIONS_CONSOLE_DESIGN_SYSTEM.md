@@ -1,8 +1,9 @@
 # Engineering Operations Console — Design System
 
 **Status:** Canonical code-derived baseline  
-**Scope:** Private Engineering Operations Console (`tools/engineering/dashboard.py`, `assets/dashboard.css` and `assets/dashboard.js`)  
-**Last reconciled:** 2026-08-16
+**Scope:** Installed Engineering Platform Server Console (`server.py`,
+`server_console_services.py`, `assets/dashboard.css` and `assets/dashboard.js`)
+**Last reconciled:** 2026-09-07
 
 This document makes the current console design explicit. It is the design and
 review baseline for every future console change: a new control, section,
@@ -30,8 +31,9 @@ Core principles:
 4. **One visual language across themes and devices.** Light mode changes
    surfaces, never meaning. Phone layouts retain labels and touch targets
    rather than replacing them with unexplained glyphs.
-5. **Evidence is readable and copyable.** Tables, reports and logs preserve
-   semantic headers, meaningful empty states and selective copy/download.
+5. **Evidence is readable and copyable.** Tables, reports, logs and local
+   filesystem locations preserve semantic headers, meaningful empty states and
+   selective copy/download.
 
 ## 2. Design tokens
 
@@ -89,7 +91,6 @@ decorative; the localized title remains the accessible name.
 | Execution history | rose `#f29ab2` | `#36232d` |
 | Capacity / resource | green `#54d6a0` | `#20332f` |
 | Operational overview / evidence | cyan `#65c5d9` and blue `#8dc7ff` | `#202b34` / `#202a36` |
-| Workspace | yellow `#f3d36a` | `#302d20` |
 | Logs / diagnostics | orange `#f0b66a` | `#302a24` |
 | AI conversation | purple `#d0a4ff` | `#292336` |
 | Platform health | lime `#a3e635` | `#29331d` |
@@ -371,6 +372,26 @@ All round controls have the shared elevation shadow. Glyphs and button text
 are non-selectable. A button uses a semantic class (`--download`, `--copy`,
 `--destructive`, etc.) rather than a one-off colour override.
 
+### Local files and folders
+
+An absolute local file or folder is evidence, never a navigation destination.
+Use the canonical `local-folder-link` text button: it is underlined, wraps
+safely, copies its displayed absolute path to the clipboard and confirms that
+action with the existing bottom-of-page copy toast. It must not open Finder,
+use `file:` URLs, or invoke a local-path server route.
+
+Server-rendered values use `data-local-path`; dynamic values use
+`window.__engineeringPlatformLocalFilesystemLink(value)`. Both paths resolve
+through the same `configureLocalFilesystemLink` implementation, so keyboard
+activation, focus treatment, clipboard behaviour and localized feedback stay
+identical. A non-absolute or unavailable value is visibly disabled and has no
+copy action.
+
+In a relocation modal, both **Huidige map** and a selected **Nieuwe map** use
+that control. The new destination remains hidden until the folder chooser
+returns a value; it is never shown as a raw text field. This rule applies
+equally to database and File Inbox relocation.
+
 ### Glyphs
 
 Glyphs are a shared control language, not ordinary body text. Every
@@ -434,6 +455,9 @@ Use the shared modal shell and contextual panel. Modal rules are:
    purple details. These secondary colours are exclusively for captions,
    dividers and subordinate surfaces: factual field values always use the
    standard modal document ink (dark in light mode, light in dark mode).
+   Every modal title has a decorative purpose glyph from the shared glyph
+   family. Relocation modals use the relocation glyph beside the title; they
+   do not substitute an information glyph or a standalone header icon.
 2. The document/content surface exactly matches the modal content surface;
    no contrasting “padding frame” may appear around an otherwise white or dark
    document.
@@ -491,6 +515,14 @@ For every interaction:
 - motion has a reduced-motion fallback;
 - contrast and state do not rely only on colour;
 - selectable text is limited to evidence/content, not controls or glyphs.
+
+### Project scope and checkout evidence
+
+Selecting a project establishes logical CENTRAL scope; it does not establish a
+checkout, branch or worktree. The selected-project page therefore contains no
+Workspace card or branch/worktree controls. A checkout path may appear only in
+the active run's execution context, where it is run-bound evidence and uses
+the canonical local-path copy control.
 
 ## 8. Localization and content rules
 
@@ -625,3 +657,19 @@ does not override an obvious visual regression.
 4. Review against sections 7–10.
 5. If a stable new pattern is introduced, amend this document in the same
    change. Otherwise, remove the one-off pattern before merge.
+
+## 12. Platform-data transfer
+
+The Configuration surface presents CENTRAL persistence as one **platform data**
+unit. It must not offer separate database or File Inbox relocation: both are
+durable parts of the same state and a partial move is unsafe.
+
+- The displayed location is a `local-folder-link`, including its canonical
+  copy-to-clipboard feedback.
+- Export is a normal download action for a ZIP snapshot of all durable
+  CENTRAL state. Installed runtime files and live process state are excluded.
+- Import uses the same modal family, a local ZIP chooser, an explicit warning
+  and a separate affirmative action. It always says that current state will be
+  replaced and the Server will restart.
+- Relocation chooses a parent directory and moves the complete data root in
+  one restart-bound operation. The existing stable launch path remains valid.

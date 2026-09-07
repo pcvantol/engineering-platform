@@ -65,7 +65,7 @@ from .storage import (
 from .provider_usage import provider_usage_summary
 from .execution_activity import terminal_activity_summary
 from .execution_lifecycle import projection as lifecycle_projection
-from .platform_version import EngineeringPlatformManifest
+from .platform_version import CURRENT_PLATFORM_VERSION, EngineeringPlatformManifest
 from .resources import package_path
 from .platform_components import PLATFORM_COMPONENT_BY_ID, PLATFORM_COMPONENTS
 from . import dashboard_state
@@ -74,7 +74,7 @@ from . import server_relay
 from .console_presentation import APP_ICON_DARK, APP_ICON_LIGHT, ASSET_DIRECTORY, WEB_MANIFEST
 
 RELAY_LABEL = PLATFORM_COMPONENT_BY_ID["dashboard_relay"].lifecycle_label or ""
-DASHBOARD_VERSION = "2.0.0"
+DASHBOARD_VERSION = CURRENT_PLATFORM_VERSION
 DASHBOARD_STARTED_AT = time.monotonic()
 DASHBOARD_SNAPSHOT_SOURCE = str(uuid.uuid4())
 LOOPBACK_ADDRESS = "127.0.0.1"
@@ -1889,7 +1889,7 @@ def render_console_document(
     workspace_open_pull_requests: list[dict[str, object]] | None = None,
     workspace_main_action_hidden: bool = True,
     workspace_branch_cleanup_hidden: bool = True,
-    platform_version: str = "2.0.0",
+    platform_version: str = CURRENT_PLATFORM_VERSION,
     configuration_inbox: str = "",
 ) -> bytes:
     """Render the private dashboard with a server-pushed status stream."""

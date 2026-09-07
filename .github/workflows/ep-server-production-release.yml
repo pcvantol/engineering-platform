@@ -1,0 +1,175 @@
+name: EP Server production release
+
+on:
+  # A release is intentionally created, never inferred from an ordinary push.
+  # The context job fail-closes unless the new branch is exactly release-X.Y.Z.
+  create:
+
+permissions:
+  contents: read
+
+jobs:
+  release-context:
+    name: Prepare canonical release version
+    if: github.event.ref_type == 'branch' && startsWith(github.event.ref, 'release-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      candidate_sha: ${{ steps.release.outputs.candidate_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ github.event.ref }}
+          fetch-depth: 0
+      - id: release
+        name: Validate release branch and write canonical version
+        env:
+          RELEASE_BRANCH: ${{ github.event.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_BRANCH" =~ ^release-([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            VERSION="${RELEASE_BRANCH#release-}"
+          else
+            echo "Only release-X.Y.Z branches may run the production release workflow." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor origin/main HEAD || {
+            echo "A production release branch must be created from main." >&2
+            exit 1
+          }
+          test -z "$(git status --porcelain)" || {
+            echo "The release checkout is not clean before canonical versioning." >&2
+            exit 1
+          }
+          python3 tools/qualification/advance_platform_build.py --source-root . --set-version "$VERSION"
+          changed="$(git diff --name-only)"
+          if [[ -n "$changed" ]]; then
+            while IFS= read -r path; do
+              case "$path" in
+                pyproject.toml|package.json|package-lock.json|src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json|src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json|src/engineering_platform/templates/workspace-config.json|src/engineering_platform/platform_version.py) ;;
+                *) echo "Version rewrite touched an unexpected path: $path" >&2; exit 1 ;;
+              esac
+            done <<< "$changed"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add $changed
+            git commit -m "release: align canonical EP version $VERSION"
+            git push origin "HEAD:$RELEASE_BRANCH"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  qualify-production-wheel:
+    name: Qualify clean production wheel
+    needs: release-context
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.candidate_sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.12'}
+      - name: Verify clean release checkout
+        run: |
+          test -z "$(git status --porcelain)"
+          test "$(python3 - <<'PY'
+          import tomllib
+          print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])
+          PY
+          )" = "${{ needs.release-context.outputs.version }}"
+      - name: Install release qualification tools
+        run: python3 -m pip install build coverage pip-audit 'bandit[toml]' cyclonedx-bom twine
+      - name: Build exact production distributions
+        env:
+          ENGINEERING_PLATFORM_RELEASE_MODE: production
+        run: |
+          python3 tools/qualification/build_platform_wheel.py --source-root . --version "${{ needs.release-context.outputs.version }}" --sdist
+          test -z "$(git diff --name-only)"
+          python3 -m twine check dist/*
+          sha256sum dist/* > dist/SHA256SUMS
+          python3 tools/qualification/production_wheel_qualification.py --source-root . --wheel "dist/engineering_platform-${{ needs.release-context.outputs.version }}-py3-none-any.whl" --version "${{ needs.release-context.outputs.version }}" --evidence dist/production-wheel-qualification.json
+      - name: Run required source, API and installed-ingress qualification
+        run: |
+          python3 -m pip install "dist/engineering_platform-${{ needs.release-context.outputs.version }}-py3-none-any.whl"
+          python3 -m compileall -q src/engineering_platform
+          PYTHONPATH=src python3 tools/qualification/console_route_ownership_guard.py --source-root src
+          python3 tools/qualification/platform_version_consistency.py --source-root .
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
+          PYTHONPATH=src python3 tools/qualification/http_json_postman_contract.py --source-root .
+      - name: Enforce production coverage and security gates
+        run: |
+          coverage run --branch --source=engineering_platform -m unittest discover -s tests/engineering
+          coverage json -o dist/engineering-platform-coverage.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('dist/engineering-platform-coverage.json').read_text())
+          if report['totals']['percent_covered'] < 80.00:
+              raise SystemExit(f"production coverage below 80.00%: {report['totals']['percent_covered']:.2f}%")
+          print(f"EP_PRODUCTION_COVERAGE=PASS percent={report['totals']['percent_covered']:.2f}")
+          PY
+          pip-audit
+          bandit -r src/engineering_platform --severity-level high
+      - name: Prove a fresh installed runtime contains the canonical release
+        env:
+          VERSION: ${{ needs.release-context.outputs.version }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ep-production"
+          "$RUNNER_TEMP/ep-production/bin/pip" install --no-deps "dist/engineering_platform-$VERSION-py3-none-any.whl"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/ep-production/bin/python" -I -c 'from importlib.metadata import version; from engineering_platform.platform_version import CURRENT_PLATFORM_VERSION; import engineering_platform; import pathlib; assert version("engineering-platform") == CURRENT_PLATFORM_VERSION == __import__("os").environ["VERSION"]; assert "engineering-platform-relocation" not in str(pathlib.Path(engineering_platform.__file__).resolve())'
+          "$RUNNER_TEMP/ep-production/bin/engineering-platform-server" --help >/dev/null
+      - name: Generate SBOM for the exact release runtime
+        run: cyclonedx-py environment --output-file dist/engineering-platform.cdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engineering-platform-production-${{ needs.release-context.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+  browser-dashboard:
+    name: Qualify production dashboard
+    needs: release-context
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.candidate_sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.12'}
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v22
+        with: {node-version: '22'}
+      - run: python3 -m pip install . && npm ci && npx playwright install --with-deps chromium
+      - run: npm run test:engineering-dashboard -- --reporter=dot
+      - run: npm run test:ui-localization && node --test tests/engineering/ui_localization_contract.test.mjs
+
+  publish-pypi:
+    name: Publish qualified EP Server release to PyPI
+    needs: [release-context, qualify-production-wheel, browser-dashboard]
+    if: needs.qualify-production-wheel.result == 'success' && needs.browser-dashboard.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: engineering-platform-production-${{ needs.release-context.outputs.version }}
+          path: dist
+      - name: Select only Python distributions for publication
+        run: |
+          mkdir pypi-dist
+          cp dist/*.whl dist/*.tar.gz pypi-dist/
+          test "$(find pypi-dist -type f | wc -l)" = 2
+      - name: Publish only the qualified immutable distributions
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1, verified 2026-07-16
+        with:
+          packages-dir: pypi-dist
+          password: ${{ secrets.PYPI_API_TOKEN }}

@@ -224,6 +224,18 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertIsNotNone(section)
             self.assertEqual(section.group(1).count(b'<table class="log-table"'), 1)  # type: ignore[union-attr]
 
+    def test_selected_project_console_removes_the_non_authoritative_workspace_card(self) -> None:
+        """Project selection does not imply a checkout, branch, or worktree."""
+        server.initialize(self.root)
+        document = server._selected_project_console_document("project-a", [], self.root)
+
+        self.assertNotIn(b'id="workspaceCard"', document)
+        self.assertNotIn(b'id="workspaceBranchMain"', document)
+        self.assertNotIn(b'id="workspaceBranchMainResultModal"', document)
+        # Active execution evidence is a separate, retained run-bound surface.
+        self.assertIn(b'id="executionContext"', document)
+        self.assertIn(b'id="checkoutPath"', document)
+
     def test_server_surfaces_missing_managed_runtime_without_degrading_central(self) -> None:
         identity = server.initialize(self.root)
         report = server.status(self.root)
@@ -249,6 +261,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         report = server.health(self.root)
         self.assertTrue(report["healthy"])
         self.assertTrue(report["ready"])
+        with urlopen(f"http://127.0.0.1:{port}/health") as response:
+            platform_health = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(platform_health["health"], "ok")
+        self.assertEqual(
+            set(platform_health["components"]),
+            {component.id for component in server.PLATFORM_COMPONENTS},
+        )
         with urlopen(f"http://127.0.0.1:{port}/readyz") as response:
             readiness = json.loads(response.read().decode("utf-8"))
         self.assertEqual(readiness["lifecycle_worker"]["state"], "RUNNING")
@@ -691,18 +710,21 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(component["quarantine_count"], 1)
         self.assertEqual(component["reason_code"], "FILE_INBOX_DIAGNOSTIC")
 
-    def test_central_database_controls_read_and_back_up_only_the_server_store(self) -> None:
+    def test_central_data_export_contains_the_server_store_and_durable_state(self) -> None:
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
         server.initialize(self.root, bind_port=port)
         server.start(self.root)
-        with urlopen(f"http://127.0.0.1:{port}/api/central-database/download") as response:
+        with urlopen(f"http://127.0.0.1:{port}/api/central-data/export") as response:
             backup = response.read()
-            self.assertEqual(response.headers.get_content_type(), "application/vnd.sqlite3")
-        with tempfile.NamedTemporaryFile(suffix=".db") as file:
+            self.assertEqual(response.headers.get_content_type(), "application/zip")
+        with tempfile.NamedTemporaryFile(suffix=".zip") as file:
             file.write(backup); file.flush()
-            with sqlite3.connect(file.name) as connection:
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
+            import zipfile
+            with zipfile.ZipFile(file.name) as archive, tempfile.NamedTemporaryFile(suffix=".db") as database:
+                database.write(archive.read("engineering.db")); database.flush()
+                with sqlite3.connect(database.name) as connection:
+                    self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
         request = Request(
             f"http://127.0.0.1:{port}/api/central-database/configuration",
             data=b'{"interval_seconds":86400}', method="POST", headers={"Content-Type": "application/json"},
@@ -831,7 +853,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('configuration-central-database__location-link', panel)
         self.assertIn('data-local-path=', panel)
         self.assertIn('id="centralDatabaseRelocate"', panel)
-        self.assertIn(str(self.root / server.SERVER_DATABASE_FILENAME), panel)
+        self.assertIn('data-modal-glyph="relocate"', panel)
+        self.assertIn('data-i18n="configuration.current_folder"', panel)
+        self.assertIn('data-i18n="configuration.new_folder"', panel)
+        self.assertIn(str(self.root.resolve()), panel)
         self.assertNotIn('{escape(str(details["path"]))}', panel)
         self.assertIn('data-i18n="configuration.database_integrity.PASS"', panel)
         self.assertNotIn('configuration.ep_database_open_folder', panel)
@@ -839,6 +864,23 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn("maintenance.dataset.savedValue", script)
         self.assertIn("maintenance.value=previous", script)
         self.assertIn("Number(result.interval_seconds)!==requested", script)
+        self.assertIn("window.__engineeringPlatformLocalFilesystemLink", script)
+        self.assertIn("destinationValue.replaceChildren", script)
+
+    def test_relocation_destination_paths_use_the_canonical_copy_control(self) -> None:
+        self.assertIn("window.__engineeringPlatformLocalFilesystemLink", server._central_database_script())
+        self.assertIn("window.__engineeringPlatformLocalFilesystemLink", server._file_inbox_relocation_script())
+        self.assertFalse(hasattr(server, "_retire_legacy_inbox_configuration"))
+
+    def test_design_system_documents_the_canonical_local_path_contract(self) -> None:
+        design_system = (
+            Path(__file__).parents[2]
+            / "src" / "engineering_platform" / "OPERATIONS_CONSOLE_DESIGN_SYSTEM.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("`local-folder-link`", design_system)
+        self.assertIn("`window.__engineeringPlatformLocalFilesystemLink(value)`", design_system)
+        self.assertIn("must not open Finder", design_system)
+        self.assertIn("File Inbox relocation", design_system)
 
     def test_runtime_directory_route_is_retired_in_the_central_console(self) -> None:
         identity = server.initialize(self.root)
@@ -978,7 +1020,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 self.assertEqual(response.headers.get_content_type(), "text/event-stream")
                 self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
                 event = "".join(response.readline().decode("utf-8") for _ in range(4))
-                self.assertIn('"platform_version":"2.0.0"', event)
+        self.assertIn(f'"platform_version":"{server._console_platform_version()}"', event)
         # Browser module and stylesheet requests precede the document's
         # project-aware fetch wrapper, so neutral package assets must remain
         # available without a scope header.
@@ -1019,10 +1061,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             no_project.index('id="configurationServerSettings"'),
             no_project.index('configurationOpenPrInterval'),
         )
-        self.assertIn('id="fileInboxHeading"', no_project)
-        self.assertIn('id="fileInboxRelocate"', no_project)
         self.assertIn('id="centralDatabaseHeading"', no_project)
-        self.assertIn('/api/central-database/download', no_project)
+        self.assertIn('/api/central-data/export', no_project)
+        self.assertIn('id="centralDataImport"', no_project)
         self.assertNotIn('workspace-database-section', no_project)
         for hidden_project_section in ("#queueItems", "#promptHistory", "#currentRun", "#technicalDetails", "#workspaceCard"):
             self.assertIn(f'body[data-project-id="none"] {hidden_project_section}', no_project)

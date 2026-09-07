@@ -5,7 +5,9 @@ from pathlib import Path
 import json
 import sqlite3
 import tempfile
+import tomllib
 import unittest
+import re
 
 from engineering_platform.platform_api import (
     PlatformConfiguration,
@@ -16,7 +18,13 @@ from engineering_platform.platform_api import (
     provider_registry,
 )
 from engineering_platform.historical_dashboard_configuration import update_inbox_root
-from engineering_platform.platform_version import EngineeringPlatformManifest
+from engineering_platform.platform_version import (
+    CURRENT_PLATFORM_VERSION,
+    EngineeringPlatformManifest,
+    RunnerCompatibility,
+)
+from engineering_platform import server
+from engineering_platform.server_console_services import DASHBOARD_VERSION
 from engineering_platform.resources import PackageResourceError, package_path, package_text
 from unittest.mock import patch
 from engineering_platform.platform_bootstrap import (
@@ -41,13 +49,115 @@ from engineering_platform.storage import open_storage
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _version_projection_files() -> tuple[str, ...]:
+    import importlib.util
+    script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+    spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.VERSION_PROJECTION_PATHS
+
+
 class PlatformProductizationTest(unittest.TestCase):
+    def test_release_version_is_consistent_across_every_canonical_component(self) -> None:
+        """A release cannot publish a mixed Server, Console, Runner, or package version."""
+        manifest = json.loads((ROOT / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json").read_text(encoding="utf-8"))
+        expected = manifest["platform_version"]
+        configuration = json.loads((ROOT / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"))
+        template = json.loads((ROOT / "src" / "engineering_platform" / "templates" / "workspace-config.json").read_text(encoding="utf-8"))
+        package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        self.assertEqual(CURRENT_PLATFORM_VERSION, expected)
+        self.assertEqual(package["project"]["version"], expected)
+        self.assertEqual(configuration["platform"]["version"], expected)
+        self.assertEqual(template["platform"]["version"], expected)
+        self.assertEqual(
+            {manifest[field] for field in ("platform_version", "runner_version", "dashboard_version", "watcher_version")},
+            {expected},
+        )
+        self.assertEqual(EngineeringPlatformManifest.load(ROOT / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json").platform_version, expected)
+        self.assertEqual(RunnerCompatibility().platform_version, expected)
+        self.assertEqual(RunnerCompatibility().runner_version, expected)
+        self.assertEqual(DASHBOARD_VERSION, expected)
+        self.assertEqual(server._console_platform_version(), expected)
+        self.assertRegex(expected, r"^\d+\.\d+\.\d+$")
+
+    def test_ci_runs_the_installed_version_consistency_smoke(self) -> None:
+        smoke = ROOT / "tools" / "qualification" / "platform_version_consistency.py"
+        workflow = (ROOT / ".github" / "workflows" / "engineering-platform-validation.yml").read_text(encoding="utf-8")
+
+        self.assertTrue(smoke.is_file())
+        self.assertIn('platform_version_consistency.py --source-root .', workflow)
+        self.assertIn("EP_VERSION_COMPONENT_DRIFT", smoke.read_text(encoding="utf-8"))
+
+    def test_production_release_is_branch_versioned_and_has_hard_publish_gates(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ep-server-production-release.yml").read_text(encoding="utf-8")
+        qualifier = ROOT / "tools" / "qualification" / "production_wheel_qualification.py"
+
+        self.assertIn("create:", workflow)
+        self.assertIn("^release-([0-9]+)\\.([0-9]+)\\.([0-9]+)$", workflow)
+        self.assertIn("--set-version \"$VERSION\"", workflow)
+        self.assertIn("Qualify clean production wheel", workflow)
+        self.assertIn("pip-audit", workflow)
+        self.assertIn("bandit", workflow)
+        self.assertIn("pypa/gh-action-pypi-publish", workflow)
+        self.assertIn("secrets.PYPI_API_TOKEN", workflow)
+        self.assertTrue(qualifier.is_file())
+
+    def test_packaging_allowlists_runtime_assets_instead_of_repository_files(self) -> None:
+        package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        package_data = package["tool"]["setuptools"]["package-data"]["engineering_platform"]
+
+        self.assertFalse(package["tool"]["setuptools"]["include-package-data"])
+        self.assertIn("assets/*.css", package_data)
+        self.assertNotIn("assets/**/*", package_data)
+
     def test_identity_and_configuration_are_canonical(self) -> None:
         configuration = PlatformConfiguration.load(ROOT)
         self.assertEqual(configuration.platform.id, "engineering-platform")
-        self.assertEqual(configuration.platform.version, "2.0.0")
+        self.assertEqual(configuration.platform.version, CURRENT_PLATFORM_VERSION)
         self.assertEqual(configuration.workspace.id, "engineering-platform")
         self.assertEqual(configuration.providers["runtime"], "codex_cli")
+
+    def test_canonical_wheel_build_advances_one_patch_across_all_projections(self) -> None:
+        import importlib.util
+        script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+        spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in _version_projection_files():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('version = "2.1.0"\n', encoding="utf-8")
+            self.assertEqual(module.advance(root), "2.1.1")
+            self.assertEqual(module.advance(root), "2.1.2")
+            for path in root.rglob("*"):
+                if path.is_file():
+                    self.assertIn("2.1.2", path.read_text(encoding="utf-8"))
+
+    def test_release_build_can_set_an_exact_branch_version_across_all_projections(self) -> None:
+        import importlib.util
+        script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+        spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in _version_projection_files():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('version = "2.1.6"\n', encoding="utf-8")
+            self.assertEqual(module.set_version(root, "2.2.0"), "2.2.0")
+            for path in root.rglob("*"):
+                if path.is_file():
+                    self.assertIn("2.2.0", path.read_text(encoding="utf-8"))
+            with self.assertRaisesRegex(RuntimeError, "stable X.Y.Z"):
+                module.set_version(root, "2.2")
 
     def test_public_api_has_all_productization_capabilities(self) -> None:
         registered = set(capabilities())
@@ -161,7 +271,7 @@ class PlatformProductizationTest(unittest.TestCase):
 
             manifest = EngineeringPlatformManifest.load(package_path("ENGINEERING_PLATFORM_VERSION.json"))
 
-            self.assertEqual(manifest.platform_version, "2.0.0")
+            self.assertEqual(manifest.platform_version, CURRENT_PLATFORM_VERSION)
             self.assertFalse((root / "src" / "engineering_platform").exists())
 
     def test_workspace_provisioning_is_idempotent(self) -> None:

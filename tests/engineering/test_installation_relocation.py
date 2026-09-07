@@ -15,63 +15,61 @@ class InstallationRelocationTest(unittest.TestCase):
         self.root.mkdir()
         self.target = Path(self.temporary.name) / "selected"
         self.target.mkdir()
+        with sqlite3.connect(self.root / "engineering.db") as connection:
+            connection.execute("CREATE TABLE proof (value TEXT)")
+            connection.execute("INSERT INTO proof VALUES ('retained')")
+        (self.root / "file-inbox" / "incoming").mkdir(parents=True)
+        (self.root / "artifacts").mkdir()
+        (self.root / "artifacts" / "proof.txt").write_text("retained", encoding="utf-8")
+        (self.root / "runtime").mkdir()
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def database(self) -> Path:
-        path = self.root / "engineering.db"
-        with sqlite3.connect(path) as connection:
-            connection.execute("CREATE TABLE proof (value TEXT)")
-            connection.execute("INSERT INTO proof VALUES ('retained')")
-        return path
-
-    def inbox(self) -> Path:
-        source = self.root / "file-inbox"
-        for name in ("incoming", "accepted", "processing", "quarantine"):
-            (source / name).mkdir(parents=True, exist_ok=True)
-        return source
-
-    def test_database_request_is_applied_only_after_clean_start(self) -> None:
-        source = self.database()
-        requested = installation_relocation.request(self.root, "DATABASE", str(self.target))
-        self.assertTrue(source.is_file())
-        self.assertTrue((self.root / "runtime/pending-relocation.json").exists())
+    def test_platform_data_request_moves_every_durable_resource_as_one_unit(self) -> None:
+        requested = installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
+        self.assertTrue((self.root / "runtime/pending-platform-data-relocation.json").exists())
 
         applied = installation_relocation.apply_pending(self.root)
 
+        destination = self.target / self.root.name
         self.assertEqual(requested, {key: applied[key] for key in requested})
-        self.assertTrue(source.is_symlink())
-        self.assertEqual(source.resolve(), (self.target / "engineering.db").resolve())
-        with sqlite3.connect(source) as connection:
+        self.assertEqual(applied["kind"], "PLATFORM_DATA")
+        self.assertTrue(self.root.is_symlink())
+        self.assertEqual(self.root.resolve(), destination.resolve())
+        self.assertTrue((destination / "file-inbox/incoming").is_dir())
+        self.assertEqual((destination / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
+        with sqlite3.connect(self.root / "engineering.db") as connection:
             self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "retained")
-        self.assertFalse((self.root / "runtime/pending-relocation.json").exists())
+        self.assertFalse((destination / "runtime/pending-platform-data-relocation.json").exists())
 
-    def test_database_rejects_existing_destination(self) -> None:
-        source = self.database()
-        (self.target / "engineering.db").write_bytes(b"not ours")
-        with self.assertRaisesRegex(installation_relocation.RelocationError, "DATABASE_DESTINATION_EXISTS"):
-            installation_relocation.request(self.root, "DATABASE", str(self.target))
-        self.assertFalse(source.is_symlink())
+    def test_request_rejects_existing_or_nested_destinations(self) -> None:
+        (self.target / self.root.name).mkdir()
+        with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_DESTINATION_EXISTS"):
+            installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
+        with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_DESTINATION_INVALID"):
+            installation_relocation.request(self.root, "PLATFORM_DATA", str(self.root))
 
-    def test_inbox_rejects_items_and_moves_only_empty_inbox(self) -> None:
-        source = self.inbox()
-        (source / "incoming" / "waiting.json").write_text("{}", encoding="utf-8")
-        with self.assertRaisesRegex(installation_relocation.RelocationError, "INBOX_NOT_EMPTY"):
-            installation_relocation.request(self.root, "FILE_INBOX", str(self.target))
-        (source / "incoming" / "waiting.json").unlink()
+    def test_legacy_partial_relocations_are_explicitly_retired(self) -> None:
+        for kind in ("DATABASE", "FILE_INBOX", "UNKNOWN"):
+            with self.subTest(kind=kind), self.assertRaisesRegex(installation_relocation.RelocationError, "RELOCATION_KIND_RETIRED"):
+                installation_relocation.request(self.root, kind, str(self.target))
 
-        installation_relocation.request(self.root, "FILE_INBOX", str(self.target))
-        applied = installation_relocation.apply_pending(self.root)
+    def test_platform_data_can_be_relocated_again_from_its_stable_link(self) -> None:
+        installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
+        installation_relocation.apply_pending(self.root)
+        second_parent = Path(self.temporary.name) / "selected-again"
+        second_parent.mkdir()
+        installation_relocation.request(self.root, "PLATFORM_DATA", str(second_parent))
+        installation_relocation.apply_pending(self.root)
+        self.assertEqual(self.root.resolve(), (second_parent / self.root.name).resolve())
+        self.assertEqual((self.root / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
 
-        self.assertEqual(applied["kind"], "FILE_INBOX")
-        self.assertTrue(source.is_symlink())
-        self.assertEqual(source.resolve(), (self.target / "file-inbox").resolve())
-        self.assertTrue((self.target / "file-inbox" / "quarantine").is_dir())
-
-    def test_only_one_request_can_be_pending(self) -> None:
-        self.database()
-        self.inbox()
-        installation_relocation.request(self.root, "DATABASE", str(self.target))
+    def test_only_one_platform_move_can_be_pending_and_payload_must_be_valid(self) -> None:
+        installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
         with self.assertRaisesRegex(installation_relocation.RelocationError, "RELOCATION_ALREADY_PENDING"):
-            installation_relocation.request(self.root, "FILE_INBOX", str(self.target))
+            installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
+        pending = self.root / "runtime/pending-platform-data-relocation.json"
+        pending.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(installation_relocation.RelocationError, "RELOCATION_REQUEST_INVALID"):
+            installation_relocation.apply_pending(self.root)

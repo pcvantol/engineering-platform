@@ -103,6 +103,17 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         ):
             self.assertIn(retired, qualification)
 
+    def test_installed_transport_matrix_smokes_aggregate_component_health(self) -> None:
+        """CI must wait for the installed Server's complete health projection."""
+        root = Path(__file__).resolve().parents[2]
+        qualification = (root / "tools" / "qualification" / "p_transport_installed_ingress_matrix.py").read_text(encoding="utf-8")
+
+        self.assertIn("def wait_for_platform_health", qualification)
+        self.assertIn('base + "/health"', qualification)
+        self.assertIn("PLATFORM_HEALTH_COMPONENT_INVENTORY_INVALID", qualification)
+        self.assertIn("PLATFORM_HEALTH_UNHEALTHY_COMPONENTS_INVALID", qualification)
+        self.assertIn("PLATFORM_HEALTH_SMOKE", qualification)
+
     def test_dependabot_canary_uses_one_bounded_named_wait(self) -> None:
         root = Path(__file__).resolve().parents[2]
         qualification = (root / "tools" / "qualification" / "p_transport_installed_ingress_matrix.py").read_text(encoding="utf-8")

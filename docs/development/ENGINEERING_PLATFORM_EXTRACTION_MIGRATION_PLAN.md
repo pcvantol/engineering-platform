@@ -519,7 +519,7 @@ or authority transition is implied by repository extraction alone.
    for dependency vulnerability scanning, static analysis, secret scanning,
    package/SBOM provenance and installer checksum/signature verification;
    release signing/publication policy; and immutable wheel release. The
-   publication job builds from a clean, tagged checkout in explicit production
+   publication job builds from a clean, exact `release-X.Y.Z` checkout in explicit production
    release mode, never from a developer worktree or a CI test environment. It
    must install the resulting wheel into a fresh environment and verify both
    its runtime manifest and its installed contents against an allowlist:

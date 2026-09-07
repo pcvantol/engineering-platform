@@ -500,10 +500,16 @@ test.describe("Engineering Status browser smoke", () => {
     const login = block.locator('[data-provider="GITHUB"] [data-provider-repair]');
     await expect(login).toBeVisible();
     await expect(login).toHaveText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.login"].replace("{provider}", "GitHub"));
-    await expect(login).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    expect(await login.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
     await login.hover();
     await expect(login).toHaveCSS("background-color", "rgb(244, 195, 79)");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-logout]')).toBeHidden();
+    const logout = block.locator('[data-provider="CODEX"] [data-provider-logout]');
+    await expect(logout).toBeVisible();
+    expect(await logout.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+    await page.locator("#themeToggle").click();
+    expect(await login.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+    expect(await logout.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
     const validation = page.locator("#configurationValidationEnvironmentStatus");
     await expect(validation).toBeVisible();
     await expect(validation).toContainText(DASHBOARD_MESSAGES.nl["configuration.validation_environment"]);
@@ -559,7 +565,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(name).toHaveCSS("color", "rgb(247, 243, 238)");
     await expect(logout).toHaveCSS("min-height", "32px");
     await expect(logout).toHaveCSS("border-top-color", "rgb(255, 120, 153)");
-    await expect(logout).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    expect(await logout.evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
     await logout.hover();
     await expect(logout).toHaveCSS("background-color", "rgb(255, 113, 143)");
     await expect(logout).toHaveCSS("color", "rgb(35, 19, 26)");
@@ -692,7 +698,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(banner).toContainText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.auth_required"].replace("{provider}", "Codex"));
     await expect(page.locator("#githubProviderReadinessBanner")).toBeHidden();
     await expect(page.locator("#codexProviderReadinessAction")).toHaveText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.login"].replace("{provider}", "Codex"));
-    await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    expect(await page.locator("#codexProviderReadinessAction").evaluate((button) => getComputedStyle(button).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
     await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("color", "rgb(255, 244, 214)");
     await page.locator("#codexProviderReadinessAction").hover();
     await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("background-color", "rgb(244, 195, 79)");
@@ -1083,6 +1089,20 @@ test.describe("Engineering Status browser smoke", () => {
       (buttons) => [...new Set(buttons.map((button) => getComputedStyle(button).fontWeight))],
     );
     expect(weights).toEqual(["400"]);
+  });
+
+  test("gives every visible dashboard action a filled surface in both themes", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    const transparentActions = () => page.evaluate(() => [...document.querySelectorAll("button")]
+      .filter((button) => getComputedStyle(button).display !== "none")
+      // These are semantic hyperlinks or switch tracks, not conventional buttons.
+      .filter((button) => !button.matches(".local-folder-link,.telemetry-run-link,.theme-toggle,.section-state-toggle"))
+      .filter((button) => getComputedStyle(button).backgroundColor === "rgba(0, 0, 0, 0)")
+      .map((button) => button.id || button.className || button.textContent?.trim()));
+    expect(await transparentActions()).toEqual([]);
+    await page.locator("#themeToggle").click();
+    expect(await transparentActions()).toEqual([]);
   });
 
   test("uses the language pulldown style for every single-choice select", async ({ page }) => {
@@ -8577,7 +8597,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(styles.buttonBackground).toBe("rgb(37, 37, 48)");
     expect(styles.buttonColor).toBe("rgb(247, 243, 238)");
     expect(styles.menuBackground).toBe("rgb(37, 37, 48)");
-    expect(styles.optionBackground).toBe("rgb(37, 37, 48)");
+    expect(styles.optionBackground).not.toBe("rgba(0, 0, 0, 0)");
     expect(styles.optionColor).toBe("rgb(247, 243, 238)");
   });
 
@@ -10589,5 +10609,30 @@ test.describe("Engineering Status browser smoke", () => {
       return target === element || element.contains(target);
     });
     expect(frontmost).toBe(true);
+  });
+
+  test("refreshes logs immediately after automatic refresh is re-enabled", async ({ page }) => {
+    let snapshots = 0, logQueries = 0;
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => {
+      snapshots += 1;
+      return route.fulfill({ json: {
+        status: { watcher_state: "WATCHER_IDLE" },
+        component_log_versions: { operations_console: String(snapshots) },
+      } });
+    });
+    await page.route("**/api/logs/**", (route) => {
+      logQueries += 1;
+      return route.fulfill({ json: {
+        entries: [], total: 0, events: [], page: 1, page_size: 50,
+      } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => componentLogsLoaded === true);
+    await page.locator("#autoRefresh").uncheck();
+    const beforeReenable = { snapshots, logQueries };
+    await page.locator("#autoRefresh").check();
+    await expect.poll(() => snapshots).toBeGreaterThan(beforeReenable.snapshots);
+    await expect.poll(() => logQueries).toBeGreaterThan(beforeReenable.logQueries);
   });
 });

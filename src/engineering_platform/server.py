@@ -26,7 +26,7 @@ import sqlite3
 import subprocess  # nosec B404
 import sys
 import time
-from threading import Lock, Timer
+from threading import Lock, RLock, Timer
 from typing import Mapping, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -35,6 +35,7 @@ from uuid import uuid4
 
 from . import agent_trust
 from . import central_database
+from . import central_data_transfer
 from . import console_route_ownership
 from . import console_presentation
 from . import server_console_services
@@ -146,9 +147,19 @@ def _http_json_openapi_document() -> dict[str, object]:
         "info": {
             "title": "Engineering Platform HTTP JSON API",
             "version": "1",
-            "description": "Canonical authenticated submission ingress.",
+            "description": "Canonical authenticated submission ingress and platform health.",
         },
         "paths": {
+            "/health": {
+                "get": {
+                    "summary": "Read aggregated Engineering Platform component health",
+                    "description": "Returns every canonical Platform Component. The aggregate is healthy only when every critical component is healthy.",
+                    "responses": {
+                        "200": {"description": "Critical Platform Components are healthy"},
+                        "503": {"description": "One or more critical Platform Components are degraded"},
+                    },
+                },
+            },
             "/healthz": {
                 "get": {
                     "summary": "Read server health and readiness",
@@ -295,7 +306,7 @@ def _codex_rate_limits() -> bytes:
         process = provider.app_server()
         if process.stdin is None or process.stdout is None:
             return json.dumps(identity, separators=(",", ":")).encode()
-        process.stdin.write(json.dumps({"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "engineering-platform-server", "title": "EP Operations", "version": "2.0.0"}}}) + "\n")
+        process.stdin.write(json.dumps({"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "engineering-platform-server", "title": "EP Operations", "version": _console_platform_version()}}}) + "\n")
         process.stdin.flush(); deadline = time.monotonic() + 5; requested = False
         while time.monotonic() < deadline:
             ready, _, _ = select.select((process.stdout,), (), (), max(0, deadline - time.monotonic()))
@@ -1633,6 +1644,14 @@ def status(data_root: Path) -> dict[str, object]:
             )
         except ValueError:
             pass
+    # Every canonical component is observed and included in the response.
+    # The aggregate follows the component model's explicit criticality: an
+    # optional access or producer adapter remains diagnosable without making
+    # a core Server probe unavailable on a host that does not install it.
+    unhealthy_components = [
+        item.id for item in PLATFORM_COMPONENTS
+        if not bool(components[item.id].get("healthy"))
+    ]
     healthy = all(
         bool(components[item.id].get("healthy"))
         for item in PLATFORM_COMPONENTS
@@ -1642,6 +1661,7 @@ def status(data_root: Path) -> dict[str, object]:
         "service": "engineering-platform-server",
         "healthy": healthy,
         "health": "ok" if healthy else "degraded",
+        "unhealthy_components": unhealthy_components,
         "instance_id": identity.instance_id,
         "store": "ready",
         "schema_version": SERVER_STORE_SCHEMA_VERSION,
@@ -2222,11 +2242,11 @@ def _central_database_section(data_root: Path) -> str:
         '<header class="configuration-central-database__header">'
         '<div><h2 id="centralDatabaseHeading" data-i18n="configuration.ep_database">EP-database</h2>'
         '<p data-i18n="configuration.ep_database_description">Platformbrede opslag voor projecten, uitvoeringen en configuratie.</p></div>'
-        '<div class="configuration-central-database__actions"><a class="dashboard-action dashboard-action--download" href="/api/central-database/download" download '
-        'data-i18n="configuration.ep_database_download" data-i18n-aria-label="configuration.ep_database_download" '
-        'aria-label="Download EP-database">Download EP-database</a></div></header>'
+        '<div class="configuration-central-database__actions"><a class="dashboard-action dashboard-action--download" href="/api/central-data/export" download '
+        'data-i18n="configuration.central_data_export" data-i18n-aria-label="configuration.central_data_export" '
+        'aria-label="Exporteer platformgegevens">Exporteer platformgegevens</a><button class="configuration-central-database__relocate" id="centralDataImport" type="button" data-i18n="configuration.central_data_import">Importeer platformgegevens</button></div></header>'
         '<dl class="configuration-central-database__facts">'
-        f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.database_location">Databaselocatie</dt><dd class="configuration-central-database__location-value"><button class="configuration-central-database__location-link local-folder-link" type="button" data-local-path="{escape(str(details["path"]))}">{escape(str(details["path"]))}</button><button class="configuration-central-database__relocate" id="centralDatabaseRelocate" type="button" data-i18n="configuration.relocate_database">Verplaats database</button></dd></div>'
+        f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.platform_data_location">Platformgegevenslocatie</dt><dd class="configuration-central-database__location-value"><button class="configuration-central-database__location-link local-folder-link" type="button" data-local-path="{escape(str(data_root.resolve()))}">{escape(str(data_root.resolve()))}</button><button class="configuration-central-database__relocate" id="centralDatabaseRelocate" type="button" data-i18n="configuration.relocate_platform_data">Verplaats platformgegevens</button></dd></div>'
         f'<div><dt class="label" data-i18n="configuration.database_size">Databasegrootte</dt><dd>{size}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.schema_version">Schema-versie</dt><dd>{details["schema_version"]}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.integrity">Integriteit</dt><dd data-i18n="configuration.database_integrity.{details["integrity"]}">{details["integrity"]}</dd></div>'
@@ -2237,44 +2257,24 @@ def _central_database_section(data_root: Path) -> str:
         f'<select id="centralDatabaseMaintenanceInterval" aria-labelledby="centralDatabaseMaintenanceLabel" aria-describedby="centralDatabaseMaintenanceHelp centralDatabaseMaintenanceStatus" data-saved-value="{interval}">{options}</select>'
         '</div>'
         '<p id="centralDatabaseMaintenanceStatus" role="status" aria-live="polite"></p></section>'
-        f'<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="centralDatabaseRelocateModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-i18n="configuration.relocate_database">Verplaats database</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-relocation="centralDatabaseRelocateModal">×</button></header><p data-i18n="configuration.relocate_database_help">Kies een beschrijfbare lokale map. De server stopt eerst veilig en start daarna opnieuw.</p><dl class="installation-relocation-modal__locations"><div><dt>Huidige map</dt><dd><button class="local-folder-link" type="button" data-local-path="{escape(str(details["path"]))}">{escape(str(details["path"]))}</button></dd></div><div id="centralDatabaseRelocateDestination" hidden><dt>Nieuwe map</dt><dd id="centralDatabaseRelocateDestinationValue"></dd></div></dl><input id="centralDatabaseRelocateDirectory" type="hidden"><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="centralDatabaseRelocateBrowse" type="button" data-i18n="configuration.choose_folder">Kies map</button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="centralDatabaseRelocateSave" type="button" disabled data-i18n="configuration.relocate">Verplaatsen</button></div><p id="centralDatabaseRelocateStatus" role="status"></p></section></dialog>'
+        f'<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="centralDatabaseRelocateModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-modal-glyph="relocate" data-i18n="configuration.relocate_platform_data">Verplaats platformgegevens</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-relocation="centralDatabaseRelocateModal">×</button></header><p data-i18n="configuration.relocate_platform_data_help">Verplaats alle platformgegevens als één geheel. De server stopt veilig en start daarna opnieuw.</p><dl class="installation-relocation-modal__locations"><div><dt data-i18n="configuration.current_folder">Huidige map</dt><dd><button class="local-folder-link" type="button" data-local-path="{escape(str(data_root.resolve()))}">{escape(str(data_root.resolve()))}</button></dd></div><div id="centralDatabaseRelocateDestination" hidden><dt data-i18n="configuration.new_folder">Nieuwe map</dt><dd id="centralDatabaseRelocateDestinationValue"></dd></div></dl><input id="centralDatabaseRelocateDirectory" type="hidden"><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="centralDatabaseRelocateBrowse" type="button" data-i18n="configuration.choose_folder">Kies map</button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="centralDatabaseRelocateSave" type="button" disabled data-i18n="configuration.relocate">Verplaatsen</button></div><p id="centralDatabaseRelocateStatus" role="status"></p></section></dialog>'
+        '<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="centralDataImportModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-modal-glyph="relocate" data-i18n="configuration.central_data_import">Importeer platformgegevens</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-central-import>×</button></header><p data-i18n="configuration.central_data_import_help">Kies een eerder geëxporteerd ZIP-bestand. Alle huidige platformgegevens worden vervangen.</p><input id="centralDataImportFile" type="file" accept="application/zip,.zip"><p class="installation-relocation-modal__warning" data-i18n="configuration.central_data_import_warning">Dit vervangt de volledige huidige platformstatus.</p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="centralDataImportConfirm" type="button" disabled data-i18n="configuration.central_data_import_confirm">Importeren en herstarten</button></div><p id="centralDataImportStatus" role="status"></p></section></dialog>'
     )
 
 
 def _central_database_script() -> str:
-    """Keep the EP database maintenance preference host-scoped in the Console."""
-    return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus'),translate=window.__engineeringPlatformDashboardTranslate;if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;maintenance.setAttribute('aria-busy','true');if(maintenanceStatus)maintenanceStatus.textContent='';try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_saved')}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_failed')}finally{maintenance.disabled=false;maintenance.removeAttribute('aria-busy')}});const modal=document.getElementById('centralDatabaseRelocateModal'),open=document.getElementById('centralDatabaseRelocate'),input=document.getElementById('centralDatabaseRelocateDirectory'),destination=document.getElementById('centralDatabaseRelocateDestination'),destinationValue=document.getElementById('centralDatabaseRelocateDestinationValue'),save=document.getElementById('centralDatabaseRelocateSave'),status=document.getElementById('centralDatabaseRelocateStatus');open?.addEventListener('click',()=>modal.showModal());modal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>modal.close());document.getElementById('centralDatabaseRelocateBrowse')?.addEventListener('click',async()=>{const r=await fetch('/api/central-database/relocate/browse',{method:'POST'}),p=await r.json();if(p.value){input.value=p.value;destinationValue.textContent=p.value;destination.hidden=false;save.disabled=false;}});save?.addEventListener('click',async()=>{const r=await fetch('/api/central-database/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:input.value})}),p=await r.json();status.textContent=r.ok?translate('configuration.relocation_restarting'):p.error||translate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);});'''
+    """Bind CENTRAL maintenance plus whole-state transfer controls."""
+    return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus'),translate=window.__engineeringPlatformDashboardTranslate;if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_saved')}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_failed')}finally{maintenance.disabled=false}});const modal=document.getElementById('centralDatabaseRelocateModal'),open=document.getElementById('centralDatabaseRelocate'),input=document.getElementById('centralDatabaseRelocateDirectory'),destination=document.getElementById('centralDatabaseRelocateDestination'),destinationValue=document.getElementById('centralDatabaseRelocateDestinationValue'),save=document.getElementById('centralDatabaseRelocateSave'),status=document.getElementById('centralDatabaseRelocateStatus'),showDestination=value=>{input.value=value;destinationValue.replaceChildren(window.__engineeringPlatformLocalFilesystemLink(value));destination.hidden=false;save.disabled=false;};open?.addEventListener('click',()=>modal.showModal());modal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>modal.close());document.getElementById('centralDatabaseRelocateBrowse')?.addEventListener('click',async()=>{const r=await fetch('/api/central-data/relocate/browse',{method:'POST'}),p=await r.json();if(p.value)showDestination(p.value);});save?.addEventListener('click',async()=>{const r=await fetch('/api/central-data/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:input.value})}),p=await r.json();status.textContent=r.ok?translate('configuration.relocation_restarting'):p.error||translate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);});const importModal=document.getElementById('centralDataImportModal'),importOpen=document.getElementById('centralDataImport'),importFile=document.getElementById('centralDataImportFile'),importSave=document.getElementById('centralDataImportConfirm'),importStatus=document.getElementById('centralDataImportStatus');importOpen?.addEventListener('click',()=>importModal.showModal());importModal?.querySelector('[data-close-central-import]')?.addEventListener('click',()=>importModal.close());importFile?.addEventListener('change',()=>{importSave.disabled=!importFile.files?.length;});importSave?.addEventListener('click',async()=>{const file=importFile.files?.[0];if(!file)return;importSave.disabled=true;const r=await fetch('/api/central-data/import',{method:'POST',headers:{'Content-Type':'application/zip','X-EP-Central-Import-Confirmed':'true'},body:file}),p=await r.json();importStatus.textContent=r.ok?translate('configuration.relocation_restarting'):p.error||translate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);else importSave.disabled=false;});'''
 
 
 def _file_inbox_section(data_root: Path) -> str:
     """Render File Inbox relocation with the same installation-owned affordance."""
     location = escape(str((data_root / FILE_INBOX_DIRECTORY).resolve()))
-    return f'''<section class="configuration-central-database" aria-labelledby="fileInboxHeading"><header class="configuration-central-database__header"><div><h2 id="fileInboxHeading" data-i18n="configuration.file_inbox">File Inbox</h2><p data-i18n="configuration.file_inbox_relocation_help">Verplaats de File Inbox alleen wanneer deze leeg is.</p></div></header><dl class="configuration-central-database__facts"><div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.file_inbox_location">File Inbox-locatie</dt><dd class="configuration-central-database__location-value"><button class="configuration-central-database__location-link local-folder-link" type="button" data-local-path="{location}">{location}</button><button class="configuration-central-database__relocate" id="fileInboxRelocate" type="button" data-i18n="configuration.relocate_file_inbox">Verplaats File Inbox</button></dd></div></dl></section><dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="fileInboxRelocateModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-i18n="configuration.relocate_file_inbox">Verplaats File Inbox</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-relocation="fileInboxRelocateModal">×</button></header><p data-i18n="configuration.file_inbox_relocation_help">Verplaats de File Inbox alleen wanneer deze leeg is.</p><dl class="installation-relocation-modal__locations"><div><dt data-i18n="configuration.current_folder">Huidige map</dt><dd><button class="local-folder-link" type="button" data-local-path="{location}">{location}</button></dd></div><div id="fileInboxRelocateDestination" hidden><dt data-i18n="configuration.new_folder">Nieuwe map</dt><dd id="fileInboxRelocateDestinationValue"></dd></div></dl><input id="fileInboxRelocateDirectory" type="hidden"><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="fileInboxRelocateBrowse" type="button" data-i18n="configuration.choose_folder">Kies map</button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="fileInboxRelocateSave" type="button" disabled data-i18n="configuration.relocate">Verplaatsen</button></div><p id="fileInboxRelocateStatus" role="status"></p></section></dialog>'''
+    return f'''<section class="configuration-central-database" aria-labelledby="fileInboxHeading"><header class="configuration-central-database__header"><div><h2 id="fileInboxHeading" data-i18n="configuration.file_inbox">File Inbox</h2><p data-i18n="configuration.file_inbox_relocation_help">Verplaats de File Inbox alleen wanneer deze leeg is.</p></div></header><dl class="configuration-central-database__facts"><div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.file_inbox_location">File Inbox-locatie</dt><dd class="configuration-central-database__location-value"><button class="configuration-central-database__location-link local-folder-link" type="button" data-local-path="{location}">{location}</button><button class="configuration-central-database__relocate" id="fileInboxRelocate" type="button" data-i18n="configuration.relocate_file_inbox">Verplaats File Inbox</button></dd></div></dl></section><dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="fileInboxRelocateModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-modal-glyph="relocate" data-i18n="configuration.relocate_file_inbox">Verplaats File Inbox</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-relocation="fileInboxRelocateModal">×</button></header><p data-i18n="configuration.file_inbox_relocation_help">Verplaats de File Inbox alleen wanneer deze leeg is.</p><dl class="installation-relocation-modal__locations"><div><dt data-i18n="configuration.current_folder">Huidige map</dt><dd><button class="local-folder-link" type="button" data-local-path="{location}">{location}</button></dd></div><div id="fileInboxRelocateDestination" hidden><dt data-i18n="configuration.new_folder">Nieuwe map</dt><dd id="fileInboxRelocateDestinationValue"></dd></div></dl><input id="fileInboxRelocateDirectory" type="hidden"><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="fileInboxRelocateBrowse" type="button" data-i18n="configuration.choose_folder">Kies map</button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="fileInboxRelocateSave" type="button" disabled data-i18n="configuration.relocate">Verplaatsen</button></div><p id="fileInboxRelocateStatus" role="status"></p></section></dialog>'''
 
 
 def _file_inbox_relocation_script() -> str:
-    return '''const inboxModal=document.getElementById('fileInboxRelocateModal'),inboxOpen=document.getElementById('fileInboxRelocate'),inboxInput=document.getElementById('fileInboxRelocateDirectory'),inboxDestination=document.getElementById('fileInboxRelocateDestination'),inboxDestinationValue=document.getElementById('fileInboxRelocateDestinationValue'),inboxSave=document.getElementById('fileInboxRelocateSave'),inboxStatus=document.getElementById('fileInboxRelocateStatus');inboxOpen?.addEventListener('click',()=>inboxModal.showModal());inboxModal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>inboxModal.close());document.getElementById('fileInboxRelocateBrowse')?.addEventListener('click',async()=>{const r=await fetch('/api/configuration/file-inbox/relocate/browse',{method:'POST'}),p=await r.json();if(p.value){inboxInput.value=p.value;inboxDestinationValue.textContent=p.value;inboxDestination.hidden=false;inboxSave.disabled=false;}});inboxSave?.addEventListener('click',async()=>{const r=await fetch('/api/configuration/file-inbox/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:inboxInput.value})}),p=await r.json();inboxStatus.textContent=r.ok?window.__engineeringPlatformDashboardTranslate('configuration.relocation_restarting'):p.error||window.__engineeringPlatformDashboardTranslate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);});'''
-
-
-def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> bytes:
-    """Add the canonical File Inbox projection to the installed Console.
-
-    The dashboard template contains no local-root chooser, folder picker or
-    watcher restart path.  The retained File Inbox scan interval is a Server
-    setting, alongside Open PR polling; it is not project or checkout state.
-    """
-    location = escape(str((data_root / FILE_INBOX_DIRECTORY).resolve())).encode("utf-8")
-    readonly = b'<p class="field configuration-field configuration-file-inbox-readonly"><span class="label" data-i18n="transport.file"></span><span>' + location + b'</span><button class="dashboard-action" id="fileInboxRelocate" type="button">Verplaats inbox</button></p><dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation" id="fileInboxRelocateModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2>Verplaats bestandsinbox</h2><button class="dashboard-modal-shell__close" type="button" data-close-relocation="fileInboxRelocateModal">x</button></header><p>Dit kan alleen als de inbox leeg is. De Server start daarna opnieuw.</p><input id="fileInboxRelocateDirectory" type="text"><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="fileInboxRelocateBrowse" type="button">Kies map</button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="fileInboxRelocateSave" type="button">Verplaatsen</button></div><p id="fileInboxRelocateStatus" role="status"></p></section></dialog><script>(()=>{const m=document.getElementById("fileInboxRelocateModal"),i=document.getElementById("fileInboxRelocateDirectory"),s=document.getElementById("fileInboxRelocateStatus");document.getElementById("fileInboxRelocate")?.addEventListener("click",()=>m.showModal());m?.querySelector("[data-close-relocation]")?.addEventListener("click",()=>m.close());document.getElementById("fileInboxRelocateBrowse")?.addEventListener("click",async()=>{const r=await fetch("/api/configuration/file-inbox/relocate/browse",{method:"POST"}),p=await r.json();if(p.value)i.value=p.value;});document.getElementById("fileInboxRelocateSave")?.addEventListener("click",async()=>{const r=await fetch("/api/configuration/file-inbox/relocate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({directory:i.value})}),p=await r.json();s.textContent=r.ok?"Inbox verplaatst; Server herstart.":p.error||"Verplaatsen mislukt.";if(r.ok)setTimeout(()=>location.reload(),2500);});})();</script>'
-    document = document.replace(b'data-i18n="section.host_components"', b'data-i18n="section.platform_components"')
-    document = document.replace(b'data-i18n="description.host_components"', b'data-i18n="description.platform_components"')
-    server_settings_end = b'</section><div class="configuration-controls">'
-    if server_settings_end in document:
-        return document.replace(server_settings_end, b'</section>' + readonly + b'<div class="configuration-controls">', 1)
-    return document.replace(
-        b'<p class="category-description" data-i18n="description.configuration"></p>',
-        b'<p class="category-description" data-i18n="description.configuration"></p>' + readonly,
-        1,
-    )
+    return '''const inboxModal=document.getElementById('fileInboxRelocateModal'),inboxOpen=document.getElementById('fileInboxRelocate'),inboxInput=document.getElementById('fileInboxRelocateDirectory'),inboxDestination=document.getElementById('fileInboxRelocateDestination'),inboxDestinationValue=document.getElementById('fileInboxRelocateDestinationValue'),inboxSave=document.getElementById('fileInboxRelocateSave'),inboxStatus=document.getElementById('fileInboxRelocateStatus'),showInboxDestination=value=>{inboxInput.value=value;inboxDestinationValue.replaceChildren(window.__engineeringPlatformLocalFilesystemLink(value));inboxDestination.hidden=false;inboxSave.disabled=false;};inboxOpen?.addEventListener('click',()=>inboxModal.showModal());inboxModal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>inboxModal.close());document.getElementById('fileInboxRelocateBrowse')?.addEventListener('click',async()=>{const r=await fetch('/api/configuration/file-inbox/relocate/browse',{method:'POST'}),p=await r.json();if(p.value)showInboxDestination(p.value);});inboxSave?.addEventListener('click',async()=>{const r=await fetch('/api/configuration/file-inbox/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:inboxInput.value})}),p=await r.json();inboxStatus.textContent=r.ok?window.__engineeringPlatformDashboardTranslate('configuration.relocation_restarting'):p.error||window.__engineeringPlatformDashboardTranslate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);});'''
 
 
 def _console_project_boundary(project_id: str, options: str) -> str:
@@ -2317,7 +2317,7 @@ def _console_project_boundary(project_id: str, options: str) -> str:
   });
 })();
 </script>'''.replace("$PROJECT", json.dumps(project_id)).replace("$OPTIONS", json.dumps(options)).replace(
-        "$CENTRAL_DATABASE_SCRIPT", _central_database_script() + _file_inbox_relocation_script(),
+        "$CENTRAL_DATABASE_SCRIPT", _central_database_script(),
     )
 
 
@@ -2332,7 +2332,7 @@ def _no_project_console_document(projects: list[dict[str, str]], data_root: Path
     )
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
-    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script() + _file_inbox_relocation_script())
+    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
     empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong data-i18n="central.no_project_selected_title"></strong><span data-i18n="central.no_project_selected_body"></span><button class="no-project-selected__dismiss" id="noProjectSelectedDismiss" type="button" data-i18n-aria-label="action.close" data-i18n-title="action.close"><span aria-hidden="true">×</span></button></aside>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
@@ -2368,7 +2368,7 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
     )
     document = document.replace(
         b'<p class="category-description" data-i18n="description.configuration"></p>',
-        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8") + _file_inbox_section(data_root).encode("utf-8"),
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"),
         1,
     )
     return document.replace(b"</head>", scoped_style.encode("utf-8") + b"</head>", 1)
@@ -2389,7 +2389,26 @@ def _selected_project_console_document(project_id: str, projects: list[dict[str,
     document = document.replace(b'<pre></pre>', b'<pre data-i18n="central.project_workspace_not_authority"></pre>', 1)
     document = document.replace(
         b'<p class="category-description" data-i18n="description.configuration"></p>',
-        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8") + _file_inbox_section(data_root).encode("utf-8"), 1,
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"), 1,
+    )
+    # A project selection establishes CENTRAL scope; it is not a local
+    # workspace binding.  The generic historical template still contains a
+    # checkout/branch/worktree card, which has no authoritative Server data
+    # and no supported action route.  Execution-bound checkout evidence stays
+    # in ``#executionContext`` and is deliberately not part of this removal.
+    document = re.sub(
+        br'<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchMainResultModal".*?</dialog>\n',
+        b"",
+        document,
+        count=1,
+        flags=re.DOTALL,
+    )
+    document = re.sub(
+        br'<details class="card card--context workspace-card" id="workspaceCard".*?</details>\n',
+        b"",
+        document,
+        count=1,
+        flags=re.DOTALL,
     )
     return document.replace(b"</main>", _console_project_boundary(project_id, options).encode("utf-8") + b"</main>", 1)
 
@@ -2545,7 +2564,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return True
         if request.path == "/health":
             report = status(self.server.data_root)  # type: ignore[attr-defined]
-            self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
+            self._send(200 if report["healthy"] else 503, report, str(report["instance_id"]))
             return True
         if request.path == "/api/configuration":
             # CENTRAL-only settings presently supported by this phase.  The
@@ -2591,31 +2610,86 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(snapshot)
 
+    def _send_central_data_export(self) -> None:
+        """Export one quiesced, portable snapshot of all durable CENTRAL data."""
+        if _central_execution_active(self.server.data_root):  # type: ignore[attr-defined]
+            self._send(409, {"error": "CENTRAL_DATA_TRANSFER_BLOCKED"})
+            return
+        with self.server.central_data_transfer_lock:  # type: ignore[attr-defined]
+            self.server.central_data_transfer_active = True  # type: ignore[attr-defined]
+            try:
+                self.server.dependabot_service.stop()  # type: ignore[attr-defined]
+                self.server.inbox_service.stop()  # type: ignore[attr-defined]
+                self.server.lifecycle_worker.stop()  # type: ignore[attr-defined]
+                if _central_execution_active(self.server.data_root):  # type: ignore[attr-defined]
+                    raise central_data_transfer.CentralDataTransferError("CENTRAL_DATA_TRANSFER_BLOCKED")
+                filename, snapshot = central_data_transfer.export_snapshot(self.server.data_root)  # type: ignore[attr-defined]
+            except (OSError, sqlite3.DatabaseError, central_data_transfer.CentralDataTransferError) as error:
+                self._send(409, {"error": str(error)})
+                return
+            finally:
+                self.server.lifecycle_worker.start()  # type: ignore[attr-defined]
+                self.server.inbox_service.start()  # type: ignore[attr-defined]
+                self.server.dependabot_service.start()  # type: ignore[attr-defined]
+                self.server.central_data_transfer_active = False  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", _attachment_content_disposition(filename))
+        self.send_header("Content-Length", str(len(snapshot)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(snapshot)
+
     def _central_database_configuration(self, method: str) -> bool:
         request = urlsplit(self.path)
-        if request.path == "/api/central-database/download" and method == "do_GET":
-            self._send_central_database_backup()
+        if request.path == "/api/central-data/export" and method == "do_GET":
+            self._send_central_data_export()
             return True
-        if request.path == "/api/central-database/relocate/browse" and method == "do_POST":
+        if request.path == "/api/central-data/relocate/browse" and method == "do_POST":
             try:
                 self._send(200, {"value": _choose_local_directory(self.server.data_root)})  # type: ignore[attr-defined]
             except ValueError as error:
                 self._send(400, {"error": str(error)})
             return True
-        if request.path == "/api/central-database/relocate" and method == "do_POST":
+        if request.path == "/api/central-data/relocate" and method == "do_POST":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length).decode("utf-8")) if 0 < length <= 4096 else None
                 if not isinstance(payload, dict) or set(payload) != {"directory"} or _central_execution_active(self.server.data_root):  # type: ignore[attr-defined]
-                    raise ValueError("DATABASE_RELOCATION_BLOCKED")
-                result = installation_relocation.request(self.server.data_root, "DATABASE", payload["directory"])  # type: ignore[attr-defined]
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError, sqlite3.DatabaseError) as error:
+                    raise ValueError("PLATFORM_DATA_RELOCATION_BLOCKED")
+                result = installation_relocation.request(self.server.data_root, "PLATFORM_DATA", payload["directory"])  # type: ignore[attr-defined]
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
                 self._send(409, {"error": str(error)})
                 return True
             self._send(202, {**result, "restarting": True})
-            restart = Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
-            restart.daemon = True
-            restart.start()
+            Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+            return True
+        if request.path == "/api/central-data/import" and method == "do_POST":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("X-EP-Central-Import-Confirmed") != "true" or not 0 < length <= central_data_transfer.MAX_ARCHIVE_BYTES or _central_execution_active(self.server.data_root):  # type: ignore[attr-defined]
+                    raise ValueError("CENTRAL_IMPORT_BLOCKED")
+                imports = self.server.data_root / "runtime" / "central-data-imports"  # type: ignore[attr-defined]
+                imports.mkdir(mode=0o700, parents=True, exist_ok=True)
+                upload = imports / f"upload-{uuid4().hex}.zip"
+                with upload.open("wb") as output:
+                    remaining = length
+                    while remaining:
+                        chunk = self.rfile.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError("CENTRAL_IMPORT_UPLOAD_INCOMPLETE")
+                        output.write(chunk); remaining -= len(chunk)
+                result = central_data_transfer.stage_import(self.server.data_root, upload)  # type: ignore[attr-defined]
+                upload.unlink(missing_ok=True)
+            except (ValueError, OSError, central_data_transfer.CentralDataTransferError) as error:
+                self._send(409, {"error": str(error)})
+                return True
+            self._send(202, {**result, "restarting": True})
+            Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+            return True
+        if request.path == "/api/central-database/download" and method == "do_GET":
+            self._send(410, {"error": "CENTRAL_DATABASE_DOWNLOAD_RETIRED"})
             return True
         if request.path != "/api/central-database/configuration":
             return False
@@ -2761,28 +2835,16 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # header makes the runtime contract observable to browser/integration
         # coverage without granting a selected project any authority.
         self._console_route = console_route_ownership.route_owner(method.removeprefix("do_"), request.path)
+        # The export boundary stops all installed writer services. Refuse a
+        # concurrent Console mutation as well, rather than claiming a ZIP is
+        # a point-in-time snapshot while an HTTP request can still alter it.
+        if method == "do_POST" and getattr(self.server, "central_data_transfer_active", False):
+            self._send(423, {"error": "CENTRAL_DATA_TRANSFER_IN_PROGRESS"})
+            return
         if method == "do_GET" and self._send_console_asset(request):
             return
-        if request.path == "/api/configuration/file-inbox/relocate/browse" and method == "do_POST":
-            try:
-                self._send(200, {"value": _choose_local_directory(self.server.data_root)})  # type: ignore[attr-defined]
-            except ValueError as error:
-                self._send(400, {"error": str(error)})
-            return
-        if request.path == "/api/configuration/file-inbox/relocate" and method == "do_POST":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8")) if 0 < length <= 4096 else None
-                if not isinstance(payload, dict) or set(payload) != {"directory"} or _central_execution_active(self.server.data_root):  # type: ignore[attr-defined]
-                    raise ValueError("INBOX_RELOCATION_BLOCKED")
-                result = installation_relocation.request(self.server.data_root, "FILE_INBOX", payload["directory"])  # type: ignore[attr-defined]
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
-                self._send(409, {"error": str(error)})
-                return
-            self._send(202, {**result, "restarting": True})
-            restart = Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
-            restart.daemon = True
-            restart.start()
+        if request.path.startswith("/api/configuration/file-inbox/relocate"):
+            self._send(410, {"error": "FILE_INBOX_PARTIAL_RELOCATION_RETIRED"})
             return
         if method == "do_POST" and re.fullmatch(r"/api/configuration/inbox-location(?:/browse)?", request.path):
             self._send(410, {"error": "INBOX_WATCHER_CONFIGURATION_RETIRED"})
@@ -2841,7 +2903,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # in both Console modes.
         if method == "do_GET" and request.path == "/health":
             report = status(self.server.data_root)  # type: ignore[attr-defined]
-            self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
+            self._send(200 if report["healthy"] else 503, report, str(report["instance_id"]))
             return
         if method == "do_GET" and request.path == "/api/host-admin/diagnostics":
             # Host Admin has an installation-only root and is intentionally
@@ -3275,21 +3337,30 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
 
 def serve(data_root: Path) -> int:
-    identity = initialize(data_root)
     relocation = installation_relocation.apply_pending(data_root)
+    imported = central_data_transfer.apply_pending_import(data_root)
+    data_root = data_root.resolve()
+    identity = initialize(data_root)
     if relocation is not None:
         _audit_configuration_change(
             data_root,
-            scope="CENTRAL_DATABASE" if relocation["kind"] == "DATABASE" else "FILE_INBOX",
+            scope="PLATFORM_DATA",
             key="location",
             previous=relocation["previous"],
             value=relocation["value"],
+        )
+    if imported is not None:
+        _audit_configuration_change(
+            data_root, scope="PLATFORM_DATA", key="import", previous="REPLACED",
+            value=f"{imported['entries']}_ENTRIES",
         )
     config = ServerConfiguration.load(data_root)
     os.environ[SERVER_ENVIRONMENT_DATA_ROOT] = str(data_root.resolve())
     os.environ[MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT] = config.managed_codex_cli_prefix
     server = http.server.ThreadingHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
+    server.central_data_transfer_lock = RLock()  # type: ignore[attr-defined]
+    server.central_data_transfer_active = False  # type: ignore[attr-defined]
     # Lifecycle composition is intentionally lazy: read-only Server import
     # and Console startup must stay independent of retired watcher modules.
     from .lifecycle_worker import LifecycleWorker
@@ -3318,6 +3389,8 @@ def serve(data_root: Path) -> int:
         ),
     )
     server.lifecycle_worker = worker  # type: ignore[attr-defined]
+    server.inbox_service = inbox_service  # type: ignore[attr-defined]
+    server.dependabot_service = dependabot_service  # type: ignore[attr-defined]
     _write_json(data_root / SERVER_RUNTIME_FILENAME, {"pid": os.getpid(), "instance_id": identity.instance_id, "started_at": _utcnow()})
     def stop(_signum: int, _frame: object) -> None:
         # ``shutdown`` must run outside the serve_forever thread.
@@ -3415,7 +3488,7 @@ def health(data_root: Path) -> dict[str, object]:
     bind = result["bind"]
     try:
         # Server configuration permits loopback host only.
-        with urlopen(f"http://{bind['host']}:{bind['port']}/readyz", timeout=1) as response:  # nosec B310
+        with urlopen(f"http://{bind['host']}:{bind['port']}/health", timeout=1) as response:  # nosec B310
             response.read()
         return {**result, "healthy": True, "ready": True}
     except (URLError, OSError):
