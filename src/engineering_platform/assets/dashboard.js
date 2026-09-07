@@ -8543,6 +8543,30 @@ document.addEventListener("change", (event) => {
 }, true);
 
 document.addEventListener("DOMContentLoaded", () => {
+  const warning = document.getElementById("centralDataImportWarningModal");
+  const confirm = document.getElementById("centralDataImportConfirm");
+  const proceed = document.getElementById("centralDataImportProceed");
+  if (!warning || !confirm || !proceed) return;
+  if (warning.parentElement !== document.body) document.body.append(warning);
+  document.querySelectorAll("[data-close-central-import-warning]").forEach((control) => {
+    control.addEventListener("click", () => warning.close());
+  });
+  confirm.addEventListener("click", (event) => {
+    if (confirm.dataset.importConfirmed === "true") {
+      delete confirm.dataset.importConfirmed;
+      return;
+    }
+    event.stopImmediatePropagation();
+    warning.showModal();
+  }, true);
+  proceed.addEventListener("click", () => {
+    confirm.dataset.importConfirmed = "true";
+    warning.close();
+    confirm.click();
+  });
+});
+
+document.addEventListener("DOMContentLoaded", () => {
   const status = $("centralDataImportStatus");
   const archive = $("centralDataImportFile");
   if (archive) archive.accept = ".epdata,application/vnd.engineering-platform.epdata+zip";

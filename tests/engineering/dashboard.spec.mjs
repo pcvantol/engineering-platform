@@ -52,7 +52,7 @@ async function startDashboard(root, environment) {
       "python3",
       [
         "-c",
-        "from http.server import ThreadingHTTPServer; from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'engineering.db'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
+        "from http.server import ThreadingHTTPServer; from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'epdata.sqlite'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
       { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] },
@@ -8273,6 +8273,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#centralDataImport").click();
     await page.locator("#centralDataImportFile").setInputFiles({ name: "invalid.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
     await page.locator("#centralDataImportConfirm").click();
+    await page.locator("#centralDataImportProceed").click();
     const status = page.locator("#centralDataImportStatus");
     await expect(status).toHaveText("Dit ZIP-bestand bevat niet-ondersteunde of onveilige bestanden.");
     await expect(status).toHaveCSS("color", "rgb(255, 113, 143)");
@@ -8288,6 +8289,7 @@ test.describe("Engineering Status browser smoke", () => {
     const archive = page.locator("#centralDataImportFile");
     await archive.setInputFiles({ name: "invalid.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
     await page.locator("#centralDataImportConfirm").click();
+    await page.locator("#centralDataImportProceed").click();
     const status = page.locator("#centralDataImportStatus");
     await expect(status).not.toHaveText("");
     await archive.setInputFiles({ name: "replacement.zip", mimeType: "application/zip", buffer: Buffer.from("zip") });
@@ -8304,7 +8306,28 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#centralDataImport").click();
     await page.locator("#centralDataImportFile").setInputFiles({ name: "platform.epdata", mimeType: "application/vnd.engineering-platform.epdata+zip", buffer: Buffer.from("package") });
     await page.locator("#centralDataImportConfirm").click();
+    await expect(page.locator("#centralDataImportWarningModal")).toBeVisible();
+    await page.locator("#centralDataImportProceed").click();
     await expect(page.locator("#centralDataImportStatus")).toHaveText("Import staat klaar; de server start opnieuw.");
+  });
+
+  test("requires destructive confirmation before replacing platform data", async ({ page }) => {
+    let importRequests = 0;
+    await page.route("**/api/central-data/import", async (route) => {
+      importRequests += 1;
+      await route.fulfill({ status: 202, json: { restarting: true } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDataImport").click();
+    await page.locator("#centralDataImportFile").setInputFiles({ name: "platform.epdata", mimeType: "application/vnd.engineering-platform.epdata+zip", buffer: Buffer.from("package") });
+    await page.locator("#centralDataImportConfirm").click();
+    await expect(page.locator("#centralDataImportWarningModal")).toBeVisible();
+    await expect(page.locator("#centralDataImportWarningModal")).toContainText("Alle bestaande platformgegevens worden definitief vervangen en kunnen verloren gaan.");
+    await expect.poll(() => importRequests).toBe(0);
+    await page.locator("[data-close-central-import-warning]").last().click();
+    await expect(page.locator("#centralDataImportWarningModal")).toBeHidden();
+    await expect.poll(() => importRequests).toBe(0);
   });
 
   test("keeps platform-data location links free of selected borders", async ({ page }) => {
