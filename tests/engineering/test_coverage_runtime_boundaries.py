@@ -588,10 +588,12 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertTrue(update._central_database_configuration("do_POST"))
         changed.assert_called_once_with(self.root, 120)
         self.assertEqual(update_responses[-1], (200, {"interval_seconds": 120}))
-        unavailable, unavailable_responses = self._in_process_console_handler("/api/central-database/download")
-        with patch("engineering_platform.server.central_database.snapshot", return_value=None):
-            self.assertTrue(unavailable._central_database_configuration("do_GET"))
-        self.assertEqual(unavailable_responses[-1], (503, {"error": "CENTRAL_DATABASE_UNAVAILABLE"}))
+        # A database-only download would create an incomplete CENTRAL backup.
+        # The route is intentionally retained as a clear retirement response;
+        # callers must use the complete central-data export instead.
+        retired, retired_responses = self._in_process_console_handler("/api/central-database/download")
+        self.assertTrue(retired._central_database_configuration("do_GET"))
+        self.assertEqual(retired_responses[-1], (410, {"error": "CENTRAL_DATABASE_DOWNLOAD_RETIRED"}))
 
     def test_console_event_streams_are_central_and_disconnect_safely(self) -> None:
         for name, args in (
