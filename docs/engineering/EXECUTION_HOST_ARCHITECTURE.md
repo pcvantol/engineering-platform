@@ -66,6 +66,24 @@ previous lease history.
 
 EP serializes mutating work at the repository/execution-scope boundary: no more
 than one mutating execution may own a scope at once. FIFO is the default queue
+
+## CENTRAL queue operator handling
+
+CENTRAL owns the durable queue record after admission; Forge remains the
+authority for the originating Action intent.  Consequently, an Operations
+Console operator must never delete a queued submission or silently make it
+disappear.  Queue handling is an explicit, per-submission, reasoned state
+transition with an append-only audit event and producer-visible readback.
+
+The supported operator dispositions are `DEFERRED`, `QUARANTINED`, and
+`DECLINED`; only `DEFERRED` and `QUARANTINED` may be explicitly resumed to
+`QUEUED`.  A declined submission is terminal but retained with its correlation
+and reason.  A lifecycle worker selects only admitted `QUEUED` submissions.
+
+Forge observes these dispositions through the canonical producer-readback
+contract and reconciles its own Action state.  EP does not invoke Forge
+internals, mutate Forge storage, or infer cancellation.  Until a versioned
+Forge callback contract exists, readback is the required reconciliation path.
 ordering within that scope, but admission and selection remain policy-driven;
 FIFO is not a second planning authority. The active mutation lease starts with
 the accepted execution and is retained through provider work, validation,
