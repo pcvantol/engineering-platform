@@ -2132,7 +2132,7 @@ def _central_database_section(data_root: Path) -> str:
         f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.database_location">Databaselocatie</dt><dd class="configuration-central-database__location-value"><span class="configuration-central-database__location-link">{escape(str(details["path"]))}</span><button class="configuration-central-database__relocate" id="centralDatabaseRelocate" type="button" data-i18n="configuration.relocate_database">Verplaats database</button></dd></div>'
         f'<div><dt class="label" data-i18n="configuration.database_size">Databasegrootte</dt><dd>{size}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.schema_version">Schema-versie</dt><dd>{details["schema_version"]}</dd></div>'
-        f'<div><dt class="label" data-i18n="configuration.integrity">Integriteit</dt><dd>{details["integrity"]}</dd></div>'
+        f'<div><dt class="label" data-i18n="configuration.integrity">Integriteit</dt><dd data-i18n="configuration.database_integrity.{details["integrity"]}">{details["integrity"]}</dd></div>'
         '</dl>'
         '<div class="configuration-central-database__maintenance">'
         '<div><span class="label" id="centralDatabaseMaintenanceLabel" data-i18n="configuration.ep_database_maintenance">Databaseonderhoud</span>'
