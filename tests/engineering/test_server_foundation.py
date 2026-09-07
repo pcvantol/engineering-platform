@@ -809,6 +809,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertNotIn('id="centralDatabaseLocation"', panel)
         self.assertIn('configuration-central-database__location-link', panel)
         self.assertIn('id="centralDatabaseRelocate"', panel)
+        self.assertIn(str(self.root / server.SERVER_DATABASE_FILENAME), panel)
+        self.assertNotIn('{escape(str(details["path"]))}', panel)
         self.assertNotIn('configuration.ep_database_open_folder', panel)
         self.assertIn('aria-describedby="centralDatabaseMaintenanceHelp centralDatabaseMaintenanceStatus"', panel)
         self.assertIn("maintenance.dataset.savedValue", script)
