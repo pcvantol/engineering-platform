@@ -5854,6 +5854,16 @@ replaceWithLocalFilesystemLink(workspaceLocation);
 replaceWithLocalFilesystemLink($("rateLimitProviderPath"));
 const noProjectDismissalStorageKey = "engineering-platform.no-project-selected.dismissed.v1";
 function initializeNoProjectSelectedBanner() {
+  const projectSelector = $("dashboardProject");
+  if (projectSelector && !projectSelector.dataset.noProjectDismissalResetBound) {
+    projectSelector.dataset.noProjectDismissalResetBound = "true";
+    projectSelector.addEventListener("change", (event) => {
+      // Choosing the explicit global/no-project context is a fresh operator
+      // choice, rather than a continuation of a formerly dismissed notice.
+      if (event.currentTarget.value !== "") return;
+      try { localStorage.removeItem(noProjectDismissalStorageKey); } catch {}
+    });
+  }
   const banner = $("noProjectSelected"), dismiss = $("noProjectSelectedDismiss");
   if (!banner || !dismiss || dismiss.dataset.dismissBound) return;
   dismiss.dataset.dismissBound = "true";
@@ -5863,12 +5873,6 @@ function initializeNoProjectSelectedBanner() {
   dismiss.addEventListener("click", () => {
     banner.hidden = true;
     try { localStorage.setItem(noProjectDismissalStorageKey, "true"); } catch {}
-  });
-  $("dashboardProject")?.addEventListener("change", (event) => {
-    // Choosing the explicit global/no-project context is a fresh operator
-    // choice, rather than a continuation of a formerly dismissed notice.
-    if (event.currentTarget.value !== "") return;
-    try { localStorage.removeItem(noProjectDismissalStorageKey); } catch {}
   });
 }
 initializeNoProjectSelectedBanner();

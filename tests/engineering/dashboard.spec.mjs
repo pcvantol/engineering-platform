@@ -142,15 +142,14 @@ test("dismisses the no-project banner for the current browser", async ({ page })
 });
 
 test("shows the no-project banner again after explicitly choosing no project", async ({ page }) => {
-  const noProjectUrl = new URL(dashboardUrl);
-  noProjectUrl.search = "";
-  await page.goto(noProjectUrl.href, { waitUntil: "domcontentloaded" });
+  await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
+    localStorage.setItem("engineering-platform.no-project-selected.dismissed.v1", "true");
+  });
+  const selector = page.locator("#dashboardProject");
+  await expect(selector).not.toHaveValue("");
+  await selector.selectOption("");
   const banner = page.getByTestId("no-project-selected");
-  await page.locator("#noProjectSelectedDismiss").click();
-  await expect(banner).toBeHidden();
-  const navigation = page.waitForNavigation({ waitUntil: "domcontentloaded" });
-  await page.locator("#dashboardProject").dispatchEvent("change");
-  await navigation;
   await expect(banner).toBeVisible();
 });
 
