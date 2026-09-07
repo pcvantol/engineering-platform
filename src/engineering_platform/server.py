@@ -1294,10 +1294,32 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
     if not isinstance(component, dict):
         return None
     definition = PLATFORM_COMPONENT_BY_ID[component_id]
+    service_paths = server_service.default_paths(data_root)
+    runtime_executable = Path(sys.executable).expanduser().absolute()
+    installation: dict[str, str] = {}
+    if component_id == "ep_server":
+        installation = {
+            "runtime_path": str(runtime_executable.parent.parent),
+            "central_data_path": str(data_root.resolve()),
+            "database_path": str((data_root / SERVER_DATABASE_FILENAME).resolve()),
+            "launch_agent_path": str(service_paths.plist_path),
+            "error_log_path": str(service_paths.stderr_log),
+        }
+    elif component_id == "platform_database":
+        installation = {
+            "central_data_path": str(data_root.resolve()),
+            "database_path": str((data_root / SERVER_DATABASE_FILENAME).resolve()),
+        }
+    elif component_id == "dashboard_relay":
+        installation = {
+            "launch_agent_path": str(server_relay.launch_agent_path()),
+            "relay_binary_path": str(server_relay.relay_binary(data_root)),
+        }
     return {
         "component": component_id,
         "machine": os.uname().nodename,
         "restart_supported": definition.restart_supported,
+        "installation": installation,
         **component,
     }
 

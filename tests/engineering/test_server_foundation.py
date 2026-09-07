@@ -56,6 +56,23 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
         self.assertEqual(status["executable"], str(launcher.absolute()))
 
+    def test_component_details_expose_only_the_relevant_installed_locations(self) -> None:
+        server.initialize(self.root)
+        details = server._platform_component_detail(self.root, "ep_server")
+        database = server._platform_component_detail(self.root, "platform_database")
+        relay = server._platform_component_detail(self.root, "dashboard_relay")
+
+        self.assertEqual(details["installation"]["central_data_path"], str(self.root.resolve()))
+        self.assertEqual(details["installation"]["database_path"], str((self.root / "engineering.db").resolve()))
+        self.assertIn("runtime_path", details["installation"])
+        self.assertIn("launch_agent_path", details["installation"])
+        self.assertEqual(database["installation"], {
+            "central_data_path": str(self.root.resolve()),
+            "database_path": str((self.root / "engineering.db").resolve()),
+        })
+        self.assertIn("relay_binary_path", relay["installation"])
+        self.assertIn("launch_agent_path", relay["installation"])
+
     def test_register_topology_cli_reads_the_versioned_json_declaration(self) -> None:
         declaration_path = Path(self.temporary.name) / "repository.json"
         declaration_path.write_text(json.dumps({

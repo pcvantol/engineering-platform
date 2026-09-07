@@ -3484,7 +3484,8 @@ function showComponentModal(payload) {
     title = $("componentModalTitle"),
     restart = $("componentModalRestart"),
     status = $("componentModalStatus"),
-    launchd = payload.launchd || {};
+    launchd = payload.launchd || {},
+    installation = payload.installation || {};
   title.textContent = healthComponentLabel(payload.component) || t("component.component_information");
   content.replaceChildren();
   const fields = document.createElement("dl");
@@ -3536,6 +3537,12 @@ function showComponentModal(payload) {
     t("component.current_memory"),
     componentMemory(payload.processes),
   );
+  componentDetailField(fields, t("component.runtime_path"), installation.runtime_path);
+  componentDetailField(fields, t("component.central_data_path"), installation.central_data_path);
+  componentDetailField(fields, t("component.database_path"), installation.database_path);
+  componentDetailField(fields, t("component.launch_agent"), installation.launch_agent_path);
+  componentDetailField(fields, t("component.error_log_path"), installation.error_log_path);
+  componentDetailField(fields, t("component.relay_binary_path"), installation.relay_binary_path);
   content.append(fields);
   restart.hidden = !payload.restart_supported;
   restart.dataset.component = payload.component;
