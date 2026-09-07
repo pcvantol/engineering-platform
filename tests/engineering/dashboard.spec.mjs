@@ -7699,7 +7699,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentModalActions")).toHaveCSS("grid-template-columns", /\d+px \d+px/);
   });
 
-  test("keeps the confirmation cancel action dark in dark mode", async ({ page }) => {
+  test("keeps confirmation modal actions visibly filled in dark mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
       component: "dashboard",
@@ -7711,7 +7711,11 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#componentModalRestart").click();
     await page.mouse.move(0, 0);
 
-    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("background-color", "rgb(36, 36, 45)");
+    const cancelFill = await page.locator("#confirmationModalCancel").evaluate((element) => getComputedStyle(element).backgroundColor);
+    const confirmFill = await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor);
+    expect(cancelFill).toMatch(/^color\(srgb /);
+    expect(confirmFill).toMatch(/^color\(srgb /);
+    expect(confirmFill).not.toBe(cancelFill);
     await expect(page.locator("#confirmationModalCancel")).toHaveCSS("color", "rgb(247, 243, 238)");
   });
 
