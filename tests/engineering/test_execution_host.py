@@ -4675,7 +4675,10 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         self.assertEqual(success.exit_code, 0)
         self.assertTrue(success.diagnostic_capture_available)
         self.assertIsNotNone(process.environment)
-        self.assertTrue(str(process.environment["PATH"]).startswith(str(Path(sys.executable).resolve().parent)))
+        # Keep the configured launcher itself first.  Resolving a symlink here
+        # would replace an installed EP virtual-environment launcher with its
+        # base interpreter and let child validation escape the EP runtime.
+        self.assertTrue(str(process.environment["PATH"]).startswith(str(Path(sys.executable).absolute().parent)))
         self.assertFalse((self.root / ".engineering" / "artifacts").exists())
         record_validation_profile(
             self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",
