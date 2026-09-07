@@ -174,3 +174,21 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             malformed["producer"] = {"id": "forge", "type": "FORGE", "version": "1.0"}
             with self.assertRaisesRegex(submission_service.SubmissionError, "FORGE_PROVENANCE_REQUIRED"):
                 submission_service.request_from_mapping("djconnect", malformed, transport="HTTP")
+
+    def test_submission_rejects_malformed_and_unbound_inputs(self) -> None:
+        with self.assertRaisesRegex(submission_service.SubmissionError, "MALFORMED_REQUEST"):
+            submission_service.request_from_mapping("djconnect", [], transport="HTTP")
+        for payload, code in (
+            ({"unknown": True}, "UNKNOWN_FIELD"),
+            ({"repository_id": "djconnect", "producer": {}, "prompt": "x"}, "INVALID_PRODUCER"),
+            ({"repository_id": "djconnect", "producer": {"id": "x", "type": "HUMAN"}, "prompt": ""}, "INVALID_PROMPT"),
+        ):
+            with self.assertRaisesRegex(submission_service.SubmissionError, code):
+                submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            unknown_project = submission_service.SubmissionRequest("absent", "djconnect", "x", "HUMAN", None, "x", "HTTP")
+            with self.assertRaisesRegex(submission_service.SubmissionError, "UNKNOWN_PROJECT"):
+                submission_service.submit(connection, unknown_project)
+            unknown_repository = submission_service.SubmissionRequest("djconnect", "absent", "x", "HUMAN", None, "x", "HTTP")
+            with self.assertRaisesRegex(submission_service.SubmissionError, "UNKNOWN_REPOSITORY"):
+                submission_service.submit(connection, unknown_repository)
