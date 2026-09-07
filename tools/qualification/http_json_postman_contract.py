@@ -8,12 +8,13 @@ import json
 from pathlib import Path
 import re
 import socket
+import sqlite3
 import tempfile
 from threading import Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import server
+from engineering_platform import server, submission_service
 
 
 COLLECTION = Path("tests/engineering/postman/http-json-api.postman_collection.json")
@@ -94,6 +95,68 @@ def _request(base_url: str, item: dict[str, object]) -> int:
         return error.code
 
 
+def _queue_action_contract(data_root: Path, base_url: str) -> None:
+    """Exercise Operations Console actions through their real HTTP boundary.
+
+    These are intentionally separate from the public OpenAPI collection: the
+    queue controls are authenticated local-console operations, not producer
+    transport endpoints.  Keeping the distinction prevents a console write
+    from being silently advertised as a public API operation.
+    """
+    project, repository = "postman-queue", "postman-queue-repository"
+    declaration = {
+        "schema_version": "1.0",
+        "project": {"id": project, "authority_repository_id": repository},
+        "repository": {"id": repository, "role": "authority"},
+        "validation": {"kind": "none"},
+    }
+    with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        server.project_topology.register_server_local_topology(connection, declaration=declaration)
+        credential = str(submission_service.issue_consumer_credential(
+            connection, consumer_id="postman-queue", project_id=project,
+        )["credential"])
+    payload = {
+        "repository_id": repository,
+        "producer": {"id": "postman-queue", "type": "HUMAN", "version": "1"},
+        "prompt": "Postman Operations Console queue qualification",
+        "idempotency_key": "postman-queue-actions",
+    }
+    submit = Request(
+        base_url + f"/v1/projects/{project}/submissions", data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {credential}"},
+    )
+    with urlopen(submit, timeout=3) as response:  # nosec B310
+        submission_id = str(json.loads(response.read())["submission_id"])
+
+    def action(disposition: str, reason: str, *, origin: str | None = None) -> tuple[int, str]:
+        request = Request(
+            base_url + f"/api/queue-disposition?project={project}",
+            data=json.dumps({"submission_id": submission_id, "disposition": disposition, "reason": reason}).encode(),
+            method="POST", headers={"Content-Type": "application/json", "Origin": origin or base_url},
+        )
+        try:
+            with urlopen(request, timeout=3) as response:  # nosec B310
+                response.read()
+                return response.status, ""
+        except HTTPError as error:
+            return error.code, error.read().decode("utf-8", "replace")
+
+    for disposition, reason in (
+        ("DEFERRED", "Postman defer contract"), ("QUEUED", "Postman resume contract"),
+        ("QUARANTINED", "Postman quarantine contract"), ("QUEUED", "Postman resume after quarantine contract"),
+        ("DECLINED", "Postman decline contract"),
+    ):
+        status, detail = action(disposition, reason)
+        if status != 200:
+            raise RuntimeError(f"POSTMAN_QUEUE_ACTION_FAILED:{disposition}:{status}:{detail}")
+    status, detail = action("QUEUED", "Must not revive a declined submission")
+    if status != 409:
+        raise RuntimeError(f"POSTMAN_QUEUE_TERMINAL_TRANSITION_NOT_REJECTED:{status}:{detail}")
+    status, detail = action("DEFERRED", "Untrusted origin", origin="https://untrusted.example")
+    if status != 403:
+        raise RuntimeError("POSTMAN_QUEUE_ORIGIN_ISOLATION_FAILED")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, required=True)
@@ -123,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
                 observed, expected = _request(base_url, item), _expected_status(item)
                 if observed != expected:
                     raise RuntimeError(f"API_POSTMAN_DRIFT {item.get('name')}: expected {expected}, got {observed}")
+            _queue_action_contract(data_root, base_url)
         finally:
             http_server.shutdown()
             worker.join(timeout=3)

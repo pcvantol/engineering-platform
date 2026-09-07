@@ -120,6 +120,10 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(action("QUARANTINED", "Investigate the source envelope")["state"], "QUARANTINED")
         self.assertEqual(action("QUEUED", "Investigation completed")["state"], "QUEUED")
         self.assertEqual(action("DECLINED", "The request is no longer needed")["state"], "DECLINED")
+        body = json.dumps({"submission_id": submitted.submission_id, "disposition": "QUEUED", "reason": "Must not revive a declined request"}).encode()
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(Request(endpoint, data=body, method="POST", headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}"}))  # nosec B310
+        self.assertEqual(rejected.exception.code, 409)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             events = [row[0] for row in connection.execute(
                 "SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,)

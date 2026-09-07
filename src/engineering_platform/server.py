@@ -3263,10 +3263,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         disposition=str(payload["disposition"]), reason=str(payload["reason"]),
                     )
                 self._send(200, result)
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                self._send(400, {"error": "INVALID_REQUEST"})
             except submission_service.SubmissionError as error:
                 self._send(error.status, {"error": error.code})
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(400, {"error": "INVALID_REQUEST"})
             return
         if isinstance(selected, str) and selected in project_ids:
             # No supported CENTRAL Console route may fall through to the
