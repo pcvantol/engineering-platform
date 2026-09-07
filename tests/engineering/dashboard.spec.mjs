@@ -8223,6 +8223,7 @@ test.describe("Engineering Status browser smoke", () => {
 
     await page.locator("#centralDatabaseRelocate").click();
     await expect(page.locator("#centralDatabaseRelocateModal")).toBeVisible();
+    await expect(page.locator("#centralDatabaseRelocateModal h2").evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↗"');
   });
 
   test("prepares the visible central destination and discards it on relocation cancel", async ({ page }) => {
