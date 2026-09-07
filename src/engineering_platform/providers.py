@@ -40,7 +40,7 @@ class LaunchdRuntimeDetails:
 
 def _elapsed_seconds(value: str) -> int | None:
     """Parse macOS ``ps etime`` without treating malformed host output as fact."""
-    match = re.fullmatch(r"(?:(\d+)-)?(\d{1,2}):(\d{2}):(\d{2})", value)
+    match = re.fullmatch(r"(?:(\d+)-)?(?:(\d{1,2}):)?(\d{1,2}):(\d{2})", value)
     if not match:
         return None
     days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
