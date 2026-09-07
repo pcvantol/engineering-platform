@@ -94,7 +94,13 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-readback", "djconnect", "COMPLETE", "now", "now", "MANAGED"))
             connection.execute("INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("run-readback", "2026-01-01", "now", "now", "now", 0, 0, "COMPLETE", None, None, None, "MANAGED", "djconnect", "djconnect", "test"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submission_id, "djconnect", "djconnect", "run-readback", "COMPLETE", "/private/prompt", "now", "now", "NONE"))
-            checkpoint = TransactionState(run_id="run-readback", repository="djconnect", prompt_path="prompt", phase="COMPLETE", terminal=True, action_intent="VALIDATION_ONLY")
+            profile = {"version": "validation-profile@1", "digest": "sha256:" + "b" * 64, "candidate_sha": "c" * 40}
+            finding = {"id": "security-1", "fingerprint": "d" * 32, "category": "SECURITY", "criterion": "post_implementation_assurance", "observation": "Project isolation lacks a negative test.", "severity": "HIGH", "confidence": "MEDIUM", "blocking": True, "disposition": "OPEN"}
+            reviews = (
+                {"reviewer": "quality", "status": "PASS", "candidate_sha": "c" * 40, "profile_digest": profile["digest"], "invocation_id": "quality-1", "findings": []},
+                {"reviewer": "security", "status": "FAIL", "candidate_sha": "c" * 40, "profile_digest": profile["digest"], "invocation_id": "security-1", "findings": [finding]},
+            )
+            checkpoint = TransactionState(run_id="run-readback", repository="djconnect", prompt_path="prompt", phase="COMPLETE", terminal=True, action_intent="VALIDATION_ONLY", assurance_profile=profile, assurance_reviews=reviews, repair_iterations=2)
             connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps(checkpoint.to_dict()), "COMPLETE", "now"))
             connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)", ("run-readback", "COMPLETE", "safe", "now", None, "/private/report", "now"))
         artifact_id = submission_service.write_terminal_evidence(self.root, repository_root=self.root, run_id="run-readback")
@@ -104,6 +110,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             stored_artifact = submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id=artifact_id)
             self.assertIsNotNone(stored_artifact)
             self.assertEqual(json.loads(stored_artifact or b"{}")['run']['id'], "run-readback")
+            findings_artifact = submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id="assurance-findings:run-readback")
+            self.assertEqual(json.loads(findings_artifact or b"{}")["reviews"], list(reviews))
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             terminal = json.loads(response.read())
         self.assertEqual(terminal["run"]["id"], "run-readback")
@@ -116,6 +124,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             artifact = json.loads(response.read())
         self.assertEqual(artifact["submission"]["id"], submission_id)
         self.assertEqual(artifact["run"]["id"], "run-readback")
+        self.assertEqual(artifact["assurance"]["repair_rounds"], {"used": 2, "maximum": 3})
+        self.assertEqual(artifact["assurance"]["findings"]["artifact"]["id"], "assurance-findings:run-readback")
 
         # The projection is CENTRAL state, not a process-local cache: a Server
         # restart preserves the exact submission/run/evidence correlation.
