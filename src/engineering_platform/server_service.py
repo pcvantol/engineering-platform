@@ -60,7 +60,10 @@ def _launchctl(arguments: Sequence[str], runner: Runner | None = None) -> subpro
 
 
 def _installed_interpreter(candidate: str | Path | None = None) -> Path:
-    executable = Path(candidate or sys.executable).expanduser().resolve()
+    # Preserve a virtual-environment launcher symlink.  Resolving it would
+    # turn ``<venv>/bin/python`` into its base interpreter, which no longer
+    # has the EP package installed when launchd invokes it.
+    executable = Path(candidate or sys.executable).expanduser().absolute()
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise ServerServiceError("The EP Server interpreter is not an executable installed runtime.")
     return executable
