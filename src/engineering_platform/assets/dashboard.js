@@ -940,9 +940,10 @@ function queueItems(x, queueDepth) {
       defer.className = "queue-defer";
       defer.type = "button";
       const held = item.queue_source === "CENTRAL" && ["DEFERRED", "QUARANTINED"].includes(item.queue_state);
-      defer.textContent = held ? "Hervatten" : t("queue.defer_action");
-      defer.title = t("queue.defer_action");
-      defer.setAttribute("aria-label", t("queue.defer_action"));
+      const actionKey = held ? "queue.resume" : "queue.defer";
+      defer.textContent = t(`${actionKey}_action`);
+      defer.title = t(`${actionKey}_action`);
+      defer.setAttribute("aria-label", t(`${actionKey}_action`));
       defer.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -955,12 +956,12 @@ function queueItems(x, queueDepth) {
     row.append(number, body);
     if (defer) row.append(defer);
     if (item.queue_source === "CENTRAL" && item.queue_state === "QUEUED") {
-      [["QUARANTINED", "Quarantaine", "Operator quarantined this submission from Operations Console."],
-       ["DECLINED", "Afwijzen", "Operator declined this submission from Operations Console."]].forEach(([disposition, label, reason]) => {
+      [["QUARANTINED", "queue.quarantine", "Operator quarantined this submission from Operations Console."],
+       ["DECLINED", "queue.decline", "Operator declined this submission from Operations Console."]].forEach(([disposition, actionKey, reason]) => {
         const action = document.createElement("button");
         action.className = "queue-defer";
         action.type = "button";
-        action.textContent = label;
+        action.textContent = t(`${actionKey}_action`);
         action.addEventListener("click", (event) => {
           event.preventDefault(); event.stopPropagation();
           queueDisposition(item, disposition, reason, action);
@@ -974,7 +975,12 @@ function queueItems(x, queueDepth) {
 function queueDisposition(item, disposition, reason, button) {
   const submissionId = String(item?.submission_id || item?.filename || "");
   if (!submissionId) return;
-  confirmDashboardAction(t("queue.defer_title"), t("queue.defer_description", { title: submissionId }), t("queue.defer_action"))
+  const actionKey = { DEFERRED: "queue.defer", QUEUED: "queue.resume", QUARANTINED: "queue.quarantine", DECLINED: "queue.decline" }[disposition];
+  if (!actionKey) return;
+  confirmDashboardAction(
+    t(`${actionKey}_title`), t(`${actionKey}_description`, { title: submissionId }), t(`${actionKey}_action`),
+    { destructive: disposition === "DECLINED" },
+  )
     .then((confirmed) => {
       if (!confirmed) return;
       button.disabled = true;
