@@ -77,12 +77,18 @@ def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]
     """
     original = Path(data_root).expanduser()
     root = original.resolve()
-    destination = _destination(root, directory)
+    parent = _directory(directory)
+    # A repeated restart may replay the same request through the stable
+    # launchd symlink.  Recognize that exact completed move before applying
+    # the nested-destination guard below.
+    destination = parent / original.name
+    if original.is_symlink() and destination.exists() and original.resolve() == destination.resolve():
+        return {"previous": str(root), "value": str(destination.resolve())}
+    if destination == root or root in destination.parents or destination in root.parents:
+        raise RelocationError("PLATFORM_DATA_DESTINATION_INVALID")
     if not root.is_dir() or not (root / "engineering.db").is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     if destination.exists():
-        if original.is_symlink() and original.resolve() == destination.resolve():
-            return {"previous": str(root), "value": str(destination.resolve())}
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:

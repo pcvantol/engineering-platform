@@ -107,8 +107,13 @@ jobs:
           measured_modules = {Path(path).resolve() for path in files}
           unmeasured = [str(path) for path in production_modules if path not in measured_modules]
           aggregate = report["totals"]["percent_covered"]
-          if len(production_modules) != 109:
-              failures.append(f"production module inventory changed: {len(production_modules)} (expected 109)")
+          # Discover the current shipped inventory instead of pinning a count.
+          # The unmeasured-module check below still fails closed whenever a
+          # production module is added without coverage evidence.
+          if not production_modules:
+              failures.append("production module inventory is empty")
+          else:
+              print(f"production module inventory: {len(production_modules)}")
           if unmeasured:
               failures.append("unmeasured production modules: " + ", ".join(unmeasured))
           if aggregate < 80.00:

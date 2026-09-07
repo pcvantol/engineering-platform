@@ -38,7 +38,7 @@ environment. It does not authorize a human UI review or Owner Authorization.
 | Finder actions | The re-audit found two direct Finder helpers in `server_console_services`; they and their historical tests were then removed, with a permanent source-absence guard | **FIXED IN WORKTREE — uncommitted** | Keep the absence guard; exact-head qualification must confirm no remote Console route/action advertises it. |
 | Route/CENTRAL ownership | Central-core, central-console and console-route guards | **PASS** | Preserve root-bound routes 0, dashboard delegates 0, project delegation 0, checkout dependency 0, and ambiguous ownership 0. |
 | Component model | Component-model regression guard | **PASS, narrow scope** | Extend it to package-wide legacy alias/read/write/lifecycle/logging reachability before declaring LR-12 complete. |
-| Coverage | Clean installed candidate run: 1,241 tests, aggregate 84.67%; all 109 shipped modules meet the 80.20% branch-coverage floor | **PASS** | Keep the per-module 80.20% and aggregate 80.00% CI gate; the inventory check fails closed when the shipped module set changes. |
+| Coverage | Clean installed candidate run: 1,241 tests, aggregate 84.67%; every shipped module met the 80.20% branch-coverage floor | **PASS** | Keep the per-module 80.20% and aggregate 80.00% CI gate; the discovered inventory check fails closed when a shipped module lacks coverage evidence. |
 
 The re-audit does not reopen implementation by itself. It records blockers
 that must be resolved before `P_TRANSPORT_SIX_LEGACY_ARCHITECTURE_POINTS =

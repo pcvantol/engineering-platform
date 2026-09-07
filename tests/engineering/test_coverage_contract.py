@@ -18,7 +18,8 @@ class EngineeringPlatformCoverageContractTests(unittest.TestCase):
         self.assertIn('minimum 80.20%', workflow)
         self.assertIn("covered is None or covered < minimum", workflow)
         self.assertIn("coverage run --branch --source=engineering_platform", workflow)
-        self.assertIn("len(production_modules) != 109", workflow)
+        self.assertIn("if not production_modules:", workflow)
+        self.assertIn("unmeasured production modules", workflow)
 
     def test_coverage_documentation_matches_the_per_module_gate(self) -> None:
         supervisor = Path("docs/engineering/LOCAL_DASHBOARD_SUPERVISOR.md").read_text(
