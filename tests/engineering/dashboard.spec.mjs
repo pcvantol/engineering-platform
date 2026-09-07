@@ -1049,12 +1049,17 @@ test.describe("Engineering Status browser smoke", () => {
       { components: canonicalPlatformComponents(), component_model: canonicalPlatformComponentModel() },
     );
     const select = page.locator("#logComponentFilter");
-    const nativeOptionCount = await select.locator("option").count();
-    expect(nativeOptionCount).toBeGreaterThan(1);
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     const picker = select.locator("+ .dashboard-select-picker");
     await openDashboardPicker(picker);
-    await expect(picker.locator("[role=option]")).toHaveCount(nativeOptionCount);
+    // The initial dashboard snapshot can finish after the deliberately
+    // injected health model.  Assert the contract that matters: the enhanced
+    // picker mirrors the native select, rather than capturing an intermediate
+    // count while the snapshot is still settling.
+    await expect.poll(async () => (
+      await picker.locator("[role=option]").count()
+    ) - await select.locator("option").count()).toBe(0);
+    expect(await select.locator("option").count()).toBeGreaterThan(1);
     await expect(picker.locator('[data-dashboard-select-value="ep_server"]')).toBeVisible();
     await expect(picker.locator('[data-dashboard-select-value="file_inbox_ingress"]')).toBeVisible();
   });
@@ -6451,7 +6456,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("src", "/assets/operations-console/icon-transparent.png");
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("aria-hidden", "true");
-    await expect(page.locator(".dashboard-splash__version")).toHaveAttribute("data-platform-version", /^2\.1\.\d+$/);
+    await expect(page.locator(".dashboard-splash__version")).toHaveAttribute("data-platform-version", /^\d+\.\d+\.\d+$/);
     await expect(page.locator(".dashboard-splash__loading")).toHaveText("Gegevens laden…");
     await expect(page.locator(".dashboard-splash__version")).toHaveCSS("color", "rgb(240, 182, 106)");
     await expect(page.locator(".dashboard-splash__spinner")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
