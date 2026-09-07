@@ -8214,6 +8214,7 @@ test.describe("Engineering Status browser smoke", () => {
       return { height, width };
     })));
     expect(dimensions[0]).toEqual(dimensions[1]);
+    await expect(importAction.evaluate((element) => getComputedStyle(element, "::before").content)).resolves.toBe('"↑"');
 
     await importAction.click();
     await expect(page.locator("#centralDataImportModal")).toBeVisible();
