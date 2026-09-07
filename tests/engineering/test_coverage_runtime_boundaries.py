@@ -40,6 +40,14 @@ from engineering_platform.ep_consumer_credentials import (
     register_consumer,
     revoke_consumer,
 )
+
+
+class ProcessElapsedTimeTest(unittest.TestCase):
+    def test_macos_elapsed_time_accepts_minutes_hours_and_days(self) -> None:
+        self.assertEqual(providers._elapsed_seconds("17:21"), 1_041)
+        self.assertEqual(providers._elapsed_seconds("01:17:21"), 4_641)
+        self.assertEqual(providers._elapsed_seconds("2-01:17:21"), 177_441)
+        self.assertIsNone(providers._elapsed_seconds("invalid"))
 from engineering_platform.project_topology import TopologyRegistrationError, register_server_local_topology
 
 
