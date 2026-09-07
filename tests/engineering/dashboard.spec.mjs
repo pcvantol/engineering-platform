@@ -6376,7 +6376,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(Math.round(box.y + box.height / 2)).toBe(422);
   });
 
-  test("keeps every modal panel inside iPhone safe outer padding and focuses only a primary action", async ({ page }) => {
+  test("keeps every modal panel inside iPhone safe outer padding and focuses a safe initial action", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
@@ -6390,14 +6390,16 @@ test.describe("Engineering Status browser smoke", () => {
       const layout = await modal.evaluate((element) => {
         const panel = element.querySelector(".dashboard-modal-shell__panel");
         const primary = element.querySelector("button.dashboard-modal-shell__action--primary:not([disabled]), a.dashboard-modal-shell__action--primary[href]");
+        const secondary = element.querySelector("button.dashboard-modal-shell__action:not(.dashboard-modal-shell__action--primary):not([disabled]), a.dashboard-modal-shell__action:not(.dashboard-modal-shell__action--primary)[href]");
+        const initial = element.classList.contains("dashboard-modal-shell--destructive") && secondary ? secondary : primary;
         const panelBox = panel.getBoundingClientRect();
         return {
-          focusedPrimary: primary ? document.activeElement === primary : false,
+          focusedInitial: initial ? document.activeElement === initial : false,
           focusedWithinModal: element.contains(document.activeElement),
           panel: { bottom: panelBox.bottom, left: panelBox.left, right: panelBox.right, top: panelBox.top },
         };
       });
-      expect(layout.focusedWithinModal, selector).toBe(layout.focusedPrimary);
+      expect(layout.focusedWithinModal, selector).toBe(layout.focusedInitial);
       expect(layout.panel.left, selector).toBeGreaterThanOrEqual(16);
       expect(layout.panel.right, selector).toBeLessThanOrEqual(374);
       expect(layout.panel.top, selector).toBeGreaterThanOrEqual(16);

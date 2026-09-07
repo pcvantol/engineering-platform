@@ -30,6 +30,7 @@ CASES = (
     ("CLI", "MANAGED"), ("CLI", "GENESIS"),
     ("FILE_INBOX", "MANAGED"), ("FILE_INBOX", "GENESIS"),
 )
+CENTRAL_DATABASE_FILENAME = "epdata.sqlite"
 
 # Two independently bound Server-child admissions can each encounter one
 # bounded SQLite retry on a hosted runner.  This protects the real installed
@@ -85,7 +86,7 @@ def payload(repository: str, mode: str, key: str) -> dict[str, object]:
 
 def central_counts(data_root: Path, project_id: str) -> tuple[int, int]:
     """Read-only evidence: submissions and their initial lifecycle dispatches."""
-    with sqlite3.connect(f"file:{data_root / 'engineering.db'}?mode=ro", uri=True) as connection:
+    with sqlite3.connect(f"file:{data_root / CENTRAL_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
         submissions = int(connection.execute("SELECT COUNT(*) FROM ep_submissions WHERE project_id=?", (project_id,)).fetchone()[0])
         runs = int(connection.execute("SELECT COUNT(*) FROM ep_parity_lifecycle_dispatches WHERE project_id=?", (project_id,)).fetchone()[0])
     return submissions, runs
@@ -154,8 +155,8 @@ def isolated_port() -> int:
 
 def storage_authority(data_root: Path, root: Path) -> dict[str, object]:
     """Inspect the installed fixture without treating transport files as DBs."""
-    databases = list(root.rglob("engineering.db"))
-    canonical = data_root / "engineering.db"
+    databases = list(root.rglob(CENTRAL_DATABASE_FILENAME))
+    canonical = data_root / CENTRAL_DATABASE_FILENAME
     local = [path for path in databases if path != canonical]
     state_stores = [path for path in root.rglob("*") if path.name.lower() in {"statestore", "state-store"}]
     if databases != [canonical] or local or state_stores:
@@ -580,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
             rows: list[tuple[str, str, str]] = []
             heartbeat = dependabot_root / "dependabot-producer-heartbeat.json"
             while time.monotonic() < deadline:
-                with sqlite3.connect(dependabot_root / "engineering.db") as connection:
+                with sqlite3.connect(dependabot_root / CENTRAL_DATABASE_FILENAME) as connection:
                     rows = [(str(row[0]), str(row[1]), str(row[2])) for row in connection.execute("SELECT submission_id,project_id,repository_id FROM ep_submissions WHERE transport='DEPENDABOT' ORDER BY project_id")]
                 if len(rows) == 2 and heartbeat.exists():
                     break
@@ -624,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
                 if heartbeat.exists():
                     break
                 time.sleep(.1)
-            with sqlite3.connect(dependabot_root / "engineering.db") as connection:
+            with sqlite3.connect(dependabot_root / CENTRAL_DATABASE_FILENAME) as connection:
                 duplicate_count = int(connection.execute("SELECT COUNT(*) FROM ep_submissions WHERE transport='DEPENDABOT'").fetchone()[0])
             if duplicate_count != 2:
                 raise RuntimeError("DEPENDABOT_RESTART_DUPLICATED")
