@@ -76,6 +76,11 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Qualify installed P-TRANSPORT 3×2 ingress matrix
         run: python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
+      - name: Qualify deterministic Genesis and Managed execution E2E
+        # The E2E script creates an isolated CENTRAL data root and a local bare
+        # Git origin for Managed.  CI therefore exercises both execution modes
+        # without mutating a GitHub repository.
+        run: python3 tools/qualification/p_deterministic_execution_e2e.py --source-root .
       - name: Qualify HTTP JSON API, OpenAPI and Postman contract
         run: PYTHONPATH=src python3 tools/qualification/http_json_postman_contract.py --source-root .
       - name: Enforce Engineering Platform coverage contract

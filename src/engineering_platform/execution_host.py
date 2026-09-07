@@ -542,7 +542,15 @@ class EngineeringRunner:
         agent action requires Codex too.  The saved original action lets a
         verified resume continue exactly where it stopped.
         """
-        missing = provider_readiness_failures(self.root, require_github=require_github)
+        # The installed deterministic qualification composes a local GitHub
+        # adapter before the runner is created.  It must therefore qualify the
+        # Managed lifecycle against that adapter, rather than demand an
+        # unrelated interactive GitHub session from the CI runner.
+        qualification_local_github = os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1"
+        missing = provider_readiness_failures(
+            self.root,
+            require_github=require_github and not qualification_local_github,
+        )
         if not require_codex:
             missing = tuple(provider for provider in missing if provider != "CODEX")
         if missing:
