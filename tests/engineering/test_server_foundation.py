@@ -808,6 +808,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('data-saved-value="3600"', panel)
         self.assertNotIn('id="centralDatabaseLocation"', panel)
         self.assertIn('configuration-central-database__location-link', panel)
+        self.assertIn('data-local-path=', panel)
         self.assertIn('id="centralDatabaseRelocate"', panel)
         self.assertIn(str(self.root / server.SERVER_DATABASE_FILENAME), panel)
         self.assertNotIn('{escape(str(details["path"]))}', panel)
