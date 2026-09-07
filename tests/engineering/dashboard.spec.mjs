@@ -10144,6 +10144,10 @@ test.describe("Engineering Status browser smoke", () => {
       await page.locator("#confirmationModalCancel").click();
     }
     await expect(page.locator("#queueList .queue-item__actions .queue-defer")).toHaveCount(3);
+    const decline = page.getByRole("button", { name: messages["queue.decline_action"], exact: true });
+    await expect(decline).toHaveClass(/queue-defer--destructive/);
+    await expect(decline).toHaveAttribute("title", messages["queue.decline_action"]);
+    await expect(decline).toHaveAttribute("aria-label", messages["queue.decline_action"]);
   });
 
   test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {

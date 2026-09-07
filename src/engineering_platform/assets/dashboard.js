@@ -961,9 +961,11 @@ function queueItems(x, queueDepth) {
       [["QUARANTINED", "queue.quarantine", "Operator quarantined this submission from Operations Console."],
        ["DECLINED", "queue.decline", "Operator declined this submission from Operations Console."]].forEach(([disposition, actionKey, reason]) => {
         const action = document.createElement("button");
-        action.className = "queue-defer";
+        action.className = `queue-defer${disposition === "DECLINED" ? " queue-defer--destructive" : ""}`;
         action.type = "button";
         action.textContent = t(`${actionKey}_action`);
+        action.title = t(`${actionKey}_action`);
+        action.setAttribute("aria-label", t(`${actionKey}_action`));
         action.addEventListener("click", (event) => {
           event.preventDefault(); event.stopPropagation();
           queueDisposition(item, disposition, reason, action);
