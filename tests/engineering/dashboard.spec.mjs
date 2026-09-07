@@ -7817,7 +7817,7 @@ test.describe("Engineering Status browser smoke", () => {
     const content = page.locator("#componentModalContent");
     await expect(content).toContainText("Lifecycle-beheerderLaunchAgent");
     await expect(content).toContainText("Lifecycle-statusActief");
-    await expect(content).toContainText("PID321");
+    await expect(content.getByText("PID", { exact: true })).toHaveCount(0);
     await expect(content).toContainText("Laatst gestoptNooit gestopt");
     await expect(content).toContainText("Huidig geheugenPID 321: 2.0 MiB");
   });
