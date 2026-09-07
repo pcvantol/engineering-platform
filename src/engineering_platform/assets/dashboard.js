@@ -4774,6 +4774,7 @@ function populateLogComponentFilter(model = latestPlatformHealth?.component_mode
   select.replaceChildren(new Option(t("filter.all_ep_components"), ""));
   model.forEach((component) => select.append(new Option(t(component.name_key), component.id)));
   select.value = [...select.options].some((option) => option.value === selected) ? selected : "";
+  syncDashboardSelectPicker(select);
 }
 function refreshComponentLogsForFilters() {
   independentLogPageStates.platform = 1;
