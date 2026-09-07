@@ -71,6 +71,7 @@ from .providers import (
     GitHubProvider,
     CodexCliProvider,
     LaunchdProvider,
+    LaunchdRuntimeDetails,
     MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT,
     LocalProcessProvider,
     default_engineering_platform_codex_cli_prefix,
@@ -1315,11 +1316,26 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
             "launch_agent_path": str(server_relay.launch_agent_path()),
             "relay_binary_path": str(server_relay.relay_binary(data_root)),
         }
+    lifecycle_label = (
+        server_service.LABEL if component_id == "ep_server" else definition.lifecycle_label
+    )
+    launchd: dict[str, object] = {}
+    if lifecycle_label:
+        observed = LaunchdProvider().runtime_details(lifecycle_label)
+        if isinstance(observed, LaunchdRuntimeDetails):
+            launchd = {
+                "label": observed.label,
+                "loaded": observed.loaded,
+                "active": observed.active,
+                "pid": observed.pid,
+                "last_exit_code": observed.last_exit_code,
+            }
     return {
         "component": component_id,
         "machine": os.uname().nodename,
         "restart_supported": definition.restart_supported,
         "installation": installation,
+        "launchd": launchd,
         **component,
     }
 

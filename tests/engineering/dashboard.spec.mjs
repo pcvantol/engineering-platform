@@ -7701,6 +7701,28 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => page.evaluate(() => componentDetailsRefreshTimer)).toBeNull();
   });
 
+  test("shows a LaunchAgent as EP-server host detail, not as a separate component", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "ep_server",
+      healthy: true,
+      launchd: {
+        label: "com.engineeringplatform.server",
+        loaded: true,
+        active: true,
+        pid: 321,
+        last_exit_code: "(never exited)",
+      },
+      restart_supported: false,
+    }));
+
+    const content = page.locator("#componentModalContent");
+    await expect(content).toContainText("Lifecycle-beheerderLaunchAgent");
+    await expect(content).toContainText("Lifecycle-statusActief");
+    await expect(content).toContainText("PID321");
+    await expect(content).toContainText("Laatst gestoptNooit gestopt");
+  });
+
   test("renders prompt-history report actions as light surfaces in light mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#themeToggle").click();

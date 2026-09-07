@@ -25,6 +25,17 @@ class ProviderStatus:
     detail: str
 
 
+@dataclass(frozen=True)
+class LaunchdRuntimeDetails:
+    """Host observation for one owned LaunchAgent, without control authority."""
+
+    label: str
+    loaded: bool
+    active: bool
+    pid: int | None
+    last_exit_code: str | None
+
+
 class RuntimeProvider(Protocol):
     def status(self) -> ProviderStatus: ...
 
@@ -304,9 +315,25 @@ class LaunchdProvider:
         A KeepAlive job can be loaded while repeatedly exiting, so reporting it
         as healthy would project a stale "active" status to the dashboard.
         """
+        details = self.runtime_details(label)
+        if not details.loaded:
+            if shutil.which("launchctl") is None:
+                return ProviderStatus("launchd", "configured", False, "launchctl unavailable")
+            return ProviderStatus("launchd", "configured", False, "LaunchAgent is not loaded")
+        if details.active:
+            return ProviderStatus("launchd", "configured", True, "LaunchAgent process is active")
+        return ProviderStatus(
+            "launchd",
+            "configured",
+            False,
+            "LaunchAgent is loaded but has no active process",
+        )
+
+    def runtime_details(self, label: str) -> LaunchdRuntimeDetails:
+        """Read the actual LaunchAgent host state used by component detail views."""
         executable = shutil.which("launchctl")
         if not executable:
-            return ProviderStatus("launchd", "configured", False, "launchctl unavailable")
+            return LaunchdRuntimeDetails(label, False, False, None, None)
         completed = subprocess.run(
             (executable, "print", f"gui/{os.getuid()}/{label}"),
             text=True,
@@ -314,19 +341,16 @@ class LaunchdProvider:
             check=False,
         )
         if completed.returncode:
-            return ProviderStatus("launchd", "configured", False, "LaunchAgent is not loaded")
+            return LaunchdRuntimeDetails(label, False, False, None, None)
         output = completed.stdout
         active_count = re.search(r"(?m)^\s*active count\s*=\s*(\d+)", output)
-        has_active_process = (
-            active_count is not None and int(active_count.group(1)) > 0
-        ) or re.search(r"(?m)^\s*pid\s*=\s*[1-9]\d*", output) is not None
-        if has_active_process:
-            return ProviderStatus("launchd", "configured", True, "LaunchAgent process is active")
-        return ProviderStatus(
-            "launchd",
-            "configured",
-            False,
-            "LaunchAgent is loaded but has no active process",
+        pid_match = re.search(r"(?m)^\s*pid\s*=\s*([1-9]\d*)", output)
+        last_exit = re.search(r"(?m)^\s*last exit code\s*=\s*(.+)$", output)
+        pid = int(pid_match.group(1)) if pid_match else None
+        active = (active_count is not None and int(active_count.group(1)) > 0) or pid is not None
+        return LaunchdRuntimeDetails(
+            label, True, active, pid,
+            last_exit.group(1).strip() if last_exit else None,
         )
 
     def restart(self, label: str) -> None:

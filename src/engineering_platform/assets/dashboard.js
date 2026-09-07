@@ -3478,6 +3478,16 @@ function componentMemory(processes) {
     )
     .join(" · ");
 }
+function launchdLifecycleState(launchd) {
+  if (!launchd.label) return null;
+  return launchd.active ? t("component.lifecycle_active") : t("component.lifecycle_not_running");
+}
+function launchdLastStopped(launchd) {
+  if (!launchd.label) return null;
+  if (launchd.last_exit_code === "(never exited)") return t("component.never_stopped");
+  if (launchd.last_exit_code) return t("component.last_stop_time_unknown", { exit: launchd.last_exit_code });
+  return t("component.last_stop_unavailable");
+}
 function showComponentModal(payload) {
   const modal = $("componentModal"),
     content = $("componentModalContent"),
@@ -3520,6 +3530,10 @@ function showComponentModal(payload) {
       : payload.executable_path,
   );
   componentDetailField(fields, t("component.launchd_label"), launchd.label);
+  componentDetailField(fields, t("component.lifecycle_owner"), launchd.label ? t("component.launch_agent") : null);
+  componentDetailField(fields, t("component.lifecycle_status"), launchdLifecycleState(launchd));
+  componentDetailField(fields, t("component.process_id"), launchd.pid);
+  componentDetailField(fields, t("component.last_stopped"), launchdLastStopped(launchd));
   componentDetailField(fields, t("component.launch_agent"), launchd.plist_path);
   componentDetailField(
     fields,
