@@ -775,6 +775,20 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                     database.write(archive.read(server.SERVER_DATABASE_FILENAME)); database.flush()
                 with sqlite3.connect(database.name) as connection:
                     self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            payload = json.loads(connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='operations_console' "
+                "AND json_extract(payload, '$.event')='platform_data_export' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0])
+        self.assertEqual({key: payload[key] for key in (
+            "event", "audit_action", "audit_actor", "audit_outcome", "package_format",
+        )}, {
+            "event": "platform_data_export", "audit_action": "EXPORT",
+            "audit_actor": "DASHBOARD_USER", "audit_outcome": "COMPLETED",
+            "package_format": "EPDATA",
+        })
         request = Request(
             f"http://127.0.0.1:{port}/api/central-database/configuration",
             data=b'{"interval_seconds":86400}', method="POST", headers={"Content-Type": "application/json"},
@@ -942,6 +956,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("`.epdata` package", design_system)
         self.assertIn("canonical checksum", design_system)
+        self.assertIn("platform_data_export", design_system)
+        self.assertIn("DASHBOARD_USER", design_system)
         self.assertIn("exactly equal", design_system)
         self.assertIn("starts the same Server command again", design_system)
 
