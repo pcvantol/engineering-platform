@@ -939,20 +939,35 @@ function queueItems(x, queueDepth) {
     if (defer) {
       defer.className = "queue-defer";
       defer.type = "button";
-      defer.textContent = t("queue.defer_action");
+      const held = item.queue_source === "CENTRAL" && ["DEFERRED", "QUARANTINED"].includes(item.queue_state);
+      defer.textContent = held ? "Hervatten" : t("queue.defer_action");
       defer.title = t("queue.defer_action");
       defer.setAttribute("aria-label", t("queue.defer_action"));
       defer.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         if (item.queue_source === "CENTRAL") {
-          queueDisposition(item, "DEFERRED", "Operator deferred this submission from Operations Console.", defer);
+          queueDisposition(item, held ? "QUEUED" : "DEFERRED", held ? "Operator resumed this submission from Operations Console." : "Operator deferred this submission from Operations Console.", defer);
         } else deferQueueItem(item, defer);
       });
     }
     body.append(title, meta);
     row.append(number, body);
     if (defer) row.append(defer);
+    if (item.queue_source === "CENTRAL" && item.queue_state === "QUEUED") {
+      [["QUARANTINED", "Quarantaine", "Operator quarantined this submission from Operations Console."],
+       ["DECLINED", "Afwijzen", "Operator declined this submission from Operations Console."]].forEach(([disposition, label, reason]) => {
+        const action = document.createElement("button");
+        action.className = "queue-defer";
+        action.type = "button";
+        action.textContent = label;
+        action.addEventListener("click", (event) => {
+          event.preventDefault(); event.stopPropagation();
+          queueDisposition(item, disposition, reason, action);
+        });
+        row.append(action);
+      });
+    }
     container.append(row);
   });
 }
