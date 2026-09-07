@@ -3472,6 +3472,14 @@ function formatComponentUptime(value) {
         ? minutes + "m"
         : total + "s";
 }
+function formatComponentDatabaseSize(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  return locale.number(bytes / 1_000_000, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }) + " MB";
+}
 function componentDetailField(list, label, value, { localPath = false } = {}) {
   if (value === null || value === undefined || value === "") return;
   const term = document.createElement("dt"),
@@ -3581,6 +3589,7 @@ function showComponentModal(payload) {
   componentDetailField(fields, t("component.runtime_path"), installation.runtime_path, { localPath: true });
   componentDetailField(fields, t("component.central_data_path"), installation.central_data_path, { localPath: true });
   componentDetailField(fields, t("component.database_path"), installation.database_path, { localPath: true });
+  componentDetailField(fields, t("workspace.database_size"), formatComponentDatabaseSize(payload.database_size_bytes));
   componentDetailField(fields, t("component.launch_agent"), installation.launch_agent_path, { localPath: true });
   componentDetailField(fields, t("component.error_log_path"), installation.error_log_path, { localPath: true });
   componentDetailField(fields, t("component.relay_binary_path"), installation.relay_binary_path, { localPath: true });
