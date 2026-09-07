@@ -3732,6 +3732,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"transport.swagger_endpoint":"OpenAPI/Swag
 Object.assign(DASHBOARD_MESSAGES.de, {"transport.swagger_endpoint":"OpenAPI/Swagger-Definition"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"transport.swagger_endpoint":"Définition OpenAPI/Swagger"});
 Object.assign(DASHBOARD_MESSAGES.es, {"transport.swagger_endpoint":"Definición OpenAPI/Swagger"});
+Object.assign(DASHBOARD_MESSAGES.en, {"footer.platform_name":"Engineering Platform","footer.version_word":"version"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"footer.platform_name":"Engineering Platform","footer.version_word":"versie"});
+Object.assign(DASHBOARD_MESSAGES.de, {"footer.platform_name":"Engineering Platform","footer.version_word":"Version"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"footer.platform_name":"Engineering Platform","footer.version_word":"version"});
+Object.assign(DASHBOARD_MESSAGES.es, {"footer.platform_name":"Engineering Platform","footer.version_word":"versión"});
 for (const locale of SUPPORTED_LOCALES)
   delete DASHBOARD_MESSAGES[locale]["ui.no_component_explanation"];
 Object.assign(DASHBOARD_MESSAGES.en, {"description.logs":"Redacted, rotating logs from Server-owned platform components."});

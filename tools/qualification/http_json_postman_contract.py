@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Fail closed when the HTTP implementation, OpenAPI and Postman drift."""
+from __future__ import annotations
+
+import argparse
+import http.server
+import json
+from pathlib import Path
+import re
+import socket
+import tempfile
+from threading import Thread
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from engineering_platform import server
+
+
+COLLECTION = Path("tests/engineering/postman/http-json-api.postman_collection.json")
+_STATUS = re.compile(r"pm\.response\.to\.have\.status\((\d+)\)")
+
+
+def _operations_from_openapi(document: dict[str, object]) -> set[tuple[str, str]]:
+    paths = document.get("paths")
+    if not isinstance(paths, dict):
+        raise RuntimeError("OPENAPI_PATHS_INVALID")
+    return {
+        (method.upper(), path)
+        for path, item in paths.items()
+        if isinstance(path, str) and isinstance(item, dict)
+        for method in item
+        if method.lower() in {"get", "post", "put", "patch", "delete"}
+    }
+
+
+def _collection_items(items: object) -> list[dict[str, object]]:
+    if not isinstance(items, list):
+        raise RuntimeError("POSTMAN_ITEMS_INVALID")
+    result: list[dict[str, object]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise RuntimeError("POSTMAN_ITEM_INVALID")
+        if "item" in item:
+            result.extend(_collection_items(item["item"]))
+        elif isinstance(item.get("request"), dict):
+            result.append(item)
+        else:
+            raise RuntimeError("POSTMAN_REQUEST_MISSING")
+    return result
+
+
+def _collection_operation(item: dict[str, object]) -> tuple[str, str]:
+    request = item["request"]
+    assert isinstance(request, dict)
+    method, raw = request.get("method"), request.get("url")
+    if not isinstance(method, str) or not isinstance(raw, str):
+        raise RuntimeError("POSTMAN_REQUEST_INVALID")
+    path = raw.removeprefix("{{baseUrl}}")
+    path = re.sub(r":([A-Za-z_][A-Za-z0-9_]*)", r"{\1}", path)
+    if not path.startswith("/"):
+        raise RuntimeError("POSTMAN_URL_INVALID")
+    return method.upper(), path
+
+
+def _expected_status(item: dict[str, object]) -> int:
+    events = item.get("event", [])
+    scripts = [line for event in events if isinstance(event, dict) and event.get("listen") == "test"
+               for line in (event.get("script", {}).get("exec", []) if isinstance(event.get("script"), dict) else [])]
+    matches = [int(match.group(1)) for line in scripts if isinstance(line, str) for match in _STATUS.finditer(line)]
+    if len(matches) != 1:
+        raise RuntimeError("POSTMAN_STATUS_ASSERTION_MISSING")
+    return matches[0]
+
+
+def _port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _request(base_url: str, item: dict[str, object]) -> int:
+    request = item["request"]
+    assert isinstance(request, dict)
+    method, path = _collection_operation(item)
+    url = base_url + path.replace("{project_id}", "postman-project")
+    headers = {str(header["key"]): str(header["value"])
+               for header in request.get("header", []) if isinstance(header, dict) and "key" in header and "value" in header}
+    body = request.get("body", {})
+    data = str(body.get("raw", "")).encode("utf-8") if isinstance(body, dict) and method != "GET" else None
+    try:
+        with urlopen(Request(url, data=data, headers=headers, method=method), timeout=3) as response:
+            return response.status
+    except HTTPError as error:
+        return error.code
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source-root", type=Path, required=True)
+    root = parser.parse_args(argv).source_root.resolve()
+    collection = json.loads((root / COLLECTION).read_text(encoding="utf-8"))
+    if collection.get("info", {}).get("schema") != "https://schema.getpostman.com/json/collection/v2.1.0/collection.json":
+        raise RuntimeError("POSTMAN_SCHEMA_INVALID")
+    expected_openapi = server._http_json_openapi_document()
+    items = _collection_items(collection.get("item"))
+    if _operations_from_openapi(expected_openapi) != {_collection_operation(item) for item in items}:
+        raise RuntimeError("OPENAPI_POSTMAN_OPERATION_DRIFT")
+    with tempfile.TemporaryDirectory(prefix="ep-postman-contract-") as temporary:
+        data_root = Path(temporary) / "data"
+        port = _port()
+        server.initialize(data_root, bind_port=port)
+        http_server = http.server.ThreadingHTTPServer(("127.0.0.1", port), server._HealthHandler)
+        http_server.data_root = data_root  # type: ignore[attr-defined]
+        worker = Thread(target=http_server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            base_url = f"http://127.0.0.1:{port}"
+            with urlopen(base_url + server.HTTP_JSON_OPENAPI_PATH, timeout=3) as response:
+                served_openapi = json.loads(response.read().decode("utf-8"))
+            if served_openapi != expected_openapi:
+                raise RuntimeError("API_OPENAPI_DRIFT")
+            for item in items:
+                observed, expected = _request(base_url, item), _expected_status(item)
+                if observed != expected:
+                    raise RuntimeError(f"API_POSTMAN_DRIFT {item.get('name')}: expected {expected}, got {observed}")
+        finally:
+            http_server.shutdown()
+            worker.join(timeout=3)
+    print("HTTP_JSON_API_OPENAPI_POSTMAN_CONTRACT=PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
