@@ -97,6 +97,57 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             urlopen(wrong)  # nosec B310
         self.assertEqual(rejected.exception.code, 401)
 
+    def test_console_queue_actions_change_only_the_selected_submission_and_are_audited(self) -> None:
+        """Exercise the browser-facing queue action endpoint against CENTRAL."""
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(
+                connection, submission_service.request_from_mapping("djconnect", self.payload("console-actions"), transport="HTTP"),
+            )
+        server.start(self.root)
+        endpoint = f"http://127.0.0.1:{self.port}/api/queue-disposition?project=djconnect"
+
+        def action(disposition: str, reason: str) -> dict[str, object]:
+            body = json.dumps({"submission_id": submitted.submission_id, "disposition": disposition, "reason": reason}).encode()
+            request = Request(endpoint, data=body, method="POST", headers={
+                "Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}",
+            })
+            with urlopen(request) as response:  # nosec B310
+                return json.loads(response.read())
+
+        self.assertEqual(action("DEFERRED", "Wait for the maintenance window")["state"], "DEFERRED")
+        self.assertEqual(action("QUEUED", "Maintenance window is open")["state"], "QUEUED")
+        # Quarantine is a separate operator hold and must be independently resumable.
+        self.assertEqual(action("QUARANTINED", "Investigate the source envelope")["state"], "QUARANTINED")
+        self.assertEqual(action("QUEUED", "Investigation completed")["state"], "QUEUED")
+        self.assertEqual(action("DECLINED", "The request is no longer needed")["state"], "DECLINED")
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            events = [row[0] for row in connection.execute(
+                "SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,)
+            )]
+        self.assertEqual(events[-5:], [
+            "OPERATOR_QUEUE_DEFERRED", "OPERATOR_QUEUE_QUEUED",
+            "OPERATOR_QUEUE_QUARANTINED", "OPERATOR_QUEUE_QUEUED", "OPERATOR_QUEUE_DECLINED",
+        ])
+
+    def test_console_queue_actions_reject_cross_origin_and_unknown_project(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(
+                connection, submission_service.request_from_mapping("djconnect", self.payload("console-denial"), transport="HTTP"),
+            )
+        server.start(self.root)
+        body = json.dumps({"submission_id": submitted.submission_id, "disposition": "DEFERRED", "reason": "Later"}).encode()
+        cases = (
+            (f"http://127.0.0.1:{self.port}/api/queue-disposition?project=djconnect", "https://untrusted.example", 403),
+            (f"http://127.0.0.1:{self.port}/api/queue-disposition?project=other", f"http://127.0.0.1:{self.port}", 409),
+        )
+        for endpoint, origin, expected in cases:
+            request = Request(endpoint, data=body, method="POST", headers={"Content-Type": "application/json", "Origin": origin})
+            with self.assertRaises(HTTPError) as rejected:
+                urlopen(request)  # nosec B310
+            self.assertEqual(rejected.exception.code, expected)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(connection.execute("SELECT state FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone()[0], "QUEUED")
+
     def test_authenticated_producer_readback_is_exactly_correlated_and_terminal_evidence_backed(self) -> None:
         server.start(self.root)
         payload = self.payload("readback")
