@@ -7776,8 +7776,10 @@ test.describe("Engineering Status browser smoke", () => {
       component: "platform_database",
       healthy: true,
       process_state: "STORAGE",
+      database_size_bytes: 12_500_000,
     }));
     await expect(page.locator("#componentModalContent")).toContainText("ProcesstatusOpslagcomponent; geen proces");
+    await expect(page.locator("#componentModalContent")).toContainText("Databasegrootte12,5 MB");
   });
 
   test("renders prompt-history report actions as light surfaces in light mode", async ({ page }) => {

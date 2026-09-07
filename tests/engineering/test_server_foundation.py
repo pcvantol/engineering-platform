@@ -70,6 +70,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "central_data_path": str(self.root.resolve()),
             "database_path": str((self.root / "engineering.db").resolve()),
         })
+        self.assertEqual(database["database_size_bytes"], (self.root / "engineering.db").stat().st_size)
         self.assertIn("relay_binary_path", relay["installation"])
         self.assertIn("launch_agent_path", relay["installation"])
 

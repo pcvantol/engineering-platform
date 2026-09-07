@@ -1307,9 +1307,10 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
             "error_log_path": str(service_paths.stderr_log),
         }
     elif component_id == "platform_database":
+        database_path = data_root / SERVER_DATABASE_FILENAME
         installation = {
             "central_data_path": str(data_root.resolve()),
-            "database_path": str((data_root / SERVER_DATABASE_FILENAME).resolve()),
+            "database_path": str(database_path.resolve()),
         }
     elif component_id == "dashboard_relay":
         installation = {
@@ -1346,6 +1347,10 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
     elif component_id == "platform_database":
         detail["launchd"] = {}
         detail["process_state"] = "STORAGE"
+        try:
+            detail["database_size_bytes"] = (data_root / SERVER_DATABASE_FILENAME).stat().st_size
+        except OSError:
+            pass
     else:
         host = LaunchdProvider().runtime_details(server_service.LABEL)
         host = host if isinstance(host, LaunchdRuntimeDetails) else None
