@@ -885,6 +885,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn("must not open Finder", design_system)
         self.assertIn("File Inbox relocation", design_system)
 
+    def test_design_system_documents_platform_data_package_and_restart_contract(self) -> None:
+        design_system = (
+            Path(__file__).parents[2]
+            / "src" / "engineering_platform" / "OPERATIONS_CONSOLE_DESIGN_SYSTEM.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("`.epdata` package", design_system)
+        self.assertIn("canonical checksum", design_system)
+        self.assertIn("exactly equal", design_system)
+        self.assertIn("starts the same Server command again", design_system)
+
     def test_runtime_directory_route_is_retired_in_the_central_console(self) -> None:
         identity = server.initialize(self.root)
         self.assertIsNotNone(identity.instance_id)

@@ -8642,8 +8642,8 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps title-bar switch focus on the compact track", () => {
     const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
-    expect(stylesheet).toContain(".execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle");
-    expect(stylesheet).toContain("Unified focus contract: one product-coloured, one-pixel edge.");
+    expect(stylesheet).toContain(":is(.dashboard-titlebar .theme-toggle,.dashboard-titlebar .section-state-toggle):is(:focus,:focus-visible)::before");
+    expect(stylesheet).toContain(":is(.dashboard-health__button,.auto-refresh-toggle input):is(:focus,:focus-visible)");
     expect(stylesheet).toContain("border-color:var(--house-style)!important;");
     expect(stylesheet).toContain("outline:1px solid var(--house-style)!important;");
   });

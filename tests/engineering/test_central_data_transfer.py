@@ -45,7 +45,7 @@ class CentralDataTransferTest(unittest.TestCase):
 
     def test_import_replaces_durable_state_and_preserves_target_runtime(self) -> None:
         _, content = central_data_transfer.export_snapshot(self.root)
-        archive = Path(self.temporary.name) / "backup.zip"
+        archive = Path(self.temporary.name) / "backup.epdata"
         archive.write_bytes(content)
         target = Path(self.temporary.name) / "target"
         target.mkdir()
@@ -114,4 +114,21 @@ class CentralDataTransferTest(unittest.TestCase):
                 rewritten.writestr(name, value)
             rewritten.writestr(central_data_transfer.MANIFEST_NAME, __import__("json").dumps(manifest))
         with self.assertRaisesRegex(central_data_transfer.CentralDataTransferError, "CENTRAL_ARCHIVE_INTEGRITY_INVALID"):
+            central_data_transfer.inspect_archive(archive)
+
+    def test_archive_rejects_a_missing_durable_member(self) -> None:
+        """A package must contain precisely every member declared by its manifest."""
+        _, content = central_data_transfer.export_snapshot(self.root)
+        archive = Path(self.temporary.name) / "incomplete.epdata"
+        archive.write_bytes(content)
+        with zipfile.ZipFile(archive) as original:
+            files = {
+                name: original.read(name)
+                for name in original.namelist()
+                if name != "artifacts/report.md"
+            }
+        with zipfile.ZipFile(archive, "w") as rewritten:
+            for name, value in files.items():
+                rewritten.writestr(name, value)
+        with self.assertRaisesRegex(central_data_transfer.CentralDataTransferError, "CENTRAL_ARCHIVE_MANIFEST_INVALID"):
             central_data_transfer.inspect_archive(archive)

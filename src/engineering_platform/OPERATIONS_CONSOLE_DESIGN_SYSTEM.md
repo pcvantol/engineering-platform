@@ -716,14 +716,27 @@ durable parts of the same state and a partial move is unsafe.
 - The displayed location is a `local-folder-link`, including its canonical
   copy-to-clipboard feedback.
 - Export is the filled text action **Exporteer platformgegevens** with the
-  `↓` glyph. It creates a ZIP snapshot of all durable CENTRAL state; installed
-  runtime files and live process state are excluded.
-- Import uses the same modal family, a local ZIP chooser, an explicit warning
-  and a separate affirmative action. Its entry action is the filled text
-  action **Importeer platformgegevens** with the `↗` glyph. It always says
-  that current state will be replaced and the Server will restart. The archive
-  database schema must exactly equal the active installation schema; imports
-  never perform migrations. Schema upgrades belong to EP installation.
+  `↓` glyph. It creates an `.epdata` package (a ZIP container with the EP
+  media type) of all durable CENTRAL state; installed runtime files and live
+  process state are excluded.
+- Every `.epdata` package contains a manifest with the exact schema version,
+  one SHA-256 digest and size per durable member, and a canonical checksum of
+  that member list. Import validates the manifest, safe member names, member
+  set, sizes, digests and embedded database schema before it stages anything.
+  This detects incomplete or accidentally changed packages; the package is an
+  integrity check, not a signature or a trust boundary.
+- Import uses the same modal family, a local `.epdata` chooser, an explicit
+  warning and a separate affirmative action. Its entry action is the filled
+  text action **Importeer platformgegevens** with the `↑` glyph, which is also
+  used in the modal header. It always says that current state will be replaced
+  and the Server will restart. The archive database schema must exactly equal
+  the active installation schema; imports never perform migrations. Schema
+  upgrades belong to EP installation. On a failed import the translated error
+  is red; choosing another file or closing the modal clears that prior error.
+- An accepted import or relocation first replies that a restart is pending,
+  then shuts down cleanly and starts the same Server command again. An
+  installed EP LaunchAgent continues this lifecycle under `launchd`; the
+  command also restarts itself when it was started manually for qualification.
 - Relocation chooses a parent directory and moves the complete data root in
   one restart-bound operation. Its filled text action uses the `↗` glyph and
   follows the location responsively. The selected directory becomes the only
