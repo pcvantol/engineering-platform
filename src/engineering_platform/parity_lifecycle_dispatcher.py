@@ -191,6 +191,13 @@ def _record_provider_free_admission(
 
 def _default_runner(repository_root: Path, *, central_database: Path | None = None) -> EngineeringRunner:
     """Construct the installed historical runner without a watcher or Agent."""
+    if os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1":
+        from .qualification_runtime import DeterministicQualificationAgent, LocalQualificationGitHub
+        return EngineeringRunner(
+            repository_root,
+            StateStore(repository_root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=False),
+            SubprocessRepositoryClient(), LocalQualificationGitHub(repository_root), DeterministicQualificationAgent(),
+        )
     remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
     match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())
     repository = match.group(1) if remote.returncode == 0 and match else None
