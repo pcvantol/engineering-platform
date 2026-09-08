@@ -23,6 +23,11 @@
       "event": [{"listen": "test", "script": {"exec": ["pm.test('server is ready', () => pm.response.to.have.status(200));"]}}]
     },
     {
+      "name": "Producer compatibility declaration",
+      "request": {"method": "GET", "url": "{{baseUrl}}/v1/producer-compatibility"},
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('producer compatibility is available', () => pm.response.to.have.status(200));"]}}]
+    },
+    {
       "name": "Canonical submission rejects missing credential",
       "request": {
         "method": "POST",

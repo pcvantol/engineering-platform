@@ -6,6 +6,17 @@ it is not a second API, consumer database, queue, or execution authority.
 
 ## Resource and authorization
 
+Before a consumer submits a request it can make this unauthenticated,
+read-only installation declaration request:
+
+```
+GET /v1/producer-compatibility
+```
+
+The response identifies the EP instance and product version and lists the
+producer-readback and terminal-evidence contract versions. It has no project,
+submission, queue, provider, repair or execution side effect.
+
 ```
 GET /v1/projects/{project_id}/submissions/{submission_id}
 Authorization: Bearer <EP-issued scoped credential>
@@ -49,8 +60,9 @@ references, and a run-bound delivery revision. It never uses current checkout
 HEAD or a mutable HTTP response as evidence.
 
 `GET /v1/projects/{project_id}/artifacts/{terminal-evidence:<run_id>}` returns
-that stored JSON only after the same project-scoped authentication and digest
-verification. A missing, corrupt, or mismatched artifact is represented as
+the exact stored canonical JSON bytes only after the same project-scoped
+authentication and digest verification. It never parses and reserializes the
+artifact response. A missing, corrupt, or mismatched artifact is represented as
 `MISSING`, `CORRUPT`, or `INCOMPLETE`; the reader never fills it in.
 
 `COMPLETE` mutating delivery is qualified only when a recorded merge revision
@@ -87,11 +99,6 @@ cancelled by a queue action.
 
 ## Forge consumer mapping fixture
 
-The pinned pair [`forge-producer-readback-v1.1.json`](../../tests/fixtures/forge-producer-readback-v1.1.json)
-and [`forge-terminal-evidence-v1.1.json`](../../tests/fixtures/forge-terminal-evidence-v1.1.json)
-is the shared consumer fixture. Its response digest is the SHA-256 of the
-terminal-artifact bytes. Forge maps `submission` and `correlation` directly to
-its issued request, `run.id` to `host_run_id`, `report.id` to `report_id`, and
-the verified `repository.revision` plus artifact digest to
-`ExecutionRepositoryEvidence`. A mismatch is consumer rejection, never a
-synthetic successful result.
+The v1.1 fixture pair is historical and is not a v1.2 compatibility promise.
+Consumers must source any v1.2 shared fixture from this versioned producer
+contract and verify the terminal artifact's exact bytes and SHA-256.
