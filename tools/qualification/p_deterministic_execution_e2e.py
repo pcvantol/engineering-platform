@@ -140,7 +140,7 @@ def verify_receipt(data_root: Path, project: str, run_id: str) -> dict[str, obje
     return {"run_id": run_id, "assurance_reviews": observed, "terminal_phase": row[0]}
 
 
-def verify_controlled_recovery(data_root: Path, checkout: Path, run_id: str, base: str) -> dict[str, object]:
+def verify_controlled_recovery(data_root: Path, checkout: Path, run_id: str, base: str, project: str = "recovery") -> dict[str, object]:
     control = checkout / ".engineering" / "artifacts" / "provider-recovery-fault-injection" / f"{run_id}-EXECUTE_AGENT.json"
     consumed = json.loads(control.read_text(encoding="utf-8"))
     if consumed.get("kind") != "CONTROLLED_PROVIDER_INTERRUPTION" or consumed.get("phase") != "EXECUTE_AGENT":
@@ -151,11 +151,63 @@ def verify_controlled_recovery(data_root: Path, checkout: Path, run_id: str, bas
         ).fetchone()
     if recovery != ("EXECUTE_AGENT", "RECOVERED", "SUCCESS"):
         raise RuntimeError(f"CONTROLLED_RECOVERY_LINEAGE_INVALID: {recovery}")
-    with urlopen(base + "/api/prompt-history?project=recovery", timeout=5) as response:  # nosec B310
+    with urlopen(base + f"/api/prompt-history?project={project}", timeout=5) as response:  # nosec B310
         history = json.loads(response.read())
     if not isinstance(history, list) or not any(item.get("run_id") == run_id for item in history if isinstance(item, dict)):
         raise RuntimeError("CONTROLLED_RECOVERY_DASHBOARD_HISTORY_UNAVAILABLE")
     return {"run_id": run_id, "control": "CONSUMED", "recovery": "RECOVERED", "dashboard_history": "VISIBLE"}
+
+
+def merge_github_pull_request(repository: str, pull_request: int) -> None:
+    """Cross the explicit human merge boundary of the disposable fixture."""
+    subprocess.run(
+        ("gh", "pr", "merge", str(pull_request), "--repo", repository, "--merge", "--delete-branch"),
+        check=True, capture_output=True, text=True,
+    )  # nosec B603
+
+
+def run_id_for_submission(server: Path, data_root: Path, submission_id: str) -> str:
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        diagnosis = command(server, "submission-diagnose", "--data-root", str(data_root), "--submission-id", submission_id)
+        run_id = diagnosis.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            return run_id
+        time.sleep(.2)
+    raise RuntimeError("MANAGED_GITHUB_RUN_ID_UNAVAILABLE")
+
+
+def complete_github_managed_run(
+    server: Path, data_root: Path, submission_id: str, checkout: Path,
+    repository: str, implementation_branch: str, project: str,
+) -> dict[str, object]:
+    """Verify the real remote implementation and Finalization handoffs to COMPLETE.
+
+    The script is the designated human operator for this disposable fixture.
+    It never changes production merge authority: each merge is an explicit
+    GitHub CLI mutation on the exact repository named by the caller.
+    """
+    implementation = wait_github_handoff(checkout, repository, implementation_branch)
+    pull_request = implementation["pull_request"]
+    if not isinstance(pull_request, dict) or not isinstance(pull_request.get("number"), int):
+        raise RuntimeError("MANAGED_GITHUB_IMPLEMENTATION_PR_INVALID")
+    merge_github_pull_request(repository, pull_request["number"])
+    run_id = run_id_for_submission(server, data_root, submission_id)
+    finalization_branch = f"codex/finalize-{run_id}"
+    finalization = wait_github_handoff(checkout, repository, finalization_branch)
+    finalization_pr = finalization["pull_request"]
+    if not isinstance(finalization_pr, dict) or not isinstance(finalization_pr.get("number"), int):
+        raise RuntimeError("MANAGED_GITHUB_FINALIZATION_PR_INVALID")
+    merge_github_pull_request(repository, finalization_pr["number"])
+    _, terminal_run_id = wait_terminal(server, data_root, submission_id)
+    if terminal_run_id != run_id:
+        raise RuntimeError("MANAGED_GITHUB_RUN_ID_CHANGED")
+    receipt = verify_receipt(data_root, project, run_id)
+    return {
+        **receipt,
+        "implementation": implementation,
+        "finalization": finalization,
+    }
 
 
 def submit(base: str, credential: str, project: str, repository: str, prompt: str, key: str) -> str:
@@ -278,22 +330,45 @@ def main(argv: list[str] | None = None) -> int:
                 credential = str(command(server, "issue-consumer-credential", "--data-root", str(data), "--project-id", project, "--consumer-id", f"{mode}-e2e")["credential"])
                 submission = submit(base, credential, project, repository, prompt, f"{mode}-e2e")
                 if mode == "managed" and github_write:
-                    evidence[mode] = wait_github_handoff(managed, str(args.managed_github_repository), str(github_branch))
+                    evidence[mode] = complete_github_managed_run(
+                        server, data, submission, managed,
+                        str(args.managed_github_repository), str(github_branch), project,
+                    )
                     continue
                 _, run_id = wait_terminal(server, data, submission)
                 evidence[mode] = verify_receipt(data, project, run_id)
-            recovery = root / "controlled-recovery"
-            create_repository(recovery, origin=root / "controlled-recovery-origin.git")
-            bind_project(server, data, project="recovery", repository="recovery-repo", checkout=recovery, push_declaration=True)
+            recovery_project, recovery_repository = "recovery", "recovery-repo"
+            if github_write:
+                # Reuse the installed, already bound dummy fixture after the
+                # first run reached COMPLETE. This proves interruption/retry
+                # with the same real GitHub provider adapter and remote write
+                # boundary, without inventing another authority declaration.
+                recovery, recovery_project, recovery_repository = managed, managed_project, managed_identity
+                recovery_branch = f"{github_branch}-recovery"
+            else:
+                recovery = root / "controlled-recovery"
+                create_repository(recovery, origin=root / "controlled-recovery-origin.git")
+                bind_project(server, data, project=recovery_project, repository=recovery_repository, checkout=recovery, push_declaration=True)
             control_ready.with_suffix(control_ready.suffix + ".enable").write_text("enabled\n", encoding="utf-8")
-            credential = str(command(server, "issue-consumer-credential", "--data-root", str(data), "--project-id", "recovery", "--consumer-id", "recovery-e2e")["credential"])
-            submission = submit(base, credential, "recovery", "recovery-repo", "Execution Mode: Managed\n\nInstalled controlled recovery qualification.", "controlled-recovery-e2e")
+            credential = str(command(server, "issue-consumer-credential", "--data-root", str(data), "--project-id", recovery_project, "--consumer-id", "recovery-e2e")["credential"])
+            submission = submit(base, credential, recovery_project, recovery_repository, "Execution Mode: Managed\n\nInstalled controlled recovery qualification.", "controlled-recovery-e2e")
             run_id = arm_controlled_recovery(venv, data, recovery, control_ready)
-            _, terminal_run_id = wait_terminal(server, data, submission)
-            if terminal_run_id != run_id:
-                raise RuntimeError("CONTROLLED_RECOVERY_RUN_ID_CHANGED")
-            verify_receipt(data, "recovery", run_id)
-            evidence["controlled_recovery"] = verify_controlled_recovery(data, recovery, run_id, base)
+            if github_write:
+                recovery_evidence = complete_github_managed_run(
+                    server, data, submission, recovery, str(args.managed_github_repository),
+                    recovery_branch, recovery_project,
+                )
+                if recovery_evidence["run_id"] != run_id:
+                    raise RuntimeError("CONTROLLED_RECOVERY_RUN_ID_CHANGED")
+            else:
+                _, terminal_run_id = wait_terminal(server, data, submission)
+                if terminal_run_id != run_id:
+                    raise RuntimeError("CONTROLLED_RECOVERY_RUN_ID_CHANGED")
+                recovery_evidence = verify_receipt(data, recovery_project, run_id)
+            evidence["controlled_recovery"] = {
+                **recovery_evidence,
+                **verify_controlled_recovery(data, recovery, run_id, base, recovery_project),
+            }
         finally:
             if not args.persistent_root:
                 process.terminate(); process.wait(timeout=10)

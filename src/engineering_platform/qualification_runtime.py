@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
+import re
 import subprocess
 import time
 
@@ -52,10 +53,27 @@ class DeterministicQualificationAgent:
             target_root = Path(target).resolve()
             sha = subprocess.run(("git", "-C", str(target_root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
             return AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target_root), commit_sha=sha)
+        is_finalization = "finalization pr on exactly" in prompt.lower()
         if self._github_write_target(root):
-            return self._create_github_managed_handoff(root, finalization="finalization" in prompt.lower())
+            return self._create_github_managed_handoff(
+                root,
+                finalization=is_finalization,
+                prompt=prompt,
+            )
         sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
-        return AgentResult("COMPLETE", branch="qualification-managed", pull_request=1, commit_sha=sha)
+        branch = self._finalization_branch(prompt) if is_finalization else "qualification-managed"
+        return AgentResult("COMPLETE", branch=branch, pull_request=1, commit_sha=sha)
+
+    @staticmethod
+    def _finalization_branch(prompt: str) -> str:
+        match = re.search(
+            r"finalization pr on exactly `([^`]+)`",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            raise RuntimeError("QUALIFICATION_FINALIZATION_BRANCH_UNAVAILABLE")
+        return match.group(1)
 
     @staticmethod
     def _github_write_target(root: Path) -> bool:
@@ -70,7 +88,9 @@ class DeterministicQualificationAgent:
         return value.removeprefix("https://github.com/").removeprefix("git@github.com:") == expected
 
     @staticmethod
-    def _create_github_managed_handoff(root: Path, *, finalization: bool = False) -> AgentResult:
+    def _create_github_managed_handoff(
+        root: Path, *, finalization: bool = False, prompt: str = ""
+    ) -> AgentResult:
         """Create one bounded dummy-repository branch and GitHub PR.
 
         This seam is reachable only through the explicit external qualification
@@ -81,7 +101,15 @@ class DeterministicQualificationAgent:
         repository = os.environ.get("EP_QUALIFICATION_GITHUB_REPOSITORY", "")
         branch = os.environ.get("EP_QUALIFICATION_GITHUB_BRANCH", "")
         if finalization:
-            branch = branch + "-finalization"
+            # The host checkpoints the only permitted Finalization branch
+            # before it invokes a provider.  The external qualification seam
+            # must exercise that contract exactly; inventing a fixture branch
+            # makes a successful remote PR unrecoverable by the host.
+            branch = DeterministicQualificationAgent._finalization_branch(prompt)
+        elif "controlled recovery qualification" in prompt.lower():
+            # A second Managed transaction in the same fixture must retain a
+            # distinct remote handoff identity after the armed interruption.
+            branch = branch + "-recovery"
         if not repository or not branch:
             raise RuntimeError("QUALIFICATION_GITHUB_WRITE_CONFIGURATION_INVALID")
 
@@ -90,7 +118,12 @@ class DeterministicQualificationAgent:
 
         run("git", "-C", str(root), "switch", "-c", branch)
         proof = root / ".engineering-platform" / ("managed-github-e2e-finalization-proof.json" if finalization else "managed-github-e2e-proof.json")
-        proof.write_text(json.dumps({"kind": "EP_MANAGED_GITHUB_E2E", "version": 1, "stage": "FINALIZATION" if finalization else "IMPLEMENTATION"}, sort_keys=True) + "\n", encoding="utf-8")
+        proof.write_text(json.dumps({
+            "branch": branch,
+            "kind": "EP_MANAGED_GITHUB_E2E",
+            "stage": "FINALIZATION" if finalization else "IMPLEMENTATION",
+            "version": 1,
+        }, sort_keys=True) + "\n", encoding="utf-8")
         run("git", "-C", str(root), "add", str(proof.relative_to(root)))
         run("git", "-C", str(root), "commit", "-m", "test: record managed GitHub qualification handoff")
         run("git", "-C", str(root), "push", "--set-upstream", "origin", branch)

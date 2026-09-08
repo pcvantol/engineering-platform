@@ -2960,6 +2960,14 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 "finalization_pr_required",
                 result.diagnostic or "Finalization pull request was not created.",
             )
+        expected_branch = finalization.finalization_branch or finalization.branch
+        if not expected_branch or result.branch != expected_branch:
+            return self._save_terminal(
+                finalization,
+                "BLOCKED",
+                "finalization_branch_mismatch",
+                "Finalization returned a pull request outside the durable Finalization branch.",
+            )
         finalization = replace(
             finalization,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",

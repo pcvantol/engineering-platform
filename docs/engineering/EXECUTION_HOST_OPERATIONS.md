@@ -173,11 +173,16 @@ python3 tools/qualification/p_deterministic_execution_e2e.py --source-root . \
 ```
 
 The command rejects a dirty checkout, a non-matching `origin`, unavailable
-GitHub access, or a missing explicit write flag. It commits and pushes one
-unique `qualification/managed-e2e-*` branch, creates one open PR against
-`main`, and verifies both remote branch and PR identity. It does **not** merge,
-close, or delete that PR or branch: the normal human merge boundary remains in
-force. This profile is intentionally excluded from CI and release gates.
+GitHub access, or a missing explicit write flag. It commits and pushes an
+implementation branch, creates and verifies its PR, then acts as the explicit
+operator only for that named disposable fixture: it merges the implementation
+PR, verifies the host-created `codex/finalize-<run-id>` Finalization PR,
+merges it, and requires the canonical run to reach `COMPLETE`. It repeats the
+same real remote handoff and finalization for the armed recovery lane, proving
+the same-run `RECOVERED` lineage rather than merely an armed marker. Remote
+branches are deleted by the GitHub merge operation; the fixture repository and
+the optional persistent local qualification root are retained for inspection.
+This profile is intentionally excluded from CI and release gates.
 
 ## CENTRAL project lanes
 
