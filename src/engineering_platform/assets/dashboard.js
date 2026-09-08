@@ -962,9 +962,12 @@ function queueItems(x, queueDepth) {
     body.append(title, meta);
     row.append(number, body);
     if (defer) actions.append(defer);
-    if (item.queue_source === "CENTRAL" && item.queue_state === "QUEUED") {
-      [["QUARANTINED", "queue.quarantine", "Operator quarantined this submission from Operations Console."],
-       ["DECLINED", "queue.decline", "Operator declined this submission from Operations Console."]].forEach(([disposition, actionKey, reason]) => {
+    if (item.queue_source === "CENTRAL" && ["QUEUED", "QUARANTINED"].includes(item.queue_state)) {
+      (item.queue_state === "QUEUED"
+        ? [["QUARANTINED", "queue.quarantine", "Operator quarantined this submission from Operations Console."],
+           ["DECLINED", "queue.decline", "Operator declined this submission from Operations Console."]]
+        : [["DECLINED", "queue.decline", "Operator declined this quarantined submission from Operations Console."]]
+      ).forEach(([disposition, actionKey, reason]) => {
         const action = document.createElement("button");
         action.className = `queue-defer${disposition === "DECLINED" ? " queue-defer--destructive" : ""}`;
         action.type = "button";

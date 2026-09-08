@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import unicodedata
 import secrets
 import sqlite3
 from pathlib import Path
@@ -48,28 +49,62 @@ class SubmissionError(ValueError):
 
 
 def operator_queue_disposition(connection: sqlite3.Connection, *, project_id: str,
-                               submission_id: str, disposition: str, reason: str) -> dict[str, str]:
+                               submission_id: str, disposition: str, reason: str,
+                               expected_state: str | None = None,
+                               expected_revision: int | None = None,
+                               operation_id: str | None = None,
+                               actor_reference: str = "LEGACY_NOT_RECORDED") -> dict[str, object]:
     """Apply one auditable CENTRAL queue disposition; never delete intent."""
-    if disposition not in OPERATOR_QUEUE_STATES | {"QUEUED"} or not reason.strip() or len(reason) > 500:
+    if (not isinstance(submission_id, str) or not isinstance(disposition, str)
+            or not isinstance(reason, str) or not isinstance(actor_reference, str)):
         raise SubmissionError("INVALID_QUEUE_DISPOSITION")
+    normalized_reason = unicodedata.normalize("NFC", reason).strip()
+    if (disposition not in OPERATOR_QUEUE_STATES | {"QUEUED"} or not normalized_reason
+            or len(normalized_reason) > 500 or any(ord(char) < 32 and char not in "\t" for char in normalized_reason)):
+        raise SubmissionError("INVALID_QUEUE_DISPOSITION")
+    command_digest = hashlib.sha256(json.dumps(
+        [project_id, submission_id, expected_state, expected_revision, disposition, normalized_reason],
+        separators=(",", ":"),
+    ).encode()).hexdigest()
+    if operation_id is not None:
+        if not isinstance(operation_id, str) or not operation_id or len(operation_id) > 128:
+            raise SubmissionError("INVALID_QUEUE_DISPOSITION")
+        prior = connection.execute(
+            "SELECT command_digest,to_state,resulting_revision,recorded_at FROM ep_queue_disposition_operations WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if prior is not None:
+            if str(prior[0]) != command_digest:
+                raise SubmissionError("OPERATION_ID_CONFLICT", 409)
+            return {"submission_id": submission_id, "state": str(prior[1]), "reason": normalized_reason,
+                    "recorded_at": str(prior[3]), "resulting_revision": int(prior[2]), "operation_id": operation_id,
+                    "replayed": True}
     row = connection.execute(
-        "SELECT state FROM ep_submissions WHERE project_id=? AND submission_id=?", (project_id, submission_id)
+        "SELECT state,admission,disposition_revision FROM ep_submissions WHERE project_id=? AND submission_id=?", (project_id, submission_id)
     ).fetchone()
     if row is None:
         raise SubmissionError("SUBMISSION_NOT_FOUND", 404)
-    current = str(row[0])
+    current, admission, revision = str(row[0]), str(row[1]), int(row[2])
+    if admission != "ADMITTED" or (expected_state is not None and expected_state != current) or (expected_revision is not None and expected_revision != revision):
+        raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
+    if connection.execute("SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE submission_id=?", (submission_id,)).fetchone() is not None:
+        raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
     allowed = (current == "QUEUED" and disposition in OPERATOR_QUEUE_STATES) or (
         current in {"DEFERRED", "QUARANTINED"} and disposition == "QUEUED"
-    )
+    ) or (current == "QUARANTINED" and disposition == "DECLINED")
     if not allowed:
         raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
     now = _now()
-    connection.execute("UPDATE ep_submissions SET state=? WHERE project_id=? AND submission_id=?", (disposition, project_id, submission_id))
-    connection.execute(
+    changed = connection.execute("UPDATE ep_submissions SET state=?,disposition_revision=disposition_revision+1 WHERE project_id=? AND submission_id=? AND state=? AND disposition_revision=?", (disposition, project_id, submission_id, current, revision)).rowcount
+    if changed != 1:
+        raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
+    event = connection.execute(
         "INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)",
-        (submission_id, "OPERATOR_QUEUE_" + disposition, json.dumps({"state": disposition, "reason": reason.strip()}, sort_keys=True), now),
+        (submission_id, "OPERATOR_QUEUE_" + disposition, json.dumps({"state": disposition, "reason": normalized_reason, "actor_reference": actor_reference, "from_state": current, "previous_revision": revision, "resulting_revision": revision + 1, "operation_id": operation_id}, sort_keys=True), now),
     )
-    return {"submission_id": submission_id, "state": disposition, "reason": reason.strip(), "recorded_at": now}
+    if operation_id is not None:
+        connection.execute("INSERT INTO ep_queue_disposition_operations(operation_id,project_id,submission_id,actor_reference,command_digest,from_state,to_state,previous_revision,resulting_revision,event_id,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (operation_id, project_id, submission_id, actor_reference, command_digest, current, disposition, revision, revision + 1, event.lastrowid, now))
+    return {"submission_id": submission_id, "state": disposition, "reason": normalized_reason, "recorded_at": now, "previous_revision": revision, "resulting_revision": revision + 1, "operation_id": operation_id}
 
 
 def _lifecycle_payload(*, transport: str, producer_id: str) -> dict[str, str]:

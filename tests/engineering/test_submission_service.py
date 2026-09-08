@@ -59,6 +59,18 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)["submission"]["state"],
                 "QUARANTINED",
             )
+            self.assertEqual(submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="DECLINED", reason="The operator rejected the quarantined submission",
+            )["state"], "DECLINED")
+            events = [row[0] for row in connection.execute("SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,))]
+            self.assertEqual(events[-2:], ["OPERATOR_QUEUE_QUARANTINED", "OPERATOR_QUEUE_DECLINED"])
+            self.assertNotIn("OPERATOR_QUEUE_QUEUED", events[-2:])
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("resume"), transport="HTTP"))
+            held = submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="QUARANTINED", reason="Needs operator review",
+            )
             resumed = submission_service.operator_queue_disposition(
                 connection, project_id="djconnect", submission_id=submitted.submission_id,
                 disposition="QUEUED", reason="Review completed",
