@@ -57,3 +57,17 @@ test("rejects placeholder drift between required locales", () => {
   catalogs.nl["queue.defer_description"] = "Uitstellen zonder titel";
   assert.match(placeholderConsistencyFindings(catalogs).join("\n"), /PLACEHOLDER_MISMATCH locale=nl key=queue\.defer_description/);
 });
+
+test("contains a five-locale explanation for every platform-data relocation error", () => {
+  const codes = [
+    "LOCATION_REQUIRED", "LOCATION_NOT_WRITABLE", "PLATFORM_DATA_DESTINATION_INVALID",
+    "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNAVAILABLE", "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED",
+    "PLATFORM_DATA_COPY_VERIFICATION_FAILED", "PLATFORM_DATA_DESTINATION_NOT_PREPARED",
+    "PLATFORM_DATA_DESTINATION_NOT_EMPTY", "PLATFORM_DATA_UNAVAILABLE", "PLATFORM_DATA_DESTINATION_EXISTS",
+    "RELOCATION_KIND_RETIRED", "RELOCATION_ALREADY_PENDING", "RELOCATION_REQUEST_INVALID",
+    "PLATFORM_DATA_RELOCATION_BLOCKED", "UNKNOWN",
+  ];
+  for (const locale of ["en", "nl", "de", "fr", "es"])
+    for (const code of codes)
+      assert.ok(DASHBOARD_MESSAGES[locale][`configuration.relocation_error.${code}`], `${locale}:${code}`);
+});

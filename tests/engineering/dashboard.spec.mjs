@@ -719,9 +719,17 @@ test.describe("Engineering Status browser smoke", () => {
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
-    await openPlatformAttention(page);
+    const attention = await openPlatformAttention(page);
     await expect(page.locator("#codexProviderReadinessBanner")).toBeVisible();
     await expect(page.locator("#codexProviderReadinessAction")).toBeHidden();
+    await expect(attention).toHaveCSS("border-top-width", "0px");
+    await expect(attention).toHaveCSS("border-right-width", "0px");
+    await expect(attention).toHaveCSS("border-bottom-width", "0px");
+    await expect(attention).toHaveCSS("border-left-width", "0px");
+    await expect(attention.locator("summary")).toHaveJSProperty("tagName", "SUMMARY");
+    expect(await attention.locator("summary").evaluate((summary) =>
+      getComputedStyle(summary, "::after").fontSize,
+    )).toBe("24px");
   });
 
   test("clears a transient provider check failure when the dashboard becomes visible", async ({ page }) => {
@@ -744,6 +752,27 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(page.locator("#codexProviderReadinessBanner")).toBeHidden();
     await expect(page.locator("#githubProviderReadinessBanner")).toBeHidden();
+    expect(checks).toBeGreaterThanOrEqual(2);
+  });
+
+  test("rechecks a transient provider failure after a server restart without waiting for a visibility change", async ({ page }) => {
+    let checks = 0;
+    await page.route("**/api/provider-login-status", async (route) => {
+      checks += 1;
+      if (checks === 1) {
+        await route.abort("failed");
+        return;
+      }
+      await route.fulfill({ json: { providers: {
+        codex: { provider: "CODEX", state: "READY" },
+        github: { provider: "GITHUB", state: "READY" },
+      } } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    await openPlatformAttention(page);
+    await expect(page.locator("#codexProviderReadinessBanner")).toBeVisible();
+    await expect(page.locator("#codexProviderReadinessBanner")).toBeHidden({ timeout: 3_000 });
     expect(checks).toBeGreaterThanOrEqual(2);
   });
 
@@ -7701,6 +7730,25 @@ test.describe("Engineering Status browser smoke", () => {
     expect(gap).toBeGreaterThanOrEqual(10);
   });
 
+  test("shows the current version beside a logged component reference", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      renderPlatformHealth({ components: {
+        dashboard_relay: { healthy: true, version: "2.3.0" },
+      } });
+      componentLogEntries.platform = [{
+        line: 1, timestamp: "2026-09-08T10:00:00Z", component: "operations_console",
+        level: "INFO", event: "component_restart_completed", runId: "",
+        details: "target_component: dashboard_relay", target_component: "dashboard_relay",
+      }];
+      componentLogServerPaged = false;
+      renderComponentLogs();
+    });
+    await expect(page.locator("#platformComponentLog tr")).toContainText(
+      "component_version: 2.3.0",
+    );
+  });
+
   test("keeps the dismiss action in its stable grid position without restart support", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
@@ -7783,6 +7831,35 @@ test.describe("Engineering Status browser smoke", () => {
 
     await expect(page.getByTestId("dashboard-splash")).toBeVisible();
     await expect(page.locator("body")).not.toHaveClass(/dashboard-ready/);
+  });
+
+  test("confirms a relay restart from fresh health when its own connection closes", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      renderPlatformHealth({ components: {
+        dashboard_relay: { healthy: true, uptime_seconds: 480 },
+      } });
+      showComponentModal({
+        component: "dashboard_relay",
+        healthy: true,
+        detail: "running",
+        launchd: {},
+        restart_supported: true,
+      });
+    });
+    await page.route("**/api/components/dashboard_relay/restart", (route) =>
+      route.abort("failed"),
+    );
+    await page.route("**/health", (route) => route.fulfill({ json: { components: {
+      dashboard_relay: { healthy: true, uptime_seconds: 1 },
+    } } }));
+
+    await page.locator("#componentModalRestart").click();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect(page.locator("#componentModalStatus")).toHaveText(
+      DASHBOARD_MESSAGES.nl["ui.component_restart_available"],
+      { timeout: 3_000 },
+    );
   });
 
   test("refreshes uptime and memory while component details remain open", async ({ page }) => {
@@ -8274,6 +8351,17 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#centralDatabaseRelocateBrowse").click();
     await expect(page.locator("#centralDatabaseRelocateStatus")).toHaveText("Kies voor verplaatsing naar een andere schijf of volume een APFS-geformatteerde map.");
     await expect(page.locator("#centralDatabaseRelocateSave")).toBeDisabled();
+  });
+
+  test("localizes required relocation destinations instead of showing the server code", async ({ page }) => {
+    await page.route("**/api/central-data/relocate/browse", async (route) => {
+      await route.fulfill({ status: 400, json: { error: "LOCATION_REQUIRED" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#centralDatabaseRelocate").click();
+    await page.locator("#centralDatabaseRelocateBrowse").click();
+    await expect(page.locator("#centralDatabaseRelocateStatus")).toHaveText("Kies eerst een map voordat je verplaatst.");
   });
 
   test("gives the platform-data import filename a wide modal", async ({ page }) => {

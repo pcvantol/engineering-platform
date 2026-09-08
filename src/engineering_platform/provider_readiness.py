@@ -15,6 +15,7 @@ from .providers import CodexCliProvider, LocalProcessProvider, codex_cli_executa
 
 
 _VERSION = re.compile(r"\b\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.]+)?\b")
+CODEX_READINESS_TIMEOUT_SECONDS = 2
 
 
 def _classify(result: subprocess.CompletedProcess[str] | None) -> str:
@@ -54,8 +55,8 @@ def runtime_details(root: Path) -> dict[str, dict[str, str]]:
     """Project token-free CLI provenance for the host-wide Console projection."""
     codex_path = codex_cli_executable() or ""
     try:
-        codex_version = _version(CodexCliProvider().command("--version")) if codex_path else ""
-    except OSError:
+        codex_version = _version(CodexCliProvider().command("--version", timeout=CODEX_READINESS_TIMEOUT_SECONDS)) if codex_path else ""
+    except (OSError, subprocess.TimeoutExpired):
         codex_version = ""
     github_path = shutil.which("gh") or ""
     try:
@@ -79,8 +80,8 @@ def host_status(root: Path, *, require_github: bool = True) -> dict[str, dict[st
     codex = CodexCliProvider()
     codex_installed = codex.status().qualified
     try:
-        codex_result = codex.command("login", "status") if codex_installed else None
-    except OSError:
+        codex_result = codex.command("login", "status", timeout=CODEX_READINESS_TIMEOUT_SECONDS) if codex_installed else None
+    except (OSError, subprocess.TimeoutExpired):
         codex_result = None
     # A server can be queried immediately after launchd restarts it (notably
     # after a platform-data import).  The managed CLI may transiently fail
@@ -89,8 +90,8 @@ def host_status(root: Path, *, require_github: bool = True) -> dict[str, dict[st
     # as a provider fault, while still failing closed if it persists.
     if codex_installed and _classify(codex_result) == "CHECK_FAILED":
         try:
-            codex_result = codex.command("login", "status")
-        except OSError:
+            codex_result = codex.command("login", "status", timeout=CODEX_READINESS_TIMEOUT_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
             codex_result = None
     result = {
         "codex": {"provider": "CODEX", "state": "UNAVAILABLE" if not codex_installed else _classify(codex_result)},

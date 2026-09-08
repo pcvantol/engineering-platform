@@ -1758,6 +1758,7 @@ def status(data_root: Path) -> dict[str, object]:
     running = bool(runtime and _alive(runtime.get("pid")))
     components = _transport_components(data_root, server_running=running)
     components["dashboard_relay"] = _dashboard_relay_component(server_running=running)
+    platform_version = _console_platform_version()
     # One Server-native inventory feeds Components, the titlebar popout and
     # detail modals. It deliberately contains no watcher/check-out model.
     for definition in PLATFORM_COMPONENTS:
@@ -1767,6 +1768,7 @@ def status(data_root: Path) -> dict[str, object]:
                 "group": definition.group, "critical": definition.critical, "restart_supported": definition.restart_supported,
                 "log_component": definition.id,
             })
+            components[definition.id].setdefault("version", platform_version)
             continue
         healthy = True if definition.id == "platform_database" else running
         components[definition.id] = {
@@ -1775,10 +1777,10 @@ def status(data_root: Path) -> dict[str, object]:
             "log_component": definition.id, "healthy": healthy,
             "status_code": definition.active_status if healthy else definition.inactive_status,
             "detail_code": definition.detail_code,
-            **({"version": str(SERVER_STORE_SCHEMA_VERSION)} if definition.id == "platform_database" else {}),
+            "version": str(SERVER_STORE_SCHEMA_VERSION) if definition.id == "platform_database" else platform_version,
         }
     server_component = components["ep_server"]
-    server_component["version"] = _console_platform_version()
+    server_component["version"] = platform_version
     started_at = runtime.get("started_at") if runtime else None
     if isinstance(started_at, str):
         try:

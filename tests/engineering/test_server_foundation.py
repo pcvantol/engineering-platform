@@ -758,6 +758,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.initialize(self.root)
         components = server.status(self.root)["components"]
         self.assertEqual(set(components), {"ep_server", "platform_database", "lifecycle_worker", "operations_console", "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress", "dependabot_producer"})
+        self.assertTrue(all(isinstance(component.get("version"), str) and component["version"] for component in components.values()))
         self.assertEqual(components["ep_server"]["status_code"], "EP_SERVER_UNAVAILABLE")
         self.assertEqual(components["platform_database"]["status_code"], "PLATFORM_DATABASE_HEALTHY")
         self.assertEqual(components["http_ingress"]["status_code"], "HTTP_INGRESS_DOWN")
