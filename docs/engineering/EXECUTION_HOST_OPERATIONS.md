@@ -49,9 +49,9 @@ while its tab is visible at a configurable **1, 5 or 10 minute** interval
 (five minutes by default). These are read-only local readiness checks: they
 never reveal credentials, claim queue work, start an execution or consume
 Codex credits. If an initial check fails because the dashboard or its local
-connection was restarting, the next return to the visible tab immediately
-rechecks both providers instead of retaining a stale warning until the next
-polling interval.
+connection was restarting, it makes up to three short, bounded automatic
+rechecks and also checks again when the tab becomes visible. It therefore does
+not retain a stale warning until the normal polling interval.
 
 ## Codex capacity reserve for new work
 

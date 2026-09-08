@@ -67,6 +67,27 @@ class ComponentLoggingTest(unittest.TestCase):
                     ).fetchone()[0])["event"],
                 )
 
+    def test_log_records_version_for_owning_and_named_canonical_components(self) -> None:
+        from engineering_platform.server import initialize
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "central"
+            initialize(data_root)
+            logger = component_logging.component_logger(
+                root, "operations_console", central_database=data_root / server.SERVER_DATABASE_FILENAME,
+            )
+            component_logging.log_event(
+                logger, logging.INFO, "component_restart_completed",
+                context={"target_component": "dashboard_relay"},
+            )
+            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+                record = json.loads(connection.execute(
+                    "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
+                ).fetchone()[0])
+            self.assertEqual(record["component_version"], "2.3.0")
+            self.assertEqual(record["target_component"], "dashboard_relay")
+            self.assertEqual(record["target_component_version"], "2.3.0")
+
     def test_supported_writer_uses_server_central_sink_without_caller_selection(self) -> None:
         """A normal supported component writer cannot fall back to its checkout."""
         from engineering_platform.server import initialize

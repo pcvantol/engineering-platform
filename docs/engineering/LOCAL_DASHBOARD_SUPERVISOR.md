@@ -456,6 +456,12 @@ component restart also records the requested fixed component name before the
 owned `launchctl kickstart -k` call is made. Signal receipt is recorded before
 the normal shutdown record when macOS asks an owned component to stop.
 
+Every newly written component record carries the version of its owning
+component. When a record names another canonical component, it also carries
+that target component's version. The Console shows those version facts beside
+the component reference; older records remain immutable and are annotated only
+with a currently observed version when one is available.
+
 This audit trail is operational evidence, not repository truth. It is stored
 through the same redacted SQLite logging contract as other component events.
 It never includes prompt bodies, credentials, account data, arbitrary commands
@@ -496,6 +502,12 @@ used for an ordinary dashboard load, then reloads the browser after the owned
 restart request has been accepted. This only refreshes the private browser
 surface; it neither changes Execution Host work nor broadens the restart
 authority.
+
+Restarting the Server Relay may close the browser request before the relay can
+return its acknowledgement. The Console treats that as an indeterminate
+handoff, not as a failed restart: it checks fresh health and confirms success
+only after the relay is healthy with a newly observed runtime. If that cannot
+be confirmed, the modal states that explicitly.
 
 ## Browser validation
 
