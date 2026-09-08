@@ -25,6 +25,8 @@ from urllib.request import Request, urlopen
 
 
 CENTRAL_DATABASE_FILENAME = "epdata.sqlite"
+SERVER_CONFIGURATION_FILENAME = "server.json"
+QUALIFICATION_RUNTIME_VERSION = "0.153.4"
 
 
 def command(binary: Path, *args: str) -> dict[str, object]:
@@ -85,6 +87,31 @@ def create_repository(path: Path, *, origin: Path | None = None) -> None:
         git(path, "remote", "add", "origin", str(origin))
         git(path, "push", "-qu", "origin", "main")
         subprocess.run(("git", "--git-dir", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"), check=True)  # nosec B603
+
+
+def configure_deterministic_runtime(data_root: Path, root: Path) -> Path:
+    """Install the minimal managed-runtime contract inside this qualification only.
+
+    Host preflight must remain real in the installed E2E.  CI deliberately has
+    no account-wide EP-managed Codex installation, so the isolated data root
+    owns a tiny version-reporting launcher.  The deterministic provider never
+    invokes it for agent work; it exists solely to exercise the same resolved
+    launcher and invocation checks that production performs.
+    """
+    prefix = root / "managed-codex-cli"
+    executable = prefix / "bin" / "codex"
+    executable.parent.mkdir(parents=True)
+    executable.write_text(f"#!/bin/sh\nprintf 'codex {QUALIFICATION_RUNTIME_VERSION}\\n'\n", encoding="utf-8")
+    executable.chmod(0o755)
+    configuration_path = data_root / SERVER_CONFIGURATION_FILENAME
+    configuration = json.loads(configuration_path.read_text(encoding="utf-8"))
+    if not isinstance(configuration, dict) or set(configuration) != {
+        "version", "bind_host", "bind_port", "managed_codex_cli_prefix",
+    }:
+        raise RuntimeError("QUALIFICATION_SERVER_CONFIGURATION_INVALID")
+    configuration["managed_codex_cli_prefix"] = str(prefix.resolve())
+    configuration_path.write_text(json.dumps(configuration, sort_keys=True) + "\n", encoding="utf-8")
+    return executable
 
 
 def wait_terminal(server: Path, data_root: Path, submission_id: str) -> tuple[str, str]:
@@ -287,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         server = venv / "bin" / "python"
         bind_port = args.bind_port or port()
         command(server, "init", "--data-root", str(data), "--bind-port", str(bind_port))
+        configure_deterministic_runtime(data, root)
         genesis_host, genesis_target = root / "genesis-host", root / "genesis-target"
         create_repository(genesis_host)
         create_repository(genesis_target)
