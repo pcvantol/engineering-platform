@@ -180,6 +180,22 @@ class PlatformProductizationTest(unittest.TestCase):
             self.assertEqual(module.advance(root, component="minor"), "2.2.0")
             self.assertEqual(module._current_version(root), "2.2.0")
 
+    def test_bootstrap_docs_only_classification_does_not_allocate_a_version(self) -> None:
+        import importlib.util
+        script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+        spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in _version_projection_files():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            module.set_version(root, "2.3.0")
+            self.assertEqual(module.advance(root, component="none"), "2.3.0")
+
     def test_release_build_can_set_an_exact_branch_version_across_all_projections(self) -> None:
         import importlib.util
         script = ROOT / "tools" / "qualification" / "advance_platform_build.py"

@@ -19,6 +19,7 @@ import tomllib
 
 
 _VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+POLICY_REVISION = "engineering-platform-bootstrap-release-cadence-v2"
 VERSION_PROJECTION_PATHS = (
     "pyproject.toml",
     "package.json",
@@ -151,12 +152,14 @@ def advance(root: Path, *, component: str = "patch") -> str:
     """Advance one stable semantic-version component across all projections."""
     current = _current_version(root)
     major, minor, patch = (int(part) for part in current.split("."))
+    if component == "none":
+        return current
     if component == "patch":
         target = f"{major}.{minor}.{patch + 1}"
     elif component == "minor":
         target = f"{major}.{minor + 1}.0"
     else:
-        raise RuntimeError("version component must be patch or minor")
+        raise RuntimeError("version component must be none, patch or minor")
     return set_version(root, target)
 
 
@@ -164,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Apply an explicit canonical EP version operation")
     parser.add_argument("--source-root", type=Path, default=Path.cwd())
     parser.add_argument("--set-version", help="set all canonical projections to this exact stable X.Y.Z version")
-    parser.add_argument("--bump", choices=("patch", "minor"), help="semantic-version component to advance")
+    parser.add_argument("--bump", choices=("none", "patch", "minor"), help="bootstrap release classification")
     parser.add_argument("--expected-version")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
