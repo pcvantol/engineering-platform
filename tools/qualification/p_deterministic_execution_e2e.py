@@ -10,6 +10,7 @@ boundary; CI never selects that profile.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -204,12 +205,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--managed-repository", type=Path, help="Clean checkout of the approved dummy GitHub repository.")
     parser.add_argument("--managed-github-repository", help="Exact approved dummy GitHub owner/repository identity.")
     parser.add_argument("--allow-managed-github-writes", action="store_true", help="Explicitly authorize one dummy-repository branch and pull request.")
+    parser.add_argument("--persistent-root", type=Path, help="New isolated qualification root retained after an external GitHub hand-off.")
+    parser.add_argument("--bind-port", type=int, help="Fixed localhost port for a retained qualification Server.")
     args = parser.parse_args(argv)
     github_write = args.allow_managed_github_writes or args.managed_github_repository is not None
     if github_write and (not args.allow_managed_github_writes or not args.managed_repository or not args.managed_github_repository):
         raise RuntimeError("MANAGED_GITHUB_WRITE_AUTHORIZATION_REQUIRED")
-    with tempfile.TemporaryDirectory(prefix="ep-deterministic-e2e-") as temporary:
+    if args.persistent_root and not github_write:
+        raise RuntimeError("PERSISTENT_QUALIFICATION_REQUIRES_GITHUB_WRITE_PROFILE")
+    if args.persistent_root and args.persistent_root.exists() and any(args.persistent_root.iterdir()):
+        raise RuntimeError("PERSISTENT_QUALIFICATION_ROOT_MUST_BE_EMPTY")
+    context = nullcontext(str(args.persistent_root.resolve())) if args.persistent_root else tempfile.TemporaryDirectory(prefix="ep-deterministic-e2e-")
+    with context as temporary:
         root, wheelhouse, venv, data = Path(temporary), Path(temporary) / "wheelhouse", Path(temporary) / "venv", Path(temporary) / "central"
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
         wheelhouse.mkdir()
         subprocess.run((sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)), check=True, capture_output=True, text=True)  # nosec B603
         subprocess.run((sys.executable, "-m", "venv", str(venv)), check=True)  # nosec B603
@@ -218,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         # wheel contents rather than relying on a platform-specific console
         # script wrapper being present in the virtual environment.
         server = venv / "bin" / "python"
-        bind_port = port()
+        bind_port = args.bind_port or port()
         command(server, "init", "--data-root", str(data), "--bind-port", str(bind_port))
         genesis_host, genesis_target = root / "genesis-host", root / "genesis-target"
         create_repository(genesis_host)
@@ -280,7 +289,10 @@ def main(argv: list[str] | None = None) -> int:
             verify_receipt(data, "recovery", run_id)
             evidence["controlled_recovery"] = verify_controlled_recovery(data, recovery, run_id, base)
         finally:
-            process.terminate(); process.wait(timeout=10)
+            if not args.persistent_root:
+                process.terminate(); process.wait(timeout=10)
+            else:
+                (root / "qualification-runtime.json").write_text(json.dumps({"data_root": str(data), "port": bind_port, "pid": process.pid, "managed_project": managed_project}, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps({"result": "PASS", "managed_fixture": "github-write" if github_write else "local-origin", "evidence": evidence}, sort_keys=True))
     return 0
 
