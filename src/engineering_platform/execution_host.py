@@ -1901,13 +1901,11 @@ Local repository validation gate — read-only measurement:
         candidate must therefore be inspectable without Managed's canonical
         bootstrap document or an ``origin`` remote.
         """
-        if execution_mode != "GENESIS":
+        try:
             return self.repository.inspect(root)
-        if not (root / ".git").exists():
-            # Compatibility seam for direct host callers whose repository
-            # evidence is supplied by a test/dedicated repository adapter.
-            # Installed Genesis admission always has a real Git host here.
-            return self.repository.inspect(root)
+        except RunnerError:
+            if execution_mode != "GENESIS" or not (root / ".git").exists():
+                raise
         provider = getattr(self.repository, "provider", GitProvider())
         try:
             branch = provider.command(root, "git", "branch", "--show-current")
