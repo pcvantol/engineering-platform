@@ -284,14 +284,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--managed-repository", type=Path, help="Clean checkout of the approved dummy GitHub repository.")
     parser.add_argument("--managed-github-repository", help="Exact approved dummy GitHub owner/repository identity.")
     parser.add_argument("--allow-managed-github-writes", action="store_true", help="Explicitly authorize one dummy-repository branch and pull request.")
-    parser.add_argument("--persistent-root", type=Path, help="New isolated qualification root retained after an external GitHub hand-off.")
+    parser.add_argument("--persistent-root", type=Path, help="New isolated qualification root retained for inspection; it never shares canonical production data.")
     parser.add_argument("--bind-port", type=int, help="Fixed localhost port for a retained qualification Server.")
     args = parser.parse_args(argv)
     github_write = args.allow_managed_github_writes or args.managed_github_repository is not None
     if github_write and (not args.allow_managed_github_writes or not args.managed_repository or not args.managed_github_repository):
         raise RuntimeError("MANAGED_GITHUB_WRITE_AUTHORIZATION_REQUIRED")
-    if args.persistent_root and not github_write:
-        raise RuntimeError("PERSISTENT_QUALIFICATION_REQUIRES_GITHUB_WRITE_PROFILE")
     if args.persistent_root and args.persistent_root.exists() and any(args.persistent_root.iterdir()):
         raise RuntimeError("PERSISTENT_QUALIFICATION_ROOT_MUST_BE_EMPTY")
     context = nullcontext(str(args.persistent_root.resolve())) if args.persistent_root else tempfile.TemporaryDirectory(prefix="ep-deterministic-e2e-")

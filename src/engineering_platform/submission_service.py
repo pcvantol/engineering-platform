@@ -409,6 +409,65 @@ def _findings_artifact_id(run_id: str) -> str:
     return f"assurance-findings:{run_id}"
 
 
+def _current_assurance(checkpoint: object) -> tuple[str, list[dict[str, object]], list[dict[str, object]]]:
+    """Project final assurance from one complete current review set.
+
+    Earlier review records are deliberately not overwritten: they remain
+    historical observations in the findings artifact.  Only the most recent
+    complete quality/security pair bound to the checkpoint's exact candidate
+    and policy can qualify terminal delivery.
+    """
+    profile = getattr(checkpoint, "assurance_profile", None)
+    reviews = list(getattr(checkpoint, "assurance_reviews", ()))
+    if not isinstance(profile, dict):
+        return "NOT_RECORDED", [], reviews
+    candidate, digest = profile.get("candidate_sha"), profile.get("digest")
+    if not isinstance(candidate, str) or not isinstance(digest, str):
+        return "UNRESOLVED", [], reviews
+    current = [
+        review for review in reviews
+        if isinstance(review, dict)
+        and review.get("candidate_sha") == candidate
+        and review.get("profile_digest") == digest
+    ]
+    latest = {
+        role: next((review for review in reversed(current) if review.get("reviewer") == role), None)
+        for role in ("quality", "security")
+    }
+    if any(review is None or review.get("status") == "UNRESOLVED" for review in latest.values()):
+        return "UNRESOLVED", current, reviews
+    if any(review.get("status") != "PASS" for review in latest.values() if isinstance(review, dict)):
+        return "FAIL", current, reviews
+    findings = [finding for review in latest.values() if isinstance(review, dict) for finding in review.get("findings", []) if isinstance(finding, dict)]
+    current_open = any(finding.get("blocking") and finding.get("disposition") == "OPEN" for finding in findings)
+    resolved = {
+        item.get("finding_id") for item in getattr(checkpoint, "assurance_resolutions", ())
+        if isinstance(item, dict) and item.get("disposition") in {"RESOLVED", "REJECTED", "RISK_ACCEPTED"}
+    }
+    historical_open = any(
+        finding.get("blocking") and finding.get("disposition") == "OPEN" and finding.get("id") not in resolved
+        for review in reviews if isinstance(review, dict)
+        for finding in review.get("findings", []) if isinstance(finding, dict)
+    )
+    return ("FAIL" if current_open or historical_open else "PASS"), current, reviews
+
+
+def _write_immutable_artifact(target: Path, payload: bytes) -> None:
+    """Create immutable evidence once; conflicting terminal rewrites fail closed."""
+    if target.exists():
+        try:
+            if target.read_bytes() == payload:
+                return
+        except OSError:
+            pass
+        raise SubmissionError("TERMINAL_EVIDENCE_IMMUTABLE_CONFLICT", 500)
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(payload)
+    temporary.chmod(0o600)
+    temporary.replace(target)
+
+
 def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]:
     """Return a run-bound delivery revision, never an ambient checkout HEAD."""
     if outcome != "COMPLETE":
@@ -471,7 +530,7 @@ def write_terminal_evidence(
     revision, delivery_qualified = _repository_revision(checkpoint, outcome)
     artifact_id = _terminal_artifact_id(run_id)
     report_id = f"report:{run_id}"
-    reviews = list(checkpoint.assurance_reviews)
+    assurance_status, current_reviews, reviews = _current_assurance(checkpoint)
     findings = [finding for review in reviews for finding in review.get("findings", [])]
     findings_id = _findings_artifact_id(run_id) if checkpoint.assurance_profile is not None else None
     if findings_id is not None:
@@ -479,11 +538,11 @@ def write_terminal_evidence(
             "artifact_type": "EP_ASSURANCE_FINDINGS", "contract_version": "1.0",
             "run_id": run_id, "project_id": str(row[1]), "repository_id": str(row[2]),
             "profile": checkpoint.assurance_profile, "reviews": reviews,
+            "resolutions": list(checkpoint.assurance_resolutions),
         }
         findings_target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "assurance-findings-v1.json"
-        findings_target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        findings_target.write_bytes(_canonical_json_bytes(findings_payload))
-        findings_target.chmod(0o600)
+        findings_bytes = _canonical_json_bytes(findings_payload)
+        _write_immutable_artifact(findings_target, findings_bytes)
         record_artifact(repository_root, findings_target, artifact_id=findings_id, artifact_type="EP_ASSURANCE_FINDINGS",
                         content_type="application/json", created_at=_now(), run_id=run_id, submission_id=str(row[0]),
                         mission_id=str(row[10]) if row[10] is not None else None, producer_id=str(row[4]),
@@ -504,20 +563,16 @@ def write_terminal_evidence(
             "repair": list(checkpoint.repair_audit), "finalization": checkpoint.latest_repository_evidence,
         },
         "assurance": {
-            "status": "NOT_RECORDED" if checkpoint.assurance_profile is None else ("PASS" if all(review.get("status") == "PASS" for review in reviews) else "UNRESOLVED" if any(review.get("status") == "UNRESOLVED" for review in reviews) else "FAIL"),
+            "status": assurance_status,
             "profile": checkpoint.assurance_profile,
-            "quality_review": next((review.get("status") for review in reversed(reviews) if review.get("reviewer") == "quality"), "NOT_RECORDED"),
-            "security_review": next((review.get("status") for review in reversed(reviews) if review.get("reviewer") == "security"), "NOT_RECORDED"),
+            "quality_review": next((review.get("status") for review in reversed(current_reviews) if review.get("reviewer") == "quality"), "NOT_RECORDED"),
+            "security_review": next((review.get("status") for review in reversed(current_reviews) if review.get("reviewer") == "security"), "NOT_RECORDED"),
             "repair_rounds": {"used": checkpoint.repair_iterations, "maximum": 3},
-            "findings": {"open_blocking": sum(1 for finding in findings if finding.get("blocking") and finding.get("disposition") == "OPEN"), "open_non_blocking": sum(1 for finding in findings if not finding.get("blocking") and finding.get("disposition") == "OPEN"), "artifact": None if findings_id is None else {"id": findings_id}},
+            "findings": {"open_blocking": sum(1 for review in current_reviews for finding in review.get("findings", []) if finding.get("blocking") and finding.get("disposition") == "OPEN"), "open_non_blocking": sum(1 for review in current_reviews for finding in review.get("findings", []) if not finding.get("blocking") and finding.get("disposition") in {"OPEN", "NON_BLOCKING"}), "artifact": None if findings_id is None else {"id": findings_id, "digest_algorithm": "sha256", "digest": hashlib.sha256(findings_bytes).hexdigest()}},
         },
     }
     target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "terminal-evidence-v1.json"
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_bytes(_canonical_json_bytes(payload))
-    temporary.chmod(0o600)
-    temporary.replace(target)
+    _write_immutable_artifact(target, _canonical_json_bytes(payload))
     record_artifact(
         repository_root, target, artifact_id=artifact_id, artifact_type="EP_TERMINAL_EVIDENCE",
         content_type="application/json", created_at=_now(), run_id=run_id,

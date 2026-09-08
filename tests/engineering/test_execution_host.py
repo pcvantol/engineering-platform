@@ -429,6 +429,11 @@ class ClientContractTest(unittest.TestCase):
                     self.roots.append(root)
                     self.prompts.append(prompt_text)
                     if "Local repository validation gate" in prompt_text:
+                        return AgentResult(
+                            "COMPLETE", branch, commit_sha=commit,
+                            validation_evidence=({"command": "canonical suite", "result": "passed"},),
+                        )
+                    if "First implementation pull-request publication gate" in prompt_text:
                         self.pr_create_calls += 1
                         return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
                     if "Mandatory autonomous refactor" in prompt_text:
@@ -1206,7 +1211,7 @@ class ClientContractTest(unittest.TestCase):
     @patch("engineering_platform.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:
         review_message = json.dumps(
-            {"contribution": "reviewed", "recommendations": ["keep scope"]}
+            {"contract_version": "1.0", "contribution": "reviewed", "recommendations": ["keep scope"], "findings": []}
         )
         agent_message = json.dumps(
             {
@@ -1227,17 +1232,22 @@ class ClientContractTest(unittest.TestCase):
         run.side_effect = [
             subprocess.CompletedProcess(("codex",), 0, review_output, ""),
             subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
+            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             client = CodexCliClient(CodexCliProvider())
             review = client.review(root, __import__("engineering_platform.capability_review", fromlist=["ReviewerSelection"]).ReviewerSelection("validation", "scope", 1), "objective")
             result = client.invoke(root, "objective")
+            validation = client.validate(root, "validation objective")
         self.assertFalse(review.failed)
         self.assertEqual(review.recommendations, ("keep scope",))
         self.assertEqual(review.runtime_metadata["raw_provider_model"], "gpt-5.6-terra")
         self.assertEqual(review.usage["input_tokens"], 100)
         self.assertEqual(result.pull_request, 12)
+        self.assertEqual(validation.pull_request, 12)
+        self.assertIn("read-only", run.call_args_list[2].args[0])
+        self.assertFalse(hasattr(client, "_sandbox_override"))
 
     @patch("engineering_platform.execution_host.time.monotonic", side_effect=(10.0, 12.75))
     @patch("engineering_platform.execution_host.subprocess.run")
@@ -2366,13 +2376,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
             state, AgentResult("COMPLETE", "codex/implementation")
         )
         self.assertEqual(validated.phase, "LOCAL_REPOSITORY_VALIDATION")
-        self.assertEqual(validated.local_validation_iterations, 2)
-        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed", "validated"])
-        self.assertEqual(validated.local_validation_audit[0]["proposed_action"], "FULL: full required repository suite")
-        self.assertEqual(validated.validation_evidence, ({"command": "python -m unittest tests.engineering", "result": "passed"},))
-        self.assertEqual(result.pull_request, 701)
-        self.assertIn("iteration 1 of 3", agent.prompts[0])
-        self.assertIn("Create one draft implementation pull request only after", agent.prompts[0])
+        self.assertEqual(validated.local_validation_iterations, 1)
+        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed"])
+        self.assertIsNone(result.pull_request)
+        self.assertIn("read-only", agent.prompts[0])
+        self.assertNotIn("draft implementation pull request", agent.prompts[0])
 
     def test_verified_implementation_validation_failure_enters_local_repair_route(self) -> None:
         sha = "b" * 40
@@ -2402,9 +2410,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         validated, result = runner._run_local_repository_validation(verified, initial)
 
         self.assertFalse(validated.terminal)
-        self.assertEqual(validated.local_validation_iterations, 2)
-        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed", "validated"])
-        self.assertEqual(result.pull_request, 701)
+        self.assertEqual(validated.local_validation_iterations, 1)
+        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed"])
+        self.assertIsNone(result.pull_request)
 
     def test_runner_routes_verified_failed_implementation_to_local_validation_before_pr(self) -> None:
         sha = "d" * 40
@@ -2440,12 +2448,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
 
         self.assertTrue(state.commit_evidence, state.diagnostic)
-        self.assertEqual(state.phase, "WAIT_FOR_OPERATOR_MERGE", state.diagnostic)
-        self.assertFalse(state.terminal)
+        self.assertEqual(state.phase, "BLOCKED", state.diagnostic)
+        self.assertTrue(state.terminal)
+        self.assertEqual(state.next_action, "implementation_pr_before_assurance")
         self.assertEqual(state.local_validation_iterations, 1)
         self.assertEqual(state.local_validation_audit[0]["outcome"], "validated")
         self.assertEqual(len(agent.prompts), 2)
-        self.assertIn("Local repository validation gate — iteration 1 of 3", agent.prompts[1])
+        self.assertIn("Local repository validation gate", agent.prompts[1])
 
     def test_unverified_or_external_implementation_failure_never_starts_local_repair(self) -> None:
         sha = "c" * 40
@@ -2462,7 +2471,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertFalse(runner._is_recoverable_implementation_validation_failure(state, result))
 
-    def test_failed_local_validation_uses_all_three_bounded_attempts(self) -> None:
+    def test_failed_local_validation_is_one_non_mutating_turn_before_shared_repair(self) -> None:
         failures = [
             AgentResult(
                 "FAILED", "codex/implementation", diagnostic="Required local suite failed.",
@@ -2482,10 +2491,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
             state, AgentResult("COMPLETE", "codex/implementation")
         )
 
-        self.assertTrue(blocked.terminal)
-        self.assertEqual(blocked.next_action, "local_validation_attempt_limit_reached")
-        self.assertEqual(blocked.local_validation_iterations, 3)
-        self.assertEqual(len(blocked.local_validation_audit), 3)
+        self.assertFalse(blocked.terminal)
+        self.assertEqual(blocked.local_validation_iterations, 1)
+        self.assertEqual(len(blocked.local_validation_audit), 1)
         self.assertEqual({item["outcome"] for item in blocked.local_validation_audit}, {"validation_failed"})
 
     def test_local_repository_validation_separates_proven_environment_instability(self) -> None:

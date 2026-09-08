@@ -257,6 +257,35 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertFalse(corrupt["result"]["delivery_qualified"])  # type: ignore[index]
             self.assertIsNone(submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id=artifact_id))
 
+    def test_terminal_assurance_requires_a_complete_current_pair_and_explicit_historical_resolution(self) -> None:
+        """A missing/stale review cannot become PASS through empty aggregation."""
+        candidate, digest = "c" * 40, "sha256:" + "b" * 64
+        profile = {"version": "validation-profile@1", "digest": digest, "candidate_sha": candidate}
+        quality = {"reviewer": "quality", "status": "PASS", "candidate_sha": candidate,
+                   "profile_digest": digest, "invocation_id": "quality-current", "findings": []}
+        security = {"reviewer": "security", "status": "PASS", "candidate_sha": candidate,
+                    "profile_digest": digest, "invocation_id": "security-current", "findings": []}
+        base = dict(run_id="assurance-current", repository="djconnect", prompt_path="prompt",
+                    phase="COMPLETE", terminal=True, assurance_profile=profile)
+        self.assertEqual(submission_service._current_assurance(TransactionState(**base))[0], "UNRESOLVED")
+        self.assertEqual(submission_service._current_assurance(TransactionState(**base, assurance_reviews=(quality,)))[0], "UNRESOLVED")
+        stale = {**security, "candidate_sha": "d" * 40}
+        self.assertEqual(submission_service._current_assurance(TransactionState(**base, assurance_reviews=(quality, stale)))[0], "UNRESOLVED")
+
+        old_finding = {"id": "old-security", "fingerprint": "e" * 32, "category": "SECURITY",
+                       "criterion": "isolation", "observation": "Missing denial test", "severity": "HIGH",
+                       "confidence": "HIGH", "blocking": True, "disposition": "OPEN"}
+        old_security = {**security, "status": "FAIL", "invocation_id": "security-old", "findings": [old_finding]}
+        unresolved = TransactionState(**base, assurance_reviews=(old_security, quality, security))
+        self.assertEqual(submission_service._current_assurance(unresolved)[0], "FAIL")
+        resolved = TransactionState(
+            **base, assurance_reviews=(old_security, quality, security),
+            assurance_resolutions=({"finding_id": "old-security", "disposition": "RESOLVED",
+                                    "resolution_ref": "repair:assurance-current:1|quality-current,security-current",
+                                    "candidate_sha": candidate},),
+        )
+        self.assertEqual(submission_service._current_assurance(resolved)[0], "PASS")
+
     def test_forge_provenance_is_required_and_part_of_idempotency_identity(self) -> None:
         payload = self.payload("forge-replay")
         payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "1.0"},

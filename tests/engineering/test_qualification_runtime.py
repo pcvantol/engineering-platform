@@ -36,12 +36,14 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
         agent.set_process_callback(process.append)
 
         managed = agent.invoke(self.root, "implement the approved work")
+        publication = agent.invoke(self.root, "First implementation pull-request publication gate")
         reconciled = agent.invoke(self.root, "the sole automatic post-finalization reconciliation")
         genesis = agent.invoke(self.root, f"Execution mode: Genesis\nTarget repository: {self.root}")
 
         self.assertEqual(process[0]["pid"], os.getpid())
         self.assertEqual(managed.branch, "qualification-managed")
-        self.assertEqual(managed.pull_request, 1)
+        self.assertIsNone(managed.pull_request)
+        self.assertEqual(publication.pull_request, 1)
         self.assertEqual(reconciled.terminal_condition, "repository_reconciled")
         self.assertEqual(genesis.terminal_condition, "local_commit_reconciled")
         self.assertEqual(genesis.repository_path, str(self.root.resolve()))

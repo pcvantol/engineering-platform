@@ -44,6 +44,10 @@ REVIEWER_LABELS = {
     "documentation": "Documentation Reviewer",
     "finalization": "Finalization Reviewer",
 }
+MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION = "1.0"
+MANDATORY_FINDING_FIELDS = frozenset({
+    "id", "observation", "category", "criterion", "severity", "confidence", "evidence_ref",
+})
 PRODUCT_MATCHERS = {
     "apple_platform": (("apps/apple/", "engineering-platform-app", "swiftui", "watchos", "macos", "ios"), "Apple platform capability"),
     "windows_platform": (("apps/windows/", "engineering-platform-windows", "maui", "windows packaging"), "Windows platform capability"),
@@ -69,6 +73,11 @@ class ReviewerResult:
     reviewer: str
     contribution: str
     recommendations: tuple[str, ...] = ()
+    findings: tuple[dict[str, str], ...] = ()
+    # In-process deterministic/test adapters construct this typed result only
+    # after choosing the mandatory contract. Raw provider JSON is still
+    # required to carry this field by ``CodexCliClient.review``.
+    contract_version: str | None = MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION
     failed: bool = False
     usage: dict[str, object] = field(default_factory=dict)
     runtime_metadata: dict[str, object] = field(default_factory=dict)
@@ -146,12 +155,15 @@ def run_reviews(
                 result = ReviewerResult(
                 selection.reviewer,
                 redact_diagnostic(result.contribution, limit=240),
-                tuple(redact_diagnostic(value, limit=240) for value in result.recommendations[:3]),
+                tuple(redact_diagnostic(value, limit=240) for value in result.recommendations),
+                tuple(dict(item) for item in result.findings if isinstance(item, dict)),
+                result.contract_version,
                 result.failed,
                 result.usage,
                 result.runtime_metadata,
                 result.churn,
                 result.duration_seconds,
+                result.usage_snapshots,
             )
         except Exception:  # Reviewer failure is advisory and cannot block the transaction.
             result = ReviewerResult(selection.reviewer, "Reviewer failed; primary review continues.", failed=True)
@@ -174,6 +186,28 @@ def reconciled_recommendations(results: tuple[ReviewerResult, ...]) -> tuple[str
             if recommendation and recommendation not in accepted:
                 accepted.append(recommendation)
     return tuple(accepted[:8])
+
+
+def mandatory_findings(result: ReviewerResult) -> tuple[dict[str, str], ...] | None:
+    """Return validated mandatory output, never advice-shaped pseudo-evidence."""
+    if result.failed or result.contract_version != MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION:
+        return None
+    if not isinstance(result.findings, tuple) or len(result.findings) > 64:
+        return None
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for finding in result.findings:
+        if not isinstance(finding, dict) or set(finding) != MANDATORY_FINDING_FIELDS:
+            return None
+        if any(not isinstance(value, str) or not value.strip() or len(value) > 240 for value in finding.values()):
+            return None
+        if finding["severity"] not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"} or finding["confidence"] not in {"LOW", "MEDIUM", "HIGH"}:
+            return None
+        if finding["id"] in seen:
+            return None
+        seen.add(finding["id"])
+        normalized.append({key: redact_diagnostic(value, limit=240) for key, value in finding.items()})
+    return tuple(normalized)
 
 
 def records_for_storage(selections: tuple[ReviewerSelection, ...], results: tuple[ReviewerResult, ...]) -> tuple[dict[str, object], ...]:

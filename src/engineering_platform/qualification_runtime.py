@@ -12,7 +12,7 @@ import re
 import subprocess
 import time
 
-from .capability_review import ReviewerResult
+from .capability_review import MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION, ReviewerResult
 from .execution_models import AgentResult, PullRequestEvidence
 
 
@@ -54,15 +54,26 @@ class DeterministicQualificationAgent:
             sha = subprocess.run(("git", "-C", str(target_root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
             return AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target_root), commit_sha=sha)
         is_finalization = "finalization pr on exactly" in prompt.lower()
-        if self._github_write_target(root):
+        publication = "first implementation pull-request publication gate" in prompt.lower()
+        if self._github_write_target(root) and (is_finalization or publication):
             return self._create_github_managed_handoff(
                 root,
                 finalization=is_finalization,
+                publication=publication,
                 prompt=prompt,
             )
+        if not is_finalization and not publication:
+            # The implementation candidate is a real local branch before it
+            # is reviewed, but its remote PR is deliberately absent until the
+            # host's first-publication gate.
+            current = subprocess.run(("git", "-C", str(root), "branch", "--show-current"), check=True, text=True, capture_output=True).stdout.strip()
+            if current != "qualification-managed":
+                subprocess.run(("git", "-C", str(root), "switch", "-c", "qualification-managed"), check=True, text=True, capture_output=True)
+            if self._github_write_target(root):
+                subprocess.run(("git", "-C", str(root), "push", "--set-upstream", "origin", "qualification-managed"), check=True, text=True, capture_output=True)
         sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
         branch = self._finalization_branch(prompt) if is_finalization else "qualification-managed"
-        return AgentResult("COMPLETE", branch=branch, pull_request=1, commit_sha=sha)
+        return AgentResult("COMPLETE", branch=branch, pull_request=1 if (is_finalization or publication) else None, commit_sha=sha)
 
     @staticmethod
     def _finalization_branch(prompt: str) -> str:
@@ -89,7 +100,7 @@ class DeterministicQualificationAgent:
 
     @staticmethod
     def _create_github_managed_handoff(
-        root: Path, *, finalization: bool = False, prompt: str = ""
+        root: Path, *, finalization: bool = False, publication: bool = False, prompt: str = ""
     ) -> AgentResult:
         """Create one bounded dummy-repository branch and GitHub PR.
 
@@ -116,17 +127,20 @@ class DeterministicQualificationAgent:
         def run(*args: str) -> str:
             return subprocess.run(args, check=True, text=True, capture_output=True).stdout.strip()  # nosec B603
 
-        run("git", "-C", str(root), "switch", "-c", branch)
-        proof = root / ".engineering-platform" / ("managed-github-e2e-finalization-proof.json" if finalization else "managed-github-e2e-proof.json")
-        proof.write_text(json.dumps({
-            "branch": branch,
-            "kind": "EP_MANAGED_GITHUB_E2E",
-            "stage": "FINALIZATION" if finalization else "IMPLEMENTATION",
-            "version": 1,
-        }, sort_keys=True) + "\n", encoding="utf-8")
-        run("git", "-C", str(root), "add", str(proof.relative_to(root)))
-        run("git", "-C", str(root), "commit", "-m", "test: record managed GitHub qualification handoff")
-        run("git", "-C", str(root), "push", "--set-upstream", "origin", branch)
+        existing = run("git", "-C", str(root), "branch", "--show-current")
+        if existing != branch:
+            run("git", "-C", str(root), "switch", "-c", branch)
+        if not publication:
+            proof = root / ".engineering-platform" / ("managed-github-e2e-finalization-proof.json" if finalization else "managed-github-e2e-proof.json")
+            proof.write_text(json.dumps({
+                "branch": branch,
+                "kind": "EP_MANAGED_GITHUB_E2E",
+                "stage": "FINALIZATION" if finalization else "IMPLEMENTATION",
+                "version": 1,
+            }, sort_keys=True) + "\n", encoding="utf-8")
+            run("git", "-C", str(root), "add", str(proof.relative_to(root)))
+            run("git", "-C", str(root), "commit", "-m", "test: record managed GitHub qualification handoff")
+            run("git", "-C", str(root), "push", "--set-upstream", "origin", branch)
         title = "test: managed GitHub qualification finalization" if finalization else "test: managed GitHub qualification"
         run("gh", "pr", "create", "--repo", repository, "--head", branch, "--base", "main", "--title", title, "--body", "Explicitly authorized Engineering Platform dummy-repository qualification.")
         number = int(run("gh", "pr", "view", branch, "--repo", repository, "--json", "number", "--jq", ".number"))
@@ -137,8 +151,24 @@ class DeterministicQualificationAgent:
     # Keep the public provider-version contract valid so the normal installed
     # compatibility gate remains part of qualification.
     def version(self) -> str: return "0.153.4"
+    def validate(self, root: Path, prompt: str) -> AgentResult:
+        """Qualification validation is explicitly non-mutating.
+
+        The installed test composition exercises the same host gate as the
+        production adapter but cannot manufacture a commit or PR while that
+        gate is active.
+        """
+        branch = subprocess.run(("git", "-C", str(root), "branch", "--show-current"), check=True, text=True, capture_output=True).stdout.strip()
+        sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
+        return AgentResult(
+            "COMPLETE", branch=branch, commit_sha=sha,
+            validation_evidence=({"command": "deterministic installed validation", "result": "passed"},),
+        )
     def review(self, _root: Path, selection: object, _objective: str, evidence: object = None) -> ReviewerResult:
-        return ReviewerResult(getattr(selection, "reviewer"), "Deterministic read-only assurance passed.")
+        return ReviewerResult(
+            getattr(selection, "reviewer"), "Deterministic read-only assurance passed.",
+            findings=(), contract_version=MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+        )
 
 
 class LocalQualificationGitHub:

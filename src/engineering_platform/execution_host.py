@@ -23,8 +23,10 @@ from .central_database import DATABASE_FILENAME as CENTRAL_DATABASE_FILENAME
 
 from .agent_state import MAX_COMMIT_EVIDENCE_RECORDS, StateError, StateStore, TransactionState, redact_diagnostic, verified_commit_evidence_record
 from .capability_review import (
+    MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
     ReviewerResult,
     ReviewerSelection,
+    mandatory_findings,
     records_for_storage,
     run_reviews,
     select_reviewers,
@@ -1000,7 +1002,12 @@ class EngineeringRunner:
             outcome=outcome,
             empty_summary="Agent invocation did not return a repair summary.",
         )
-        if state.repair_audit and state.repair_audit[-1].get("iteration") == str(state.repair_iterations) and state.repair_audit[-1].get("outcome") == "planned":
+        previous = state.repair_audit[-1] if state.repair_audit else None
+        if previous and previous.get("iteration") == str(state.repair_iterations) and previous.get("outcome") == "planned":
+            # The reservation identity is immutable.  A retry/recovery updates
+            # the recorded outcome but cannot consume a second repair round.
+            if "repair_id" in previous:
+                record.update({key: previous[key] for key in ("repair_id", "origin", "input_candidate_sha", "dispatch_id")})
             return replace(state, repair_audit=state.repair_audit[:-1] + (record,))
         return replace(state, repair_audit=state.repair_audit + (record,))
 
@@ -1011,10 +1018,12 @@ class EngineeringRunner:
         plan = state.repair_audit[-1]
         if plan.get("iteration") != str(state.repair_iterations) or plan.get("outcome") != "planned":
             return None
+        if "repair_id" in plan and plan["repair_id"] != f"repair:{state.run_id}:{state.repair_iterations}":
+            return None
         return plan
 
     def _advance_after_repair_agent_result(self, repair: TransactionState, result: AgentResult) -> TransactionState:
-        """Apply live or recovered Repair success using its persisted plan."""
+        """Revalidate and re-review every repaired candidate before delivery."""
         plan = self._repair_plan(repair)
         if plan is None:
             return self._save_terminal(repair, "BLOCKED", "repair_plan_missing", "Repair result cannot be resumed without its persisted repair plan.")
@@ -1026,9 +1035,38 @@ class EngineeringRunner:
         self.store.save(repair)
         if result.terminal_state in {"BLOCKED", "FAILED"}:
             return self._save_terminal(repair, result.terminal_state, "external_action_required", result.diagnostic)
-        if result.pull_request != repair.pull_request:
+        if result.pull_request not in {None, repair.pull_request}:
             return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the bounded pull request.")
-        return self._poll(replace(repair, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks"), result)
+        repaired_result = replace(
+            result,
+            branch=result.branch or repair.branch,
+            pull_request=repair.pull_request,
+        )
+        if repair.execution_mode == "GENESIS":
+            target = Path(repaired_result.repository_path).expanduser() if repaired_result.repository_path else None
+            if target is None:
+                return self._save_terminal(repair, "BLOCKED", "repair_candidate_unavailable", "Genesis repair did not return its local candidate repository." )
+            reviewed, repaired_result = self._run_quality_assurance(repair, repaired_result, assurance_root=target)
+            if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
+                return reviewed
+            return self._reconcile_genesis_result(reviewed, repaired_result)
+        validated, validation_result = self._run_local_repository_validation(repair, repaired_result)
+        if validated.terminal:
+            return validated
+        if validation_result.terminal_state != "COMPLETE" or self._has_failed_validation_evidence(validation_result):
+            if validated.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
+                return self._save_terminal(validated, "BLOCKED", "repair_budget_exhausted", "Repaired candidate did not pass local validation before the run-wide repair budget was exhausted.")
+            return self._repair(validated, "local validation failed. Repair the recorded validation findings for the current candidate.")
+        reviewed, reviewed_result = self._run_quality_assurance(
+            validated, replace(validation_result, pull_request=repair.pull_request, branch=repair.branch)
+        )
+        if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
+            return reviewed
+        try:
+            evidence = self.repository.inspect(self.root)
+        except RunnerError:
+            return self._save_terminal(reviewed, "BLOCKED", "repair_candidate_unavailable", "Repaired Managed candidate could not be inspected after assurance.")
+        return self._continue_after_quality_control(reviewed, reviewed_result, evidence)
 
     def _record_local_validation_audit(self, state: TransactionState, *, result: AgentResult | None, outcome: str, profile: ValidationProfile) -> TransactionState:
         """Append one bounded local-validation iteration without sharing PR repair budget."""
@@ -1314,7 +1352,8 @@ class EngineeringRunner:
                     terminal_condition="provider_turn_interrupted",
                     interruption_reason="controlled_qualification_interruption",
                 )
-            result = self.agent.invoke(self.root, prompt)
+            invocation = getattr(self.agent, "validate", self.agent.invoke) if local_validation else self.agent.invoke
+            result = invocation(self.root, prompt)
         except KeyboardInterrupt as error:
             # A managed SIGINT/SIGTERM while the provider is active means no
             # valid AgentResult exists. Persist the canonical interruption
@@ -1507,6 +1546,11 @@ class EngineeringRunner:
                 isinstance(recovery, dict)
                 and recovery.get("state") == "RECOVERED"
                 and recovery.get("lifecycle_phase") == state.phase
+                # EXECUTE_AGENT contains two distinct product dispatches:
+                # implementation and the later immutable PR publication.
+                # A recovered implementation result (necessarily no PR for
+                # a new run) must never be replayed as publication evidence.
+                and state.next_action != "publish_first_implementation_pull_request"
             ):
                 replacement_id = recovery.get("replacement_invocation_id")
                 if (
@@ -1609,7 +1653,7 @@ class EngineeringRunner:
     def _run_local_repository_validation(
         self, state: TransactionState, implementation: AgentResult
     ) -> tuple[TransactionState, AgentResult]:
-        """Run the bounded, mutable local gate before an implementation PR exists."""
+        """Run the read-only local gate before first implementation publication."""
         if state.action_intent == "VALIDATION_ONLY":
             # This gate is a delivery-only boundary.  A producer-authorized
             # qualification run may supply validation evidence but must never
@@ -1620,7 +1664,15 @@ class EngineeringRunner:
         # Never rewrite that evidence; new managed prompts are instructed to
         # stop before PR creation and therefore enter this gate normally.
         if implementation.pull_request:
-            return state, implementation
+            # A PR that predates this assurance contract is preserved as
+            # immutable lineage evidence.  A newly-started run cannot use a
+            # provider-returned PR to skip the publication gate.
+            if state.implementation_pull_request == implementation.pull_request:
+                return state, implementation
+            return self._save_terminal(
+                state, "BLOCKED", "implementation_pr_before_assurance",
+                "A new Managed run returned an implementation pull request before local validation and mandatory assurance.",
+            ), implementation
         if not branch:
             return self._save_terminal(
                 state, "BLOCKED", "local_validation_scope", "Implementation must return one branch and no pull request before local validation."
@@ -1630,21 +1682,10 @@ class EngineeringRunner:
             next_action="run_local_repository_validation", local_validation_iterations=0,
             local_validation_audit=(),
         )
-        for iteration in range(1, MAX_LOCAL_REPOSITORY_VALIDATION_ATTEMPTS + 1):
-            # The initial local check is not a repair. Every subsequent
-            # corrective validation dispatch consumes the same durable budget
-            # used by assurance, hosted-check and finalization repairs.
-            if iteration > 1:
-                if validation.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
-                    return self._save_terminal(
-                        validation, "BLOCKED", "repair_budget_exhausted",
-                        "Local validation still requires correction after the run-wide repair budget was exhausted.",
-                    ), implementation
-                validation = replace(validation, repair_iterations=validation.repair_iterations + 1)
-                validation = self._record_repair_audit(
-                    validation, failed_checks="validation: required local control", objective="Repair bounded local validation findings.",
-                    result=None, outcome="planned",
-                )
+        # The first validation is a measurement, never a corrective provider
+        # turn.  A failed measurement is routed through ``_repair`` by the
+        # caller, where it consumes the single run-wide repair budget.
+        for iteration in (1,):
             try:
                 profile = classify(changed_paths(self.root, "main"))
             except OSError:
@@ -1670,12 +1711,12 @@ class EngineeringRunner:
             write_live_status(self.root, validation, validation.next_action)
             instruction = f"""
 
-Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSITORY_VALIDATION_ATTEMPTS}:
+Local repository validation gate — read-only measurement:
 - Stay on exactly `{branch}`. Do not merge or change scope.
 - Diff-derived validation profile: `{profile.tier}`. Required evidence: {"; ".join(profile.commands)}. If the diff is unavailable or scope becomes mixed, use the full required suite.
-- You may correct only the bounded production code and its tests, commit and push those corrections, then rerun the required validation.
-- If validation still fails, return `WAITING` with a concise safe diagnostic; the host may allow the next bounded iteration.
-- Create one draft implementation pull request only after the required local validation passes. Return that same branch and PR number. Never poll remote checks.
+- Do not modify files, index, branch, commits, remotes, pull requests, or external state. The host enforces a read-only provider sandbox.
+- Execute and report the required controls with concrete validation evidence. Return `COMPLETE` only when they pass; otherwise return `WAITING` or `FAILED` with a concise safe diagnostic.
+- Do not create a pull request. First publication is a later host-owned gate after both mandatory reviews pass.
 """
             try:
                 result = self._invoke_agent_with_timing(
@@ -1700,39 +1741,25 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 self.console_detail = error.console_detail
                 validation = self._record_local_validation_audit(validation, result=None, outcome="agent_failed", profile=profile)
                 return self._terminalize_provider_invocation_error(validation, error), implementation
-            if iteration > 1:
-                validation = self._record_repair_audit(
-                    validation, failed_checks="validation: required local control", objective="Repair bounded local validation findings.",
-                    result=result,
-                    outcome="agent_failed" if result.terminal_state in {"BLOCKED", "FAILED"} else "submitted_for_recheck",
-                )
-            if result.terminal_state in {"BLOCKED", "FAILED"}:
-                if (
-                    result.terminal_state == "FAILED"
-                    and not self._is_external_agent_block(result)
-                    and self._has_failed_validation_evidence(result)
-                ):
-                    validation = self._record_local_validation_audit(
-                        validation, result=result, outcome="validation_failed", profile=profile
-                    )
-                    if self._is_environmental_validation_instability(result):
-                        return self._save_terminal(
-                            validation,
-                            "BLOCKED",
-                            "validation_infrastructure_recovery_required",
-                            "Required local validation is unstable: a failed required suite and a passing isolated rerun were recorded without an implementation correction. Preserve this run and create a separate validation-infrastructure recovery item.",
-                        ), implementation
-                    continue
+            # A failed validation command is evidence for the shared repair
+            # route, not an unavailable validator.  Only a provider-blocked
+            # invocation is terminal at this read-only gate.
+            if result.terminal_state == "BLOCKED":
                 validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
-                return self._save_terminal(validation, result.terminal_state, "local_repository_validation_failed", result.diagnostic or "Local repository validation failed."), implementation
+                return validation, result
             if result.branch and result.branch != branch:
                 validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
                 return self._save_terminal(validation, "BLOCKED", "local_validation_scope", "Local validation changed the bounded implementation branch."), implementation
             if result.pull_request:
                 validation = self._record_local_validation_audit(validation, result=result, outcome="validated", profile=profile)
+                return self._save_terminal(
+                    validation, "BLOCKED", "implementation_pr_before_assurance",
+                    "Read-only local validation returned a pull request before mandatory assurance.",
+                ), implementation
+            if result.terminal_state == "COMPLETE" and result.validation_evidence and not self._has_failed_validation_evidence(result):
+                validation = self._record_local_validation_audit(validation, result=result, outcome="validated", profile=profile)
                 return validation, replace(
-                    result,
-                    branch=branch,
+                    result, branch=branch, pull_request=None,
                     validation_evidence=implementation.validation_evidence + result.validation_evidence,
                 )
             validation = self._record_local_validation_audit(validation, result=result, outcome="validation_failed", profile=profile)
@@ -1743,7 +1770,7 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                     "validation_infrastructure_recovery_required",
                     "Required local validation is unstable: a failed required suite and a passing isolated rerun were recorded without an implementation correction. Preserve this run and create a separate validation-infrastructure recovery item.",
                 ), implementation
-        return self._save_terminal(validation, "BLOCKED", "local_validation_attempt_limit_reached", "Required local repository validation did not pass after 3 bounded iterations."), implementation
+        return validation, result
 
     def _run_quality_assurance(
         self, state: TransactionState, implementation: AgentResult, *, assurance_root: Path | None = None,
@@ -1770,11 +1797,16 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
         if not candidate.clean or not re.fullmatch(r"[0-9a-f]{40}", candidate.head_sha):
             return self._save_terminal(quality, "BLOCKED", "assurance_candidate_invalid", "Quality assurance requires one clean, pinned candidate."), implementation
         profile_version = f"validation-profile@{VALIDATION_PROFILE_VERSION}"
+        criteria = Path(quality.prompt_path).read_text(encoding="utf-8")
+        criteria_digest = "sha256:" + hashlib.sha256(criteria.encode("utf-8")).hexdigest()
+        # Candidate identity and policy identity are intentionally independent:
+        # a source revision must not silently select or weaken its own policy.
         profile_digest = "sha256:" + hashlib.sha256(
-            f"{profile_version}:{candidate.head_sha}".encode("utf-8")
+            json.dumps({"baseline": profile_version, "criteria_digest": criteria_digest}, sort_keys=True).encode("utf-8")
         ).hexdigest()
         quality = replace(quality, assurance_profile={
             "version": profile_version, "digest": profile_digest, "candidate_sha": candidate.head_sha,
+            "criteria_digest": criteria_digest,
         })
         self.store.save(quality)
         write_live_status(self.root, quality, quality.next_action)
@@ -1792,36 +1824,74 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 f"candidate {candidate.head_sha}. Report only concrete, bounded findings against the action acceptance criteria. "
                 + Path(quality.prompt_path).read_text(encoding="utf-8")
             )
+            started_at = datetime.now(timezone.utc).isoformat()
             result = run_reviews(assurance_root or self.root, (selection,), assurance_objective, self.agent if hasattr(self.agent, "review") else None, evidence=evidence)[0]
+            completed_at = datetime.now(timezone.utc).isoformat()
             try:
                 unchanged = self._inspect_assurance_candidate(candidate_root, state.execution_mode)
             except RunnerError:
                 unchanged = None
-            status = "UNRESOLVED" if result.failed or unchanged is None or unchanged.head_sha != candidate.head_sha else ("FAIL" if result.recommendations else "PASS")
+            supplied_findings = mandatory_findings(result)
+            status = "UNRESOLVED" if supplied_findings is None or unchanged is None or not unchanged.clean or unchanged.head_sha != candidate.head_sha else "PASS"
             findings = [
                 {
-                    "id": f"{selection.reviewer}-{index + 1}", "fingerprint": hashlib.sha256(note.encode("utf-8")).hexdigest()[:32],
-                    "category": selection.reviewer.upper(), "criterion": "post_implementation_assurance",
-                    "observation": redact_diagnostic(note, limit=240), "severity": "HIGH", "confidence": "MEDIUM",
-                    "blocking": True, "disposition": "OPEN",
+                    "id": f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + len(records) + 1}:{item['id']}",
+                    "fingerprint": hashlib.sha256(json.dumps(item, sort_keys=True).encode("utf-8")).hexdigest()[:32],
+                    "category": item["category"], "criterion": item["criterion"],
+                    "observation": item["observation"], "severity": item["severity"], "confidence": item["confidence"],
+                    "blocking": item["severity"] in {"HIGH", "CRITICAL"},
+                    "disposition": "OPEN" if item["severity"] in {"HIGH", "CRITICAL"} else "NON_BLOCKING",
+                    "evidence_ref": item["evidence_ref"],
                 }
-                for index, note in enumerate(result.recommendations[:3])
+                for item in (supplied_findings or ())
             ]
+            if status == "PASS" and any(finding["blocking"] for finding in findings):
+                status = "FAIL"
             records.append({
                 "reviewer": selection.reviewer, "status": status, "candidate_sha": candidate.head_sha,
                 "profile_digest": profile_digest, "invocation_id": f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + len(records)}",
-                "findings": findings,
+                "findings": findings, "contract_version": MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+                "started_at": started_at, "completed_at": completed_at,
             })
         quality = replace(quality, assurance_reviews=quality.assurance_reviews + tuple(records))
+        # A later PASS does not erase an earlier blocker.  Only a completed
+        # reserved repair followed by this exact re-review can append the
+        # linked resolution evidence; the original finding remains immutable.
+        if all(record["status"] == "PASS" for record in records) and quality.repair_audit:
+            repair = quality.repair_audit[-1]
+            if repair.get("outcome") == "submitted_for_recheck" and repair.get("repair_id"):
+                resolved = {item["finding_id"] for item in quality.assurance_resolutions}
+                prior_blockers = [
+                    finding for review in quality.assurance_reviews[:-len(records)]
+                    for finding in review.get("findings", [])
+                    if isinstance(finding, dict) and finding.get("blocking") and finding.get("disposition") == "OPEN"
+                    and isinstance(finding.get("id"), str) and finding["id"] not in resolved
+                ]
+                if prior_blockers:
+                    review_refs = ",".join(str(record["invocation_id"]) for record in records)
+                    resolutions = tuple({
+                        "finding_id": str(finding["id"]), "disposition": "RESOLVED",
+                        "resolution_ref": f"{repair['repair_id']}|{review_refs}",
+                        "candidate_sha": candidate.head_sha,
+                    } for finding in prior_blockers)
+                    quality = replace(quality, assurance_resolutions=quality.assurance_resolutions + resolutions)
         self.store.save(quality)
         unresolved = [record for record in records if record["status"] == "UNRESOLVED"]
         if unresolved:
             return self._save_terminal(quality, "BLOCKED", "mandatory_assurance_unresolved", "A required quality or security review was unavailable, malformed, or candidate-mismatched."), implementation
         findings = [finding for record in records for finding in record["findings"]]
-        if findings:
+        blockers = [finding for finding in findings if finding["blocking"] and finding["disposition"] == "OPEN"]
+        if blockers:
             if quality.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
                 return self._save_terminal(quality, "BLOCKED", "repair_budget_exhausted", "Mandatory assurance blockers remain after the run-wide repair budget was exhausted."), implementation
-            repaired = self._repair(quality, "quality/security review findings failed. Repair all listed bounded findings in one implementation repair round.")
+            blocker_roles = sorted({str(record["reviewer"]) for record in records if any(
+                finding["blocking"] and finding["disposition"] == "OPEN" for finding in record["findings"]
+            )})
+            summary = "; ".join(
+                f"{finding['id']}: {finding['criterion']} — {finding['observation']}"
+                for finding in blockers
+            )
+            repaired = self._repair(quality, f"{'/'.join(blocker_roles)} review findings failed. Repair these bounded findings: {summary}")
             return repaired, implementation
         return quality, implementation
 
@@ -1847,6 +1917,85 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
         except RuntimeError as error:
             raise RunnerError(str(error)) from error
         return RepositoryEvidence(root.name, branch, head_sha, clean, True)
+
+    @staticmethod
+    def _current_assurance_passes(state: TransactionState) -> bool:
+        """Require the two mandatory reviews for this exact profile/candidate."""
+        profile = state.assurance_profile
+        if not isinstance(profile, dict):
+            return False
+        candidate, digest = profile.get("candidate_sha"), profile.get("digest")
+        if not isinstance(candidate, str) or not isinstance(digest, str):
+            return False
+        current = [
+            review for review in state.assurance_reviews
+            if review.get("candidate_sha") == candidate and review.get("profile_digest") == digest
+        ]
+        return all(
+            any(review.get("reviewer") == role and review.get("status") == "PASS" for review in current)
+            for role in ("quality", "security")
+        ) and not any(
+            finding.get("blocking") and finding.get("disposition") == "OPEN"
+            for review in current for finding in review.get("findings", [])
+            if isinstance(finding, dict)
+        )
+
+    def _publish_first_implementation_pull_request(
+        self, state: TransactionState, implementation: AgentResult,
+    ) -> tuple[TransactionState, AgentResult]:
+        """Publish exactly one new Managed implementation PR after assurance.
+
+        This is deliberately a host gate rather than a sentence attached to a
+        previous provider prompt.  The provider receives no authority to edit
+        the already reviewed candidate; the host pins its SHA before and after
+        the PR hand-off.
+        """
+        if state.execution_mode == "GENESIS" or state.pull_request or implementation.pull_request:
+            return state, implementation
+        if not self._current_assurance_passes(state):
+            return self._save_terminal(state, "BLOCKED", "implementation_publication_assurance_required", "First implementation PR publication requires current passing quality and security assurance."), implementation
+        try:
+            before = self.repository.inspect(self.root)
+        except RunnerError:
+            return self._save_terminal(state, "BLOCKED", "implementation_publication_candidate_unavailable", "Reviewed Managed candidate is unavailable for PR publication."), implementation
+        profile = state.assurance_profile or {}
+        if not before.clean or before.branch != implementation.branch or before.head_sha != profile.get("candidate_sha"):
+            return self._save_terminal(state, "BLOCKED", "implementation_publication_candidate_changed", "The reviewed candidate changed before first PR publication."), implementation
+        publication = replace(state, phase="EXECUTE_AGENT", next_action="publish_first_implementation_pull_request")
+        self.store.save(publication)
+        prompt = assemble_prompt(Path(publication.prompt_path), publication, managed_target=self.root) + """
+
+First implementation pull-request publication gate:
+- The Execution Host has already recorded passing local validation plus independent quality and security assurance for the exact current candidate.
+- Do not edit files, index, commits, branch, tests, configuration, or evidence. Do not merge, release, or change repository settings.
+- Create exactly one draft implementation pull request for the existing bounded branch and current HEAD. Return that existing branch, the GitHub pull-request number and the unchanged current commit SHA.
+"""
+        try:
+            published = self._invoke_agent_with_timing(publication, prompt)
+            publication = self._record_agent_execution_time(publication)
+        except (CodexInvocationError, ProviderReadinessBlocked) as error:
+            if isinstance(error, ProviderReadinessBlocked):
+                return error.state, implementation
+            return self._terminalize_provider_invocation_error(publication, error), implementation
+        try:
+            after = self.repository.inspect(self.root)
+        except RunnerError:
+            after = None
+        failures = []
+        if published.terminal_state != "COMPLETE": failures.append("provider_not_complete")
+        if not published.pull_request: failures.append("missing_pull_request")
+        if published.branch != before.branch: failures.append("branch_mismatch")
+        if published.commit_sha != before.head_sha: failures.append("candidate_sha_mismatch")
+        if after is None: failures.append("candidate_unavailable_after_publication")
+        elif not after.clean: failures.append("candidate_dirty_after_publication")
+        elif after.branch != before.branch: failures.append("branch_changed_after_publication")
+        elif after.head_sha != before.head_sha: failures.append("candidate_changed_after_publication")
+        if failures:
+            return self._save_terminal(
+                publication, "BLOCKED", "implementation_publication_evidence_invalid",
+                "First implementation PR publication changed or failed to identify the reviewed candidate: " + ", ".join(failures) + ".",
+            ), implementation
+        return publication, published
 
     def _reject_historical_agent_pull_request(
         self, state: TransactionState
@@ -1912,11 +2061,19 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 state, result = self._run_local_repository_validation(state, result)
                 if state.terminal:
                     return state
+                if result.terminal_state != "COMPLETE" or self._has_failed_validation_evidence(result):
+                    if state.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
+                        return self._save_terminal(state, "BLOCKED", "repair_budget_exhausted", "Local validation requires a repair after the run-wide repair budget was exhausted.")
+                    return self._repair(state, "local validation failed. Repair the recorded validation findings for the current candidate.")
             state, result = self._run_quality_assurance(state, result)
             if state.terminal:
                 return state
             if state.phase in {"REPAIR_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"}:
                 return state
+            if state.owner_authorized:
+                state, result = self._publish_first_implementation_pull_request(state, result)
+                if state.terminal:
+                    return state
         return self._continue_after_quality_control(state, result, evidence)
 
     def _continue_after_quality_control(
@@ -2786,7 +2943,14 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
             return self._save_operator_merge_wait(waiting)
 
     def _repair(self, state: TransactionState, objective: str) -> TransactionState:
+        if state.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
+            return self._save_terminal(
+                state, "BLOCKED", "repair_budget_exhausted",
+                "The run-wide maximum of three correction rounds has been consumed.",
+            )
         failed_checks = objective.split(" failed.", 1)[0]
+        origin = next((origin for origin in ("validation", "quality", "security", "hosted", "finalization") if origin in objective.casefold()), "validation")
+        input_candidate = state.last_verified_sha or (state.assurance_profile or {}).get("candidate_sha") or "not_recorded"
         repair = replace(
             state,
             phase="REPAIR_AGENT",
@@ -2799,6 +2963,14 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
         repair = self._record_repair_audit(
             repair, failed_checks=failed_checks, objective=objective, result=None, outcome="planned",
         )
+        reservation = dict(repair.repair_audit[-1])
+        reservation.update({
+            "repair_id": f"repair:{repair.run_id}:{repair.repair_iterations}",
+            "origin": origin,
+            "input_candidate_sha": input_candidate,
+            "dispatch_id": f"{repair.run_id}:repair:{repair.repair_iterations}",
+        })
+        repair = replace(repair, repair_audit=repair.repair_audit[:-1] + (reservation,))
         self.store.save(repair)
         write_live_status(self.root, repair, repair.next_action)
         try:
