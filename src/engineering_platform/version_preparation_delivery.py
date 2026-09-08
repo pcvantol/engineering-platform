@@ -138,3 +138,14 @@ class VersionPreparationDelivery:
         if pr.head_branch != branch:
             raise VersionPreparationError("recovered pull request does not bind the candidate branch")
         return {**prepared, "candidate_commit_sha": candidate_sha, "branch": branch, "pull_request_id": pr.number}
+
+    @staticmethod
+    def qualify_candidate(candidate: Mapping[str, object], github: GitHubClient) -> dict[str, object]:
+        """Bind read-only repository qualification to the candidate's exact SHA."""
+        sha, number = candidate.get("candidate_commit_sha"), candidate.get("pull_request_id")
+        if not isinstance(sha, str) or not _SHA.fullmatch(sha) or not isinstance(number, int):
+            raise VersionPreparationError("candidate lacks exact SHA/PR binding")
+        evidence = github.qualification_for_exact_head(number, sha)
+        if evidence.get("exact_qualified_sha") != sha or evidence.get("conclusion") != "PASS":
+            raise VersionPreparationError("candidate qualification is not bound to the exact candidate SHA")
+        return dict(evidence)

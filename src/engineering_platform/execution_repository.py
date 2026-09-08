@@ -45,6 +45,7 @@ class GitHubClient(Protocol):
     def normalize_markdown_body(self, number: int) -> bool: ...
     def merge(self, number: int) -> None: ...
     def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence: ...
+    def qualification_for_exact_head(self, number: int, head_sha: str) -> dict[str, object]: ...
 
 
 class SubprocessRepositoryClient:
@@ -253,6 +254,24 @@ class GhCliClient:
                 raise RunnerError("Version preparation PR create acknowledgement is ambiguous.")
             return recovered
         return self.pull_request(int(match.group(1)))
+
+    def qualification_for_exact_head(self, number: int, head_sha: str) -> dict[str, object]:
+        """Read real check evidence and reject merge-ref/old-head substitution."""
+        if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise RunnerError("Qualification requires an exact candidate SHA.")
+        try:
+            raw = json.loads(self._github("pr", "view", str(number), "--json", "headRefOid,baseRefOid,statusCheckRollup"))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Version preparation qualification could not be read.") from error
+        if raw.get("headRefOid") != head_sha:
+            raise RunnerError("Qualification evidence belongs to a different pull request head.")
+        checks = [item for item in (raw.get("statusCheckRollup") or []) if isinstance(item, dict) and isinstance(item.get("status"), str)]
+        if not checks or any(item.get("status") != "COMPLETED" for item in checks):
+            raise RunnerError("Version preparation qualification is incomplete.")
+        failed = [str(item.get("name") or "unnamed check") for item in checks if item.get("conclusion") not in {"SUCCESS", "NEUTRAL", "SKIPPED"}]
+        if failed:
+            raise RunnerError("Version preparation qualification failed: " + ", ".join(failed))
+        return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "checks": checks, "conclusion": "PASS"}
     def ready(self, number: int) -> None:
         try: self._github("pr", "ready", str(number))
         except RuntimeError as error:

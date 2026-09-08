@@ -42,6 +42,13 @@ class VersionPreparationRequestTest(unittest.TestCase):
         parsed = VersionPreparationRequest.parse(request())
         self.assertEqual(VersionPreparationDelivery.branch_name(parsed), "ep/version-preparation/operation-0001")
 
+    def test_qualification_cannot_substitute_an_old_head(self) -> None:
+        class GitHub:
+            def qualification_for_exact_head(self, number: int, sha: str) -> dict[str, object]:
+                return {"pull_request_id": number, "exact_qualified_sha": "b" * 40, "conclusion": "PASS"}
+        with self.assertRaisesRegex(VersionPreparationError, "exact candidate SHA"):
+            VersionPreparationDelivery.qualify_candidate({"candidate_commit_sha": "a" * 40, "pull_request_id": 9}, GitHub())
+
 
 if __name__ == "__main__":
     unittest.main()
