@@ -26,6 +26,11 @@ MAX_CONSTRAINT_BYTES = 8192
 VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "FILE_INBOX", "DEPENDABOT", "LEGACY_FILE"})
 VALID_EXECUTION_MODES = frozenset({"MANAGED", "GENESIS"})
 OPERATOR_QUEUE_STATES = frozenset({"DEFERRED", "QUARANTINED", "DECLINED"})
+OPERATOR_QUEUE_TRANSITIONS = {
+    "QUEUED": frozenset({"DEFERRED", "QUARANTINED", "DECLINED"}),
+    "DEFERRED": frozenset({"QUEUED"}),
+    "QUARANTINED": frozenset({"QUEUED", "DECLINED"}),
+}
 
 # This is the complete B8D lifecycle.  The final value deliberately says what
 # CENTRAL has *not* done: admission makes a submission eligible for a later
@@ -89,10 +94,7 @@ def operator_queue_disposition(connection: sqlite3.Connection, *, project_id: st
         raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
     if connection.execute("SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE submission_id=?", (submission_id,)).fetchone() is not None:
         raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
-    allowed = (current == "QUEUED" and disposition in OPERATOR_QUEUE_STATES) or (
-        current in {"DEFERRED", "QUARANTINED"} and disposition == "QUEUED"
-    ) or (current == "QUARANTINED" and disposition == "DECLINED")
-    if not allowed:
+    if disposition not in OPERATOR_QUEUE_TRANSITIONS.get(current, frozenset()):
         raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
     now = _now()
     changed = connection.execute("UPDATE ep_submissions SET state=?,disposition_revision=disposition_revision+1 WHERE project_id=? AND submission_id=? AND state=? AND disposition_revision=?", (disposition, project_id, submission_id, current, revision)).rowcount
