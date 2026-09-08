@@ -57,6 +57,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 disposition="QUARANTINED", reason="Needs operator review",
             )
             self.assertEqual(held["state"], "QUARANTINED")
+            readback = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)
+            self.assertEqual(readback["disposition"], {"state": "QUARANTINED", "terminal": False, "execution_eligible": False, "revision": 1, "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None})
             self.assertEqual(
                 submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)["submission"]["state"],
                 "QUARANTINED",
@@ -65,6 +67,10 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 connection, project_id="djconnect", submission_id=submitted.submission_id,
                 disposition="DECLINED", reason="The operator rejected the quarantined submission",
             )["state"], "DECLINED")
+            declined_readback = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)
+            self.assertIsNone(declined_readback["run"])
+            self.assertEqual(declined_readback["result"]["outcome"], "NOT_STARTED")
+            self.assertTrue(declined_readback["disposition"]["terminal"])
             events = [row[0] for row in connection.execute("SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,))]
             self.assertEqual(events[-2:], ["OPERATOR_QUEUE_QUARANTINED", "OPERATOR_QUEUE_DECLINED"])
             self.assertNotIn("OPERATOR_QUEUE_QUEUED", events[-2:])
