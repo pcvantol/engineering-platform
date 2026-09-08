@@ -199,9 +199,9 @@ class VersionPreparationRequestTest(unittest.TestCase):
             sha = subprocess.run(("git", "rev-parse", "HEAD"), cwd=root, check=True, text=True, capture_output=True).stdout.strip()
             parsed = VersionPreparationRequest.parse(request(expected_source_revision=sha, prepared_operation_digest=digest))
             delivery = VersionPreparationDelivery(GitProvider(), Helper())
-            delivery.create_isolated_worktree(root, candidate, parsed)
-            prepared = delivery.prepare(root, candidate, parsed)
+            prepared = delivery.prepare_in_isolated_worktree(root, candidate, parsed)
             self.assertEqual(prepared["changed_paths"], (".version-operations/operation-0001.json", "product-version.json"))
+            self.assertEqual(GitProvider().command(candidate, "git", "rev-parse", "HEAD"), sha)
 
 
 if __name__ == "__main__":

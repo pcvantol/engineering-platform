@@ -211,6 +211,18 @@ class VersionPreparationDelivery:
         if self.git.command(worktree, "git", "status", "--porcelain", "--untracked-files=all"):
             raise VersionPreparationError("isolated version preparation worktree is not clean")
 
+    def prepare_in_isolated_worktree(
+        self, repository: Path, worktree: Path, request: VersionPreparationRequest,
+    ) -> dict[str, object]:
+        """Create and prepare one candidate without publishing it.
+
+        The worktree is deliberately retained on an apply failure.  It has no
+        commit, push, PR or publication side effect, and retaining it prevents
+        a retry from silently deriving a new operation from partial files.
+        """
+        self.create_isolated_worktree(repository, worktree, request)
+        return self.prepare(repository, worktree, request)
+
     def publish_candidate(
         self, worktree: Path, request: VersionPreparationRequest, prepared: Mapping[str, object], github: GitHubClient,
         *, base_branch: str,
