@@ -10115,7 +10115,7 @@ test.describe("Engineering Status browser smoke", () => {
         producer_type: "CLI",
         action_intent: "UNSPECIFIED",
         modified_at: "2026-08-02T10:01:00Z",
-        queue_source: "CENTRAL",
+        queue_source: "CENTRAL", disposition_revision: 3,
         queue_state: "DEFERRED",
       },
     ], 1));
@@ -10138,7 +10138,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => queueItems([{
       submission_id: "sub-central-fifo", filename: "sub-central-fifo",
       title_kind: "producer_submission", producer_type: "CLI", action_intent: "UNSPECIFIED",
-      modified_at: "2026-08-02T10:01:00Z", queue_source: "CENTRAL", queue_state: "QUEUED",
+      modified_at: "2026-08-02T10:01:00Z", queue_source: "CENTRAL", disposition_revision: 4, queue_state: "QUEUED",
     }], 1));
     for (const [actionKey, titleKey] of [
       ["queue.defer_action", "queue.defer_title"],
@@ -10156,6 +10156,13 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(decline).toHaveClass(/queue-defer--destructive/);
     await expect(decline).toHaveAttribute("title", messages["queue.decline_action"]);
     await expect(decline).toHaveAttribute("aria-label", messages["queue.decline_action"]);
+
+    await page.evaluate(() => queueItems([{
+      submission_id: "sub-central-fifo", filename: "sub-central-fifo", title_kind: "producer_submission",
+      producer_type: "CLI", action_intent: "UNSPECIFIED", modified_at: "2026-08-02T10:01:00Z",
+      queue_source: "CENTRAL", disposition_revision: 5, queue_state: "QUARANTINED",
+    }], 1));
+    expect(await page.locator("#queueList button").allTextContents()).toEqual([messages["queue.resume_action"], messages["queue.decline_action"]]);
   });
 
   test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {
