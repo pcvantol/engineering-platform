@@ -52,19 +52,26 @@ def set_version(root: Path, version: str) -> str:
     return version
 
 
-def advance(root: Path) -> str:
-    """Advance one patch number while retaining the current major/minor line."""
+def advance(root: Path, *, component: str = "patch") -> str:
+    """Advance one stable semantic-version component across all projections."""
     current = _current_version(root)
     major, minor, patch = (int(part) for part in current.split("."))
-    return set_version(root, f"{major}.{minor}.{patch + 1}")
+    if component == "patch":
+        target = f"{major}.{minor}.{patch + 1}"
+    elif component == "minor":
+        target = f"{major}.{minor + 1}.0"
+    else:
+        raise RuntimeError("version component must be patch or minor")
+    return set_version(root, target)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Advance one canonical EP wheel build number")
     parser.add_argument("--source-root", type=Path, default=Path.cwd())
     parser.add_argument("--set-version", help="set all canonical projections to this exact stable X.Y.Z version")
+    parser.add_argument("--bump", choices=("patch", "minor"), default="patch", help="semantic-version component to advance when --set-version is absent")
     args = parser.parse_args(argv)
-    version = set_version(args.source_root, args.set_version) if args.set_version else advance(args.source_root)
+    version = set_version(args.source_root, args.set_version) if args.set_version else advance(args.source_root, component=args.bump)
     print(f"EP_BUILD_VERSION={version}")
     return 0
 

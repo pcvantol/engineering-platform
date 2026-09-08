@@ -163,6 +163,24 @@ class PlatformProductizationTest(unittest.TestCase):
                 if path.is_file():
                     self.assertIn("2.1.2", path.read_text(encoding="utf-8"))
 
+    def test_canonical_versioning_can_advance_a_minor_and_resets_patch(self) -> None:
+        import importlib.util
+        script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+        spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in _version_projection_files():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('version = "2.1.6"\n', encoding="utf-8")
+            self.assertEqual(module.advance(root, component="minor"), "2.2.0")
+            for path in root.rglob("*"):
+                if path.is_file():
+                    self.assertIn("2.2.0", path.read_text(encoding="utf-8"))
+
     def test_release_build_can_set_an_exact_branch_version_across_all_projections(self) -> None:
         import importlib.util
         script = ROOT / "tools" / "qualification" / "advance_platform_build.py"

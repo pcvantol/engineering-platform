@@ -40,6 +40,17 @@ is a separate Engineering Platform release. The private dashboard displays
 them with the corresponding live components, while its status bar displays the
 Engineering Platform version and Git commit.
 
+`Canonical versioning` is the only CI writer of the checked-in release
+projections. On the first non-bot push to a feature branch it adds one
+`build: advance canonical EP patch version X.Y.Z` commit. On a non-bot push to
+`main` it adds one `build: advance canonical EP minor version X.Y.0` commit.
+The workflow serializes writes per ref, skips `release-*` branches, and uses
+`advance_platform_build.py` so the package, manifest, configuration and
+workspace-template projections remain identical. A protected branch must
+explicitly allow the repository GitHub Actions token to create these bot
+commits; otherwise the workflow correctly fails instead of silently claiming a
+version bump.
+
 At runner startup, `engineering-execution-host` reads the manifest and rejects an unsupported
 platform major version, older runner, older Bootstrap Contract, unsupported
 checkpoint/memory/report format or unsupported Codex CLI. Diagnostics state the
