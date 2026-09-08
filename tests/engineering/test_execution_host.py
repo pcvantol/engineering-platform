@@ -1208,6 +1208,119 @@ class ClientContractTest(unittest.TestCase):
         self.assertTrue(evidence.checks_passed)
         self.assertEqual(evidence.failed_checks, ())
 
+    def test_github_writer_preflight_reads_only_identity_and_scoped_permission(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+            def github(self, *args: str) -> str:
+                self.calls.append(args)
+                if args[:2] == ("api", "user"):
+                    return json.dumps({"login": "ep-delivery-app"})
+                if args[:2] == ("api", "repos/pcvantol/forge"):
+                    return json.dumps({"permissions": {"push": True}})
+                raise AssertionError(args)
+
+        provider = Provider()
+        self.assertEqual(
+            GhCliClient(provider, "pcvantol/forge").version_preparation_writer(),
+            {"actor": "ep-delivery-app", "repository_id": "pcvantol/forge", "can_push": True},
+        )
+        self.assertEqual(provider.calls, [("api", "user"), ("api", "repos/pcvantol/forge", "--repo", "pcvantol/forge")])
+
+    def test_github_writer_preflight_rejects_missing_scope_or_identity(self) -> None:
+        with self.assertRaisesRegex(RunnerError, "exact GitHub repository"):
+            GhCliClient(object()).version_preparation_writer()
+
+        class Provider:
+            def github(self, *args: str) -> str:
+                return json.dumps({"login": "ep-delivery-app"}) if args[:2] == ("api", "user") else json.dumps({})
+
+        with self.assertRaisesRegex(RunnerError, "identity is incomplete"):
+            GhCliClient(Provider(), "pcvantol/forge").version_preparation_writer()
+
+    def test_github_client_recovers_only_one_matching_version_preparation_pr(self) -> None:
+        evidence = {
+            "number": 12, "state": "OPEN", "isDraft": False,
+            "mergeCommit": None, "headRefName": "codex/version-prepare/op",
+            "headRefOid": "a" * 40, "baseRefName": "main", "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": [{"name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+        }
+
+        class Provider:
+            def __init__(self, listing: list[object]) -> None: self.listing, self.calls = listing, []
+            def github(self, *args: str) -> str:
+                self.calls.append(args)
+                if args[:2] == ("pr", "list"): return json.dumps(self.listing)
+                if args[:2] == ("pr", "view"): return json.dumps(evidence)
+                raise AssertionError(args)
+
+        client = GhCliClient(Provider([{"number": 12}]))
+        recovered = client.create_or_recover_pull_request("codex/version-prepare/op", "main", "title", "body")
+        self.assertEqual(recovered.number, 12)
+        self.assertIsNone(GhCliClient(Provider([])).pull_request_for_head_branch("missing"))
+        with self.assertRaisesRegex(RunnerError, "more than one"):
+            GhCliClient(Provider([{"number": 12}, {"number": 13}])).pull_request_for_head_branch("ambiguous")
+
+    def test_github_client_create_acknowledgement_and_qualification_are_exact_head_bound(self) -> None:
+        head = "b" * 40
+        evidence = {
+            "number": 17, "state": "OPEN", "isDraft": False, "mergeCommit": None,
+            "headRefName": "codex/version-prepare/op", "headRefOid": head,
+            "baseRefName": "main", "baseRefOid": "c" * 40, "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": [{"name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+        }
+
+        class Provider:
+            def github(self, *args: str) -> str:
+                if args[:2] == ("pr", "list"): return "[]"
+                if args[:2] == ("pr", "create"): return "https://github.com/pcvantol/forge/pull/17\n"
+                if args[:2] == ("pr", "view"): return json.dumps(evidence)
+                if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_status_checks"):
+                    return json.dumps({"contexts": ["validate"], "checks": []})
+                raise AssertionError(args)
+
+        client = GhCliClient(Provider(), "pcvantol/forge")
+        self.assertEqual(client.create_or_recover_pull_request("codex/version-prepare/op", "main", "title", "body").number, 17)
+        qualification = client.qualification_for_exact_head(17, head)
+        self.assertEqual(qualification["exact_qualified_sha"], head)
+        with self.assertRaisesRegex(RunnerError, "exact candidate SHA"):
+            client.qualification_for_exact_head(17, "not-a-sha")
+        evidence["headRefOid"] = "d" * 40
+        with self.assertRaisesRegex(RunnerError, "different pull request head"):
+            client.qualification_for_exact_head(17, head)
+
+    def test_github_client_rejects_incomplete_or_failed_version_preparation_qualification(self) -> None:
+        head = "e" * 40
+        class Provider:
+            def __init__(self, checks: list[dict[str, str]]) -> None: self.checks = checks
+            def github(self, *args: str) -> str:
+                if args[:2] == ("pr", "view"):
+                    return json.dumps({"headRefOid": head, "baseRefOid": "f" * 40, "baseRefName": "main", "statusCheckRollup": self.checks})
+                if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_status_checks"):
+                    return json.dumps({"contexts": ["lint"], "checks": []})
+                raise AssertionError(args)
+
+        with self.assertRaisesRegex(RunnerError, "incomplete"):
+            GhCliClient(Provider([]), "pcvantol/forge").qualification_for_exact_head(1, head)
+        with self.assertRaisesRegex(RunnerError, "failed: lint"):
+            GhCliClient(Provider([{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}]), "pcvantol/forge").qualification_for_exact_head(1, head)
+
+    def test_github_client_requires_the_protected_branch_check_set(self) -> None:
+        head = "e" * 40
+        class Provider:
+            def __init__(self, required: dict[str, object]) -> None: self.required = required
+            def github(self, *args: str) -> str:
+                if args[:2] == ("pr", "view"):
+                    return json.dumps({"headRefOid": head, "baseRefOid": "f" * 40, "baseRefName": "main", "statusCheckRollup": [{"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}]})
+                if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_status_checks"):
+                    return json.dumps(self.required)
+                raise AssertionError(args)
+
+        with self.assertRaisesRegex(RunnerError, "no required checks"):
+            GhCliClient(Provider({"contexts": [], "checks": []}), "pcvantol/forge").qualification_for_exact_head(1, head)
+        with self.assertRaisesRegex(RunnerError, "missing required checks: integration"):
+            GhCliClient(Provider({"contexts": ["unit", "integration"], "checks": []}), "pcvantol/forge").qualification_for_exact_head(1, head)
+
     @patch("engineering_platform.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:
         review_message = json.dumps(

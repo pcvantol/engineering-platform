@@ -44,6 +44,9 @@ class GitHubClient(Protocol):
     def ready(self, number: int) -> None: ...
     def normalize_markdown_body(self, number: int) -> bool: ...
     def merge(self, number: int) -> None: ...
+    def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence: ...
+    def qualification_for_exact_head(self, number: int, head_sha: str) -> dict[str, object]: ...
+    def version_preparation_writer(self) -> dict[str, object]: ...
 
 
 class SubprocessRepositoryClient:
@@ -192,8 +195,28 @@ class GhCliClient:
         scoped = (*args, "--repo", self.repository) if self.repository else args
         return self.provider.github(*scoped)
 
+    def version_preparation_writer(self) -> dict[str, object]:
+        """Read the configured writer's safe identity and repository scope.
+
+        This is a preflight observation, never a credential issuer or branch
+        protection bypass.  GitHub does not expose a general branch-write
+        guarantee here, so a protected merge remains GitHub's authority.
+        """
+        if not self.repository or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository):
+            raise RunnerError("Version preparation writer requires one exact GitHub repository scope.")
+        try:
+            identity = json.loads(self.provider.github("api", "user"))
+            repository = json.loads(self._github("api", f"repos/{self.repository}"))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Version preparation writer identity could not be read.") from error
+        actor = identity.get("login") if isinstance(identity, dict) else None
+        permissions = repository.get("permissions") if isinstance(repository, dict) else None
+        if not isinstance(actor, str) or not actor or not isinstance(permissions, dict):
+            raise RunnerError("Version preparation writer identity is incomplete.")
+        return {"actor": actor, "repository_id": self.repository, "can_push": permissions.get("push") is True}
+
     def pull_request(self, number: int) -> PullRequestEvidence:
-        try: raw = json.loads(self._github("pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup,headRefName,baseRefName,mergeStateStatus"))
+        try: raw = json.loads(self._github("pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup,headRefName,headRefOid,baseRefName,mergeStateStatus"))
         except RuntimeError as error: raise RunnerError(str(error)) from error
         # GitHub can append an empty rollup entry to an otherwise completed
         # merged PR. It is not a check and must not keep terminal evidence in
@@ -209,7 +232,7 @@ class GhCliClient:
         merge = raw.get("mergeCommit") or {}
         return PullRequestEvidence(
             raw["number"], raw["state"], terminal, passed, merge.get("oid"), raw["isDraft"], failed,
-            raw.get("headRefName"), raw.get("baseRefName"), raw.get("mergeStateStatus"),
+            raw.get("headRefName"), raw.get("baseRefName"), raw.get("mergeStateStatus"), raw.get("headRefOid"),
         )
 
     def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None:
@@ -226,6 +249,72 @@ class GhCliClient:
         if len(numbers) != 1:
             raise RunnerError("Finalization recovery found more than one pull request for its checkpointed branch.")
         return self.pull_request(numbers[0])
+
+    def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
+        """Create one bounded PR or recover the sole existing branch identity."""
+        existing = self.pull_request_for_head_branch(branch)
+        if existing is not None:
+            if existing.base_branch != base:
+                raise RunnerError("Version preparation branch already has a pull request for another base.")
+            return existing
+        try:
+            raw = self._github("pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body)
+        except RuntimeError as error:
+            # A successful create may lose its acknowledgement.  Only recover
+            # the deterministic branch identity; never create a second PR.
+            recovered = self.pull_request_for_head_branch(branch)
+            if recovered is None:
+                raise RunnerError(str(error)) from error
+            if recovered.base_branch != base:
+                raise RunnerError("Version preparation PR recovery found wrong base.") from error
+            return recovered
+        match = re.search(r"/pull/(\d+)(?:\s|$)", raw)
+        if match is None:
+            recovered = self.pull_request_for_head_branch(branch)
+            if recovered is None:
+                raise RunnerError("Version preparation PR create acknowledgement is ambiguous.")
+            return recovered
+        return self.pull_request(int(match.group(1)))
+
+    def qualification_for_exact_head(self, number: int, head_sha: str) -> dict[str, object]:
+        """Read the base branch's required checks for this exact candidate."""
+        if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise RunnerError("Qualification requires an exact candidate SHA.")
+        try:
+            raw = json.loads(self._github("pr", "view", str(number), "--json", "headRefOid,baseRefOid,baseRefName,statusCheckRollup"))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Version preparation qualification could not be read.") from error
+        if raw.get("headRefOid") != head_sha:
+            raise RunnerError("Qualification evidence belongs to a different pull request head.")
+        base = raw.get("baseRefName")
+        if not self.repository or not isinstance(base, str) or not base:
+            raise RunnerError("Version preparation qualification lacks an exact protected base branch.")
+        try:
+            required = json.loads(self._github(
+                "api", f"repos/{self.repository}/branches/{base}/protection/required_status_checks",
+            ))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Version preparation required-check policy could not be read.") from error
+        contexts = required.get("contexts") if isinstance(required, dict) else None
+        protected_checks = required.get("checks") if isinstance(required, dict) else None
+        names = set()
+        if isinstance(contexts, list):
+            names.update(item for item in contexts if isinstance(item, str) and item)
+        if isinstance(protected_checks, list):
+            names.update(item.get("context") for item in protected_checks if isinstance(item, dict) and isinstance(item.get("context"), str) and item["context"])
+        if not names:
+            raise RunnerError("Version preparation qualification has no required checks configured.")
+        checks = [item for item in (raw.get("statusCheckRollup") or []) if isinstance(item, dict) and isinstance(item.get("status"), str)]
+        if not checks or any(item.get("status") != "COMPLETED" for item in checks):
+            raise RunnerError("Version preparation qualification is incomplete.")
+        failed = [str(item.get("name") or "unnamed check") for item in checks if item.get("conclusion") not in {"SUCCESS", "NEUTRAL", "SKIPPED"}]
+        if failed:
+            raise RunnerError("Version preparation qualification failed: " + ", ".join(failed))
+        observed = {item.get("name") for item in checks if isinstance(item.get("name"), str) and item["name"]}
+        missing = sorted(names - observed)
+        if missing:
+            raise RunnerError("Version preparation qualification is missing required checks: " + ", ".join(missing))
+        return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "required_checks": sorted(names), "checks": checks, "conclusion": "PASS"}
     def ready(self, number: int) -> None:
         try: self._github("pr", "ready", str(number))
         except RuntimeError as error:
