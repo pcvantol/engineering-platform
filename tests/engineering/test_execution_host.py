@@ -1266,9 +1266,11 @@ class ClientContractTest(unittest.TestCase):
                 if args[:2] == ("pr", "list"): return "[]"
                 if args[:2] == ("pr", "create"): return "https://github.com/pcvantol/forge/pull/17\n"
                 if args[:2] == ("pr", "view"): return json.dumps(evidence)
+                if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_status_checks"):
+                    return json.dumps({"contexts": ["validate"], "checks": []})
                 raise AssertionError(args)
 
-        client = GhCliClient(Provider())
+        client = GhCliClient(Provider(), "pcvantol/forge")
         self.assertEqual(client.create_or_recover_pull_request("codex/version-prepare/op", "main", "title", "body").number, 17)
         qualification = client.qualification_for_exact_head(17, head)
         self.assertEqual(qualification["exact_qualified_sha"], head)
@@ -1283,12 +1285,32 @@ class ClientContractTest(unittest.TestCase):
         class Provider:
             def __init__(self, checks: list[dict[str, str]]) -> None: self.checks = checks
             def github(self, *args: str) -> str:
-                return json.dumps({"headRefOid": head, "baseRefOid": "f" * 40, "statusCheckRollup": self.checks})
+                if args[:2] == ("pr", "view"):
+                    return json.dumps({"headRefOid": head, "baseRefOid": "f" * 40, "baseRefName": "main", "statusCheckRollup": self.checks})
+                if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_status_checks"):
+                    return json.dumps({"contexts": ["lint"], "checks": []})
+                raise AssertionError(args)
 
         with self.assertRaisesRegex(RunnerError, "incomplete"):
-            GhCliClient(Provider([])).qualification_for_exact_head(1, head)
+            GhCliClient(Provider([]), "pcvantol/forge").qualification_for_exact_head(1, head)
         with self.assertRaisesRegex(RunnerError, "failed: lint"):
-            GhCliClient(Provider([{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}])).qualification_for_exact_head(1, head)
+            GhCliClient(Provider([{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}]), "pcvantol/forge").qualification_for_exact_head(1, head)
+
+    def test_github_client_requires_the_protected_branch_check_set(self) -> None:
+        head = "e" * 40
+        class Provider:
+            def __init__(self, required: dict[str, object]) -> None: self.required = required
+            def github(self, *args: str) -> str:
+                if args[:2] == ("pr", "view"):
+                    return json.dumps({"headRefOid": head, "baseRefOid": "f" * 40, "baseRefName": "main", "statusCheckRollup": [{"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}]})
+                if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_status_checks"):
+                    return json.dumps(self.required)
+                raise AssertionError(args)
+
+        with self.assertRaisesRegex(RunnerError, "no required checks"):
+            GhCliClient(Provider({"contexts": [], "checks": []}), "pcvantol/forge").qualification_for_exact_head(1, head)
+        with self.assertRaisesRegex(RunnerError, "missing required checks: integration"):
+            GhCliClient(Provider({"contexts": ["unit", "integration"], "checks": []}), "pcvantol/forge").qualification_for_exact_head(1, head)
 
     @patch("engineering_platform.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:

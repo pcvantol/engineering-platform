@@ -277,22 +277,44 @@ class GhCliClient:
         return self.pull_request(int(match.group(1)))
 
     def qualification_for_exact_head(self, number: int, head_sha: str) -> dict[str, object]:
-        """Read real check evidence and reject merge-ref/old-head substitution."""
+        """Read the base branch's required checks for this exact candidate."""
         if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
             raise RunnerError("Qualification requires an exact candidate SHA.")
         try:
-            raw = json.loads(self._github("pr", "view", str(number), "--json", "headRefOid,baseRefOid,statusCheckRollup"))
+            raw = json.loads(self._github("pr", "view", str(number), "--json", "headRefOid,baseRefOid,baseRefName,statusCheckRollup"))
         except (RuntimeError, json.JSONDecodeError) as error:
             raise RunnerError("Version preparation qualification could not be read.") from error
         if raw.get("headRefOid") != head_sha:
             raise RunnerError("Qualification evidence belongs to a different pull request head.")
+        base = raw.get("baseRefName")
+        if not self.repository or not isinstance(base, str) or not base:
+            raise RunnerError("Version preparation qualification lacks an exact protected base branch.")
+        try:
+            required = json.loads(self._github(
+                "api", f"repos/{self.repository}/branches/{base}/protection/required_status_checks",
+            ))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Version preparation required-check policy could not be read.") from error
+        contexts = required.get("contexts") if isinstance(required, dict) else None
+        protected_checks = required.get("checks") if isinstance(required, dict) else None
+        names = set()
+        if isinstance(contexts, list):
+            names.update(item for item in contexts if isinstance(item, str) and item)
+        if isinstance(protected_checks, list):
+            names.update(item.get("context") for item in protected_checks if isinstance(item, dict) and isinstance(item.get("context"), str) and item["context"])
+        if not names:
+            raise RunnerError("Version preparation qualification has no required checks configured.")
         checks = [item for item in (raw.get("statusCheckRollup") or []) if isinstance(item, dict) and isinstance(item.get("status"), str)]
         if not checks or any(item.get("status") != "COMPLETED" for item in checks):
             raise RunnerError("Version preparation qualification is incomplete.")
         failed = [str(item.get("name") or "unnamed check") for item in checks if item.get("conclusion") not in {"SUCCESS", "NEUTRAL", "SKIPPED"}]
         if failed:
             raise RunnerError("Version preparation qualification failed: " + ", ".join(failed))
-        return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "checks": checks, "conclusion": "PASS"}
+        observed = {item.get("name") for item in checks if isinstance(item.get("name"), str) and item["name"]}
+        missing = sorted(names - observed)
+        if missing:
+            raise RunnerError("Version preparation qualification is missing required checks: " + ", ".join(missing))
+        return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "required_checks": sorted(names), "checks": checks, "conclusion": "PASS"}
     def ready(self, number: int) -> None:
         try: self._github("pr", "ready", str(number))
         except RuntimeError as error:
