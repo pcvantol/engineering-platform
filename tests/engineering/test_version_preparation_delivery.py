@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 import tempfile
+import hashlib
 
 from engineering_platform.version_preparation_delivery import VersionPreparationDelivery, VersionPreparationError, VersionPreparationRequest
+from engineering_platform.execution_models import PullRequestEvidence
 
 
 def request(**overrides: object) -> dict[str, object]:
@@ -58,6 +60,28 @@ class VersionPreparationRequestTest(unittest.TestCase):
             self.assertEqual(first, VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, qualification))
             with self.assertRaisesRegex(VersionPreparationError, "exact successful"):
                 VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, {**qualification, "exact_qualified_sha": "b" * 40})
+
+    def test_execute_binds_prepare_candidate_qualification_and_evidence(self) -> None:
+        class Git:
+            def command(self, _root: Path, *args: str) -> str:
+                if args[-1] == "HEAD": return "a" * 40
+                if args[-1] == "--untracked-files=all": return ""
+                if args[-2:] == ("diff", "--name-only"): return "product-version.json\n.version-operations/operation-0001.json"
+                if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
+                return ""
+        class Helper:
+            def apply(self, _worktree: Path, _request: object) -> None: pass
+        class GitHub:
+            def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
+                return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base)
+            def qualification_for_exact_head(self, number: int, sha: str) -> dict[str, object]:
+                return {"pull_request_id": number, "exact_qualified_sha": sha, "conclusion": "PASS", "checks": []}
+        digest = hashlib.sha256(b"product-version.json\n.version-operations/operation-0001.json").hexdigest()
+        parsed = VersionPreparationRequest.parse(request(prepared_operation_digest=digest))
+        with tempfile.TemporaryDirectory() as directory:
+            result = VersionPreparationDelivery(Git(), Helper()).execute(Path(directory), Path(directory), parsed, GitHub(), base_branch="main", evidence_root=Path(directory))
+            self.assertEqual(result["pull_request_id"], 9)
+            self.assertTrue(Path(str(result["delivery_evidence_path"])).is_file())
 
 
 if __name__ == "__main__":

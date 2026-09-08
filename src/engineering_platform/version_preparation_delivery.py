@@ -177,3 +177,14 @@ class VersionPreparationDelivery:
         except FileExistsError as error:
             raise VersionPreparationError("delivery evidence write collided") from error
         return target
+
+    def execute(
+        self, repository: Path, worktree: Path, request: VersionPreparationRequest, github: GitHubClient,
+        *, base_branch: str, evidence_root: Path,
+    ) -> dict[str, object]:
+        """Run one bounded preparation transaction; never merge or publish a release."""
+        prepared = self.prepare(repository, worktree, request)
+        candidate = self.publish_candidate(worktree, request, prepared, github, base_branch=base_branch)
+        qualification = self.qualify_candidate(candidate, github)
+        evidence = self.record_delivery_evidence(evidence_root, candidate, qualification)
+        return {**candidate, "qualification": qualification, "delivery_evidence_path": str(evidence)}
