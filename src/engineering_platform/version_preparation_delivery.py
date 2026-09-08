@@ -193,6 +193,9 @@ class VersionPreparationDelivery:
         self.git.command(worktree, "git", "add", "--", *paths)
         self.git.command(worktree, "git", "commit", "-m", f"build: prepare version operation {request.operation_id}")
         candidate_sha = self.git.command(worktree, "git", "rev-parse", "HEAD")
+        candidate_tree_sha = self.git.command(worktree, "git", "rev-parse", "HEAD^{tree}")
+        if not _SHA.fullmatch(candidate_tree_sha):
+            raise VersionPreparationError("candidate tree identity is unavailable")
         self.git.command(worktree, "git", "push", "origin", f"HEAD:{branch}")
         body = "\n".join((
             "Bounded EP version-preparation candidate.",
@@ -205,7 +208,16 @@ class VersionPreparationDelivery:
             raise VersionPreparationError("recovered pull request does not bind the candidate branch")
         if pr.head_sha != candidate_sha:
             raise VersionPreparationError("pull request head changed after version candidate publication")
-        return {**prepared, "candidate_commit_sha": candidate_sha, "branch": branch, "pull_request_id": pr.number}
+        return {
+            **prepared,
+            "candidate_commit_sha": candidate_sha,
+            "candidate_tree_sha": candidate_tree_sha,
+            "branch": branch,
+            "pull_request_id": pr.number,
+            "pull_request_head_sha": pr.head_sha,
+            "authorization_reference": request.authorization_reference,
+            "delivery_mode": request.delivery_mode,
+        }
 
     @staticmethod
     def qualify_candidate(candidate: Mapping[str, object], github: GitHubClient) -> dict[str, object]:
@@ -221,13 +233,33 @@ class VersionPreparationDelivery:
     @staticmethod
     def record_delivery_evidence(evidence_root: Path, candidate: Mapping[str, object], qualification: Mapping[str, object]) -> Path:
         """Append immutable delivery evidence outside the tracked prepared receipt."""
-        operation, sha, branch, pr = (candidate.get(key) for key in ("operation_id", "candidate_commit_sha", "branch", "pull_request_id"))
-        if not all(isinstance(value, str) and value for value in (operation, sha, branch)) or not isinstance(pr, int):
+        operation, sha, tree, branch, pr, digest, authorization = (
+            candidate.get(key) for key in (
+                "operation_id", "candidate_commit_sha", "candidate_tree_sha", "branch", "pull_request_id",
+                "prepared_operation_digest", "authorization_reference",
+            )
+        )
+        if (not all(isinstance(value, str) and value for value in (operation, sha, tree, branch, digest, authorization))
+                or not _SHA.fullmatch(sha) or not _SHA.fullmatch(tree) or not isinstance(pr, int)):
             raise VersionPreparationError("candidate is incomplete for delivery evidence")
         if qualification.get("exact_qualified_sha") != sha or qualification.get("conclusion") != "PASS":
             raise VersionPreparationError("delivery evidence requires exact successful qualification")
-        payload = {"schema_version": 1, "operation_id": operation, "candidate_commit_sha": sha, "branch": branch,
-                   "pull_request_id": pr, "qualification": dict(qualification)}
+        payload = {
+            "schema_version": 1,
+            "operation_id": operation,
+            "prepared_operation_digest": digest,
+            "candidate_commit_sha": sha,
+            "candidate_tree_sha": tree,
+            "branch": branch,
+            "pull_request_id": pr,
+            "pull_request_head_sha": candidate.get("pull_request_head_sha"),
+            "qualification": dict(qualification),
+            "authorization_reference": authorization,
+            # This adapter never merges.  A later authorized delivery route
+            # may append separate merge evidence; it cannot relabel this as a
+            # completed protected delivery.
+            "delivery": {"state": "PENDING_PROTECTED_MERGE"},
+        }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         directory = evidence_root / "version-preparation-delivery"
         directory.mkdir(parents=True, exist_ok=True)

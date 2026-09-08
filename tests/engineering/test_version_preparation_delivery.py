@@ -54,11 +54,14 @@ class VersionPreparationRequestTest(unittest.TestCase):
             VersionPreparationDelivery.qualify_candidate({"candidate_commit_sha": "a" * 40, "pull_request_id": 9}, GitHub())
 
     def test_delivery_evidence_is_idempotent_and_exact_head_bound(self) -> None:
-        candidate = {"operation_id": "operation-0001", "candidate_commit_sha": "a" * 40, "branch": "ep/version-preparation/operation-0001", "pull_request_id": 9}
+        candidate = {"operation_id": "operation-0001", "prepared_operation_digest": "sha256:diff", "candidate_commit_sha": "a" * 40, "candidate_tree_sha": "c" * 40, "branch": "ep/version-preparation/operation-0001", "pull_request_id": 9, "pull_request_head_sha": "a" * 40, "authorization_reference": "grant:bounded"}
         qualification = {"exact_qualified_sha": "a" * 40, "conclusion": "PASS", "checks": []}
         with tempfile.TemporaryDirectory() as directory:
             first = VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, qualification)
             self.assertEqual(first, VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, qualification))
+            recorded = __import__("json").loads(first.read_text(encoding="utf-8"))
+            self.assertEqual(recorded["candidate_tree_sha"], "c" * 40)
+            self.assertEqual(recorded["delivery"]["state"], "PENDING_PROTECTED_MERGE")
             with self.assertRaisesRegex(VersionPreparationError, "exact successful"):
                 VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, {**qualification, "exact_qualified_sha": "b" * 40})
 
@@ -70,6 +73,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
                     self.status_calls += 1
                     return "" if self.status_calls == 1 else "product-version.json\0"
                 if args[-1] == "-z": return "" if self.status_calls == 1 else ".version-operations/operation-0001.json\0"
+                if args[-1] == "HEAD^{tree}": return "c" * 40
                 if args[-1] == "HEAD": return "a" * 40
                 if args[-1] == "--untracked-files=all": return ""
                 if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
@@ -93,6 +97,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
         class Git:
             def command(self, _root: Path, *args: str) -> str:
                 if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
+                if args[-1] == "HEAD^{tree}": return "c" * 40
                 if args[-1] == "HEAD": return "a" * 40
                 return ""
         class GitHub:
