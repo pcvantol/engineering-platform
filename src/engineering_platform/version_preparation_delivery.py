@@ -21,6 +21,7 @@ from .execution_repository import GitHubClient
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _PATH = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*$")
+_REPOSITORY_PATH = re.compile(r"^(?:[A-Za-z0-9.][A-Za-z0-9._-]*/)*[A-Za-z0-9.][A-Za-z0-9._-]*$")
 _REQUEST_KEYS = frozenset({"contract_version", "operation_id", "product_id", "component_id", "repository_id", "policy_revision", "policy_digest", "source_event_set", "source_event_policy", "expected_source_revision", "expected_target_branch_revision", "expected_version", "requested_change", "determined_target_version", "allowed_projection_paths", "prepared_operation_digest", "authorization_reference", "delivery_mode"})
 _HELPER_KEYS = frozenset({"contract_version", "product_id", "repository_id", "helper_path", "receipt_directory", "allowed_projection_paths", "policy_revision"})
 
@@ -47,7 +48,8 @@ class ProductHelperDeclaration:
         fields = ("product_id", "repository_id", "helper_path", "policy_revision")
         receipt_directory = value.get("receipt_directory")
         if (not all(isinstance(value.get(key), str) and _PATH.fullmatch(value[key]) for key in fields)
-                or not isinstance(receipt_directory, str) or "/.." in receipt_directory or receipt_directory.startswith("/")):
+                or not isinstance(receipt_directory, str) or not _REPOSITORY_PATH.fullmatch(receipt_directory)
+                or any(part in {".", ".."} for part in receipt_directory.split("/"))):
             raise VersionPreparationError("product version helper declaration has invalid paths or identities")
         paths = value.get("allowed_projection_paths")
         if not isinstance(paths, list) or not paths or not all(isinstance(path, str) and _PATH.fullmatch(path) for path in paths):
@@ -119,6 +121,23 @@ class VersionPreparationDelivery:
     def __init__(self, git: GitProvider, helper: ProductHelper) -> None:
         self.git, self.helper = git, helper
 
+    def _changed_paths(self, worktree: Path) -> tuple[str, ...]:
+        """Return every changed path, including the helper's new receipt.
+
+        ``git diff --name-only`` alone omits untracked receipts, which would
+        let a candidate commit omit its operation evidence.  NUL-delimited
+        Git path inventories avoid whitespace/quote interpretation entirely.
+        """
+        tracked = self.git.command(worktree, "git", "diff", "--no-renames", "--name-only", "-z", "HEAD")
+        untracked = self.git.command(worktree, "git", "ls-files", "--others", "--exclude-standard", "-z")
+        paths = [path for path in (tracked + untracked).split("\0") if path]
+        for path in paths:
+            if not _REPOSITORY_PATH.fullmatch(path) or any(part in {".", ".."} for part in path.split("/")):
+                raise VersionPreparationError("version preparation has an invalid changed path")
+        if len(set(paths)) != len(paths):
+            raise VersionPreparationError("version preparation has duplicate changed paths")
+        return tuple(sorted(paths))
+
     def prepare(self, repository: Path, worktree: Path, request: VersionPreparationRequest) -> dict[str, object]:
         head = self.git.command(repository, "git", "rev-parse", "HEAD")
         if head != request.expected_source_revision:
@@ -126,16 +145,18 @@ class VersionPreparationDelivery:
         status = self.git.command(repository, "git", "status", "--porcelain", "--untracked-files=all")
         if status:
             raise VersionPreparationError("repository checkout is not clean")
+        if self._changed_paths(worktree):
+            raise VersionPreparationError("isolated version preparation worktree is not clean")
         declaration = ProductHelperDeclaration.load(worktree)
         if (declaration.product_id != request.product_id or declaration.repository_id != request.repository_id
                 or declaration.policy_revision != request.policy_revision
                 or tuple(request.allowed_projection_paths) != declaration.allowed_projection_paths):
             raise VersionPreparationError("product helper declaration does not bind the admitted operation")
         self.helper.apply(worktree, request)
-        changed = tuple(filter(None, self.git.command(worktree, "git", "diff", "--name-only").splitlines()))
-        receipt = tuple(path for path in changed if path.endswith(f"/{request.operation_id}.json"))
-        allowed = set(request.allowed_projection_paths) | set(receipt)
-        if not receipt or set(changed) - allowed:
+        changed = self._changed_paths(worktree)
+        receipt = f"{declaration.receipt_directory}/{request.operation_id}.json"
+        allowed = set(request.allowed_projection_paths) | {receipt}
+        if receipt not in changed or set(changed) - allowed:
             raise VersionPreparationError("version preparation changed a path outside its declared operation")
         digest = hashlib.sha256("\n".join(changed).encode()).hexdigest()
         if digest != request.prepared_operation_digest:
