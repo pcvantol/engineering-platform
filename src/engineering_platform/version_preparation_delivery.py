@@ -24,7 +24,7 @@ _SEMVER = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _PATH = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*$")
 _REPOSITORY_PATH = re.compile(r"^(?:[A-Za-z0-9.][A-Za-z0-9._-]*/)*[A-Za-z0-9.][A-Za-z0-9._-]*$")
-_REQUEST_KEYS = frozenset({"contract_version", "operation_id", "product_id", "component_id", "repository_id", "policy_revision", "policy_digest", "source_event_set", "source_event_policy", "expected_source_revision", "expected_target_branch_revision", "expected_version", "requested_change", "determined_target_version", "allowed_projection_paths", "prepared_operation_digest", "authorization_reference", "delivery_mode"})
+_REQUEST_KEYS = frozenset({"contract_version", "operation_id", "product_id", "component_id", "repository_id", "policy_revision", "policy_digest", "source_event_set", "source_event_policy", "release_class", "release_rationale", "expected_source_revision", "expected_target_branch_revision", "expected_version", "requested_change", "determined_target_version", "allowed_projection_paths", "prepared_operation_digest", "authorization_reference", "delivery_mode"})
 _HELPER_KEYS = frozenset({"contract_version", "product_id", "repository_id", "helper_path", "receipt_directory", "allowed_projection_paths", "policy_revision"})
 
 
@@ -70,6 +70,8 @@ class VersionPreparationRequest:
     policy_digest: str
     source_event_set: tuple[str, ...]
     source_event_policy: str
+    release_class: str
+    release_rationale: str
     expected_source_revision: str
     expected_target_branch_revision: str | None
     expected_version: str
@@ -99,7 +101,7 @@ class VersionPreparationRequest:
             raise VersionPreparationError("allowed projection paths are invalid")
         request = cls(*(text(key, key in {"component_id", "expected_target_branch_revision"}) for key in (
             "contract_version", "operation_id", "product_id", "component_id", "repository_id", "policy_revision", "policy_digest")),
-            tuple(events), text("source_event_policy"), text("expected_source_revision"),
+            tuple(events), text("source_event_policy"), text("release_class"), text("release_rationale"), text("expected_source_revision"),
             text("expected_target_branch_revision", True), text("expected_version"), text("requested_change"),
             text("determined_target_version"), tuple(paths), text("prepared_operation_digest"),
             text("authorization_reference"), text("delivery_mode"))
@@ -117,6 +119,11 @@ class VersionPreparationRequest:
             raise VersionPreparationError("unsupported delivery mode")
         if request.requested_change not in {"patch", "minor", "exact-version"}:
             raise VersionPreparationError("unsupported requested change")
+        if request.release_class not in {"PATCH", "MINOR", "MAJOR", "EXACT", "NO_BUMP"}:
+            raise VersionPreparationError("unsupported release classification")
+        expected_class = {"patch": "PATCH", "minor": "MINOR", "exact-version": "EXACT"}[request.requested_change]
+        if request.release_class != expected_class:
+            raise VersionPreparationError("release classification does not bind the requested change")
         return request
 
 

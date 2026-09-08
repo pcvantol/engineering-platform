@@ -14,7 +14,7 @@ def request(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "contract_version": "1", "operation_id": "operation-0001", "product_id": "forge",
         "component_id": "product", "repository_id": "pcvantol/forge", "policy_revision": "v1",
-        "policy_digest": "sha256:" + "a" * 64, "source_event_set": ["merge:1"], "source_event_policy": "main",
+        "policy_digest": "sha256:" + "a" * 64, "source_event_set": ["increment:I-123"], "source_event_policy": "engineering-increment", "release_class": "MINOR", "release_rationale": "capability boundary",
         "expected_source_revision": "a" * 40, "expected_target_branch_revision": None,
         "expected_version": "2.3.0", "requested_change": "minor", "determined_target_version": "2.4.0",
         "allowed_projection_paths": ["product-version.json"], "prepared_operation_digest": "sha256:" + "b" * 64,
@@ -53,6 +53,10 @@ class VersionPreparationRequestTest(unittest.TestCase):
             VersionPreparationRequest.parse(request(policy_digest="sha256:policy"))
         with self.assertRaisesRegex(VersionPreparationError, "SHA-256"):
             VersionPreparationRequest.parse(request(prepared_operation_digest="sha256:diff"))
+
+    def test_rejects_a_release_classification_that_disagrees_with_the_operation(self) -> None:
+        with self.assertRaisesRegex(VersionPreparationError, "classification"):
+            VersionPreparationRequest.parse(request(release_class="PATCH"))
 
     def test_candidate_branch_is_deterministically_bound_to_operation(self) -> None:
         parsed = VersionPreparationRequest.parse(request())
