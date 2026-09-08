@@ -121,7 +121,10 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> Capability
     # Installed deterministic qualification replaces GitHub with the local
     # adapter before any lifecycle work.  Its admission must therefore test
     # the adapter composition, not require an unrelated live GitHub session.
-    qualification_local_github = os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1"
+    qualification_local_github = (
+        os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1"
+        and os.environ.get("EP_QUALIFICATION_GITHUB_WRITE_FLOW") != "1"
+    )
     required_providers = provider_readiness_failures(
         root, require_github=mode != "GENESIS" and not qualification_local_github,
     )

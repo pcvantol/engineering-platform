@@ -193,10 +193,17 @@ def _default_runner(repository_root: Path, *, central_database: Path | None = No
     """Construct the installed historical runner without a watcher or Agent."""
     if os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1":
         from .qualification_runtime import DeterministicQualificationAgent, LocalQualificationGitHub
+        github: object = LocalQualificationGitHub(repository_root)
+        if os.environ.get("EP_QUALIFICATION_GITHUB_WRITE_FLOW") == "1":
+            remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
+            match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())
+            if remote.returncode != 0 or match is None:
+                raise RunnerError("QUALIFICATION_GITHUB_REMOTE_REQUIRED")
+            github = GhCliClient(repository=match.group(1))
         return EngineeringRunner(
             repository_root,
             StateStore(repository_root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=False),
-            SubprocessRepositoryClient(), LocalQualificationGitHub(repository_root), DeterministicQualificationAgent(),
+            SubprocessRepositoryClient(), github, DeterministicQualificationAgent(),
         )
     remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
     match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())

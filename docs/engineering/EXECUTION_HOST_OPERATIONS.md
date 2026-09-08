@@ -159,6 +159,26 @@ same-run `RECOVERED` lineage, terminal assurance evidence, and the run in the
 dashboard's project-scoped history. The dedicated provider-recovery unit suite
 additionally qualifies unsafe and ambiguous recovery branches.
 
+### Explicit external Managed GitHub qualification
+
+The default deterministic qualification never contacts GitHub. To prove the
+Managed hand-off against an approved dummy repository, an operator must supply
+all three values deliberately:
+
+```sh
+python3 tools/qualification/p_deterministic_execution_e2e.py --source-root . \
+  --managed-repository /absolute/path/to/clean-dummy-checkout \
+  --managed-github-repository owner/approved-dummy-repository \
+  --allow-managed-github-writes
+```
+
+The command rejects a dirty checkout, a non-matching `origin`, unavailable
+GitHub access, or a missing explicit write flag. It commits and pushes one
+unique `qualification/managed-e2e-*` branch, creates one open PR against
+`main`, and verifies both remote branch and PR identity. It does **not** merge,
+close, or delete that PR or branch: the normal human merge boundary remains in
+force. This profile is intentionally excluded from CI and release gates.
+
 ## CENTRAL project lanes
 
 CENTRAL retains a FIFO lane per project. It permits at most one active,

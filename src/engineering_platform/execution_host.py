@@ -548,7 +548,10 @@ class EngineeringRunner:
         # adapter before the runner is created.  It must therefore qualify the
         # Managed lifecycle against that adapter, rather than demand an
         # unrelated interactive GitHub session from the CI runner.
-        qualification_local_github = os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1"
+        qualification_local_github = (
+            os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1"
+            and os.environ.get("EP_QUALIFICATION_GITHUB_WRITE_FLOW") != "1"
+        )
         missing = provider_readiness_failures(
             self.root,
             require_github=require_github and not qualification_local_github,
