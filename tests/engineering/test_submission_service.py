@@ -117,6 +117,17 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT state,disposition_revision FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone(), before)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind LIKE 'OPERATOR_QUEUE_%'", (submitted.submission_id,)).fetchone()[0], 0)
 
+    def test_queue_operation_id_replays_once_and_rejects_payload_collision(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("operation"), transport="HTTP"))
+            first = submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason="Investigate source", expected_state="QUEUED", expected_revision=0, operation_id="queue-operation-1", actor_reference="operator-a")
+            replay = submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason="Investigate source", expected_state="QUEUED", expected_revision=0, operation_id="queue-operation-1", actor_reference="operator-a")
+            self.assertEqual((first["state"], replay["state"]), ("QUARANTINED", "QUARANTINED"))
+            self.assertTrue(replay["replayed"])
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind='OPERATOR_QUEUE_QUARANTINED'", (submitted.submission_id,)).fetchone()[0], 1)
+            with self.assertRaisesRegex(submission_service.SubmissionError, "OPERATION_ID_CONFLICT"):
+                submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="DECLINED", reason="Different command", expected_state="QUARANTINED", expected_revision=1, operation_id="queue-operation-1", actor_reference="operator-a")
+
     def test_http_auth_scope_and_acceptance(self) -> None:
         server.start(self.root)
         request = Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions", data=json.dumps(self.payload("http")).encode(), headers={"Authorization": f"Bearer {self.credential}", "Content-Type": "application/json"}, method="POST")
