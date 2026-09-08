@@ -1,5 +1,26 @@
 # Engineering Platform Roadmap
 
+## Repository observation and safe cleanup — documented target
+
+The coordinated `PROJECT_HYGIENE_AND_REPOSITORY_RECONCILIATION_V1` increment
+adds [EP-owned observation and safe cleanup](../engineering/REPOSITORY_HYGIENE_AND_SAFE_CLEANUP.md)
+and the [HY-E/HY-C/HY-Q roadmap](PROJECT_HYGIENE_V1_ROADMAP.md).
+EP owns fresh host/provider facts and actual scoped cleanup; Forge owns
+project-wide cases and reasoning; Workspace presents requests/decisions.
+Own-run finalization cleanup does not require a Forge Mission or online UI.
+
+`HY-0 -> HY-E -> HY-C -> HY-Q` is the local documentary lane; HY-Q also consumes
+Forge HY-F/HY-S. All implementation/qualification remains PLANNED. Reuse existing
+admission, providers, leases and finalization rather than add a second queue or
+arbitrary-shell execution mode. Mutation requires current actor/scope, exact
+expected state, no active owner, retention and conditional provider safety.
+Semantic supersession, branch age and a merged PR alone are not delete authority.
+
+Cleanup warnings preserve proven delivery; protected/unknown-owned work and
+ignored/untracked runtime state remain retained. The full hygiene family is not
+a new first-canary or global release gate. No package, schema, workflow, grant,
+budget, active programme or installed-state change is made by this document set.
+
 ## Policy governance and effective assurance profiles — documented target
 
 The coordinated `POLICY_GOVERNANCE_AND_EFFECTIVE_PROFILES_V1` increment adds
@@ -357,7 +378,7 @@ Forge may consume canonical EP readiness/status/result/evidence APIs but must no
 | `EP::P_NEUTRAL_V1` | No active generic DJConnect platform identity/authority. | MERGED / CLOSED; completion evidence `b44af091`. |
 | `EP::P_INSTALLER_V1` | Reproducible standalone Server-side EP install/repair/update boundary; excludes Forge/Workspace/general Agent productization. | CURRENT AUTONOMY FRONTIER. |
 | `EP::STANDALONE_EP_VERIFIED` | One independent installed governed DJConnect execution with canonical evidence. | AFTER P-INSTALLER-V1 + DJConnect canary. |
-| `EP::SELF_HOSTED_ENGINEERING_VERIFIED` | Installed EP executes a real bounded Engineering Platform source change through CENTRAL. | IMMEDIATE POST-STANDALONE dogfood gate. |
+| `EP::SELF_HOSTED_ENGINEERING_VERIFIED` | Installed EP executes a real bounded Engineering Platform self-development Action through CENTRAL. | IMMEDIATE POST-STANDALONE dogfood gate. |
 | `EP::PROJECT_ATTACHMENT_AND_ADMISSION_V1` | Consumer-facing attachment/admission hardening beyond current B8R runtime. | FOLLOW-ON consumer qualification. |
 | `EP::ENGINEERING_CONTRACT_FOUNDATION_V1` | Rich DoR/DoD/Human-Gate/Action-quality producer contract. | Long-term Forge producer contract. |
 
