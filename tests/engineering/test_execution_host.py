@@ -2356,6 +2356,37 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(len(agent.prompts), 1)
         self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
 
+    def test_first_implementation_publication_is_a_separate_post_assurance_dispatch(self) -> None:
+        """The product gate, not provider wording, owns first PR creation."""
+        sha = "a" * 40
+        profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+        reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
+                         "profile_digest": profile["digest"], "invocation_id": f"{role}-1",
+                         "findings": [], "contract_version": "1.0", "started_at": "now", "completed_at": "now"}
+                        for role in ("quality", "security"))
+        agent = SequencedFakeAgent([AgentResult("COMPLETE", "main", 71, commit_sha=sha)])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState("publication-gate", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
+                                 branch="main", owner_authorized=True, assurance_profile=profile, assurance_reviews=reviews)
+        published, result = runner._publish_first_implementation_pull_request(
+            state, AgentResult("COMPLETE", "main", commit_sha=sha)
+        )
+        self.assertFalse(published.terminal)
+        self.assertEqual(result.pull_request, 71)
+        self.assertIn("First implementation pull-request publication gate", agent.prompts[0])
+
+    def test_malformed_mandatory_review_is_unresolved_not_an_empty_pass(self) -> None:
+        class MalformedReviewer(FakeAgent):
+            def review(self, _: Path, selection: object, __: str, evidence: object = None) -> ReviewerResult:
+                return ReviewerResult(getattr(selection, "reviewer"), "malformed", contract_version=None)
+
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), MalformedReviewer(AgentResult("COMPLETE")), lambda _: None)
+        state = TransactionState("malformed-review", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="main")
+        blocked, _ = runner._run_quality_assurance(state, AgentResult("COMPLETE", "main", commit_sha="a" * 40))
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "mandatory_assurance_unresolved")
+
     def test_local_repository_validation_iterates_before_creating_the_implementation_pr(self) -> None:
         agent = SequencedFakeAgent([
             AgentResult(
