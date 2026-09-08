@@ -47,6 +47,25 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
 
+    def test_queue_disposition_http_helpers_reject_ambiguous_json_and_foreign_origins(self) -> None:
+        """The queue mutation boundary treats origin and JSON ambiguity safely."""
+        self.assertTrue(server._same_origin({"Host": "localhost:8765"}))
+        self.assertTrue(server._same_origin({"Host": "localhost:8765", "Origin": "https://localhost:8765"}))
+        self.assertFalse(server._same_origin({"Host": "localhost:8765", "Origin": "https://other.example"}))
+        self.assertEqual(server._strict_json_object(b'{"operation_id":"once"}'), {"operation_id": "once"})
+        with self.assertRaises(ValueError):
+            server._strict_json_object(b'{"operation_id":"first","operation_id":"second"}')
+        with self.assertRaises(ValueError):
+            server._strict_json_object(b'[]')
+
+    def test_queue_operator_capability_commands_are_explicit(self) -> None:
+        parsed = server.build_parser().parse_args((
+            "grant-operator-capability", "--project-id", "project", "--consumer-id", "operator",
+            "--capability", "QUEUE_DECLINE",
+        ))
+        self.assertEqual((parsed.command, parsed.project_id, parsed.consumer_id, parsed.capability),
+                         ("grant-operator-capability", "project", "operator", "QUEUE_DECLINE"))
+
     def test_execution_runtime_status_preserves_the_virtual_environment_launcher(self) -> None:
         launcher = Path(self.temporary.name) / "venv" / "bin" / "python"
         launcher.parent.mkdir(parents=True)
