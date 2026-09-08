@@ -44,13 +44,27 @@ DEPENDABOT_BINDING_TIMEOUT_SECONDS = 30
 # lifecycle semantics depend on runner timing.
 DEPENDABOT_DISPATCH_TIMEOUT_SECONDS = 60
 
+# The crash-recovery canaries deliberately terminate the installed Server.
+# A hosted SQLite runner can briefly retain the just-released store while the
+# next, idempotent topology bootstrap starts.  Retry only that bootstrap: an
+# issuance or other mutating administrative command must never be replayed
+# merely because its response was unavailable.
+BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS = 4
+BOOTSTRAP_TOPOLOGY_RETRY_DELAY_SECONDS = 0.25
+
 
 def command(binary: Path, *args: str, environment: dict[str, str] | None = None) -> dict[str, object]:
-    completed = subprocess.run([str(binary), *args], check=False, text=True, capture_output=True, env=environment)  # nosec B603
-    if completed.returncode:
+    for attempt in range(1, BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS + 1):
+        completed = subprocess.run([str(binary), *args], check=False, text=True, capture_output=True, env=environment)  # nosec B603
+        if not completed.returncode:
+            return json.loads(completed.stdout)
         detail = (completed.stderr or completed.stdout).strip().replace("\n", " ")[:1024]
+        retryable = args[:1] == ("bootstrap-topology",) and "EP Server store is unavailable." in detail
+        if retryable and attempt < BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS:
+            time.sleep(BOOTSTRAP_TOPOLOGY_RETRY_DELAY_SECONDS * attempt)
+            continue
         raise RuntimeError(f"installed Server command failed ({' '.join(args)}): {detail}")
-    return json.loads(completed.stdout)
+    raise AssertionError("bounded installed Server command retry loop exhausted")
 
 
 def wait_for_dispatch(
