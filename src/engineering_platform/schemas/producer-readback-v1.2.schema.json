@@ -3,10 +3,14 @@
   "$id": "https://engineering-platform.local/schemas/producer-readback-v1.2.schema.json",
   "title": "Engineering Platform producer readback v1.2 disposition extension",
   "type": "object",
-  "required": ["contract_version", "submission", "disposition", "run", "result", "evidence"],
+  "additionalProperties": false,
+  "required": ["contract_version", "submission", "producer", "correlation", "provenance", "disposition", "run", "result", "evidence"],
   "properties": {
     "contract_version": {"const": "1.2"},
-    "submission": {"type": "object", "required": ["state"]},
+    "submission": {"type": "object", "additionalProperties": false, "required": ["id", "project_id", "repository_id", "state", "admission", "transport", "created_at", "accepted_request_digest"]},
+    "producer": {"type": "object", "additionalProperties": false, "required": ["id", "type", "version"]},
+    "correlation": {"type": "object", "additionalProperties": false, "required": ["correlation_id", "mission_id", "engineering_action_id"]},
+    "provenance": {"type": "object", "additionalProperties": false, "required": ["status", "forge_execution"]},
     "disposition": {
       "type": "object",
       "additionalProperties": false,
@@ -24,7 +28,7 @@
       }
     },
     "run": {"type": ["object", "null"]},
-    "result": {"type": "object"},
-    "evidence": {"type": "object"}
+    "result": {"type": "object", "additionalProperties": false, "required": ["outcome", "terminal", "delivery_qualified"]},
+    "evidence": {"type": "object", "additionalProperties": false, "required": ["status", "terminal_artifact", "repository"]}
   }
 }
