@@ -38,6 +38,7 @@ class ComponentLoggingTest(unittest.TestCase):
             record = json.loads(payload)
             self.assertEqual(record["level"], "INFO")
             self.assertEqual(record["component"], "file_inbox_ingress")
+            self.assertEqual(record["component_version"], "1")
             self.assertEqual(record["run_id"], "operations_console-example")
             self.assertIn("timestamp", record)
             self.assertIn("[REDACTED]", record["event"])

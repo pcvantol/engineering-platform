@@ -3522,6 +3522,21 @@ function healthComponentLabel(component) {
   );
   return definition?.name_key ? t(definition.name_key) : component;
 }
+function componentLogDetails(entry) {
+  const details = String(entry?.details || ""),
+    component = typeof entry?.target_component === "string" && entry.target_component
+      ? entry.target_component
+      : entry?.component,
+    version = latestPlatformHealth?.components?.[component]?.version;
+  // Old records did not persist a component version.  The display therefore
+  // identifies the observed current version, without rewriting historical
+  // evidence or inventing one when health has no version.
+  if (
+    typeof version !== "string" || !version ||
+    /(?:^| · )(?:target_)?component_version:/.test(details)
+  ) return details || "—";
+  return (details ? details + " · " : "") + "component_version: " + version;
+}
 const LEGACY_TRANSPORT_STATUS_CODES = Object.freeze({
   HEALTHY: "HTTP_INGRESS_HEALTHY", DOWN: "HTTP_INGRESS_DOWN", AVAILABLE: "CLI_INGRESS_AVAILABLE",
   DEGRADED: "FILE_INGRESS_DEGRADED", RUNNING: "FILE_INGRESS_RUNNING", NOT_READY: "FILE_INGRESS_NOT_READY", STOPPED: "FILE_INGRESS_STOPPED",
@@ -4698,7 +4713,7 @@ function componentLogText(entries) {
       entry.level,
       entry.event,
       entry.runId || "—",
-      entry.details || "—",
+      componentLogDetails(entry),
       JSON.stringify(entry),
     ].join("\t"));
   return [header, ...rows].join("\n");
@@ -4886,7 +4901,7 @@ function renderComponentLogs() {
           ],
           ["", logEventLabel(entry.event)],
           ["", entry.runId || "—"],
-          ["", entry.details || "—"],
+          ["", componentLogDetails(entry)],
         ]) {
           const cell = document.createElement("td");
           cell.className = name;
@@ -6274,6 +6289,7 @@ syncStickyHeaderOffset();
 syncFooterOffset();
 const providerReadinessActions = new Map();
 let providerInteractiveRepairInProgress = false;
+let providerReadinessRecoveryAttempts = 0, providerReadinessRecoveryTimer = null;
 function providerDisplayName(provider) {
   return provider === "CODEX" || provider === "codex" ? "Codex" : "GitHub";
 }
@@ -6362,13 +6378,25 @@ async function refreshProviderLoginStatus() {
       fetch("/api/provider-login-status", probeOptions),
       fetch("/api/execution-runtime-status", probeOptions),
     ]);
+  let providers = CHECK_FAILED_PROVIDERS;
   try {
     if (providerResult.status !== "fulfilled") throw Error();
     const response = providerResult.value, payload = await response.json();
     if (!response.ok || !payload || typeof payload.providers !== "object") throw Error();
-    renderProviderLoginStatus(block, payload.providers);
+    providers = payload.providers;
+    renderProviderLoginStatus(block, providers);
   } catch {
-    renderProviderLoginStatus(block, CHECK_FAILED_PROVIDERS);
+    renderProviderLoginStatus(block, providers);
+  }
+  const hasTransientProviderFailure = PROVIDER_READINESS_KEYS.some((key) => providerReadinessState(providers, key) === "CHECK_FAILED");
+  if (hasTransientProviderFailure && providerReadinessRecoveryAttempts < 3) {
+    if (providerReadinessRecoveryTimer !== null) window.clearTimeout(providerReadinessRecoveryTimer);
+    providerReadinessRecoveryAttempts += 1;
+    providerReadinessRecoveryTimer = window.setTimeout(() => void refreshProviderLoginStatus(), providerReadinessRecoveryAttempts * 2_000);
+  } else if (!hasTransientProviderFailure) {
+    providerReadinessRecoveryAttempts = 0;
+    if (providerReadinessRecoveryTimer !== null) window.clearTimeout(providerReadinessRecoveryTimer);
+    providerReadinessRecoveryTimer = null;
   }
   try {
     if (runtimeResult.status !== "fulfilled") throw Error();
@@ -7126,22 +7154,34 @@ renderPlatformHealth = (payload) => {
     components ? { ...payload, components: components } : payload,
   );
 };
-async function confirmComponentRestart(component) {
+function componentUptimeSeconds(payload, component) {
+  const uptime = Number(payload?.components?.[component]?.uptime_seconds);
+  return Number.isFinite(uptime) && uptime >= 0 ? uptime : null;
+}
+async function confirmComponentRestart(component, previousUptimeSeconds = null) {
   for (let attempt = 0; attempt < 5; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 1250));
     try {
       const response = await fetch("/health", { cache: "no-store" }),
         payload = await response.json();
       if (response.ok && payload?.components?.[component]?.healthy) {
-        restartingPlatformComponents.delete(component);
-        renderPlatformHealth(payload);
-        $("componentModalStatus").textContent = t("ui.component_restart_available");
-        return;
+        const currentUptimeSeconds = componentUptimeSeconds(payload, component),
+          restartConfirmed = previousUptimeSeconds === null ||
+            (currentUptimeSeconds !== null && currentUptimeSeconds < previousUptimeSeconds);
+        if (restartConfirmed) {
+          restartingPlatformComponents.delete(component);
+          renderPlatformHealth(payload);
+          $("componentModalStatus").textContent = t("ui.component_restart_available");
+          return true;
+        }
       }
       renderPlatformHealth(payload);
     } catch {}
   }
-  $("componentModalStatus").textContent = t("ui.component_restart_waiting");
+  $("componentModalStatus").textContent = previousUptimeSeconds === null
+    ? t("ui.component_restart_unconfirmed")
+    : t("ui.component_restart_waiting");
+  return false;
 }
 const formatComponentUptimeForMeasuredValues = formatComponentUptime;
 formatComponentUptime = (value) => {
@@ -8470,7 +8510,13 @@ async function restartPlatformComponent(button) {
     t("component.restart_title"),
   );
   if (!confirmed) return;
+  const previousUptimeSeconds = componentUptimeSeconds(
+    latestPlatformHealthPayload,
+    component,
+  );
   button.disabled = true;
+  restartingPlatformComponents.add(component);
+  $("componentModalStatus").textContent = t("ui.component_restart_started");
   try {
     const response = await fetch(
         "/api/components/" + encodeURIComponent(component) + "/restart",
@@ -8481,7 +8527,11 @@ async function restartPlatformComponent(button) {
         },
       ),
       payload = await response.json();
-    if (!response.ok) throw Error(t("ui.component_restart_failed"));
+    if (!response.ok) {
+      restartingPlatformComponents.delete(component);
+      $("componentModalStatus").textContent = t("ui.component_restart_failed");
+      return;
+    }
     if (component === "dashboard") {
       $("componentModalStatus").textContent =
         t("ui.component_restart_started");
@@ -8489,9 +8539,12 @@ async function restartPlatformComponent(button) {
       window.setTimeout(() => window.location.reload(), 750);
       return;
     }
-    $("componentModalStatus").textContent = t("ui.component_restart_started");
+    void confirmComponentRestart(component, previousUptimeSeconds);
   } catch {
-    $("componentModalStatus").textContent = t("ui.component_restart_failed");
+    // Restarting the relay can close this connection before its response is
+    // delivered.  Never mistake that expected hand-off for proof of failure;
+    // require a fresh health observation instead.
+    void confirmComponentRestart(component, previousUptimeSeconds);
   } finally {
     button.disabled = false;
   }
@@ -8669,11 +8722,21 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 document.addEventListener("DOMContentLoaded", () => {
-  const status = $("centralDatabaseRelocateStatus");
-  if (!status) return;
-  new MutationObserver(() => {
-    if (status.textContent?.trim() === "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED") {
-      status.textContent = t("configuration.relocation_filesystem_unsupported");
-    }
-  }).observe(status, { childList: true, characterData: true, subtree: true });
+  const relocationErrors = new Set([
+    "LOCATION_REQUIRED", "LOCATION_NOT_WRITABLE", "PLATFORM_DATA_DESTINATION_INVALID",
+    "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNAVAILABLE", "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED",
+    "PLATFORM_DATA_COPY_VERIFICATION_FAILED", "PLATFORM_DATA_DESTINATION_NOT_PREPARED",
+    "PLATFORM_DATA_DESTINATION_NOT_EMPTY", "PLATFORM_DATA_UNAVAILABLE", "PLATFORM_DATA_DESTINATION_EXISTS",
+    "RELOCATION_KIND_RETIRED", "RELOCATION_ALREADY_PENDING", "RELOCATION_REQUEST_INVALID",
+    "PLATFORM_DATA_RELOCATION_BLOCKED",
+  ]);
+  for (const id of ["centralDatabaseRelocateStatus", "fileInboxRelocateStatus"]) {
+    const status = $(id);
+    if (!status) continue;
+    new MutationObserver(() => {
+      const code = status.textContent?.trim() || "";
+      if (!/^[A-Z][A-Z0-9_]+$/.test(code)) return;
+      status.textContent = t(`configuration.relocation_error.${relocationErrors.has(code) ? code : "UNKNOWN"}`);
+    }).observe(status, { childList: true, characterData: true, subtree: true });
+  }
 });

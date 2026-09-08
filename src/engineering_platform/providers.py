@@ -216,10 +216,10 @@ class CodexCliProvider(LocalProcessProvider):
         available = bool(self._executable) and Path(self._executable).is_file() and os.access(self._executable, os.X_OK)
         return ProviderStatus("codex_cli", "configured", available, "available" if available else "codex unavailable")
 
-    def command(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def command(self, *args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
         if not self._executable:
             raise FileNotFoundError("Engineering Platform managed Codex CLI is unavailable")
-        return subprocess.run((self._executable, *args), text=True, capture_output=True, check=False)
+        return subprocess.run((self._executable, *args), text=True, capture_output=True, check=False, timeout=timeout)
 
     def app_server(self) -> subprocess.Popen[str]:
         """Open the provider-owned interactive Codex app-server channel."""

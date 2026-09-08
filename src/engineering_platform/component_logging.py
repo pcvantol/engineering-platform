@@ -15,9 +15,10 @@ from collections.abc import Iterable, Iterator, Mapping
 
 from .agent_state import redact_diagnostic
 from . import central_database as central_database_module
-from .storage import EngineeringStorageError, open_storage
+from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, open_storage
 from .providers import GitProvider
 from .platform_components import PLATFORM_COMPONENT_IDS
+from .platform_version import CURRENT_PLATFORM_VERSION
 
 LOG_LEVEL_ENVIRONMENT = "ENGINEERING_PLATFORM_LOG_LEVEL"
 SERVER_DATA_ROOT_ENVIRONMENT = "EP_SERVER_DATA_ROOT"
@@ -38,6 +39,8 @@ LIFECYCLE_CONTEXT_KEYS = frozenset(
         "launchd_label",
         "launch_agent_path",
         "target_component",
+        "component_version",
+        "target_component_version",
         "shutdown_signal",
         "configuration_scope",
         "configuration_key",
@@ -367,16 +370,31 @@ def log_event(
     context: Mapping[str, object] | None = None,
 ) -> None:
     """Write one redacted, structured event without exposing arbitrary extras."""
+    component = logger.name.rsplit(".", 1)[-1]
+    payload_context = dict(context or {})
+    payload_context.setdefault("component_version", _component_version(component))
+    target = payload_context.get("target_component")
+    if isinstance(target, str) and target in PLATFORM_COMPONENT_IDS:
+        payload_context.setdefault("target_component_version", _component_version(target))
     logger.log(
         level,
         redact_diagnostic(event, limit=500),
         extra={
-            "component": logger.name.rsplit(".", 1)[-1],
+            "component": component,
             "run_id": run_id or "",
             "diagnostic": diagnostic,
-            "context": dict(context or {}),
+            "context": payload_context,
         },
     )
+
+
+def _component_version(component: str) -> str:
+    """Return the bounded version identity recorded beside a component name."""
+    if component == "platform_database":
+        return str(ENGINEERING_STORAGE_SCHEMA_VERSION)
+    if component in {"http_ingress", "cli_ingress", "file_inbox_ingress"}:
+        return "1"
+    return CURRENT_PLATFORM_VERSION
 
 
 def component_lifecycle_context(

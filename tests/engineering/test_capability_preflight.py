@@ -150,7 +150,7 @@ class CapabilityPreflightTest(unittest.TestCase):
             )
             status = provider_readiness.status(self.root, require_github=False)
         self.assertEqual(status["codex"]["state"], "AUTH_REQUIRED")
-        codex.return_value.command.assert_called_once_with("login", "status")
+        codex.return_value.command.assert_called_once_with("login", "status", timeout=provider_readiness.CODEX_READINESS_TIMEOUT_SECONDS)
 
     def test_codex_readiness_retries_one_transient_check_failure_after_server_restart(self) -> None:
         completed = __import__("subprocess").CompletedProcess
@@ -163,6 +163,14 @@ class CapabilityPreflightTest(unittest.TestCase):
             status = provider_readiness.host_status(self.root, require_github=False)
 
         self.assertEqual(status["codex"]["state"], "READY")
+        self.assertEqual(codex.return_value.command.call_count, 2)
+
+    def test_codex_readiness_times_out_without_holding_the_console_probe(self) -> None:
+        with patch("engineering_platform.provider_readiness.CodexCliProvider") as codex:
+            codex.return_value.status.return_value.qualified = True
+            codex.return_value.command.side_effect = __import__("subprocess").TimeoutExpired(("codex", "login", "status"), 2)
+            status = provider_readiness.host_status(self.root, require_github=False)
+        self.assertEqual(status["codex"]["state"], "CHECK_FAILED")
         self.assertEqual(codex.return_value.command.call_count, 2)
 
     def test_provider_runtime_details_report_only_executable_paths_and_versions(self) -> None:
