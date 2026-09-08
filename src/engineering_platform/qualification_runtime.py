@@ -53,7 +53,7 @@ class DeterministicQualificationAgent:
             sha = subprocess.run(("git", "-C", str(target_root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
             return AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target_root), commit_sha=sha)
         if self._github_write_target(root):
-            return self._create_github_managed_handoff(root)
+            return self._create_github_managed_handoff(root, finalization="finalization" in prompt.lower())
         sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
         return AgentResult("COMPLETE", branch="qualification-managed", pull_request=1, commit_sha=sha)
 
@@ -70,7 +70,7 @@ class DeterministicQualificationAgent:
         return value.removeprefix("https://github.com/").removeprefix("git@github.com:") == expected
 
     @staticmethod
-    def _create_github_managed_handoff(root: Path) -> AgentResult:
+    def _create_github_managed_handoff(root: Path, *, finalization: bool = False) -> AgentResult:
         """Create one bounded dummy-repository branch and GitHub PR.
 
         This seam is reachable only through the explicit external qualification
@@ -80,6 +80,8 @@ class DeterministicQualificationAgent:
         """
         repository = os.environ.get("EP_QUALIFICATION_GITHUB_REPOSITORY", "")
         branch = os.environ.get("EP_QUALIFICATION_GITHUB_BRANCH", "")
+        if finalization:
+            branch = branch + "-finalization"
         if not repository or not branch:
             raise RuntimeError("QUALIFICATION_GITHUB_WRITE_CONFIGURATION_INVALID")
 
@@ -87,12 +89,13 @@ class DeterministicQualificationAgent:
             return subprocess.run(args, check=True, text=True, capture_output=True).stdout.strip()  # nosec B603
 
         run("git", "-C", str(root), "switch", "-c", branch)
-        proof = root / ".engineering-platform" / "managed-github-e2e-proof.json"
-        proof.write_text(json.dumps({"kind": "EP_MANAGED_GITHUB_E2E", "version": 1}, sort_keys=True) + "\n", encoding="utf-8")
+        proof = root / ".engineering-platform" / ("managed-github-e2e-finalization-proof.json" if finalization else "managed-github-e2e-proof.json")
+        proof.write_text(json.dumps({"kind": "EP_MANAGED_GITHUB_E2E", "version": 1, "stage": "FINALIZATION" if finalization else "IMPLEMENTATION"}, sort_keys=True) + "\n", encoding="utf-8")
         run("git", "-C", str(root), "add", str(proof.relative_to(root)))
         run("git", "-C", str(root), "commit", "-m", "test: record managed GitHub qualification handoff")
         run("git", "-C", str(root), "push", "--set-upstream", "origin", branch)
-        run("gh", "pr", "create", "--repo", repository, "--head", branch, "--base", "main", "--title", "test: managed GitHub qualification", "--body", "Explicitly authorized Engineering Platform dummy-repository qualification.")
+        title = "test: managed GitHub qualification finalization" if finalization else "test: managed GitHub qualification"
+        run("gh", "pr", "create", "--repo", repository, "--head", branch, "--base", "main", "--title", title, "--body", "Explicitly authorized Engineering Platform dummy-repository qualification.")
         number = int(run("gh", "pr", "view", branch, "--repo", repository, "--json", "number", "--jq", ".number"))
         sha = run("git", "-C", str(root), "rev-parse", "HEAD")
         return AgentResult("COMPLETE", branch=branch, pull_request=number, commit_sha=sha)
