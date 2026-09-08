@@ -942,11 +942,13 @@ function queueItems(x, queueDepth) {
         ? locale.dateTime(new Date(modified))
         : t("format.timestamp_unavailable"),
     });
-    const defer = document.createElement("button");
+    const central = item.queue_source === "CENTRAL";
+    const mutable = !central || ["QUEUED", "DEFERRED", "QUARANTINED"].includes(item.queue_state);
+    const defer = mutable ? document.createElement("button") : null;
     if (defer) {
       defer.className = "queue-defer";
       defer.type = "button";
-      const held = item.queue_source === "CENTRAL" && ["DEFERRED", "QUARANTINED"].includes(item.queue_state);
+      const held = central && ["DEFERRED", "QUARANTINED"].includes(item.queue_state);
       const actionKey = held ? "queue.resume" : "queue.defer";
       defer.textContent = t(`${actionKey}_action`);
       defer.title = t(`${actionKey}_action`);
