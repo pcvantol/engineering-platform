@@ -154,6 +154,56 @@ class VersionPreparationDelivery:
         return tuple(sorted(paths))
 
     @staticmethod
+    def _prepared_candidate_digest(
+        worktree: Path, changed: tuple[str, ...], request: VersionPreparationRequest,
+    ) -> str:
+        """Return a canonical identity for the complete, resulting candidate.
+
+        The identity deliberately covers resulting bytes rather than just a
+        path inventory.  It also repeats the operation facts that select the
+        product-owned mutation.  This is evidence for one prepared candidate,
+        not a substitute for a Git tree identity after it is committed.
+        """
+        entries: list[dict[str, str]] = []
+        for relative in changed:
+            path = worktree / relative
+            if path.is_symlink() or not path.is_file():
+                raise VersionPreparationError("prepared candidate contains a non-regular projection")
+            try:
+                content = path.read_bytes()
+            except OSError as error:
+                raise VersionPreparationError("prepared candidate projection is unreadable") from error
+            entries.append({
+                "path": relative,
+                "resulting_sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+            })
+        operation = {
+            "operation_id": request.operation_id,
+            "product_id": request.product_id,
+            "component_id": request.component_id,
+            "repository_id": request.repository_id,
+            "policy_revision": request.policy_revision,
+            "policy_digest": request.policy_digest,
+            "source_event_set": list(request.source_event_set),
+            "source_event_policy": request.source_event_policy,
+            "release_class": request.release_class,
+            "release_rationale": request.release_rationale,
+            "expected_source_revision": request.expected_source_revision,
+            "expected_target_branch_revision": request.expected_target_branch_revision,
+            "expected_version": request.expected_version,
+            "requested_change": request.requested_change,
+            "determined_target_version": request.determined_target_version,
+            "allowed_projection_paths": list(request.allowed_projection_paths),
+            "authorization_reference": request.authorization_reference,
+            "delivery_mode": request.delivery_mode,
+        }
+        payload = json.dumps(
+            {"schema_version": 1, "operation": operation, "resulting_paths": entries},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        ).encode("ascii")
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
     def _validate_prepared_receipt(path: Path, declaration: ProductHelperDeclaration, request: VersionPreparationRequest) -> None:
         """Bind the product-owned receipt without imposing one product schema.
 
@@ -169,12 +219,46 @@ class VersionPreparationDelivery:
             raise VersionPreparationError("prepared operation receipt must be an object")
         if receipt.get("schema_version") not in {1, "1"} or isinstance(receipt.get("schema_version"), bool):
             raise VersionPreparationError("prepared operation receipt has an unsupported schema")
-        if (receipt.get("operation_id") != request.operation_id
-                or receipt.get("product") != request.product_id
-                or receipt.get("policy_revision") != declaration.policy_revision
-                or receipt.get("expected_source_revision") != request.expected_source_revision
-                or receipt.get("allowed_projection_paths") != list(request.allowed_projection_paths)):
+        expected = {
+            "operation_id": request.operation_id,
+            "product": request.product_id,
+            "component_id": request.component_id,
+            "repository_id": request.repository_id,
+            "policy_revision": declaration.policy_revision,
+            "policy_digest": request.policy_digest,
+            "source_event_set": list(request.source_event_set),
+            "source_event_policy": request.source_event_policy,
+            "release_class": request.release_class,
+            "release_rationale": request.release_rationale,
+            "expected_source_revision": request.expected_source_revision,
+            "expected_target_branch_revision": request.expected_target_branch_revision,
+            "expected_version": request.expected_version,
+            "requested_change": request.requested_change,
+            "determined_target_version": request.determined_target_version,
+            "allowed_projection_paths": list(request.allowed_projection_paths),
+            "authorization_reference": request.authorization_reference,
+            "delivery_mode": request.delivery_mode,
+        }
+        if any(receipt.get(key) != value for key, value in expected.items()):
             raise VersionPreparationError("prepared operation receipt does not bind the admitted operation")
+
+    def _verify_prepared_candidate(
+        self, worktree: Path, declaration: ProductHelperDeclaration, request: VersionPreparationRequest,
+        *, expected_paths: tuple[str, ...] | None = None,
+    ) -> tuple[tuple[str, ...], str]:
+        """Re-read every candidate input; never publish a stale preparation."""
+        changed = self._changed_paths(worktree)
+        if expected_paths is not None and changed != expected_paths:
+            raise VersionPreparationError("prepared candidate changed after verification")
+        receipt = f"{declaration.receipt_directory}/{request.operation_id}.json"
+        allowed = set(request.allowed_projection_paths) | {receipt}
+        if receipt not in changed or set(changed) - allowed:
+            raise VersionPreparationError("version preparation changed a path outside its declared operation")
+        self._validate_prepared_receipt(worktree / receipt, declaration, request)
+        digest = self._prepared_candidate_digest(worktree, changed, request)
+        if digest != request.prepared_operation_digest:
+            raise VersionPreparationError("prepared operation digest does not bind the candidate content")
+        return changed, digest
 
     def prepare(self, repository: Path, worktree: Path, request: VersionPreparationRequest) -> dict[str, object]:
         head = self.git.command(repository, "git", "rev-parse", "HEAD")
@@ -191,15 +275,7 @@ class VersionPreparationDelivery:
                 or tuple(request.allowed_projection_paths) != declaration.allowed_projection_paths):
             raise VersionPreparationError("product helper declaration does not bind the admitted operation")
         self.helper.apply(worktree, request)
-        changed = self._changed_paths(worktree)
-        receipt = f"{declaration.receipt_directory}/{request.operation_id}.json"
-        allowed = set(request.allowed_projection_paths) | {receipt}
-        if receipt not in changed or set(changed) - allowed:
-            raise VersionPreparationError("version preparation changed a path outside its declared operation")
-        self._validate_prepared_receipt(worktree / receipt, declaration, request)
-        digest = "sha256:" + hashlib.sha256("\n".join(changed).encode()).hexdigest()
-        if digest != request.prepared_operation_digest:
-            raise VersionPreparationError("prepared operation digest does not bind the candidate diff")
+        changed, digest = self._verify_prepared_candidate(worktree, declaration, request)
         return {"operation_id": request.operation_id, "changed_paths": changed, "prepared_operation_digest": digest}
 
     @staticmethod
@@ -250,7 +326,19 @@ class VersionPreparationDelivery:
             target = self.git.command(worktree, "git", "rev-parse", f"origin/{base_branch}")
             if target != request.expected_target_branch_revision:
                 raise VersionPreparationError("target branch revision changed before candidate publication")
-        self.git.command(worktree, "git", "add", "--", *paths)
+        # This is deliberately the final read before staging.  A preparation
+        # is not authority to commit bytes that changed after it was checked.
+        declared = ProductHelperDeclaration.load(worktree)
+        if (declared.product_id != request.product_id or declared.repository_id != request.repository_id
+                or declared.policy_revision != request.policy_revision
+                or declared.allowed_projection_paths != request.allowed_projection_paths):
+            raise VersionPreparationError("product helper declaration does not bind the admitted operation")
+        actual_paths, actual_digest = self._verify_prepared_candidate(
+            worktree, declared, request, expected_paths=paths,
+        )
+        if actual_digest != prepared.get("prepared_operation_digest"):
+            raise VersionPreparationError("prepared candidate digest changed after verification")
+        self.git.command(worktree, "git", "add", "--", *actual_paths)
         self.git.command(worktree, "git", "commit", "-m", f"build: prepare version operation {request.operation_id}")
         candidate_sha = self.git.command(worktree, "git", "rev-parse", "HEAD")
         candidate_tree_sha = self.git.command(worktree, "git", "rev-parse", "HEAD^{tree}")

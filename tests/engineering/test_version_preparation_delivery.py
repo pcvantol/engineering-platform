@@ -24,6 +24,31 @@ def request(**overrides: object) -> dict[str, object]:
     return value
 
 
+def receipt_for(operation: VersionPreparationRequest) -> dict[str, object]:
+    """The cross-repository receipt fields EP admits and re-checks."""
+    return {
+        "schema_version": 1,
+        "operation_id": operation.operation_id,
+        "product": operation.product_id,
+        "component_id": operation.component_id,
+        "repository_id": operation.repository_id,
+        "policy_revision": operation.policy_revision,
+        "policy_digest": operation.policy_digest,
+        "source_event_set": list(operation.source_event_set),
+        "source_event_policy": operation.source_event_policy,
+        "release_class": operation.release_class,
+        "release_rationale": operation.release_rationale,
+        "expected_source_revision": operation.expected_source_revision,
+        "expected_target_branch_revision": operation.expected_target_branch_revision,
+        "expected_version": operation.expected_version,
+        "requested_change": operation.requested_change,
+        "determined_target_version": operation.determined_target_version,
+        "allowed_projection_paths": list(operation.allowed_projection_paths),
+        "authorization_reference": operation.authorization_reference,
+        "delivery_mode": operation.delivery_mode,
+    }
+
+
 class VersionPreparationRequestTest(unittest.TestCase):
     def test_accepts_exact_bounded_contract(self) -> None:
         parsed = VersionPreparationRequest.parse(request())
@@ -57,6 +82,10 @@ class VersionPreparationRequestTest(unittest.TestCase):
     def test_rejects_a_release_classification_that_disagrees_with_the_operation(self) -> None:
         with self.assertRaisesRegex(VersionPreparationError, "classification"):
             VersionPreparationRequest.parse(request(release_class="PATCH"))
+
+    def test_rejects_no_bump_from_the_mutating_prepare_adapter(self) -> None:
+        with self.assertRaisesRegex(VersionPreparationError, "requested change"):
+            VersionPreparationRequest.parse(request(requested_change="none", release_class="NO_BUMP"))
 
     def test_candidate_branch_is_deterministically_bound_to_operation(self) -> None:
         parsed = VersionPreparationRequest.parse(request())
@@ -96,9 +125,10 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 return ""
         class Helper:
             def apply(self, worktree: Path, operation: VersionPreparationRequest) -> None:
+                (worktree / "product-version.json").write_text('{"version":"2.4.0"}\n', encoding="utf-8")
                 receipt = worktree / ".version-operations"
                 receipt.mkdir(exist_ok=True)
-                (receipt / "operation-0001.json").write_text(__import__("json").dumps({"schema_version": 1, "operation_id": operation.operation_id, "product": operation.product_id, "policy_revision": operation.policy_revision, "expected_source_revision": operation.expected_source_revision, "allowed_projection_paths": list(operation.allowed_projection_paths)}), encoding="utf-8")
+                (receipt / "operation-0001.json").write_text(__import__("json").dumps(receipt_for(operation)), encoding="utf-8")
         class GitHub:
             def version_preparation_writer(self) -> dict[str, object]:
                 return {"actor": "ep-writer", "repository_id": "pcvantol/forge", "can_push": True}
@@ -106,11 +136,19 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base, head_sha="a" * 40)
             def qualification_for_exact_head(self, number: int, sha: str) -> dict[str, object]:
                 return {"pull_request_id": number, "exact_qualified_sha": sha, "conclusion": "PASS", "checks": []}
-        digest = "sha256:" + hashlib.sha256(b".version-operations/operation-0001.json\nproduct-version.json").hexdigest()
-        parsed = VersionPreparationRequest.parse(request(prepared_operation_digest=digest))
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, ".version-preparation.json").write_text(__import__("json").dumps({"contract_version": "1", "product_id": "forge", "repository_id": "pcvantol/forge", "helper_path": "scripts/advance_product_version.py", "receipt_directory": ".version-operations", "allowed_projection_paths": ["product-version.json"], "policy_revision": "v1"}), encoding="utf-8")
-            result = VersionPreparationDelivery(Git(), Helper()).execute(Path(directory), Path(directory), parsed, GitHub(), base_branch="main", evidence_root=Path(directory))
+            root = Path(directory)
+            provisional = VersionPreparationRequest.parse(request())
+            (root / "product-version.json").write_text('{"version":"2.4.0"}\n', encoding="utf-8")
+            (root / ".version-operations").mkdir()
+            (root / ".version-operations" / "operation-0001.json").write_text(__import__("json").dumps(receipt_for(provisional)), encoding="utf-8")
+            digest = VersionPreparationDelivery(Git(), Helper())._prepared_candidate_digest(root, (".version-operations/operation-0001.json", "product-version.json"), provisional)
+            (root / "product-version.json").unlink()
+            (root / ".version-operations" / "operation-0001.json").unlink()
+            (root / ".version-operations").rmdir()
+            parsed = VersionPreparationRequest.parse(request(prepared_operation_digest=digest))
+            result = VersionPreparationDelivery(Git(), Helper()).execute(root, root, parsed, GitHub(), base_branch="main", evidence_root=root)
             self.assertEqual(result["pull_request_id"], 9)
             self.assertTrue(Path(str(result["delivery_evidence_path"])).is_file())
 
@@ -118,6 +156,8 @@ class VersionPreparationRequestTest(unittest.TestCase):
         class Git:
             def command(self, _root: Path, *args: str) -> str:
                 if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
+                if args[-2:] == ("-z", "HEAD"): return "product-version.json\0"
+                if args[-1] == "-z": return ".version-operations/operation-0001.json\0"
                 if args[-1] == "HEAD^{tree}": return "c" * 40
                 if args[-1] == "HEAD": return "a" * 40
                 return ""
@@ -126,10 +166,46 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 return {"actor": "ep-writer", "repository_id": "pcvantol/forge", "can_push": True}
             def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
                 return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base, head_sha="b" * 40)
-        parsed = VersionPreparationRequest.parse(request())
-        prepared = {"operation_id": parsed.operation_id, "changed_paths": ("product-version.json",), "prepared_operation_digest": parsed.prepared_operation_digest}
-        with self.assertRaisesRegex(VersionPreparationError, "head changed"):
-            VersionPreparationDelivery(Git(), object()).publish_candidate(Path("."), parsed, prepared, GitHub(), base_branch="main")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".version-preparation.json").write_text(__import__("json").dumps({"contract_version": "1", "product_id": "forge", "repository_id": "pcvantol/forge", "helper_path": "scripts/advance_product_version.py", "receipt_directory": ".version-operations", "allowed_projection_paths": ["product-version.json"], "policy_revision": "v1"}), encoding="utf-8")
+            provisional = VersionPreparationRequest.parse(request())
+            (root / "product-version.json").write_text('{"version":"2.4.0"}\n', encoding="utf-8")
+            (root / ".version-operations").mkdir()
+            (root / ".version-operations" / "operation-0001.json").write_text(__import__("json").dumps(receipt_for(provisional)), encoding="utf-8")
+            digest = VersionPreparationDelivery(Git(), object())._prepared_candidate_digest(root, (".version-operations/operation-0001.json", "product-version.json"), provisional)
+            parsed = VersionPreparationRequest.parse(request(prepared_operation_digest=digest))
+            prepared = {"operation_id": parsed.operation_id, "changed_paths": (".version-operations/operation-0001.json", "product-version.json"), "prepared_operation_digest": digest}
+            with self.assertRaisesRegex(VersionPreparationError, "head changed"):
+                VersionPreparationDelivery(Git(), object()).publish_candidate(root, parsed, prepared, GitHub(), base_branch="main")
+
+    def test_publish_rejects_candidate_bytes_changed_after_prepare(self) -> None:
+        class Git:
+            def command(self, _root: Path, *args: str) -> str:
+                if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
+                if args[-2:] == ("-z", "HEAD"): return "product-version.json\0"
+                if args[-1] == "-z": return ".version-operations/operation-0001.json\0"
+                if args[1:3] == ("add", "--"):
+                    raise AssertionError("must not stage mutated candidate bytes")
+                return ""
+        class GitHub:
+            def version_preparation_writer(self) -> dict[str, object]:
+                return {"actor": "ep-writer", "repository_id": "pcvantol/forge", "can_push": True}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".version-preparation.json").write_text(__import__("json").dumps({"contract_version": "1", "product_id": "forge", "repository_id": "pcvantol/forge", "helper_path": "scripts/advance_product_version.py", "receipt_directory": ".version-operations", "allowed_projection_paths": ["product-version.json"], "policy_revision": "v1"}), encoding="utf-8")
+            provisional = VersionPreparationRequest.parse(request())
+            (root / "product-version.json").write_text('{"version":"2.4.0"}\n', encoding="utf-8")
+            (root / ".version-operations").mkdir()
+            receipt = root / ".version-operations" / "operation-0001.json"
+            receipt.write_text(__import__("json").dumps(receipt_for(provisional)), encoding="utf-8")
+            delivery = VersionPreparationDelivery(Git(), object())
+            digest = delivery._prepared_candidate_digest(root, (".version-operations/operation-0001.json", "product-version.json"), provisional)
+            parsed = VersionPreparationRequest.parse(request(prepared_operation_digest=digest))
+            prepared = {"operation_id": parsed.operation_id, "changed_paths": (".version-operations/operation-0001.json", "product-version.json"), "prepared_operation_digest": digest}
+            (root / "product-version.json").write_text('{"version":"9.9.9"}\n', encoding="utf-8")
+            with self.assertRaisesRegex(VersionPreparationError, "candidate content"):
+                delivery.publish_candidate(root, parsed, prepared, GitHub(), base_branch="main")
 
     def test_publish_rejects_a_writer_without_exact_repository_push_scope(self) -> None:
         class Git:
@@ -194,22 +270,30 @@ class VersionPreparationRequestTest(unittest.TestCase):
             with self.assertRaisesRegex(VersionPreparationError, "does not bind"):
                 VersionPreparationDelivery._validate_prepared_receipt(receipt, declaration, VersionPreparationRequest.parse(request()))
 
+    def test_prepared_receipt_rejects_changed_version_or_classification(self) -> None:
+        declaration = ProductHelperDeclaration("forge", "pcvantol/forge", "scripts/advance_product_version.py", ".version-operations", ("product-version.json",), "v1")
+        parsed = VersionPreparationRequest.parse(request())
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory, "operation-0001.json")
+            receipt.write_text(__import__("json").dumps({"schema_version": 1, "operation_id": parsed.operation_id, "product": parsed.product_id, "policy_revision": parsed.policy_revision, "expected_source_revision": parsed.expected_source_revision, "expected_version": "8.0.0", "requested_change": "exact-version", "release_class": "EXACT", "release_rationale": parsed.release_rationale, "determined_target_version": "9.0.0", "allowed_projection_paths": list(parsed.allowed_projection_paths)}), encoding="utf-8")
+            with self.assertRaisesRegex(VersionPreparationError, "does not bind"):
+                VersionPreparationDelivery._validate_prepared_receipt(receipt, declaration, parsed)
+
     def test_isolated_git_worktree_includes_an_untracked_receipt_in_candidate_scope(self) -> None:
         """A real temporary Git checkout proves receipts cannot be omitted by diff."""
         from engineering_platform.providers import GitProvider
 
         class Helper:
-            def apply(self, worktree: Path, _request: object) -> None:
+            def apply(self, worktree: Path, operation: VersionPreparationRequest) -> None:
                 (worktree / "product-version.json").write_text('{"version":"2.4.0"}\n', encoding="utf-8")
                 receipt = worktree / ".version-operations"
                 receipt.mkdir()
-                (receipt / "operation-0001.json").write_text(__import__("json").dumps({"schema_version": 1, "operation_id": "operation-0001", "product": "forge", "policy_revision": "v1", "expected_source_revision": sha, "allowed_projection_paths": ["product-version.json"]}), encoding="utf-8")
+                (receipt / "operation-0001.json").write_text(__import__("json").dumps(receipt_for(operation)), encoding="utf-8")
 
         def git(root: Path, *args: str) -> None:
             subprocess.run(("git", *args), cwd=root, check=True, text=True, capture_output=True)
 
         declaration = {"contract_version": "1", "product_id": "forge", "repository_id": "pcvantol/forge", "helper_path": "scripts/advance_product_version.py", "receipt_directory": ".version-operations", "allowed_projection_paths": ["product-version.json"], "policy_revision": "v1"}
-        digest = "sha256:" + hashlib.sha256(b".version-operations/operation-0001.json\nproduct-version.json").hexdigest()
         with tempfile.TemporaryDirectory() as directory:
             root, candidate = Path(directory, "source"), Path(directory, "candidate")
             root.mkdir()
@@ -221,8 +305,15 @@ class VersionPreparationRequestTest(unittest.TestCase):
             git(root, "add", "product-version.json", ".version-preparation.json")
             git(root, "commit", "-qm", "baseline")
             sha = subprocess.run(("git", "rev-parse", "HEAD"), cwd=root, check=True, text=True, capture_output=True).stdout.strip()
-            parsed = VersionPreparationRequest.parse(request(expected_source_revision=sha, prepared_operation_digest=digest))
             delivery = VersionPreparationDelivery(GitProvider(), Helper())
+            provisional = VersionPreparationRequest.parse(request(expected_source_revision=sha))
+            planned = Path(directory, "planned")
+            planned.mkdir()
+            (planned / "product-version.json").write_text('{"version":"2.4.0"}\n', encoding="utf-8")
+            (planned / ".version-operations").mkdir()
+            (planned / ".version-operations" / "operation-0001.json").write_text(__import__("json").dumps(receipt_for(provisional)), encoding="utf-8")
+            digest = delivery._prepared_candidate_digest(planned, (".version-operations/operation-0001.json", "product-version.json"), provisional)
+            parsed = VersionPreparationRequest.parse(request(expected_source_revision=sha, prepared_operation_digest=digest))
             prepared = delivery.prepare_in_isolated_worktree(root, candidate, parsed)
             self.assertEqual(prepared["changed_paths"], (".version-operations/operation-0001.json", "product-version.json"))
             self.assertEqual(GitProvider().command(candidate, "git", "rev-parse", "HEAD"), sha)
