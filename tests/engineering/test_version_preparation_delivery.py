@@ -203,6 +203,20 @@ class VersionPreparationRequestTest(unittest.TestCase):
             self.assertEqual(prepared["changed_paths"], (".version-operations/operation-0001.json", "product-version.json"))
             self.assertEqual(GitProvider().command(candidate, "git", "rev-parse", "HEAD"), sha)
 
+            class FailingHelper:
+                def apply(self, worktree: Path, operation: VersionPreparationRequest) -> None:
+                    (worktree / "product-version.json").write_text('{"version":"2.4.0"}\n', encoding="utf-8")
+                    (worktree / ".version-operations").mkdir()
+                    (worktree / ".version-operations" / f"{operation.operation_id}.json").write_text("not-json", encoding="utf-8")
+
+            failed = Path(directory, "failed-candidate")
+            failed_request = VersionPreparationRequest.parse(request(operation_id="operation-0002", expected_source_revision=sha, prepared_operation_digest=digest))
+            with self.assertRaisesRegex(VersionPreparationError, "receipt is unreadable"):
+                VersionPreparationDelivery(GitProvider(), FailingHelper()).prepare_in_isolated_worktree(root, failed, failed_request)
+            self.assertEqual(GitProvider().command(root, "git", "rev-parse", "HEAD"), sha)
+            self.assertEqual(GitProvider().command(failed, "git", "rev-parse", "HEAD"), sha)
+            self.assertTrue(GitProvider().command(failed, "git", "status", "--porcelain"))
+
 
 if __name__ == "__main__":
     unittest.main()
