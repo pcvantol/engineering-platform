@@ -96,6 +96,8 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 receipt.mkdir(exist_ok=True)
                 (receipt / "operation-0001.json").write_text(__import__("json").dumps({"schema_version": 1, "operation_id": operation.operation_id, "product": operation.product_id, "policy_revision": operation.policy_revision, "expected_source_revision": operation.expected_source_revision, "allowed_projection_paths": list(operation.allowed_projection_paths)}), encoding="utf-8")
         class GitHub:
+            def version_preparation_writer(self) -> dict[str, object]:
+                return {"actor": "ep-writer", "repository_id": "pcvantol/forge", "can_push": True}
             def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
                 return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base, head_sha="a" * 40)
             def qualification_for_exact_head(self, number: int, sha: str) -> dict[str, object]:
@@ -116,11 +118,26 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 if args[-1] == "HEAD": return "a" * 40
                 return ""
         class GitHub:
+            def version_preparation_writer(self) -> dict[str, object]:
+                return {"actor": "ep-writer", "repository_id": "pcvantol/forge", "can_push": True}
             def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
                 return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base, head_sha="b" * 40)
         parsed = VersionPreparationRequest.parse(request())
         prepared = {"operation_id": parsed.operation_id, "changed_paths": ("product-version.json",), "prepared_operation_digest": parsed.prepared_operation_digest}
         with self.assertRaisesRegex(VersionPreparationError, "head changed"):
+            VersionPreparationDelivery(Git(), object()).publish_candidate(Path("."), parsed, prepared, GitHub(), base_branch="main")
+
+    def test_publish_rejects_a_writer_without_exact_repository_push_scope(self) -> None:
+        class Git:
+            def command(self, _root: Path, *args: str) -> str:
+                if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
+                raise AssertionError(f"candidate must stop before {args!r}")
+        class GitHub:
+            def version_preparation_writer(self) -> dict[str, object]:
+                return {"actor": "ep-writer", "repository_id": "pcvantol/other", "can_push": True}
+        parsed = VersionPreparationRequest.parse(request())
+        prepared = {"operation_id": parsed.operation_id, "changed_paths": ("product-version.json",), "prepared_operation_digest": parsed.prepared_operation_digest}
+        with self.assertRaisesRegex(VersionPreparationError, "not authorized"):
             VersionPreparationDelivery(Git(), object()).publish_candidate(Path("."), parsed, prepared, GitHub(), base_branch="main")
 
     def test_publish_rejects_a_target_branch_that_moved_after_admission(self) -> None:
@@ -129,10 +146,13 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
                 if args[-1] == "origin/main": return "b" * 40
                 raise AssertionError(f"candidate must stop before {args!r}")
+        class GitHub:
+            def version_preparation_writer(self) -> dict[str, object]:
+                return {"actor": "ep-writer", "repository_id": "pcvantol/forge", "can_push": True}
         parsed = VersionPreparationRequest.parse(request(expected_target_branch_revision="a" * 40))
         prepared = {"operation_id": parsed.operation_id, "changed_paths": ("product-version.json",), "prepared_operation_digest": parsed.prepared_operation_digest}
         with self.assertRaisesRegex(VersionPreparationError, "target branch revision changed"):
-            VersionPreparationDelivery(Git(), object()).publish_candidate(Path("."), parsed, prepared, object(), base_branch="main")
+            VersionPreparationDelivery(Git(), object()).publish_candidate(Path("."), parsed, prepared, GitHub(), base_branch="main")
 
     def test_existing_worktree_path_is_rejected_before_git_write(self) -> None:
         class Git:

@@ -234,6 +234,11 @@ class VersionPreparationDelivery:
             raise VersionPreparationError("prepared candidate has no bounded changed paths")
         if self.git.command(worktree, "git", "branch", "--show-current") != branch:
             raise VersionPreparationError("isolated worktree branch does not bind the operation ID")
+        writer = github.version_preparation_writer()
+        if (writer.get("repository_id") != request.repository_id
+                or not isinstance(writer.get("actor"), str) or not writer["actor"]
+                or writer.get("can_push") is not True):
+            raise VersionPreparationError("configured GitHub writer is not authorized for this version candidate")
         if request.expected_target_branch_revision is not None:
             target = self.git.command(worktree, "git", "rev-parse", f"origin/{base_branch}")
             if target != request.expected_target_branch_revision:

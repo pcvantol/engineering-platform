@@ -46,6 +46,7 @@ class GitHubClient(Protocol):
     def merge(self, number: int) -> None: ...
     def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence: ...
     def qualification_for_exact_head(self, number: int, head_sha: str) -> dict[str, object]: ...
+    def version_preparation_writer(self) -> dict[str, object]: ...
 
 
 class SubprocessRepositoryClient:
@@ -193,6 +194,26 @@ class GhCliClient:
     def _github(self, *args: str) -> str:
         scoped = (*args, "--repo", self.repository) if self.repository else args
         return self.provider.github(*scoped)
+
+    def version_preparation_writer(self) -> dict[str, object]:
+        """Read the configured writer's safe identity and repository scope.
+
+        This is a preflight observation, never a credential issuer or branch
+        protection bypass.  GitHub does not expose a general branch-write
+        guarantee here, so a protected merge remains GitHub's authority.
+        """
+        if not self.repository or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository):
+            raise RunnerError("Version preparation writer requires one exact GitHub repository scope.")
+        try:
+            identity = json.loads(self.provider.github("api", "user"))
+            repository = json.loads(self._github("api", f"repos/{self.repository}"))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Version preparation writer identity could not be read.") from error
+        actor = identity.get("login") if isinstance(identity, dict) else None
+        permissions = repository.get("permissions") if isinstance(repository, dict) else None
+        if not isinstance(actor, str) or not actor or not isinstance(permissions, dict):
+            raise RunnerError("Version preparation writer identity is incomplete.")
+        return {"actor": actor, "repository_id": self.repository, "can_push": permissions.get("push") is True}
 
     def pull_request(self, number: int) -> PullRequestEvidence:
         try: raw = json.loads(self._github("pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup,headRefName,headRefOid,baseRefName,mergeStateStatus"))
