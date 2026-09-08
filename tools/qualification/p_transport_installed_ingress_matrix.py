@@ -46,7 +46,10 @@ DEPENDABOT_DISPATCH_TIMEOUT_SECONDS = 60
 
 
 def command(binary: Path, *args: str, environment: dict[str, str] | None = None) -> dict[str, object]:
-    completed = subprocess.run([str(binary), *args], check=True, text=True, capture_output=True, env=environment)  # nosec B603
+    completed = subprocess.run([str(binary), *args], check=False, text=True, capture_output=True, env=environment)  # nosec B603
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip().replace("\n", " ")[:1024]
+        raise RuntimeError(f"installed Server command failed ({' '.join(args)}): {detail}")
     return json.loads(completed.stdout)
 
 
