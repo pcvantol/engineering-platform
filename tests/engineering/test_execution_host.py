@@ -1726,6 +1726,60 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual((failed.phase, failed.next_action), ("FAILED", "external_action_required"))
         self.assertEqual(failed.repair_audit[-1]["outcome"], "agent_failed")
 
+    def test_repair_rereview_paths_fail_closed_for_missing_genesis_or_validation_evidence(self) -> None:
+        """A repair must return a candidate to the same assurance boundary."""
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+
+        def planned(run_id: str, *, mode: str = "MANAGED", rounds: int = 1) -> TransactionState:
+            return TransactionState(
+                run_id, "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+                branch="codex/repair-rereview", pull_request=17, execution_mode=mode,
+                repair_iterations=rounds,
+                repair_audit=({
+                    "iteration": str(rounds), "outcome": "planned", "failed_checks": "required check",
+                    "proposed_action": "repair bounded finding",
+                },),
+            )
+
+        genesis = planned("genesis-repair-missing", mode="GENESIS")
+        no_candidate = runner._advance_after_repair_agent_result(
+            genesis, AgentResult("COMPLETE", branch=genesis.branch),
+        )
+        self.assertEqual((no_candidate.phase, no_candidate.next_action), ("BLOCKED", "repair_candidate_unavailable"))
+
+        target = self.root / "genesis-repair-candidate"
+        target.mkdir()
+        review_state = planned("genesis-repair-reviewed", mode="GENESIS")
+        reviewed_state = review_state.__class__(**{**review_state.__dict__, "phase": "WAIT_FOR_TERMINAL_EVIDENCE"})
+        reconciled = TransactionState("genesis-repair-complete", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        with patch.object(runner, "_run_quality_assurance", return_value=(reviewed_state, AgentResult("COMPLETE", repository_path=str(target)))) as review, \
+             patch.object(runner, "_reconcile_genesis_result", return_value=reconciled) as reconcile:
+            advanced = runner._advance_after_repair_agent_result(
+                review_state, AgentResult("COMPLETE", branch=review_state.branch, repository_path=str(target)),
+            )
+        self.assertIs(advanced, reconciled)
+        self.assertEqual(review.call_args.kwargs["assurance_root"], target)
+        reconcile.assert_called_once()
+
+        exhausted = planned("managed-repair-validation-exhausted", rounds=3)
+        with patch.object(
+            runner, "_run_local_repository_validation",
+            side_effect=lambda state, _: (state, AgentResult("FAILED", validation_evidence=({"result": "failed"},))),
+        ):
+            blocked = runner._advance_after_repair_agent_result(
+                exhausted, AgentResult("COMPLETE", branch=exhausted.branch, pull_request=17),
+            )
+        self.assertEqual((blocked.phase, blocked.next_action), ("BLOCKED", "repair_budget_exhausted"))
+
+        inspected = planned("managed-repair-inspection-failure")
+        post_review = inspected.__class__(**{**inspected.__dict__, "phase": "WAIT_FOR_TERMINAL_EVIDENCE"})
+        review_result = AgentResult("COMPLETE", branch=inspected.branch, pull_request=17)
+        with patch.object(runner, "_run_local_repository_validation", side_effect=lambda state, _: (state, review_result)), \
+             patch.object(runner, "_run_quality_assurance", return_value=(post_review, review_result)), \
+             patch.object(runner.repository, "inspect", side_effect=RunnerError("unavailable")):
+            unavailable = runner._advance_after_repair_agent_result(inspected, review_result)
+        self.assertEqual((unavailable.phase, unavailable.next_action), ("BLOCKED", "repair_candidate_unavailable"))
+
     def test_validation_failure_and_commit_evidence_helpers_refuse_unverified_inputs(self) -> None:
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
         self.assertFalse(runner._has_failed_validation_evidence(AgentResult("FAILED")))
