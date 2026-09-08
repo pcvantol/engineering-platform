@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import unittest
+import tempfile
 
 from engineering_platform.version_preparation_delivery import VersionPreparationDelivery, VersionPreparationError, VersionPreparationRequest
 
@@ -48,6 +49,15 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 return {"pull_request_id": number, "exact_qualified_sha": "b" * 40, "conclusion": "PASS"}
         with self.assertRaisesRegex(VersionPreparationError, "exact candidate SHA"):
             VersionPreparationDelivery.qualify_candidate({"candidate_commit_sha": "a" * 40, "pull_request_id": 9}, GitHub())
+
+    def test_delivery_evidence_is_idempotent_and_exact_head_bound(self) -> None:
+        candidate = {"operation_id": "operation-0001", "candidate_commit_sha": "a" * 40, "branch": "ep/version-preparation/operation-0001", "pull_request_id": 9}
+        qualification = {"exact_qualified_sha": "a" * 40, "conclusion": "PASS", "checks": []}
+        with tempfile.TemporaryDirectory() as directory:
+            first = VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, qualification)
+            self.assertEqual(first, VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, qualification))
+            with self.assertRaisesRegex(VersionPreparationError, "exact successful"):
+                VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, {**qualification, "exact_qualified_sha": "b" * 40})
 
 
 if __name__ == "__main__":

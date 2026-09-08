@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from typing import Mapping, Protocol
@@ -149,3 +150,30 @@ class VersionPreparationDelivery:
         if evidence.get("exact_qualified_sha") != sha or evidence.get("conclusion") != "PASS":
             raise VersionPreparationError("candidate qualification is not bound to the exact candidate SHA")
         return dict(evidence)
+
+    @staticmethod
+    def record_delivery_evidence(evidence_root: Path, candidate: Mapping[str, object], qualification: Mapping[str, object]) -> Path:
+        """Append immutable delivery evidence outside the tracked prepared receipt."""
+        operation, sha, branch, pr = (candidate.get(key) for key in ("operation_id", "candidate_commit_sha", "branch", "pull_request_id"))
+        if not all(isinstance(value, str) and value for value in (operation, sha, branch)) or not isinstance(pr, int):
+            raise VersionPreparationError("candidate is incomplete for delivery evidence")
+        if qualification.get("exact_qualified_sha") != sha or qualification.get("conclusion") != "PASS":
+            raise VersionPreparationError("delivery evidence requires exact successful qualification")
+        payload = {"schema_version": 1, "operation_id": operation, "candidate_commit_sha": sha, "branch": branch,
+                   "pull_request_id": pr, "qualification": dict(qualification)}
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        directory = evidence_root / "version-preparation-delivery"
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{operation}-{sha}.json"
+        if target.exists():
+            if target.read_bytes() != encoded:
+                raise VersionPreparationError("delivery evidence identity conflicts with existing bytes")
+            return target
+        temporary = target.with_suffix(".tmp")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(encoded); handle.flush(); os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        except FileExistsError as error:
+            raise VersionPreparationError("delivery evidence write collided") from error
+        return target
