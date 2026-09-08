@@ -44,6 +44,7 @@ class GitHubClient(Protocol):
     def ready(self, number: int) -> None: ...
     def normalize_markdown_body(self, number: int) -> bool: ...
     def merge(self, number: int) -> None: ...
+    def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence: ...
 
 
 class SubprocessRepositoryClient:
@@ -226,6 +227,32 @@ class GhCliClient:
         if len(numbers) != 1:
             raise RunnerError("Finalization recovery found more than one pull request for its checkpointed branch.")
         return self.pull_request(numbers[0])
+
+    def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
+        """Create one bounded PR or recover the sole existing branch identity."""
+        existing = self.pull_request_for_head_branch(branch)
+        if existing is not None:
+            if existing.base_branch != base:
+                raise RunnerError("Version preparation branch already has a pull request for another base.")
+            return existing
+        try:
+            raw = self._github("pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body)
+        except RuntimeError as error:
+            # A successful create may lose its acknowledgement.  Only recover
+            # the deterministic branch identity; never create a second PR.
+            recovered = self.pull_request_for_head_branch(branch)
+            if recovered is None:
+                raise RunnerError(str(error)) from error
+            if recovered.base_branch != base:
+                raise RunnerError("Version preparation PR recovery found wrong base.") from error
+            return recovered
+        match = re.search(r"/pull/(\d+)(?:\s|$)", raw)
+        if match is None:
+            recovered = self.pull_request_for_head_branch(branch)
+            if recovered is None:
+                raise RunnerError("Version preparation PR create acknowledgement is ambiguous.")
+            return recovered
+        return self.pull_request(int(match.group(1)))
     def ready(self, number: int) -> None:
         try: self._github("pr", "ready", str(number))
         except RuntimeError as error:

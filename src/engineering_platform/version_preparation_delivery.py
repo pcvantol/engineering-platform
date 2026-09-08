@@ -14,7 +14,8 @@ import re
 from typing import Mapping, Protocol
 
 from .execution_errors import RunnerError
-from .providers import GitProvider, ProcessProvider
+from .providers import GitProvider
+from .execution_repository import GitHubClient
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
@@ -107,3 +108,33 @@ class VersionPreparationDelivery:
         if digest != request.prepared_operation_digest:
             raise VersionPreparationError("prepared operation digest does not bind the candidate diff")
         return {"operation_id": request.operation_id, "changed_paths": changed, "prepared_operation_digest": digest}
+
+    @staticmethod
+    def branch_name(request: VersionPreparationRequest) -> str:
+        return f"ep/version-preparation/{request.operation_id}"
+
+    def publish_candidate(
+        self, worktree: Path, request: VersionPreparationRequest, prepared: Mapping[str, object], github: GitHubClient,
+        *, base_branch: str,
+    ) -> dict[str, object]:
+        """Commit only the verified candidate diff and create/recover one PR."""
+        branch = self.branch_name(request)
+        paths = prepared.get("changed_paths")
+        if not isinstance(paths, tuple) or not paths or not all(isinstance(path, str) for path in paths):
+            raise VersionPreparationError("prepared candidate has no bounded changed paths")
+        if self.git.command(worktree, "git", "branch", "--show-current") != branch:
+            raise VersionPreparationError("isolated worktree branch does not bind the operation ID")
+        self.git.command(worktree, "git", "add", "--", *paths)
+        self.git.command(worktree, "git", "commit", "-m", f"build: prepare version operation {request.operation_id}")
+        candidate_sha = self.git.command(worktree, "git", "rev-parse", "HEAD")
+        self.git.command(worktree, "git", "push", "origin", f"HEAD:{branch}")
+        body = "\n".join((
+            "Bounded EP version-preparation candidate.",
+            f"operation_id: `{request.operation_id}`",
+            f"prepared_operation_digest: `{request.prepared_operation_digest}`",
+            f"expected_source_revision: `{request.expected_source_revision}`",
+        ))
+        pr = github.create_or_recover_pull_request(branch, base_branch, f"build: prepare version {request.determined_target_version}", body)
+        if pr.head_branch != branch:
+            raise VersionPreparationError("recovered pull request does not bind the candidate branch")
+        return {**prepared, "candidate_commit_sha": candidate_sha, "branch": branch, "pull_request_id": pr.number}

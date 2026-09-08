@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from engineering_platform.version_preparation_delivery import VersionPreparationError, VersionPreparationRequest
+from engineering_platform.version_preparation_delivery import VersionPreparationDelivery, VersionPreparationError, VersionPreparationRequest
 
 
 def request(**overrides: object) -> dict[str, object]:
@@ -37,6 +37,10 @@ class VersionPreparationRequestTest(unittest.TestCase):
             VersionPreparationRequest.parse(request(source_event_set=["merge:1", "merge:1"]))
         with self.assertRaisesRegex(VersionPreparationError, "exact SHA"):
             VersionPreparationRequest.parse(request(expected_source_revision="main"))
+
+    def test_candidate_branch_is_deterministically_bound_to_operation(self) -> None:
+        parsed = VersionPreparationRequest.parse(request())
+        self.assertEqual(VersionPreparationDelivery.branch_name(parsed), "ep/version-preparation/operation-0001")
 
 
 if __name__ == "__main__":
