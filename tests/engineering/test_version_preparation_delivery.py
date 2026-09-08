@@ -14,10 +14,10 @@ def request(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "contract_version": "1", "operation_id": "operation-0001", "product_id": "forge",
         "component_id": "product", "repository_id": "pcvantol/forge", "policy_revision": "v1",
-        "policy_digest": "sha256:policy", "source_event_set": ["merge:1"], "source_event_policy": "main",
+        "policy_digest": "sha256:" + "a" * 64, "source_event_set": ["merge:1"], "source_event_policy": "main",
         "expected_source_revision": "a" * 40, "expected_target_branch_revision": None,
         "expected_version": "2.3.0", "requested_change": "minor", "determined_target_version": "2.4.0",
-        "allowed_projection_paths": ["product-version.json"], "prepared_operation_digest": "sha256:diff",
+        "allowed_projection_paths": ["product-version.json"], "prepared_operation_digest": "sha256:" + "b" * 64,
         "authorization_reference": "grant:bounded", "delivery_mode": "PROTECTED_VERSION_PREPARATION_CANDIDATE",
     }
     value.update(overrides)
@@ -44,6 +44,16 @@ class VersionPreparationRequestTest(unittest.TestCase):
         with self.assertRaisesRegex(VersionPreparationError, "target branch revision"):
             VersionPreparationRequest.parse(request(expected_target_branch_revision="main"))
 
+    def test_rejects_noncanonical_versions_and_digests(self) -> None:
+        with self.assertRaisesRegex(VersionPreparationError, "stable SemVer"):
+            VersionPreparationRequest.parse(request(expected_version="02.3.0"))
+        with self.assertRaisesRegex(VersionPreparationError, "stable SemVer"):
+            VersionPreparationRequest.parse(request(determined_target_version="2.3.00"))
+        with self.assertRaisesRegex(VersionPreparationError, "SHA-256"):
+            VersionPreparationRequest.parse(request(policy_digest="sha256:policy"))
+        with self.assertRaisesRegex(VersionPreparationError, "SHA-256"):
+            VersionPreparationRequest.parse(request(prepared_operation_digest="sha256:diff"))
+
     def test_candidate_branch_is_deterministically_bound_to_operation(self) -> None:
         parsed = VersionPreparationRequest.parse(request())
         self.assertEqual(VersionPreparationDelivery.branch_name(parsed), "ep/version-preparation/operation-0001")
@@ -56,7 +66,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
             VersionPreparationDelivery.qualify_candidate({"candidate_commit_sha": "a" * 40, "pull_request_id": 9}, GitHub())
 
     def test_delivery_evidence_is_idempotent_and_exact_head_bound(self) -> None:
-        candidate = {"operation_id": "operation-0001", "prepared_operation_digest": "sha256:diff", "candidate_commit_sha": "a" * 40, "candidate_tree_sha": "c" * 40, "branch": "ep/version-preparation/operation-0001", "pull_request_id": 9, "pull_request_head_sha": "a" * 40, "authorization_reference": "grant:bounded"}
+        candidate = {"operation_id": "operation-0001", "prepared_operation_digest": "sha256:" + "b" * 64, "candidate_commit_sha": "a" * 40, "candidate_tree_sha": "c" * 40, "branch": "ep/version-preparation/operation-0001", "pull_request_id": 9, "pull_request_head_sha": "a" * 40, "authorization_reference": "grant:bounded"}
         qualification = {"exact_qualified_sha": "a" * 40, "conclusion": "PASS", "checks": []}
         with tempfile.TemporaryDirectory() as directory:
             first = VersionPreparationDelivery.record_delivery_evidence(Path(directory), candidate, qualification)
@@ -87,7 +97,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base, head_sha="a" * 40)
             def qualification_for_exact_head(self, number: int, sha: str) -> dict[str, object]:
                 return {"pull_request_id": number, "exact_qualified_sha": sha, "conclusion": "PASS", "checks": []}
-        digest = hashlib.sha256(b".version-operations/operation-0001.json\nproduct-version.json").hexdigest()
+        digest = "sha256:" + hashlib.sha256(b".version-operations/operation-0001.json\nproduct-version.json").hexdigest()
         parsed = VersionPreparationRequest.parse(request(prepared_operation_digest=digest))
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, ".version-preparation.json").write_text(__import__("json").dumps({"contract_version": "1", "product_id": "forge", "repository_id": "pcvantol/forge", "helper_path": "scripts/advance_product_version.py", "receipt_directory": ".version-operations", "allowed_projection_paths": ["product-version.json"], "policy_revision": "v1"}), encoding="utf-8")
@@ -145,7 +155,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".version-preparation.json").write_text(__import__("json").dumps({"contract_version": "1", "product_id": "forge", "repository_id": "pcvantol/forge", "helper_path": "scripts/advance_product_version.py", "receipt_directory": ".version-operations", "allowed_projection_paths": ["product-version.json"], "policy_revision": "v1"}), encoding="utf-8")
-            digest = hashlib.sha256(b"other/operation-0001.json\nproduct-version.json").hexdigest()
+            digest = "sha256:" + hashlib.sha256(b"other/operation-0001.json\nproduct-version.json").hexdigest()
             with self.assertRaisesRegex(VersionPreparationError, "declared operation"):
                 VersionPreparationDelivery(Git(), Helper()).prepare(root, root, VersionPreparationRequest.parse(request(prepared_operation_digest=digest)))
 
@@ -164,7 +174,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
             subprocess.run(("git", *args), cwd=root, check=True, text=True, capture_output=True)
 
         declaration = {"contract_version": "1", "product_id": "forge", "repository_id": "pcvantol/forge", "helper_path": "scripts/advance_product_version.py", "receipt_directory": ".version-operations", "allowed_projection_paths": ["product-version.json"], "policy_revision": "v1"}
-        digest = hashlib.sha256(b".version-operations/operation-0001.json\nproduct-version.json").hexdigest()
+        digest = "sha256:" + hashlib.sha256(b".version-operations/operation-0001.json\nproduct-version.json").hexdigest()
         with tempfile.TemporaryDirectory() as directory:
             root, candidate = Path(directory, "source"), Path(directory, "candidate")
             root.mkdir()

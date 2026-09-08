@@ -19,6 +19,8 @@ from .providers import GitProvider
 from .execution_repository import GitHubClient
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SEMVER = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _PATH = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*$")
 _REPOSITORY_PATH = re.compile(r"^(?:[A-Za-z0-9.][A-Za-z0-9._-]*/)*[A-Za-z0-9.][A-Za-z0-9._-]*$")
@@ -107,6 +109,10 @@ class VersionPreparationRequest:
             raise VersionPreparationError("expected source revision must be an exact SHA")
         if request.expected_target_branch_revision is not None and not _SHA.fullmatch(request.expected_target_branch_revision):
             raise VersionPreparationError("expected target branch revision must be an exact SHA")
+        if not _SEMVER.fullmatch(request.expected_version) or not _SEMVER.fullmatch(request.determined_target_version):
+            raise VersionPreparationError("expected and determined versions must be stable SemVer")
+        if not _SHA256.fullmatch(request.policy_digest) or not _SHA256.fullmatch(request.prepared_operation_digest):
+            raise VersionPreparationError("policy and prepared operation digests must be SHA-256 identities")
         if request.delivery_mode not in {"EXISTING_FEATURE_CANDIDATE", "PROTECTED_VERSION_PREPARATION_CANDIDATE"}:
             raise VersionPreparationError("unsupported delivery mode")
         if request.requested_change not in {"patch", "minor", "exact-version"}:
@@ -160,7 +166,7 @@ class VersionPreparationDelivery:
         allowed = set(request.allowed_projection_paths) | {receipt}
         if receipt not in changed or set(changed) - allowed:
             raise VersionPreparationError("version preparation changed a path outside its declared operation")
-        digest = hashlib.sha256("\n".join(changed).encode()).hexdigest()
+        digest = "sha256:" + hashlib.sha256("\n".join(changed).encode()).hexdigest()
         if digest != request.prepared_operation_digest:
             raise VersionPreparationError("prepared operation digest does not bind the candidate diff")
         return {"operation_id": request.operation_id, "changed_paths": changed, "prepared_operation_digest": digest}
