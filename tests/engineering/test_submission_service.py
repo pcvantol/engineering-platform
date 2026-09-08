@@ -106,6 +106,17 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                     disposition="QUEUED", reason="Must not revive a decline",
                 )
 
+    def test_claimed_submission_rejects_queue_mutation_without_audit_event(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("claimed"), transport="HTTP"))
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-claimed", "djconnect", "CLAIMED", "now", "now", "MANAGED"))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submitted.submission_id, "djconnect", "djconnect", "run-claimed", "CLAIMED", "prompt", "now", "now", "NONE"))
+            before = connection.execute("SELECT state,disposition_revision FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone()
+            with self.assertRaisesRegex(submission_service.SubmissionError, "QUEUE_DISPOSITION_CONFLICT"):
+                submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason="Too late")
+            self.assertEqual(connection.execute("SELECT state,disposition_revision FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone(), before)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind LIKE 'OPERATOR_QUEUE_%'", (submitted.submission_id,)).fetchone()[0], 0)
+
     def test_http_auth_scope_and_acceptance(self) -> None:
         server.start(self.root)
         request = Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions", data=json.dumps(self.payload("http")).encode(), headers={"Authorization": f"Bearer {self.credential}", "Content-Type": "application/json"}, method="POST")
