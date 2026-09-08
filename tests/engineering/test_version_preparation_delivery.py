@@ -5,6 +5,9 @@ import unittest
 import tempfile
 import hashlib
 import subprocess
+import shutil
+import sys
+from dataclasses import asdict
 
 from engineering_platform.version_preparation_delivery import ProductHelperDeclaration, VersionPreparationDelivery, VersionPreparationError, VersionPreparationRequest
 from engineering_platform.execution_models import PullRequestEvidence
@@ -331,6 +334,48 @@ class VersionPreparationRequestTest(unittest.TestCase):
             self.assertEqual(GitProvider().command(root, "git", "rev-parse", "HEAD"), sha)
             self.assertEqual(GitProvider().command(failed, "git", "rev-parse", "HEAD"), sha)
             self.assertTrue(GitProvider().command(failed, "git", "status", "--porcelain"))
+
+    def test_external_fixture_product_proves_the_declared_receipt_contract(self) -> None:
+        """Exercise a real product helper process, not an in-memory fake."""
+        from engineering_platform.providers import GitProvider
+
+        class ExternalFixtureHelper:
+            def apply(self, worktree: Path, operation: VersionPreparationRequest) -> None:
+                payload = asdict(operation)
+                payload["source_event_set"] = list(operation.source_event_set)
+                payload["allowed_projection_paths"] = list(operation.allowed_projection_paths)
+                subprocess.run(
+                    (sys.executable, str(worktree / "scripts" / "apply_version.py"), str(worktree)),
+                    input=__import__("json").dumps(payload), text=True, check=True, capture_output=True,
+                )
+
+        def git(root: Path, *args: str) -> None:
+            subprocess.run(("git", *args), cwd=root, check=True, text=True, capture_output=True)
+
+        fixture = Path(__file__).parents[1] / "fixtures" / "version_preparation_product"
+        with tempfile.TemporaryDirectory() as directory:
+            root, candidate, planned = Path(directory, "source"), Path(directory, "candidate"), Path(directory, "planned")
+            shutil.copytree(fixture, root)
+            git(root, "init", "-q")
+            git(root, "config", "user.email", "test@example.invalid")
+            git(root, "config", "user.name", "Version Preparation Test")
+            git(root, "add", ".")
+            git(root, "commit", "-qm", "fixture baseline")
+            sha = subprocess.run(("git", "rev-parse", "HEAD"), cwd=root, check=True, text=True, capture_output=True).stdout.strip()
+            raw = request(
+                product_id="fixture-product", repository_id="pcvantol/fixture-product", component_id="fixture-product",
+                policy_revision="fixture-policy-v1", expected_source_revision=sha,
+            )
+            provisional = VersionPreparationRequest.parse(raw)
+            shutil.copytree(fixture, planned)
+            ExternalFixtureHelper().apply(planned, provisional)
+            delivery = VersionPreparationDelivery(GitProvider(), ExternalFixtureHelper())
+            digest = delivery._prepared_candidate_digest(planned, (".version-operations/operation-0001.json", "product-version.json"), provisional)
+            prepared = delivery.prepare_in_isolated_worktree(
+                root, candidate, VersionPreparationRequest.parse({**raw, "prepared_operation_digest": digest}),
+            )
+            self.assertEqual(prepared["prepared_operation_digest"], digest)
+            self.assertEqual(__import__("json").loads((candidate / "product-version.json").read_text())["version"], "2.4.0")
 
 
 if __name__ == "__main__":
