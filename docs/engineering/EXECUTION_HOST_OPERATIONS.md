@@ -159,6 +159,23 @@ same-run `RECOVERED` lineage, terminal assurance evidence, and the run in the
 dashboard's project-scoped history. The dedicated provider-recovery unit suite
 additionally qualifies unsafe and ambiguous recovery branches.
 
+### Installed qualification runtime composition
+
+The installed E2E also exercises the real host-preflight runtime checks. Its
+temporary CENTRAL root owns a minimal executable under
+`managed-codex-cli/bin/codex`; it reports the fixed qualification runtime
+version and is written into that root's `server.json` before the Server starts.
+This is a composition fixture, not a provider fallback: the deterministic
+qualification agent remains the only component that performs the test work.
+The launcher exists so `runtime_executable` and `runtime_invocation` are
+verified through the same configured EP-managed runtime boundary as a normal
+installation. It is removed with the temporary qualification root and never
+creates or relies on an account-wide Codex installation.
+
+Consequently, CI always runs Genesis, Managed and armed recovery with a real
+preflight. The separate external GitHub profile below additionally proves the
+remote-write adapter and merge boundaries; it is not invoked by ordinary CI.
+
 ### Explicit external Managed GitHub qualification
 
 The default deterministic qualification never contacts GitHub. To prove the
