@@ -1667,12 +1667,11 @@ class EngineeringRunner:
             # A PR that predates this assurance contract is preserved as
             # immutable lineage evidence.  A newly-started run cannot use a
             # provider-returned PR to skip the publication gate.
-            if state.implementation_pull_request == implementation.pull_request:
-                return state, implementation
-            return self._save_terminal(
-                state, "BLOCKED", "implementation_pr_before_assurance",
-                "A new Managed run returned an implementation pull request before local validation and mandatory assurance.",
-            ), implementation
+            if implementation.pull_request not in {state.implementation_pull_request, state.pull_request}:
+                return self._save_terminal(
+                    state, "BLOCKED", "implementation_pr_before_assurance",
+                    "A new Managed run returned an implementation pull request before local validation and mandatory assurance.",
+                ), implementation
         if not branch:
             return self._save_terminal(
                 state, "BLOCKED", "local_validation_scope", "Implementation must return one branch and no pull request before local validation."
