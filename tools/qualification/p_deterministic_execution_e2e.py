@@ -222,7 +222,13 @@ def main(argv: list[str] | None = None) -> int:
         wheelhouse.mkdir()
         subprocess.run((sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)), check=True, capture_output=True, text=True)  # nosec B603
         subprocess.run((sys.executable, "-m", "venv", str(venv)), check=True)  # nosec B603
-        subprocess.run((str(venv / "bin" / "pip"), "install", "--no-index", "--find-links", str(wheelhouse), "engineering-platform"), check=True, capture_output=True, text=True)  # nosec B603
+        wheels = tuple(wheelhouse.glob("engineering_platform-*.whl"))
+        if len(wheels) != 1:
+            raise RuntimeError("QUALIFICATION_WHEEL_UNAVAILABLE")
+        # Install the exact wheel path. A requirement-name install from the
+        # source checkout can falsely treat its adjacent metadata as already
+        # installed, leaving a non-restartable qualification venv.
+        subprocess.run((str(venv / "bin" / "pip"), "install", "--no-index", "--force-reinstall", str(wheels[0])), check=True, capture_output=True, text=True)  # nosec B603
         # Invoke the installed module directly so qualification verifies the
         # wheel contents rather than relying on a platform-specific console
         # script wrapper being present in the virtual environment.
