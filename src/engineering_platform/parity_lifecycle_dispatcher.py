@@ -197,9 +197,9 @@ def _default_runner(repository_root: Path, *, central_database: Path | None = No
         if os.environ.get("EP_QUALIFICATION_GITHUB_WRITE_FLOW") == "1":
             remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
             match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())
-            if remote.returncode != 0 or match is None:
-                raise RunnerError("QUALIFICATION_GITHUB_REMOTE_REQUIRED")
-            github = GhCliClient(repository=match.group(1))
+            expected = os.environ.get("EP_QUALIFICATION_GITHUB_REPOSITORY")
+            if remote.returncode == 0 and match is not None and match.group(1) == expected:
+                github = GhCliClient(repository=match.group(1))
         return EngineeringRunner(
             repository_root,
             StateStore(repository_root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=False),

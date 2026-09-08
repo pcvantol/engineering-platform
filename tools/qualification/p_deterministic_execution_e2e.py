@@ -52,6 +52,19 @@ def approved_github_checkout(path: Path, repository: str) -> Path:
     return checkout
 
 
+def declared_fixture_identity(checkout: Path) -> tuple[str, str]:
+    """Use the fixture's committed binding; never overwrite its authority."""
+    try:
+        declaration = json.loads((checkout / ".engineering-platform" / "repository.json").read_text(encoding="utf-8"))
+        project = declaration["project"]["id"]
+        repository = declaration["repository"]["id"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError("MANAGED_GITHUB_FIXTURE_DECLARATION_REQUIRED") from error
+    if not isinstance(project, str) or not isinstance(repository, str) or not project or not repository:
+        raise RuntimeError("MANAGED_GITHUB_FIXTURE_DECLARATION_INVALID")
+    return project, repository
+
+
 def port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -152,14 +165,15 @@ def submit(base: str, credential: str, project: str, repository: str, prompt: st
 
 
 def bind_project(server: Path, data_root: Path, *, project: str, repository: str,
-                 checkout: Path, push_declaration: bool = False) -> None:
+                 checkout: Path, push_declaration: bool = False, existing_declaration: bool = False) -> None:
     """Bind a clean fixture through the same installed Server commands as production."""
     command(server, "bootstrap-topology", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository)
-    command(server, "provision-declaration", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
-    git(checkout, "add", ".engineering-platform")
-    git(checkout, "commit", "-qm", "bind installed e2e project")
-    if push_declaration:
-        git(checkout, "push", "-q", "origin", "main")
+    if not existing_declaration:
+        command(server, "provision-declaration", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        git(checkout, "add", ".engineering-platform")
+        git(checkout, "commit", "-qm", "bind installed e2e project")
+        if push_declaration:
+            git(checkout, "push", "-q", "origin", "main")
     command(server, "bind-repository", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
 
 
@@ -216,13 +230,15 @@ def main(argv: list[str] | None = None) -> int:
             if not github_write:
                 raise RuntimeError("MANAGED_GITHUB_WRITE_AUTHORIZATION_REQUIRED")
             managed = approved_github_checkout(args.managed_repository, str(args.managed_github_repository))
+            managed_project, managed_identity = declared_fixture_identity(managed)
         else:
             managed = root / "managed"
             create_repository(managed, origin=root / "managed-origin.git")
+            managed_project, managed_identity = "managed", "managed-repo"
         evidence: dict[str, object] = {}
-        layouts = (("genesis", "genesis-repo", genesis_host), ("managed", "managed-repo", managed))
-        for project, repository, checkout in layouts:
-            bind_project(server, data, project=project, repository=repository, checkout=checkout, push_declaration=project == "managed")
+        layouts = (("genesis", "genesis", "genesis-repo", genesis_host), ("managed", managed_project, managed_identity, managed))
+        for mode, project, repository, checkout in layouts:
+            bind_project(server, data, project=project, repository=repository, checkout=checkout, push_declaration=mode == "managed", existing_declaration=github_write and mode == "managed")
         control_ready = root / "controlled-recovery-ready.json"
         env = {
             **os.environ,
@@ -243,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
                     break
                 except OSError:
                     time.sleep(.1)
-            for mode, project, repository, prompt in (("genesis", "genesis", "genesis-repo", f"Execution Mode: Genesis\nTarget repository: {genesis_target}\n\nInstalled deterministic qualification."), ("managed", "managed", "managed-repo", "Execution Mode: Managed\n\nInstalled deterministic qualification.")):
+            for mode, project, repository, prompt in (("genesis", "genesis", "genesis-repo", f"Execution Mode: Genesis\nTarget repository: {genesis_target}\n\nInstalled deterministic qualification."), ("managed", managed_project, managed_identity, "Execution Mode: Managed\n\nInstalled deterministic qualification.")):
                 credential = str(command(server, "issue-consumer-credential", "--data-root", str(data), "--project-id", project, "--consumer-id", f"{mode}-e2e")["credential"])
                 submission = submit(base, credential, project, repository, prompt, f"{mode}-e2e")
                 if mode == "managed" and github_write:
