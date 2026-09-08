@@ -51,6 +51,12 @@ explicitly allow the repository GitHub Actions token to create these bot
 commits; otherwise the workflow correctly fails instead of silently claiming a
 version bump.
 
+The event policy is shared with Forge and Workspace and is canonically defined
+by Forge Platform in [Canonical product versioning](https://github.com/pcvantol/forge-platform/blob/main/docs/architecture/CANONICAL_PRODUCT_VERSIONING.md).
+Engineering Platform retains its richer package/manifest projection and its
+own release-publishing authority; the shared policy grants neither publication
+nor deployment authority.
+
 At runner startup, `engineering-execution-host` reads the manifest and rejects an unsupported
 platform major version, older runner, older Bootstrap Contract, unsupported
 checkpoint/memory/report format or unsupported Codex CLI. Diagnostics state the
