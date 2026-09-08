@@ -980,6 +980,24 @@
       ]
     },
     {
+      "name": "Producer compatibility declaration",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/v1/producer-compatibility"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "Submission requires credential",
       "request": {
         "method": "POST",

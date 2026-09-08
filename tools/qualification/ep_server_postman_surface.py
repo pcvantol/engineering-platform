@@ -71,6 +71,7 @@ CASES: tuple[Case, ...] = (
     Case("Topology diagnostics", "GET", "/diagnostics/topology", 200),
     Case("Health probe", "GET", "/healthz", 200),
     Case("Readiness probe", "GET", "/readyz", 200),
+    Case("Producer compatibility declaration", "GET", "/v1/producer-compatibility", 200),
     Case("Submission requires credential", "POST", "/v1/projects/postman-project/submissions", 401, "{}"),
     Case("Submission readback requires credential", "GET", "/v1/projects/postman-project/submissions/missing", 401),
     Case("Evidence artifact requires credential", "GET", "/v1/projects/postman-project/artifacts/terminal-evidence:missing", 401),
