@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import os
+import sqlite3
 import unittest
 
 from engineering_platform.agent_state import StateStore, TransactionState
 from engineering_platform.provider_recovery import (
+    _connection,
     ControlledInterruptionControlError,
     arm_controlled_interruption,
     controlled_interruption_status,
@@ -22,6 +24,7 @@ from engineering_platform.provider_recovery import (
     consume_controlled_interruption_hook,
     watcher_resume_action,
 )
+from engineering_platform.storage import EngineeringStorageError
 
 
 class ProviderRecoveryControllerTests(unittest.TestCase):
@@ -40,6 +43,19 @@ class ProviderRecoveryControllerTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_explicit_central_binding_requires_an_existing_database(self) -> None:
+        missing = self.root / "missing-central.sqlite"
+        with self.assertRaisesRegex(EngineeringStorageError, "CENTRAL recovery database"):
+            _connection(self.root, missing)
+
+        central = self.root / "central.sqlite"
+        sqlite3.connect(central).close()
+        connection = _connection(self.root, central)
+        try:
+            self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone(), (1,))
+        finally:
+            connection.close()
 
     def test_claim_start_terminal_lineage_is_exactly_once(self) -> None:
         self.assertTrue(transition_recovery_state(
