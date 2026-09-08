@@ -38,6 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           version="$(python3 tools/qualification/advance_platform_build.py --source-root . --bump patch | sed -n 's/^EP_BUILD_VERSION=//p')"
+          python3 -m pip install --quiet .
           python3 tools/qualification/platform_version_consistency.py --source-root .
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -55,6 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           version="$(python3 tools/qualification/advance_platform_build.py --source-root . --bump minor | sed -n 's/^EP_BUILD_VERSION=//p')"
+          python3 -m pip install --quiet .
           python3 tools/qualification/platform_version_consistency.py --source-root .
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
