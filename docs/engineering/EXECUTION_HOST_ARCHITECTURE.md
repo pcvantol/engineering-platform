@@ -77,15 +77,21 @@ Console operator must never delete a queued submission or silently make it
 disappear.  Queue handling is an explicit, per-submission, reasoned state
 transition with an append-only audit event and producer-visible readback.
 
-The supported operator dispositions are `DEFERRED`, `QUARANTINED`, and
-`DECLINED`; only `DEFERRED` and `QUARANTINED` may be explicitly resumed to
-`QUEUED`.  A declined submission is terminal but retained with its correlation
-and reason.  A lifecycle worker selects only admitted `QUEUED` submissions.
+The state machine is `QUEUED -> DEFERRED|QUARANTINED|DECLINED`,
+`DEFERRED -> QUEUED`, and `QUARANTINED -> QUEUED|DECLINED`. `DECLINED` has no
+outgoing transition. Direct `QUARANTINED -> DECLINED` never creates an
+intermediate `QUEUED` state or a worker-eligible window. A declined submission
+is terminal but retained with its correlation and reason. A lifecycle worker
+selects only admitted `QUEUED` submissions; queue disposition never cancels a
+claimed run.
 
 Forge observes these dispositions through the canonical producer-readback
 contract and reconciles its own Action state.  EP does not invoke Forge
 internals, mutate Forge storage, or infer cancellation.  Until a versioned
 Forge callback contract exists, readback is the required reconciliation path.
+Queue commands carry a versioned operation ID, expected state and monotone
+revision, and are arbitrated with the worker claim in CENTRAL. Origin checking
+is CSRF protection only, never operator authentication.
 The active mutation lease starts with
 the accepted execution and is retained through provider work, validation,
 delivery, finalization and reconciliation. It is released only after terminal
