@@ -221,7 +221,7 @@ def _http_json_openapi_document() -> dict[str, object]:
                          "schema": {"type": "string"}},
                     ],
                     "responses": {
-                        "200": {"description": "Canonical project-scoped producer readback v1.1"},
+                        "200": {"description": "Canonical project-scoped producer readback v1.2"},
                         "401": {"description": "Missing or invalid consumer credential"},
                         "404": {"description": "Submission absent from the authenticated project"},
                     },

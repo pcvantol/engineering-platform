@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/producer-readback-v1.2.schema.json",
+  "title": "Engineering Platform producer readback v1.2 disposition extension",
+  "type": "object",
+  "required": ["contract_version", "submission", "disposition", "run", "result", "evidence"],
+  "properties": {
+    "contract_version": {"const": "1.2"},
+    "submission": {"type": "object", "required": ["state"]},
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "terminal", "execution_eligible", "revision", "operation_id", "event_reference", "reason", "actor_reference", "recorded_at"],
+      "properties": {
+        "state": {"enum": ["QUEUED", "DEFERRED", "QUARANTINED", "DECLINED"]},
+        "terminal": {"type": "boolean"},
+        "execution_eligible": {"type": "boolean"},
+        "revision": {"type": "integer", "minimum": 0},
+        "operation_id": {"type": ["string", "null"]},
+        "event_reference": {"type": ["string", "null"]},
+        "reason": {"type": "string"},
+        "actor_reference": {"type": "string"},
+        "recorded_at": {"type": ["string", "null"]}
+      }
+    },
+    "run": {"type": ["object", "null"]},
+    "result": {"type": "object"},
+    "evidence": {"type": "object"}
+  }
+}

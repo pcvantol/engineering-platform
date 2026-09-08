@@ -66,6 +66,8 @@ previous lease history.
 
 EP serializes mutating work at the repository/execution-scope boundary: no more
 than one mutating execution may own a scope at once. FIFO is the default queue
+ordering within that scope, but admission and selection remain policy-driven;
+FIFO is not a second planning authority.
 
 ## CENTRAL queue operator handling
 
@@ -84,8 +86,7 @@ Forge observes these dispositions through the canonical producer-readback
 contract and reconciles its own Action state.  EP does not invoke Forge
 internals, mutate Forge storage, or infer cancellation.  Until a versioned
 Forge callback contract exists, readback is the required reconciliation path.
-ordering within that scope, but admission and selection remain policy-driven;
-FIFO is not a second planning authority. The active mutation lease starts with
+The active mutation lease starts with
 the accepted execution and is retained through provider work, validation,
 delivery, finalization and reconciliation. It is released only after terminal
 or governed recovery evidence establishes that the scope is safe for later

@@ -1,6 +1,6 @@
-# EP producer readback contract v1.1
+# EP producer readback contract v1.2
 
-`v1.1` is the consumer-visible, authenticated readback contract for a
+`v1.2` is the consumer-visible, authenticated readback contract for a
 canonical EP submission.  It belongs to the existing EP Server HTTP JSON API;
 it is not a second API, consumer database, queue, or execution authority.
 
@@ -20,11 +20,18 @@ storage.
 
 ## Response identity and evidence
 
-The JSON response is schema version `1.1` and contains the immutable canonical
+The JSON response is schema version `1.2` and contains the immutable canonical
 submission ID, project/repository IDs, producer provenance, submitted
 correlation/mission/engineering-action IDs, and a server-computed
 `accepted_request_digest`. `run` is `null` until CENTRAL has claimed the
 accepted submission; once present, its run ID and lifecycle state are canonical.
+
+`disposition` is separate from the execution result. It records the current
+submission state, monotone revision, worker eligibility and, where an operator
+command exists, its operation/event reference, verified actor reference,
+reason and timestamp. `DECLINED` is terminal for the submission while keeping
+`run: null` and `result.outcome: NOT_STARTED`; EP never fabricates an execution
+receipt, commit or terminal artifact for a declined-but-unclaimed submission.
 
 Forge requests place the versioned, exact execution identity under
 `constraints.forge_execution`: host, repository, correlation, mission and
