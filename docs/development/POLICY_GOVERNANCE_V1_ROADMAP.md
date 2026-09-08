@@ -54,3 +54,14 @@ or implicit peer readiness; source/CI/runtime/package/permission files unchanged
 Implementation acceptance additionally requires the concrete tests in the owning
 design and applicable installed evidence. Documentary completion alone cannot
 unlock a run or close a live assurance gate.
+
+## Governed progression and existing CD authority
+
+The [GP roadmap](GOVERNED_PROGRESSION_V1_ROADMAP.md) and
+[owning delivery-authority design](../engineering/GOVERNED_PROGRESSION_AND_DELIVERY_AUTHORITY.md)
+refine how EP enforces protected operation requirements without owning Forge's
+review cadence or a project's existing CD approval/deployment authority.
+GP-E/GP-Q/GP-X are PLANNED; a Workspace decision is not a substitute for the
+external target's gate. No duplicate workflow, live policy or executable DAG
+is introduced. The current Action assurance and bounded repair requirements
+remain intact and distinct from post-Action human review.
