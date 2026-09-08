@@ -66,6 +66,22 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual((parsed.command, parsed.project_id, parsed.consumer_id, parsed.capability),
                          ("grant-operator-capability", "project", "operator", "QUEUE_DECLINE"))
 
+    def test_queue_operator_capability_grant_and_revoke_are_durable(self) -> None:
+        server.initialize(self.root)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            server.project_topology.register_server_local_topology(connection, declaration={
+                "schema_version": "1.0", "project": {"id": "queue-project", "authority_repository_id": "queue-repository"},
+                "repository": {"id": "queue-repository", "role": "authority"}, "validation": {"kind": "none"},
+            })
+            from engineering_platform.submission_service import issue_consumer_credential
+            issue_consumer_credential(connection, consumer_id="queue-operator", project_id="queue-project")
+        arguments = ("--data-root", str(self.root), "--project-id", "queue-project", "--consumer-id", "queue-operator", "--capability", "QUEUE_DECLINE")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main(("grant-operator-capability", *arguments)), 0)
+            self.assertEqual(server.main(("revoke-operator-capability", *arguments)), 0)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertIsNotNone(connection.execute("SELECT revoked_at FROM ep_operator_capabilities WHERE consumer_id='queue-operator' AND project_id='queue-project' AND capability='QUEUE_DECLINE'").fetchone()[0])
+
     def test_execution_runtime_status_preserves_the_virtual_environment_launcher(self) -> None:
         launcher = Path(self.temporary.name) / "venv" / "bin" / "python"
         launcher.parent.mkdir(parents=True)
