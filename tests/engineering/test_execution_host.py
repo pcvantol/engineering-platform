@@ -1638,6 +1638,38 @@ class LocalAgentRunnerTest(unittest.TestCase):
             runner._provider_process_boundary(state, {"pid": 42, "process_group": 42})
             started.assert_called_once_with(self.root, run_id=state.run_id, receipt_id="receipt-1", pid=42, process_group=42, central_database=runner.store.central_database)
 
+    def test_provider_invocation_records_only_safe_context_and_recovery_telemetry(self) -> None:
+        """Supplementary provider telemetry retains bounded context without authority."""
+        agent = FakeAgent(AgentResult("WAITING"))
+        agent.last_context_escalations = (
+            {"reason": "missing evidence", "boundary_kind": "run", "diagnostic": "safe diagnostic"},
+            "untrusted",
+        )
+        agent.last_execution_seconds = 2.0
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState("provider-context", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        self.store.save(state)
+        with patch("engineering_platform.execution_host.persist_provider_invocation", return_value="provider-1") as persist:
+            invocation_id = runner._persist_provider_invocation(
+                state, phase="EXECUTE_AGENT", observed_metadata={"raw_provider_model": "gpt-5.6-terra"},
+            )
+        self.assertEqual(invocation_id, "provider-1")
+        recorded = persist.call_args.args[1]
+        self.assertEqual(recorded.model, "gpt-5.6-terra")
+        self.assertEqual(recorded.churn["context_scope_effective"], "INVESTIGATION")
+        self.assertEqual(recorded.churn["context_escalation_count"], 1)
+        self.assertEqual(recorded.churn["context_escalation_reasons"], "missing evidence")
+
+        recovered = runner._recovery_record(
+            state, original="provider-1", replacement="provider-2", eligibility="ELIGIBLE",
+            result="RECOVERED", requested_at="then", started_at="then", completed_at="now",
+        )
+        self.store.save(recovered)
+        agent.last_execution_seconds = 0.5
+        merged = runner._record_agent_execution_time(state)
+        self.assertEqual(merged.provider_recovery_attempts, recovered.provider_recovery_attempts)
+        self.assertEqual(merged.agent_execution_seconds, 0.5)
+
     def test_optional_phase_wrappers_degrade_only_telemetry_storage_failures(self) -> None:
         with patch("engineering_platform.execution_host._start_phase", return_value=SimpleNamespace()) as start:
             self.assertIsNotNone(execution_host.start_phase(self.root, "phase-run", "VALIDATION"))
@@ -1658,6 +1690,41 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED")))
         self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed"},))))
         self.assertTrue(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed once; timed out once"},))))
+
+    def test_repair_result_requires_the_durable_plan_and_preserves_its_bounded_pr(self) -> None:
+        """Recovery never infers a repair plan or lets a provider switch PRs."""
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        missing = TransactionState(
+            "repair-plan-missing", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+            branch="codex/repair-plan-missing", pull_request=17, repair_iterations=1,
+        )
+        blocked = runner._advance_after_repair_agent_result(
+            missing, AgentResult("COMPLETE", branch=missing.branch, pull_request=17),
+        )
+        self.assertEqual((blocked.phase, blocked.next_action), ("BLOCKED", "repair_plan_missing"))
+        self.assertTrue(self.store.load(missing.run_id).terminal)
+
+        planned = missing.__class__(**{
+            **missing.__dict__,
+            "run_id": "repair-plan-conflict",
+            "repair_audit": ({
+                "iteration": "1", "outcome": "planned", "failed_checks": "required check",
+                "proposed_action": "repair only the required check",
+            },),
+        })
+        conflict = runner._advance_after_repair_agent_result(
+            planned, AgentResult("COMPLETE", branch=planned.branch, pull_request=18, diagnostic="changed PR"),
+        )
+        self.assertEqual((conflict.phase, conflict.next_action), ("BLOCKED", "bounded_scope_conflict"))
+        self.assertEqual(conflict.repair_audit[-1]["outcome"], "submitted_for_recheck")
+        self.assertEqual(self.store.load(planned.run_id).repair_audit, conflict.repair_audit)
+
+        failed_plan = planned.__class__(**{**planned.__dict__, "run_id": "repair-agent-failed"})
+        failed = runner._advance_after_repair_agent_result(
+            failed_plan, AgentResult("FAILED", branch=failed_plan.branch, pull_request=17, diagnostic="provider failure"),
+        )
+        self.assertEqual((failed.phase, failed.next_action), ("FAILED", "external_action_required"))
+        self.assertEqual(failed.repair_audit[-1]["outcome"], "agent_failed")
 
     def test_validation_failure_and_commit_evidence_helpers_refuse_unverified_inputs(self) -> None:
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
