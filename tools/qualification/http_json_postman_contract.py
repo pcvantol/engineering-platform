@@ -127,11 +127,9 @@ def _queue_action_contract(data_root: Path, base_url: str) -> None:
         credential = str(submission_service.issue_consumer_credential(
             connection, consumer_id="postman-queue", project_id=project,
         )["credential"])
-        for capability in ("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"):
-            connection.execute(
-                "INSERT INTO ep_operator_capabilities(consumer_id,project_id,capability,granted_at) VALUES(?,?,?,?)",
-                ("postman-queue", project, capability, "qualification"),
-            )
+        producer_credential = str(submission_service.issue_consumer_credential(
+            connection, consumer_id="postman-producer", project_id=project,
+        )["credential"])
     payload = {
         "repository_id": repository,
         "producer": {"id": "postman-queue", "type": "HUMAN", "version": "1"},
@@ -147,7 +145,8 @@ def _queue_action_contract(data_root: Path, base_url: str) -> None:
 
     expected_state, expected_revision = "QUEUED", 0
 
-    def action(disposition: str, reason: str, *, origin: str | None = None) -> tuple[int, str]:
+    def action(disposition: str, reason: str, *, origin: str | None = None,
+               bearer: str | None = credential) -> tuple[int, str]:
         nonlocal expected_state, expected_revision
         request = Request(
             base_url + f"/api/queue-disposition?project={project}",
@@ -156,7 +155,7 @@ def _queue_action_contract(data_root: Path, base_url: str) -> None:
                              "expected_revision": expected_revision, "disposition": disposition,
                              "reason": reason}).encode(),
             method="POST", headers={"Content-Type": "application/json", "Origin": origin or base_url,
-                                      "Authorization": f"Bearer {credential}"},
+                                      **({"Authorization": f"Bearer {bearer}"} if bearer else {})},
         )
         try:
             with urlopen(request, timeout=3) as response:  # nosec B310
@@ -166,6 +165,17 @@ def _queue_action_contract(data_root: Path, base_url: str) -> None:
                 return response.status, ""
         except HTTPError as error:
             return error.code, error.read().decode("utf-8", "replace")
+
+    for bearer, expected_status in ((None, 401), (producer_credential, 403)):
+        status, detail = action("DEFERRED", "Capability negative contract", bearer=bearer)
+        if status != expected_status:
+            raise RuntimeError(f"POSTMAN_QUEUE_AUTHORIZATION_FAILED:{expected_status}:{status}:{detail}")
+    with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        for capability in ("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"):
+            connection.execute(
+                "INSERT INTO ep_operator_capabilities(consumer_id,project_id,capability,granted_at) VALUES(?,?,?,?)",
+                ("postman-queue", project, capability, "qualification"),
+            )
 
     for disposition, reason in (
         ("DEFERRED", "Postman defer contract"), ("QUEUED", "Postman resume contract"),

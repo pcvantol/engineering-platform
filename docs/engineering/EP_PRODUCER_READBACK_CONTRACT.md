@@ -59,7 +59,31 @@ is present in the checkpoint's verified commit evidence. `VALIDATION_ONLY`,
 they are not fabricated into successful delivery.
 
 The machine-readable response shape is
-[`producer-readback-v1.schema.json`](../../src/engineering_platform/schemas/producer-readback-v1.schema.json).
+[`producer-readback-v1.2.schema.json`](../../src/engineering_platform/schemas/producer-readback-v1.2.schema.json).
+
+## Operations Console queue disposition
+
+The Console-only mutation boundary is separate from the producer API:
+
+```
+POST /api/queue-disposition?project={project_id}
+Authorization: Bearer <EP-issued, project-scoped operator credential>
+```
+
+The exact JSON v1.0 request has `contract_version`, a unique `operation_id`,
+`submission_id`, `expected_state`, integer `expected_revision`, `disposition`
+and a bounded operator `reason`.  It rejects duplicate JSON names, unknown or
+missing fields, stale state/revision, unknown submissions and invalid state
+transitions. Replaying the same operation ID and exact command is idempotent;
+using that ID for a different command is a conflict.
+
+Authentication and queue authority are deliberately distinct. A scoped
+producer credential receives `403 OPERATOR_CAPABILITY_REQUIRED`; no credential
+receives `401 UNAUTHENTICATED`. `QUEUE_HOLD_RESUME` permits defer, quarantine
+and resume. `QUEUE_DECLINE` permits terminal decline, including the direct
+`QUARANTINED -> DECLINED` path. The worker claim and this command arbitrate in
+one CENTRAL transaction, so a claimed submission returns `409` and is never
+cancelled by a queue action.
 
 ## Forge consumer mapping fixture
 
