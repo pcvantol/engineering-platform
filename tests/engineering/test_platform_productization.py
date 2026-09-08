@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import json
 import sqlite3
+import shutil
 import tempfile
 import tomllib
 import unittest
@@ -156,12 +157,11 @@ class PlatformProductizationTest(unittest.TestCase):
             for relative in _version_projection_files():
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text('version = "2.1.0"\n', encoding="utf-8")
+                shutil.copy2(ROOT / relative, target)
+            module.set_version(root, "2.1.0")
             self.assertEqual(module.advance(root), "2.1.1")
             self.assertEqual(module.advance(root), "2.1.2")
-            for path in root.rglob("*"):
-                if path.is_file():
-                    self.assertIn("2.1.2", path.read_text(encoding="utf-8"))
+            self.assertEqual(module._current_version(root), "2.1.2")
 
     def test_canonical_versioning_can_advance_a_minor_and_resets_patch(self) -> None:
         import importlib.util
@@ -175,11 +175,10 @@ class PlatformProductizationTest(unittest.TestCase):
             for relative in _version_projection_files():
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text('version = "2.1.6"\n', encoding="utf-8")
+                shutil.copy2(ROOT / relative, target)
+            module.set_version(root, "2.1.6")
             self.assertEqual(module.advance(root, component="minor"), "2.2.0")
-            for path in root.rglob("*"):
-                if path.is_file():
-                    self.assertIn("2.2.0", path.read_text(encoding="utf-8"))
+            self.assertEqual(module._current_version(root), "2.2.0")
 
     def test_release_build_can_set_an_exact_branch_version_across_all_projections(self) -> None:
         import importlib.util
@@ -193,11 +192,10 @@ class PlatformProductizationTest(unittest.TestCase):
             for relative in _version_projection_files():
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text('version = "2.1.6"\n', encoding="utf-8")
+                shutil.copy2(ROOT / relative, target)
+            module.set_version(root, "2.1.6")
             self.assertEqual(module.set_version(root, "2.2.0"), "2.2.0")
-            for path in root.rglob("*"):
-                if path.is_file():
-                    self.assertIn("2.2.0", path.read_text(encoding="utf-8"))
+            self.assertEqual(module._current_version(root), "2.2.0")
             with self.assertRaisesRegex(RuntimeError, "stable X.Y.Z"):
                 module.set_version(root, "2.2")
 

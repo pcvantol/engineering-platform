@@ -5,61 +5,17 @@ on:
     branches:
       - '**'
 
-# One writer per ref prevents two near-simultaneous pushes from creating two
-# version commits on the same branch.
-concurrency:
-  group: canonical-version-${{ github.ref }}
-  cancel-in-progress: false
-
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  feature-patch:
-    name: Add the first feature-branch patch version
-    if: github.ref_name != 'main' && !startsWith(github.ref_name, 'release-') && github.actor != 'github-actions[bot]'
+  validate-version-source:
+    name: Validate committed canonical version source
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
-        with:
-          fetch-depth: 0
-      - name: Detect an existing canonical version commit
-        id: existing
+      - name: Read-only source consistency
         run: |
-          set -euo pipefail
-          git fetch --no-tags origin main
-          if git log --format=%s origin/main..HEAD | grep -Eq '^build: advance canonical EP patch version [0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo 'present=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'present=false' >> "$GITHUB_OUTPUT"
-          fi
-      - name: Advance patch version once for this feature branch
-        if: steps.existing.outputs.present != 'true'
-        run: |
-          set -euo pipefail
-          version="$(python3 tools/qualification/advance_platform_build.py --source-root . --bump patch | sed -n 's/^EP_BUILD_VERSION=//p')"
           python3 -m pip install --quiet .
+          python3 tools/qualification/advance_platform_build.py --source-root . --check
           python3 tools/qualification/platform_version_consistency.py --source-root .
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add pyproject.toml package.json package-lock.json src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json src/engineering_platform/templates/workspace-config.json src/engineering_platform/platform_version.py
-          git commit -m "build: advance canonical EP patch version ${version}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
-
-  main-minor:
-    name: Advance the canonical minor version on main
-    if: github.ref_name == 'main' && github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
-      - name: Advance minor version and commit it to main
-        run: |
-          set -euo pipefail
-          version="$(python3 tools/qualification/advance_platform_build.py --source-root . --bump minor | sed -n 's/^EP_BUILD_VERSION=//p')"
-          python3 -m pip install --quiet .
-          python3 tools/qualification/platform_version_consistency.py --source-root .
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add pyproject.toml package.json package-lock.json src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json src/engineering_platform/templates/workspace-config.json src/engineering_platform/platform_version.py
-          git commit -m "build: advance canonical EP minor version ${version}"
-          git push origin HEAD:main

@@ -33,11 +33,16 @@ def main(argv: list[str] | None = None) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     expected = manifest["platform_version"]
     package = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    package_json = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    package_lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
     configuration = json.loads((source / "engineering_platform" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"))
     template = json.loads((source / "engineering_platform" / "templates" / "workspace-config.json").read_text(encoding="utf-8"))
 
     projections = {
         "package": package["project"]["version"],
+        "package_json_root": package_json["version"],
+        "package_lock_root": package_lock["version"],
+        "package_lock_workspace_root": package_lock["packages"][""]["version"],
         "installed_package": installed_version("engineering-platform"),
         "manifest_platform": manifest["platform_version"],
         "manifest_runner": manifest["runner_version"],
