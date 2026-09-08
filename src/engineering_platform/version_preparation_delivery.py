@@ -146,6 +146,29 @@ class VersionPreparationDelivery:
             raise VersionPreparationError("version preparation has duplicate changed paths")
         return tuple(sorted(paths))
 
+    @staticmethod
+    def _validate_prepared_receipt(path: Path, declaration: ProductHelperDeclaration, request: VersionPreparationRequest) -> None:
+        """Bind the product-owned receipt without imposing one product schema.
+
+        Product helpers deliberately retain their own detailed receipt forms.
+        EP validates only the shared operation facts required to publish their
+        output as one bounded candidate.
+        """
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise VersionPreparationError("prepared operation receipt is unreadable") from error
+        if not isinstance(receipt, dict):
+            raise VersionPreparationError("prepared operation receipt must be an object")
+        if receipt.get("schema_version") not in {1, "1"} or isinstance(receipt.get("schema_version"), bool):
+            raise VersionPreparationError("prepared operation receipt has an unsupported schema")
+        if (receipt.get("operation_id") != request.operation_id
+                or receipt.get("product") != request.product_id
+                or receipt.get("policy_revision") != declaration.policy_revision
+                or receipt.get("expected_source_revision") != request.expected_source_revision
+                or receipt.get("allowed_projection_paths") != list(request.allowed_projection_paths)):
+            raise VersionPreparationError("prepared operation receipt does not bind the admitted operation")
+
     def prepare(self, repository: Path, worktree: Path, request: VersionPreparationRequest) -> dict[str, object]:
         head = self.git.command(repository, "git", "rev-parse", "HEAD")
         if head != request.expected_source_revision:
@@ -166,6 +189,7 @@ class VersionPreparationDelivery:
         allowed = set(request.allowed_projection_paths) | {receipt}
         if receipt not in changed or set(changed) - allowed:
             raise VersionPreparationError("version preparation changed a path outside its declared operation")
+        self._validate_prepared_receipt(worktree / receipt, declaration, request)
         digest = "sha256:" + hashlib.sha256("\n".join(changed).encode()).hexdigest()
         if digest != request.prepared_operation_digest:
             raise VersionPreparationError("prepared operation digest does not bind the candidate diff")

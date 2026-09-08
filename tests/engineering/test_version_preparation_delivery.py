@@ -6,7 +6,7 @@ import tempfile
 import hashlib
 import subprocess
 
-from engineering_platform.version_preparation_delivery import VersionPreparationDelivery, VersionPreparationError, VersionPreparationRequest
+from engineering_platform.version_preparation_delivery import ProductHelperDeclaration, VersionPreparationDelivery, VersionPreparationError, VersionPreparationRequest
 from engineering_platform.execution_models import PullRequestEvidence
 
 
@@ -91,7 +91,10 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
                 return ""
         class Helper:
-            def apply(self, _worktree: Path, _request: object) -> None: pass
+            def apply(self, worktree: Path, operation: VersionPreparationRequest) -> None:
+                receipt = worktree / ".version-operations"
+                receipt.mkdir(exist_ok=True)
+                (receipt / "operation-0001.json").write_text(__import__("json").dumps({"schema_version": 1, "operation_id": operation.operation_id, "product": operation.product_id, "policy_revision": operation.policy_revision, "expected_source_revision": operation.expected_source_revision, "allowed_projection_paths": list(operation.allowed_projection_paths)}), encoding="utf-8")
         class GitHub:
             def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
                 return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base, head_sha="a" * 40)
@@ -159,6 +162,14 @@ class VersionPreparationRequestTest(unittest.TestCase):
             with self.assertRaisesRegex(VersionPreparationError, "declared operation"):
                 VersionPreparationDelivery(Git(), Helper()).prepare(root, root, VersionPreparationRequest.parse(request(prepared_operation_digest=digest)))
 
+    def test_prepared_receipt_must_bind_the_admitted_product_operation(self) -> None:
+        declaration = ProductHelperDeclaration("forge", "pcvantol/forge", "scripts/advance_product_version.py", ".version-operations", ("product-version.json",), "v1")
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory, "operation-0001.json")
+            receipt.write_text(__import__("json").dumps({"schema_version": 1, "operation_id": "operation-0001", "product": "workspace", "policy_revision": "v1", "expected_source_revision": "a" * 40, "allowed_projection_paths": ["product-version.json"]}), encoding="utf-8")
+            with self.assertRaisesRegex(VersionPreparationError, "does not bind"):
+                VersionPreparationDelivery._validate_prepared_receipt(receipt, declaration, VersionPreparationRequest.parse(request()))
+
     def test_isolated_git_worktree_includes_an_untracked_receipt_in_candidate_scope(self) -> None:
         """A real temporary Git checkout proves receipts cannot be omitted by diff."""
         from engineering_platform.providers import GitProvider
@@ -168,7 +179,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
                 (worktree / "product-version.json").write_text('{"version":"2.4.0"}\n', encoding="utf-8")
                 receipt = worktree / ".version-operations"
                 receipt.mkdir()
-                (receipt / "operation-0001.json").write_text('{"operation_id":"operation-0001"}\n', encoding="utf-8")
+                (receipt / "operation-0001.json").write_text(__import__("json").dumps({"schema_version": 1, "operation_id": "operation-0001", "product": "forge", "policy_revision": "v1", "expected_source_revision": sha, "allowed_projection_paths": ["product-version.json"]}), encoding="utf-8")
 
         def git(root: Path, *args: str) -> None:
             subprocess.run(("git", *args), cwd=root, check=True, text=True, capture_output=True)
