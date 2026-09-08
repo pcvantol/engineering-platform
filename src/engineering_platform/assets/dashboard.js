@@ -6289,7 +6289,32 @@ syncStickyHeaderOffset();
 syncFooterOffset();
 const providerReadinessActions = new Map();
 let providerInteractiveRepairInProgress = false;
+const PROVIDER_READINESS_RECOVERY_MAX_ATTEMPTS = 3,
+  PROVIDER_READINESS_RECOVERY_DELAY_MS = 2_000;
 let providerReadinessRecoveryAttempts = 0, providerReadinessRecoveryTimer = null;
+function resetProviderReadinessRecovery() {
+  providerReadinessRecoveryAttempts = 0;
+  if (providerReadinessRecoveryTimer !== null)
+    window.clearTimeout(providerReadinessRecoveryTimer);
+  providerReadinessRecoveryTimer = null;
+}
+function scheduleProviderReadinessRecovery(providers) {
+  const hasTransientFailure = PROVIDER_READINESS_KEYS.some(
+    (key) => providerReadinessState(providers, key) === "CHECK_FAILED",
+  );
+  if (!hasTransientFailure) return resetProviderReadinessRecovery();
+  if (providerReadinessRecoveryAttempts >= PROVIDER_READINESS_RECOVERY_MAX_ATTEMPTS) {
+    providerReadinessRecoveryTimer = null;
+    return;
+  }
+  if (providerReadinessRecoveryTimer !== null)
+    window.clearTimeout(providerReadinessRecoveryTimer);
+  providerReadinessRecoveryAttempts += 1;
+  providerReadinessRecoveryTimer = window.setTimeout(
+    () => void refreshProviderLoginStatus(),
+    providerReadinessRecoveryAttempts * PROVIDER_READINESS_RECOVERY_DELAY_MS,
+  );
+}
 function providerDisplayName(provider) {
   return provider === "CODEX" || provider === "codex" ? "Codex" : "GitHub";
 }
@@ -6388,16 +6413,7 @@ async function refreshProviderLoginStatus() {
   } catch {
     renderProviderLoginStatus(block, providers);
   }
-  const hasTransientProviderFailure = PROVIDER_READINESS_KEYS.some((key) => providerReadinessState(providers, key) === "CHECK_FAILED");
-  if (hasTransientProviderFailure && providerReadinessRecoveryAttempts < 3) {
-    if (providerReadinessRecoveryTimer !== null) window.clearTimeout(providerReadinessRecoveryTimer);
-    providerReadinessRecoveryAttempts += 1;
-    providerReadinessRecoveryTimer = window.setTimeout(() => void refreshProviderLoginStatus(), providerReadinessRecoveryAttempts * 2_000);
-  } else if (!hasTransientProviderFailure) {
-    providerReadinessRecoveryAttempts = 0;
-    if (providerReadinessRecoveryTimer !== null) window.clearTimeout(providerReadinessRecoveryTimer);
-    providerReadinessRecoveryTimer = null;
-  }
+  scheduleProviderReadinessRecovery(providers);
   try {
     if (runtimeResult.status !== "fulfilled") throw Error();
     const response = runtimeResult.value, runtime = await response.json();
@@ -8721,22 +8737,25 @@ document.addEventListener("DOMContentLoaded", () => {
   }).observe(status, { childList: true, characterData: true, subtree: true });
 });
 
+const RELOCATION_ERROR_CODES = new Set([
+  "LOCATION_REQUIRED", "LOCATION_NOT_WRITABLE", "PLATFORM_DATA_DESTINATION_INVALID",
+  "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNAVAILABLE", "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED",
+  "PLATFORM_DATA_COPY_VERIFICATION_FAILED", "PLATFORM_DATA_DESTINATION_NOT_PREPARED",
+  "PLATFORM_DATA_DESTINATION_NOT_EMPTY", "PLATFORM_DATA_UNAVAILABLE", "PLATFORM_DATA_DESTINATION_EXISTS",
+  "RELOCATION_KIND_RETIRED", "RELOCATION_ALREADY_PENDING", "RELOCATION_REQUEST_INVALID",
+  "PLATFORM_DATA_RELOCATION_BLOCKED",
+]);
+function relocationErrorText(code) {
+  return t(`configuration.relocation_error.${RELOCATION_ERROR_CODES.has(code) ? code : "UNKNOWN"}`);
+}
 document.addEventListener("DOMContentLoaded", () => {
-  const relocationErrors = new Set([
-    "LOCATION_REQUIRED", "LOCATION_NOT_WRITABLE", "PLATFORM_DATA_DESTINATION_INVALID",
-    "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNAVAILABLE", "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED",
-    "PLATFORM_DATA_COPY_VERIFICATION_FAILED", "PLATFORM_DATA_DESTINATION_NOT_PREPARED",
-    "PLATFORM_DATA_DESTINATION_NOT_EMPTY", "PLATFORM_DATA_UNAVAILABLE", "PLATFORM_DATA_DESTINATION_EXISTS",
-    "RELOCATION_KIND_RETIRED", "RELOCATION_ALREADY_PENDING", "RELOCATION_REQUEST_INVALID",
-    "PLATFORM_DATA_RELOCATION_BLOCKED",
-  ]);
   for (const id of ["centralDatabaseRelocateStatus", "fileInboxRelocateStatus"]) {
     const status = $(id);
     if (!status) continue;
     new MutationObserver(() => {
       const code = status.textContent?.trim() || "";
       if (!/^[A-Z][A-Z0-9_]+$/.test(code)) return;
-      status.textContent = t(`configuration.relocation_error.${relocationErrors.has(code) ? code : "UNKNOWN"}`);
+      status.textContent = relocationErrorText(code);
     }).observe(status, { childList: true, characterData: true, subtree: true });
   }
 });
