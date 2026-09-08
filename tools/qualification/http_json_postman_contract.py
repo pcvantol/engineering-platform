@@ -127,6 +127,11 @@ def _queue_action_contract(data_root: Path, base_url: str) -> None:
         credential = str(submission_service.issue_consumer_credential(
             connection, consumer_id="postman-queue", project_id=project,
         )["credential"])
+        for capability in ("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"):
+            connection.execute(
+                "INSERT INTO ep_operator_capabilities(consumer_id,project_id,capability,granted_at) VALUES(?,?,?,?)",
+                ("postman-queue", project, capability, "qualification"),
+            )
     payload = {
         "repository_id": repository,
         "producer": {"id": "postman-queue", "type": "HUMAN", "version": "1"},
@@ -140,22 +145,31 @@ def _queue_action_contract(data_root: Path, base_url: str) -> None:
     with urlopen(submit, timeout=3) as response:  # nosec B310
         submission_id = str(json.loads(response.read())["submission_id"])
 
+    expected_state, expected_revision = "QUEUED", 0
+
     def action(disposition: str, reason: str, *, origin: str | None = None) -> tuple[int, str]:
+        nonlocal expected_state, expected_revision
         request = Request(
             base_url + f"/api/queue-disposition?project={project}",
-            data=json.dumps({"submission_id": submission_id, "disposition": disposition, "reason": reason}).encode(),
-            method="POST", headers={"Content-Type": "application/json", "Origin": origin or base_url},
+            data=json.dumps({"contract_version": "1.0", "operation_id": f"postman-{expected_revision + 1}",
+                             "submission_id": submission_id, "expected_state": expected_state,
+                             "expected_revision": expected_revision, "disposition": disposition,
+                             "reason": reason}).encode(),
+            method="POST", headers={"Content-Type": "application/json", "Origin": origin or base_url,
+                                      "Authorization": f"Bearer {credential}"},
         )
         try:
             with urlopen(request, timeout=3) as response:  # nosec B310
-                response.read()
+                response_payload = json.loads(response.read())
+                expected_state = str(response_payload["state"])
+                expected_revision = int(response_payload["resulting_revision"])
                 return response.status, ""
         except HTTPError as error:
             return error.code, error.read().decode("utf-8", "replace")
 
     for disposition, reason in (
         ("DEFERRED", "Postman defer contract"), ("QUEUED", "Postman resume contract"),
-        ("QUARANTINED", "Postman quarantine contract"), ("QUEUED", "Postman resume after quarantine contract"),
+        ("QUARANTINED", "Postman quarantine contract"),
         ("DECLINED", "Postman decline contract"),
     ):
         status, detail = action(disposition, reason)
