@@ -196,8 +196,30 @@ class PlatformProductizationTest(unittest.TestCase):
             module.set_version(root, "2.1.6")
             self.assertEqual(module.set_version(root, "2.2.0"), "2.2.0")
             self.assertEqual(module._current_version(root), "2.2.0")
+            package_lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(package_lock["version"], "2.2.0")
+            self.assertEqual(package_lock["packages"][""]["version"], "2.2.0")
             with self.assertRaisesRegex(RuntimeError, "stable X.Y.Z"):
                 module.set_version(root, "2.2")
+
+    def test_version_writer_rejects_invalid_last_projection_without_partial_update(self) -> None:
+        import importlib.util
+        script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+        spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in _version_projection_files():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            pyproject_before = (root / "pyproject.toml").read_bytes()
+            (root / "src" / "engineering_platform" / "platform_version.py").write_text("# missing canonical constant\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "runtime version projection drift"):
+                module.set_version(root, "2.2.1")
+            self.assertEqual((root / "pyproject.toml").read_bytes(), pyproject_before)
 
     def test_public_api_has_all_productization_capabilities(self) -> None:
         registered = set(capabilities())

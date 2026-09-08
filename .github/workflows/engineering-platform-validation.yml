@@ -73,7 +73,7 @@ jobs:
           python3 -c "import engineering_platform, engineering_platform.execution_host"
           python3 -m compileall -q src/engineering_platform
           PYTHONPATH=src python3 tools/qualification/console_route_ownership_guard.py --source-root src
-          python3 tools/qualification/platform_version_consistency.py --source-root .
+          python3 tools/qualification/platform_version_consistency.py --source-root . --installed-python "$(command -v python3)"
           python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Qualify installed P-TRANSPORT 3×2 ingress matrix
         run: python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
