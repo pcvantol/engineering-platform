@@ -1184,7 +1184,20 @@ def _migrate_schema_54(connection: sqlite3.Connection) -> None:
         prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL, idempotency_key TEXT, correlation_id TEXT,
         mission_id TEXT, engineering_action_id TEXT, transport_receipt_id TEXT, transport_received_at TEXT,
         state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED','DEFERRED','QUARANTINED','DECLINED')), admission TEXT NOT NULL, created_at TEXT NOT NULL)""")
-    connection.execute("INSERT INTO ep_submissions SELECT * FROM ep_submissions_schema53")
+    # Do not use ``SELECT *`` here: an interrupted/newer installation can
+    # retain later additive columns while its recorded schema is still being
+    # recovered.  Schema-54 owns exactly these predecessor columns.
+    connection.execute("""INSERT INTO ep_submissions(
+        submission_id,project_id,repository_id,producer_id,producer_type,
+        producer_version,transport,prompt,prompt_digest,constraints,
+        idempotency_key,correlation_id,mission_id,engineering_action_id,
+        transport_receipt_id,transport_received_at,state,admission,created_at
+    ) SELECT
+        submission_id,project_id,repository_id,producer_id,producer_type,
+        producer_version,transport,prompt,prompt_digest,constraints,
+        idempotency_key,correlation_id,mission_id,engineering_action_id,
+        transport_receipt_id,transport_received_at,state,admission,created_at
+      FROM ep_submissions_schema53""")
     connection.execute("CREATE TABLE ep_submission_events (event_id INTEGER PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id), event_kind TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)")
     connection.execute("INSERT INTO ep_submission_events SELECT * FROM ep_submission_events_schema53")
     connection.execute("CREATE TABLE ep_submission_prompt_history (submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id), prompt_digest TEXT NOT NULL, recorded_at TEXT NOT NULL)")
@@ -1207,8 +1220,10 @@ def _migrate_schema_55(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55)))")
     connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,55 FROM ep_installations_schema54")
     connection.execute("DROP TABLE ep_installations_schema54")
-    connection.execute("ALTER TABLE ep_submissions ADD COLUMN disposition_revision INTEGER NOT NULL DEFAULT 0")
-    connection.execute("CREATE TABLE ep_queue_disposition_operations (operation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id), actor_reference TEXT NOT NULL, command_digest TEXT NOT NULL, from_state TEXT NOT NULL, to_state TEXT NOT NULL, previous_revision INTEGER NOT NULL, resulting_revision INTEGER NOT NULL, event_id INTEGER NOT NULL REFERENCES ep_submission_events(event_id), recorded_at TEXT NOT NULL)")
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(ep_submissions)")}
+    if "disposition_revision" not in columns:
+        connection.execute("ALTER TABLE ep_submissions ADD COLUMN disposition_revision INTEGER NOT NULL DEFAULT 0")
+    connection.execute("CREATE TABLE IF NOT EXISTS ep_queue_disposition_operations (operation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id), actor_reference TEXT NOT NULL, command_digest TEXT NOT NULL, from_state TEXT NOT NULL, to_state TEXT NOT NULL, previous_revision INTEGER NOT NULL, resulting_revision INTEGER NOT NULL, event_id INTEGER NOT NULL REFERENCES ep_submission_events(event_id), recorded_at TEXT NOT NULL)")
     connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(55)")
     connection.execute("UPDATE engineering_metadata SET value='55' WHERE key='installation.schema_version'")
     connection.execute("UPDATE ep_installations SET schema_version=55")
