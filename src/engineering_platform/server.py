@@ -516,6 +516,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_submission_events",
         "ep_submission_prompt_history",
         "ep_queue_disposition_operations",
+        "ep_operator_capabilities",
         "ep_parity_lifecycle_dispatches",
         "ep_receipt_run_provenance",
         "ep_external_producer_bindings",
@@ -1208,6 +1209,7 @@ def _migrate_schema_55(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE ep_installations_schema54")
     connection.execute("ALTER TABLE ep_submissions ADD COLUMN disposition_revision INTEGER NOT NULL DEFAULT 0")
     connection.execute("CREATE TABLE ep_queue_disposition_operations (operation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id), actor_reference TEXT NOT NULL, command_digest TEXT NOT NULL, from_state TEXT NOT NULL, to_state TEXT NOT NULL, previous_revision INTEGER NOT NULL, resulting_revision INTEGER NOT NULL, event_id INTEGER NOT NULL REFERENCES ep_submission_events(event_id), recorded_at TEXT NOT NULL)")
+    connection.execute("CREATE TABLE ep_operator_capabilities (consumer_id TEXT NOT NULL, project_id TEXT NOT NULL, capability TEXT NOT NULL CHECK(capability IN ('QUEUE_HOLD_RESUME','QUEUE_DECLINE')), granted_at TEXT NOT NULL, revoked_at TEXT, PRIMARY KEY(consumer_id,project_id,capability))")
     connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(55)")
     connection.execute("UPDATE engineering_metadata SET value='55' WHERE key='installation.schema_version'")
     connection.execute("UPDATE ep_installations SET schema_version=55")
@@ -2565,6 +2567,15 @@ def _authenticated_consumer(connection: sqlite3.Connection, token: object, proje
     return str(row[0]) if row else None
 
 
+def _operator_capability(connection: sqlite3.Connection, token: object, project_id: str, capability: str) -> str | None:
+    """Resolve an explicit project capability; admission credentials are insufficient."""
+    actor = _authenticated_consumer(connection, token, project_id)
+    if actor is None:
+        return None
+    grant = connection.execute("SELECT 1 FROM ep_operator_capabilities WHERE consumer_id=? AND project_id=? AND capability=? AND revoked_at IS NULL", (actor, project_id, capability)).fetchone()
+    return actor if grant is not None else ""
+
+
 def _admit_server_owned_file_inbox(
     data_root: Path, envelope: dict[str, object], receipt_id: str, received_at: str,
 ) -> dict[str, object]:
@@ -3333,12 +3344,26 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if not 2 <= length <= 1024:
                     raise ValueError
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if not isinstance(payload, dict) or set(payload) != {"submission_id", "disposition", "reason"}:
+                expected = {"contract_version", "operation_id", "submission_id", "expected_state", "expected_revision", "disposition", "reason"}
+                if (not isinstance(payload, dict) or set(payload) != expected
+                        or payload.get("contract_version") != "1.0"
+                        or not all(isinstance(payload.get(field), str) for field in ("operation_id", "submission_id", "expected_state", "disposition", "reason"))
+                        or not isinstance(payload.get("expected_revision"), int) or isinstance(payload.get("expected_revision"), bool)):
                     raise ValueError
                 with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    connection.execute("BEGIN IMMEDIATE")
+                    token = self.headers.get("Authorization", "")[7:] if self.headers.get("Authorization", "").startswith("Bearer ") else None
+                    capability = "QUEUE_DECLINE" if payload["disposition"] == "DECLINED" else "QUEUE_HOLD_RESUME"
+                    actor = _operator_capability(connection, token, selected, capability)
+                    if actor is None:
+                        raise submission_service.SubmissionError("UNAUTHENTICATED", 401)
+                    if not actor:
+                        raise submission_service.SubmissionError("OPERATOR_CAPABILITY_REQUIRED", 403)
                     result = submission_service.operator_queue_disposition(
-                        connection, project_id=selected, submission_id=str(payload["submission_id"]),
-                        disposition=str(payload["disposition"]), reason=str(payload["reason"]),
+                        connection, project_id=selected, submission_id=payload["submission_id"],
+                        disposition=payload["disposition"], reason=payload["reason"],
+                        expected_state=payload["expected_state"], expected_revision=payload["expected_revision"],
+                        operation_id=payload["operation_id"], actor_reference=actor,
                     )
                 self._send(200, result)
             except submission_service.SubmissionError as error:

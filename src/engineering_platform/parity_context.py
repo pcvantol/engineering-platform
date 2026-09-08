@@ -90,7 +90,7 @@ class ParityProjectStore:
         it; terminal records remain durable history rather than queue items.
         """
         rows = self.connection.execute(
-            """SELECT s.submission_id,s.transport,s.producer_type,s.created_at,s.state
+            """SELECT s.submission_id,s.transport,s.producer_type,s.created_at,s.state,s.disposition_revision
                 FROM ep_submissions s
                 LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id
                 WHERE s.project_id=? AND s.state IN ('QUEUED','DEFERRED','QUARANTINED') AND s.admission='ADMITTED'
@@ -109,6 +109,7 @@ class ParityProjectStore:
                 "queue_source": "CENTRAL",
                 "transport": str(row[1]),
                 "queue_state": str(row[4]),
+                "disposition_revision": int(row[5]),
             }
             for row in rows[:limit]
         ]

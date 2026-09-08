@@ -395,7 +395,7 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
     return {"credential_id": credential_id, "consumer_id": consumer_id, "project_id": project_id, "credential": token}
 
 
-PRODUCER_READBACK_CONTRACT_VERSION = "1.1"
+PRODUCER_READBACK_CONTRACT_VERSION = "1.2"
 TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.2"
 _TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
@@ -631,7 +631,7 @@ def producer_readback(
     row = connection.execute(
         """SELECT s.repository_id,s.producer_id,s.producer_type,s.producer_version,
                   s.prompt_digest,s.constraints,s.correlation_id,s.mission_id,
-                  s.engineering_action_id,s.state,s.admission,s.transport,s.created_at,
+                  s.engineering_action_id,s.state,s.admission,s.transport,s.created_at,s.disposition_revision,
                   d.run_id,d.state,d.operator_resolution,d.updated_at
              FROM ep_submissions AS s
              LEFT JOIN ep_parity_lifecycle_dispatches AS d
@@ -644,9 +644,20 @@ def producer_readback(
     (
         repository_id, producer_id, producer_type, producer_version, prompt_digest,
         raw_constraints, correlation_id, mission_id, engineering_action_id, submission_state,
-        admission, transport, created_at, run_id, dispatch_state,
+        admission, transport, created_at, disposition_revision, run_id, dispatch_state,
         operator_resolution, updated_at,
     ) = row
+    disposition_row = connection.execute(
+        "SELECT o.operation_id,o.event_id,o.actor_reference,e.payload,o.recorded_at FROM ep_queue_disposition_operations o JOIN ep_submission_events e ON e.event_id=o.event_id WHERE o.project_id=? AND o.submission_id=? ORDER BY o.recorded_at DESC LIMIT 1",
+        (project_id, submission_id),
+    ).fetchone()
+    disposition = {"state": str(submission_state), "terminal": str(submission_state) == "DECLINED", "execution_eligible": str(submission_state) == "QUEUED", "revision": int(disposition_revision), "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None}
+    if disposition_row is not None:
+        try:
+            reason = json.loads(str(disposition_row[3])).get("reason", "NOT_RECORDED")
+        except json.JSONDecodeError:
+            reason = "NOT_RECORDED"
+        disposition.update({"operation_id": str(disposition_row[0]), "event_reference": "event:" + str(disposition_row[1]), "actor_reference": str(disposition_row[2]), "reason": reason, "recorded_at": str(disposition_row[4])})
     constraints = _read_constraints(raw_constraints)
     if constraints is None:
         # Existing data is retained, but cannot be represented as qualified
@@ -748,7 +759,7 @@ def producer_readback(
             "engineering_action_id": engineering_action_id,
         },
         "provenance": {"status": provenance_status, "forge_execution": constraints.get("forge_execution")},
-        "run": run, "result": result, "evidence": evidence,
+        "disposition": disposition, "run": run, "result": result, "evidence": evidence,
     }
 
 

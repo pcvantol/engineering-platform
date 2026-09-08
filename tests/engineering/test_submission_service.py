@@ -26,6 +26,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", ("djconnect", "{}", "ACTIVE", now, now))
             connection.execute("INSERT INTO ep_repository_registrations VALUES(?,?,?,?,?,?,?)", ("djconnect", "djconnect", "djconnect", "authority", "{}", now, now))
             self.credential = submission_service.issue_consumer_credential(connection, consumer_id="cli", project_id="djconnect")["credential"]
+            connection.execute("INSERT INTO ep_operator_capabilities VALUES(?,?,?,?,?)", ("cli", "djconnect", "QUEUE_HOLD_RESUME", now, None))
+            connection.execute("INSERT INTO ep_operator_capabilities VALUES(?,?,?,?,?)", ("cli", "djconnect", "QUEUE_DECLINE", now, None))
 
     def tearDown(self) -> None:
         server.stop(self.root)
@@ -118,13 +120,18 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         server.start(self.root)
         endpoint = f"http://127.0.0.1:{self.port}/api/queue-disposition?project=djconnect"
 
+        current_state, current_revision = "QUEUED", 0
         def action(disposition: str, reason: str) -> dict[str, object]:
-            body = json.dumps({"submission_id": submitted.submission_id, "disposition": disposition, "reason": reason}).encode()
+            nonlocal current_state, current_revision
+            revision, expected_state = current_revision, current_state
+            body = json.dumps({"contract_version": "1.0", "operation_id": f"operation-{disposition}-{revision}", "submission_id": submitted.submission_id, "expected_state": expected_state, "expected_revision": revision, "disposition": disposition, "reason": reason}).encode()
             request = Request(endpoint, data=body, method="POST", headers={
-                "Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}",
+                "Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}", "Authorization": f"Bearer {self.credential}",
             })
             with urlopen(request) as response:  # nosec B310
-                return json.loads(response.read())
+                result = json.loads(response.read())
+            current_state, current_revision = result["state"], result["resulting_revision"]
+            return result
 
         self.assertEqual(action("DEFERRED", "Wait for the maintenance window")["state"], "DEFERRED")
         self.assertEqual(action("QUEUED", "Maintenance window is open")["state"], "QUEUED")
@@ -132,9 +139,9 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(action("QUARANTINED", "Investigate the source envelope")["state"], "QUARANTINED")
         self.assertEqual(action("QUEUED", "Investigation completed")["state"], "QUEUED")
         self.assertEqual(action("DECLINED", "The request is no longer needed")["state"], "DECLINED")
-        body = json.dumps({"submission_id": submitted.submission_id, "disposition": "QUEUED", "reason": "Must not revive a declined request"}).encode()
+        body = json.dumps({"contract_version": "1.0", "operation_id": "must-not-revive", "submission_id": submitted.submission_id, "expected_state": "DECLINED", "expected_revision": current_revision, "disposition": "QUEUED", "reason": "Must not revive a declined request"}).encode()
         with self.assertRaises(HTTPError) as rejected:
-            urlopen(Request(endpoint, data=body, method="POST", headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}"}))  # nosec B310
+            urlopen(Request(endpoint, data=body, method="POST", headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}", "Authorization": f"Bearer {self.credential}"}))  # nosec B310
         self.assertEqual(rejected.exception.code, 409)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             events = [row[0] for row in connection.execute(
@@ -188,7 +195,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions/{submission_id}"
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             initial = json.loads(response.read())
-        self.assertEqual(initial["contract_version"], "1.1")
+        self.assertEqual(initial["contract_version"], "1.2")
         self.assertEqual(initial["correlation"], {
             "correlation_id": "forge-correlation-1", "mission_id": "mission-1", "engineering_action_id": "action-1",
         })

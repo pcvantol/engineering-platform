@@ -999,8 +999,10 @@ function queueDisposition(item, disposition, reason, button) {
     .then((confirmed) => {
       if (!confirmed) return;
       button.disabled = true;
+      const operationId = crypto.randomUUID();
       return fetch("/api/queue-disposition", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ submission_id: submissionId, disposition, reason }) })
+        body: JSON.stringify({ contract_version: "1.0", operation_id: operationId, submission_id: submissionId,
+          expected_state: item.queue_state, expected_revision: item.disposition_revision, disposition, reason }) })
         .then(async (response) => ({ ok: response.ok, body: await response.json().catch(() => ({})) }))
         .then((result) => { if (!result.ok) throw Error(result.body.error || t("queue.defer_failed")); return refreshDashboard(); })
         .catch((error) => showDashboardError(error.message, t("queue.defer_failed")))
