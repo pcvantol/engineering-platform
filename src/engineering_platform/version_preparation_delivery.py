@@ -105,6 +105,8 @@ class VersionPreparationRequest:
             raise VersionPreparationError("unsupported contract version or operation ID")
         if not _SHA.fullmatch(request.expected_source_revision):
             raise VersionPreparationError("expected source revision must be an exact SHA")
+        if request.expected_target_branch_revision is not None and not _SHA.fullmatch(request.expected_target_branch_revision):
+            raise VersionPreparationError("expected target branch revision must be an exact SHA")
         if request.delivery_mode not in {"EXISTING_FEATURE_CANDIDATE", "PROTECTED_VERSION_PREPARATION_CANDIDATE"}:
             raise VersionPreparationError("unsupported delivery mode")
         if request.requested_change not in {"patch", "minor", "exact-version"}:
@@ -190,6 +192,10 @@ class VersionPreparationDelivery:
             raise VersionPreparationError("prepared candidate has no bounded changed paths")
         if self.git.command(worktree, "git", "branch", "--show-current") != branch:
             raise VersionPreparationError("isolated worktree branch does not bind the operation ID")
+        if request.expected_target_branch_revision is not None:
+            target = self.git.command(worktree, "git", "rev-parse", f"origin/{base_branch}")
+            if target != request.expected_target_branch_revision:
+                raise VersionPreparationError("target branch revision changed before candidate publication")
         self.git.command(worktree, "git", "add", "--", *paths)
         self.git.command(worktree, "git", "commit", "-m", f"build: prepare version operation {request.operation_id}")
         candidate_sha = self.git.command(worktree, "git", "rev-parse", "HEAD")

@@ -41,6 +41,8 @@ class VersionPreparationRequestTest(unittest.TestCase):
             VersionPreparationRequest.parse(request(source_event_set=["merge:1", "merge:1"]))
         with self.assertRaisesRegex(VersionPreparationError, "exact SHA"):
             VersionPreparationRequest.parse(request(expected_source_revision="main"))
+        with self.assertRaisesRegex(VersionPreparationError, "target branch revision"):
+            VersionPreparationRequest.parse(request(expected_target_branch_revision="main"))
 
     def test_candidate_branch_is_deterministically_bound_to_operation(self) -> None:
         parsed = VersionPreparationRequest.parse(request())
@@ -107,6 +109,17 @@ class VersionPreparationRequestTest(unittest.TestCase):
         prepared = {"operation_id": parsed.operation_id, "changed_paths": ("product-version.json",), "prepared_operation_digest": parsed.prepared_operation_digest}
         with self.assertRaisesRegex(VersionPreparationError, "head changed"):
             VersionPreparationDelivery(Git(), object()).publish_candidate(Path("."), parsed, prepared, GitHub(), base_branch="main")
+
+    def test_publish_rejects_a_target_branch_that_moved_after_admission(self) -> None:
+        class Git:
+            def command(self, _root: Path, *args: str) -> str:
+                if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
+                if args[-1] == "origin/main": return "b" * 40
+                raise AssertionError(f"candidate must stop before {args!r}")
+        parsed = VersionPreparationRequest.parse(request(expected_target_branch_revision="a" * 40))
+        prepared = {"operation_id": parsed.operation_id, "changed_paths": ("product-version.json",), "prepared_operation_digest": parsed.prepared_operation_digest}
+        with self.assertRaisesRegex(VersionPreparationError, "target branch revision changed"):
+            VersionPreparationDelivery(Git(), object()).publish_candidate(Path("."), parsed, prepared, object(), base_branch="main")
 
     def test_existing_worktree_path_is_rejected_before_git_write(self) -> None:
         class Git:
