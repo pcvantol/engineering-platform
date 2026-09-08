@@ -1199,6 +1199,36 @@ class ClientContractTest(unittest.TestCase):
         self.assertTrue(evidence.checks_passed)
         self.assertEqual(evidence.failed_checks, ())
 
+    def test_github_writer_preflight_reads_only_identity_and_scoped_permission(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+            def github(self, *args: str) -> str:
+                self.calls.append(args)
+                if args[:2] == ("api", "user"):
+                    return json.dumps({"login": "ep-delivery-app"})
+                if args[:2] == ("api", "repos/pcvantol/forge"):
+                    return json.dumps({"permissions": {"push": True}})
+                raise AssertionError(args)
+
+        provider = Provider()
+        self.assertEqual(
+            GhCliClient(provider, "pcvantol/forge").version_preparation_writer(),
+            {"actor": "ep-delivery-app", "repository_id": "pcvantol/forge", "can_push": True},
+        )
+        self.assertEqual(provider.calls, [("api", "user"), ("api", "repos/pcvantol/forge", "--repo", "pcvantol/forge")])
+
+    def test_github_writer_preflight_rejects_missing_scope_or_identity(self) -> None:
+        with self.assertRaisesRegex(RunnerError, "exact GitHub repository"):
+            GhCliClient(object()).version_preparation_writer()
+
+        class Provider:
+            def github(self, *args: str) -> str:
+                return json.dumps({"login": "ep-delivery-app"}) if args[:2] == ("api", "user") else json.dumps({})
+
+        with self.assertRaisesRegex(RunnerError, "identity is incomplete"):
+            GhCliClient(Provider(), "pcvantol/forge").version_preparation_writer()
+
     @patch("engineering_platform.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:
         review_message = json.dumps(
