@@ -2390,24 +2390,33 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_reserved_repair_revalidates_and_rereviews_before_returning_to_pr_evidence(self) -> None:
         """One repair consumes one durable round and cannot bypass assurance."""
         sha = "a" * 40
+        branch = "codex/repair-rereview"
         agent = SequencedFakeAgent([
-            AgentResult("COMPLETE", "main", commit_sha=sha),
-            AgentResult("COMPLETE", "main", commit_sha=sha,
+            AgentResult("COMPLETE", branch, commit_sha=sha),
+            AgentResult("COMPLETE", branch, commit_sha=sha,
                         validation_evidence=({"command": "canonical suite", "result": "passed"},)),
         ])
-        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch="main", base_branch="main")])
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, agent, lambda _: None)
+        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch=branch, base_branch="main")])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), github, agent, lambda _: None)
         state = TransactionState("repair-rereview", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
-                                 branch="main", pull_request=71, owner_authorized=True)
+                                 branch=branch, pull_request=71, owner_authorized=True)
         advanced = runner._repair(state, "quality review findings failed. Repair these bounded findings: finding-1")
-        # The fake remote intentionally has no persisted PR binding; what this
-        # regression owns is the required repair -> validation -> review path.
-        self.assertNotEqual(advanced.phase, "REPAIR_AGENT")
+        self.assertEqual(advanced.phase, "WAIT_FOR_OPERATOR_MERGE")
         self.assertEqual(advanced.repair_iterations, 1)
         self.assertEqual(len(advanced.repair_audit), 1)
         self.assertEqual(advanced.repair_audit[0]["repair_id"], "repair:repair-rereview:1")
         self.assertEqual([item["status"] for item in advanced.assurance_reviews], ["PASS", "PASS"])
         self.assertIn("Local repository validation gate", agent.prompts[1])
+
+    def test_fourth_shared_repair_dispatch_is_refused_before_provider_invocation(self) -> None:
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        exhausted = TransactionState("repair-exhausted", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+                                     branch="codex/repair", repair_iterations=3)
+        blocked = runner._repair(exhausted, "hosted check failed. Repair bounded finding.")
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "repair_budget_exhausted")
+        self.assertEqual(agent.prompts, [])
 
     def test_local_repository_validation_iterates_before_creating_the_implementation_pr(self) -> None:
         agent = SequencedFakeAgent([
