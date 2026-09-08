@@ -83,6 +83,14 @@ class VersionPreparationRequestTest(unittest.TestCase):
             self.assertEqual(result["pull_request_id"], 9)
             self.assertTrue(Path(str(result["delivery_evidence_path"])).is_file())
 
+    def test_existing_worktree_path_is_rejected_before_git_write(self) -> None:
+        class Git:
+            def command(self, *_args: str) -> str: raise AssertionError("must not invoke Git")
+        with tempfile.TemporaryDirectory() as directory:
+            parsed = VersionPreparationRequest.parse(request())
+            with self.assertRaisesRegex(VersionPreparationError, "already exists"):
+                VersionPreparationDelivery(Git(), object()).create_isolated_worktree(Path(directory), Path(directory), parsed)
+
 
 if __name__ == "__main__":
     unittest.main()

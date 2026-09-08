@@ -114,6 +114,18 @@ class VersionPreparationDelivery:
     def branch_name(request: VersionPreparationRequest) -> str:
         return f"ep/version-preparation/{request.operation_id}"
 
+    def create_isolated_worktree(self, repository: Path, worktree: Path, request: VersionPreparationRequest) -> None:
+        """Create the one deterministic candidate worktree from the pinned source."""
+        if worktree.exists():
+            raise VersionPreparationError("version preparation worktree path already exists")
+        if self.git.command(repository, "git", "rev-parse", request.expected_source_revision) != request.expected_source_revision:
+            raise VersionPreparationError("expected source revision is unavailable")
+        self.git.command(repository, "git", "worktree", "add", "-b", self.branch_name(request), str(worktree), request.expected_source_revision)
+        if self.git.command(worktree, "git", "rev-parse", "HEAD") != request.expected_source_revision:
+            raise VersionPreparationError("isolated worktree did not start at the expected source revision")
+        if self.git.command(worktree, "git", "status", "--porcelain", "--untracked-files=all"):
+            raise VersionPreparationError("isolated version preparation worktree is not clean")
+
     def publish_candidate(
         self, worktree: Path, request: VersionPreparationRequest, prepared: Mapping[str, object], github: GitHubClient,
         *, base_branch: str,
