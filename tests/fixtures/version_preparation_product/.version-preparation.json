@@ -1,0 +1,9 @@
+{
+  "contract_version": "1",
+  "product_id": "fixture-product",
+  "repository_id": "pcvantol/fixture-product",
+  "helper_path": "scripts/apply_version.py",
+  "receipt_directory": ".version-operations",
+  "allowed_projection_paths": ["product-version.json"],
+  "policy_revision": "fixture-policy-v1"
+}

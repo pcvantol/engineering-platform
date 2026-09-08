@@ -25,6 +25,7 @@ class PullRequestEvidence:
     head_branch: str | None = None
     base_branch: str | None = None
     merge_state_status: str | None = None
+    head_sha: str | None = None
 
 
 @dataclass(frozen=True)
