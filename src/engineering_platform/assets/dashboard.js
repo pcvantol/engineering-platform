@@ -106,6 +106,11 @@ function reviewerStatusLabel(value, fallback = t("format.not_available")) {
   const normalized = reviewerKey(raw) === "uitgevoerd" ? "completed" : reviewerKey(raw);
   return t(`reviewer.status.${normalized}`, {}, raw.replaceAll("_", " "));
 }
+function assuranceStatusLabel(value, fallback = t("format.not_available")) {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  return t(`lifecycle.assurance_status.${reviewerKey(raw)}`, {}, raw);
+}
 function reviewerCapabilityLabel(value, fallback = t("format.not_available")) {
   const raw = String(value || "").trim();
   return raw ? enumLabel(raw.toUpperCase(), raw) : fallback;
@@ -2030,7 +2035,7 @@ function lifecycleAssuranceEvidence(step) {
     const findings = Array.isArray(review.findings) ? review.findings : [];
     const item = document.createElement("li");
     const role = String(review.reviewer || ""); const status = String(review.status || "UNRESOLVED");
-    item.append(Object.assign(document.createElement("strong"), { textContent: `${reviewerLabel(role, role)} · ${status}` }));
+    item.append(Object.assign(document.createElement("strong"), { textContent: `${reviewerLabel(role, role)} · ${assuranceStatusLabel(status, status)}` }));
     const summary = findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean).join("; ");
     item.append(Object.assign(document.createElement("span"), { textContent: summary || t("lifecycle.assurance_no_findings") }));
     list.append(item);

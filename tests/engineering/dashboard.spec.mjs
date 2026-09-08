@@ -3290,8 +3290,12 @@ test.describe("Engineering Status browser smoke", () => {
         steps: [
           { id: "execute", presentation_key: "lifecycle.step.execute_agent", state: "COMPLETED" },
           { id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
-            timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL", duration_ms: 1000, outcome: "ACTIVE" }] },
-            quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }] },
+            timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL_AGENT", duration_ms: 1000, outcome: "ACTIVE" }] },
+            quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }],
+            assurance_reviews: [
+              { reviewer: "quality", status: "PASS", findings: [] },
+              { reviewer: "security", status: "PASS", findings: [] },
+            ] },
         ],
       },
     }, {}));
@@ -3302,10 +3306,14 @@ test.describe("Engineering Status browser smoke", () => {
     const modal = page.locator("#lifecycleDetailModal");
     await expect(modal).toBeVisible();
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.quality_control_agent"]);
-    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.quality_control"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.quality_control_agent"]);
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_quality_evidence"]);
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.quality_evidence.test_coverage"]);
     await expect(modal).toContainText("Gerichte regressietest toegevoegd.");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.quality"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.security"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
+    await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
   });
 
