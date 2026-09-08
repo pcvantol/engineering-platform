@@ -19,7 +19,7 @@ class ExecutionLeaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
             server.initialize(data)
-            database = data / "engineering.db"
+            database = data / server.SERVER_DATABASE_FILENAME
             StateStore(
                 checkout / ".engineering" / "engineering-runs", central_database=database,
                 emit_local_projection=False,
@@ -29,7 +29,7 @@ class ExecutionLeaseTest(unittest.TestCase):
             release(checkout, lease, central_database=database)
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
             self.assertFalse((checkout / ".engineering" / "engineering-runs").exists())
-            with sqlite3.connect(data / "engineering.db") as connection:
+            with sqlite3.connect(data / server.SERVER_DATABASE_FILENAME) as connection:
                 self.assertIsNotNone(connection.execute(
                     "SELECT 1 FROM execution_run_leases WHERE run_id='inbox-central-lease'"
                 ).fetchone())

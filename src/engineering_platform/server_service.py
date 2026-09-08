@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import plistlib
 import platform
+import shlex
 import subprocess
 import sys
 from typing import Callable, Mapping, Sequence
@@ -120,3 +121,41 @@ def uninstall(data_root: Path, *, home: Path | None = None, runner: Runner | Non
             raise ServerServiceError("Unable to unload EP Server LaunchAgent.")
         paths.plist_path.unlink(missing_ok=True)
     return {"state": "uninstalled", "label": LABEL, "plist": str(paths.plist_path), "data_root": str(paths.data_root)}
+
+
+def repoint_after_relocation(previous: Path, destination: Path, *, home: Path | None = None,
+                             runner: Runner | None = None) -> bool:
+    """Reload an installed owned LaunchAgent with its moved data root.
+
+    Manual ``serve`` invocations have no supervisor to update and simply keep
+    running from ``destination``.  An installed LaunchAgent is unloaded and
+    bootstrapped again, so its next process has no dependency on the old path.
+    """
+    old_paths = default_paths(previous, home)
+    if not old_paths.plist_path.is_file():
+        return False
+    new_paths = default_paths(destination, home)
+    plist = write_plist(new_paths, _installed_interpreter())
+    if runner is not None:
+        # The injected runner is used by lifecycle tests; production uses the
+        # detached hand-off below so launchd can stop this very process first.
+        bootout = _launchctl(("bootout", _domain(), str(plist)), runner)
+        if bootout.returncode:
+            raise ServerServiceError("Unable to unload EP Server LaunchAgent after platform-data relocation.")
+        bootstrap = _launchctl(("bootstrap", _domain(), str(plist)), runner)
+        if bootstrap.returncode:
+            raise ServerServiceError("Unable to reload EP Server LaunchAgent after platform-data relocation.")
+        return True
+    if platform.system() != "Darwin":
+        return False
+    # launchctl bootout terminates this serving process.  A detached, bounded
+    # helper therefore performs the unload/reload after the current request
+    # has been answered instead of relying on KeepAlive or an old-path link.
+    quoted = shlex.quote(str(plist))
+    domain = shlex.quote(_domain())
+    subprocess.Popen(
+        ("/bin/sh", "-c", f"sleep 1; launchctl bootout {domain} {quoted}; launchctl bootstrap {domain} {quoted}"),
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True, close_fds=True,
+    )
+    return True

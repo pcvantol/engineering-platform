@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from engineering_platform import installation_relocation
+from engineering_platform.central_database import DATABASE_FILENAME
 
 
 class InstallationRelocationTest(unittest.TestCase):
@@ -16,7 +17,7 @@ class InstallationRelocationTest(unittest.TestCase):
         self.root.mkdir()
         self.target = Path(self.temporary.name) / "selected"
         self.target.mkdir()
-        with sqlite3.connect(self.root / "engineering.db") as connection:
+        with sqlite3.connect(self.root / DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE proof (value TEXT)")
             connection.execute("INSERT INTO proof VALUES ('retained')")
         (self.root / "file-inbox" / "incoming").mkdir(parents=True)
@@ -28,21 +29,38 @@ class InstallationRelocationTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_platform_data_request_moves_every_durable_resource_as_one_unit(self) -> None:
+        prepared = installation_relocation.prepare(self.root, str(self.target))
+        destination = self.target / self.root.name
+        self.assertEqual(prepared["value"], str(destination.resolve()))
+        self.assertTrue((destination / ".engineering-platform-relocation-prepared").is_file())
         requested = installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
         self.assertTrue((self.root / "runtime/pending-platform-data-relocation.json").exists())
 
         applied = installation_relocation.apply_pending(self.root)
 
-        destination = self.target / self.root.name
         self.assertEqual(requested, {key: applied[key] for key in requested})
         self.assertEqual(applied["kind"], "PLATFORM_DATA")
-        self.assertTrue(self.root.is_symlink())
-        self.assertEqual(self.root.resolve(), destination.resolve())
+        self.assertFalse(self.root.exists())
+        self.assertFalse(self.root.is_symlink())
         self.assertTrue((destination / "file-inbox/incoming").is_dir())
         self.assertEqual((destination / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
-        with sqlite3.connect(self.root / "engineering.db") as connection:
+        with sqlite3.connect(destination / DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "retained")
         self.assertFalse((destination / "runtime/pending-platform-data-relocation.json").exists())
+
+    def test_prepared_empty_destination_is_removed_when_relocation_is_cancelled(self) -> None:
+        destination = self.target / self.root.name
+        installation_relocation.prepare(self.root, str(self.target))
+        installation_relocation.discard_prepared(self.root, str(self.target))
+        self.assertFalse(destination.exists())
+
+    def test_prepared_destination_with_new_content_is_never_removed(self) -> None:
+        destination = self.target / self.root.name
+        installation_relocation.prepare(self.root, str(self.target))
+        (destination / "operator-note.txt").write_text("keep", encoding="utf-8")
+        with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_DESTINATION_NOT_EMPTY"):
+            installation_relocation.discard_prepared(self.root, str(self.target))
+        self.assertEqual((destination / "operator-note.txt").read_text(encoding="utf-8"), "keep")
 
     def test_request_rejects_existing_or_nested_destinations(self) -> None:
         (self.target / self.root.name).mkdir()
@@ -56,17 +74,22 @@ class InstallationRelocationTest(unittest.TestCase):
             with self.subTest(kind=kind), self.assertRaisesRegex(installation_relocation.RelocationError, "RELOCATION_KIND_RETIRED"):
                 installation_relocation.request(self.root, kind, str(self.target))
 
-    def test_platform_data_can_be_relocated_again_from_its_stable_link(self) -> None:
+    def test_platform_data_can_be_relocated_again_from_its_new_canonical_location(self) -> None:
+        installation_relocation.prepare(self.root, str(self.target))
         installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
         installation_relocation.apply_pending(self.root)
+        first_destination = self.target / self.root.name
         second_parent = Path(self.temporary.name) / "selected-again"
         second_parent.mkdir()
-        installation_relocation.request(self.root, "PLATFORM_DATA", str(second_parent))
-        installation_relocation.apply_pending(self.root)
-        self.assertEqual(self.root.resolve(), (second_parent / self.root.name).resolve())
-        self.assertEqual((self.root / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
+        installation_relocation.prepare(first_destination, str(second_parent))
+        installation_relocation.request(first_destination, "PLATFORM_DATA", str(second_parent))
+        installation_relocation.apply_pending(first_destination)
+        destination = second_parent / self.root.name
+        self.assertFalse(first_destination.exists())
+        self.assertEqual((destination / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
 
     def test_only_one_platform_move_can_be_pending_and_payload_must_be_valid(self) -> None:
+        installation_relocation.prepare(self.root, str(self.target))
         installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
         with self.assertRaisesRegex(installation_relocation.RelocationError, "RELOCATION_ALREADY_PENDING"):
             installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
@@ -89,23 +112,48 @@ class InstallationRelocationTest(unittest.TestCase):
         with self.assertRaisesRegex(installation_relocation.RelocationError, "RELOCATION_KIND_RETIRED"):
             installation_relocation.apply_pending(self.root)
 
-    def test_relocation_is_idempotent_and_rolls_back_a_failed_link_swap(self) -> None:
-        """A restart retry cannot duplicate data or leave the stable path absent."""
+    def test_relocation_rejects_a_non_apfs_cross_volume_before_preparing_it(self) -> None:
+        """A cross-volume move needs APFS for the supported copy contract."""
         destination = self.target / self.root.name
-        installation_relocation.relocate_platform_data(self.root, str(self.target))
-        self.assertEqual(
-            installation_relocation.relocate_platform_data(self.root, str(self.target)),
-            {"previous": str(destination.resolve()), "value": str(destination.resolve())},
-        )
+        with patch("engineering_platform.installation_relocation._same_filesystem", return_value=False), patch(
+            "engineering_platform.installation_relocation._destination_filesystem", return_value="hfs"
+        ):
+            with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED"):
+                installation_relocation.prepare(self.root, str(self.target))
+        self.assertFalse(destination.exists())
 
-        failed_root = Path(self.temporary.name) / "failed-data"
-        failed_root.mkdir()
-        with sqlite3.connect(failed_root / "engineering.db"):
-            pass
-        failed_target = Path(self.temporary.name) / "failed-target"
-        failed_target.mkdir()
-        with patch.object(Path, "symlink_to", side_effect=OSError("link failed")):
-            with self.assertRaisesRegex(OSError, "link failed"):
-                installation_relocation.relocate_platform_data(failed_root, str(failed_target))
-        self.assertTrue(failed_root.is_dir())
-        self.assertFalse((failed_target / failed_root.name).exists())
+    def test_relocation_copies_and_verifies_a_cross_volume_apfs_destination(self) -> None:
+        destination = self.target / self.root.name
+        with patch("engineering_platform.installation_relocation._same_filesystem", return_value=False), patch(
+            "engineering_platform.installation_relocation._destination_filesystem", return_value="apfs"
+        ):
+            installation_relocation.prepare(self.root, str(self.target))
+            installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
+            installation_relocation.apply_pending(self.root)
+        self.assertFalse(self.root.exists())
+        self.assertEqual((destination / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
+
+    def test_cross_volume_copy_keeps_the_source_when_verification_fails(self) -> None:
+        """No source data may be removed until the destination inventory matches."""
+        destination = self.target / self.root.name
+        with patch("engineering_platform.installation_relocation._same_filesystem", return_value=False), patch(
+            "engineering_platform.installation_relocation._destination_filesystem", return_value="apfs"
+        ):
+            installation_relocation.prepare(self.root, str(self.target))
+            installation_relocation.request(self.root, "PLATFORM_DATA", str(self.target))
+            with patch("engineering_platform.installation_relocation._file_checksums", side_effect=[{"proof": "source"}, {"proof": "different"}]):
+                with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_COPY_VERIFICATION_FAILED"):
+                    installation_relocation.apply_pending(self.root)
+        self.assertTrue((self.root / "artifacts/proof.txt").is_file())
+        self.assertFalse(destination.exists())
+
+    def test_relocation_is_atomic_without_creating_a_compatibility_link(self) -> None:
+        """A completed move has one canonical location and no old-path link."""
+        destination = self.target / self.root.name
+        installation_relocation.prepare(self.root, str(self.target))
+        installation_relocation.relocate_platform_data(self.root, str(self.target))
+        self.assertFalse(self.root.exists())
+        self.assertFalse(self.root.is_symlink())
+        self.assertTrue((destination / DATABASE_FILENAME).is_file())
+        with self.assertRaisesRegex(installation_relocation.RelocationError, "PLATFORM_DATA_UNAVAILABLE"):
+            installation_relocation.relocate_platform_data(self.root, str(self.target))

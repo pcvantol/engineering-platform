@@ -6,10 +6,15 @@ the legacy per-resource relocation requests are deliberately retired.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 from uuid import uuid4
+
+from . import central_database
 
 
 class RelocationError(ValueError):
@@ -17,6 +22,7 @@ class RelocationError(ValueError):
 
 
 _PENDING = "runtime/pending-platform-data-relocation.json"
+_PREPARED = ".engineering-platform-relocation-prepared"
 
 
 def _directory(value: object) -> Path:
@@ -51,16 +57,104 @@ def _destination(root: Path, directory: object) -> Path:
     return target
 
 
+def _same_filesystem(root: Path, destination: Path) -> bool:
+    return os.stat(root).st_dev == os.stat(destination.parent).st_dev
+
+
+def _destination_filesystem(destination: Path) -> str:
+    """Return the macOS filesystem type for a selected destination parent."""
+    try:
+        return subprocess.run(
+            ["stat", "-f", "%T", str(destination.parent)],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip().lower()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RelocationError("PLATFORM_DATA_DESTINATION_FILESYSTEM_UNAVAILABLE") from error
+
+
+def _require_supported_destination(root: Path, destination: Path) -> None:
+    """Allow atomic local moves and verified cross-volume APFS moves."""
+    if not _same_filesystem(root, destination) and _destination_filesystem(destination) != "apfs":
+        raise RelocationError("PLATFORM_DATA_DESTINATION_FILESYSTEM_UNSUPPORTED")
+
+
+def _file_checksums(root: Path) -> dict[Path, str]:
+    """Produce a complete content inventory before deleting a copied source."""
+    return {
+        item.relative_to(root): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in sorted(root.rglob("*")) if item.is_file()
+    }
+
+
+def _copy_verified(source: Path, destination: Path) -> None:
+    """Copy a cross-volume root and prove it matches before removing source."""
+    shutil.copytree(source, destination, copy_function=shutil.copy2)
+    if _file_checksums(source) != _file_checksums(destination):
+        raise RelocationError("PLATFORM_DATA_COPY_VERIFICATION_FAILED")
+
+
+def _prepared_marker(destination: Path) -> Path:
+    return destination / _PREPARED
+
+
+def _remove_prepared_destination(destination: Path) -> None:
+    """Remove exactly the empty, EP-owned destination prepared for a move."""
+    marker = _prepared_marker(destination)
+    if not marker.is_file() or marker.read_text(encoding="utf-8") != "prepared":
+        raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_PREPARED")
+    marker.unlink()
+    try:
+        destination.rmdir()
+    except OSError as error:
+        # Never remove a directory to which an operator added content.
+        marker.write_text("prepared", encoding="utf-8")
+        raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_EMPTY") from error
+
+
+def prepare(data_root: Path, directory: object) -> dict[str, str]:
+    """Create and prove write access to the exact future data-root folder."""
+    root = Path(data_root).expanduser().resolve()
+    if not central_database.path(root).is_file():
+        raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
+    destination = _destination(root, directory)
+    _require_supported_destination(root, destination)
+    if destination.exists():
+        raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
+    destination.mkdir(mode=0o700)
+    marker = _prepared_marker(destination)
+    try:
+        marker.write_text("prepared", encoding="utf-8")
+        if marker.read_text(encoding="utf-8") != "prepared":
+            raise OSError("PLATFORM_DATA_DESTINATION_NOT_WRITABLE")
+    except Exception:
+        marker.unlink(missing_ok=True)
+        destination.rmdir()
+        raise
+    return {"previous": str(root), "directory": str(_directory(directory)), "value": str(destination)}
+
+
+def discard_prepared(data_root: Path, directory: object) -> None:
+    """Remove only the empty destination directory created by ``prepare``."""
+    destination = _destination(Path(data_root).expanduser().resolve(), directory)
+    marker = _prepared_marker(destination)
+    if not marker.is_file() or marker.read_text(encoding="utf-8") != "prepared":
+        return
+    _remove_prepared_destination(destination)
+
+
 def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
     """Persist one whole-platform move for the next clean Server startup."""
     if kind != "PLATFORM_DATA":
         raise RelocationError("RELOCATION_KIND_RETIRED")
     root = data_root.resolve()
-    if not (root / "engineering.db").is_file():
+    if not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
     destination = _destination(root, directory)
-    if destination.exists() and destination.resolve() != root:
+    _require_supported_destination(root, destination)
+    if destination.exists() and not _prepared_marker(destination).is_file() and destination.resolve() != root:
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
+    if not _prepared_marker(destination).is_file():
+        raise RelocationError("PLATFORM_DATA_DESTINATION_NOT_PREPARED")
     pending = _pending_path(root)
     if pending.exists():
         raise RelocationError("RELOCATION_ALREADY_PENDING")
@@ -69,39 +163,33 @@ def request(data_root: Path, kind: str, directory: object) -> dict[str, str]:
 
 
 def relocate_platform_data(data_root: Path, directory: object) -> dict[str, str]:
-    """Move the entire data root, retaining its stable launchd entry path.
+    """Move the entire data root to its new canonical location.
 
-    launchd continues to start the stable original path. That path becomes a
-    symlink only after the complete directory rename succeeds, so the DB,
-    inbox, artifacts and configuration never end up on different volumes.
+    A relocation is a real move: no symlink is retained at the old location.
+    The service supervisor is repointed separately after this atomic rename.
     """
-    original = Path(data_root).expanduser()
-    root = original.resolve()
+    root = Path(data_root).expanduser().resolve()
     parent = _directory(directory)
-    # A repeated restart may replay the same request through the stable
-    # launchd symlink.  Recognize that exact completed move before applying
-    # the nested-destination guard below.
-    destination = parent / original.name
-    if original.is_symlink() and destination.exists() and original.resolve() == destination.resolve():
-        return {"previous": str(root), "value": str(destination.resolve())}
+    destination = parent / root.name
     if destination == root or root in destination.parents or destination in root.parents:
         raise RelocationError("PLATFORM_DATA_DESTINATION_INVALID")
-    if not root.is_dir() or not (root / "engineering.db").is_file():
+    if not root.is_dir() or not central_database.path(root).is_file():
         raise RelocationError("PLATFORM_DATA_UNAVAILABLE")
-    if destination.exists():
+    _require_supported_destination(root, destination)
+    if destination.exists() and not _prepared_marker(destination).is_file():
         raise RelocationError("PLATFORM_DATA_DESTINATION_EXISTS")
+    if destination.exists():
+        _remove_prepared_destination(destination)
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
+    if _same_filesystem(root, destination):
         os.replace(root, destination)
-        # A later relocation starts through the stable, already-symlinked
-        # launch path.  Its old link is now dangling and must be replaced.
-        if original.is_symlink():
-            original.unlink()
-        original.symlink_to(destination, target_is_directory=True)
-    except Exception:
-        if destination.exists() and not original.exists():
-            os.replace(destination, original)
-        raise
+    else:
+        try:
+            _copy_verified(root, destination)
+        except Exception:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+        shutil.rmtree(root)
     return {"previous": str(root), "value": str(destination.resolve())}
 
 
@@ -118,5 +206,7 @@ def apply_pending(data_root: Path) -> dict[str, str] | None:
         result = relocate_platform_data(data_root, directory)
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise RelocationError("RELOCATION_REQUEST_INVALID") from error
-    _pending_path(data_root).unlink(missing_ok=True)
+    # The request file moved with the data root, so remove it there rather
+    # than recreating an old location merely to clear it.
+    _pending_path(Path(result["value"])).unlink(missing_ok=True)
     return {**result, "kind": "PLATFORM_DATA"}

@@ -85,7 +85,7 @@ from .resources import package_path
 SERVER_CONFIGURATION_FILENAME = "server.json"
 SERVER_IDENTITY_FILENAME = "runtime-identity.json"
 SERVER_RUNTIME_FILENAME = "runtime.json"
-SERVER_DATABASE_FILENAME = "engineering.db"
+SERVER_DATABASE_FILENAME = central_database.DATABASE_FILENAME
 SERVER_CONFIGURATION_VERSION = 2
 # ADR-0026 defines the first standalone store as the canonical schema-40
 # product definitions plus immutable control provenance.  This server-owned
@@ -95,7 +95,7 @@ SERVER_CONFIGURATION_VERSION = 2
 SERVER_STORE_SCHEMA_VERSION = 53
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
-HTTP_JSON_OPENAPI_PATH = "/openapi.json"
+HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
 _CENTRAL_LOG_SORT_COLUMNS = {
     "line": "id",
     "timestamp": "created_at",
@@ -1192,6 +1192,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
     """Create or validate an empty, installation-owned server instance."""
     data_root = data_root.resolve()
     data_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    central_database.migrate_legacy_database(data_root)
     config_path = data_root / SERVER_CONFIGURATION_FILENAME
     if not config_path.exists():
         if bind_host != "127.0.0.1" or not 1 <= bind_port <= 65535:
@@ -1534,7 +1535,10 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
         detail["process_state"] = "IN_PROCESS"
         detail["process_host"] = {
             "component": "ep_server",
-            "pid": host.pid if host is not None and host.active else None,
+            # In-process components always run in this Server process.  A
+            # manually started qualification server has no LaunchAgent to
+            # inspect, but its current PID is still authoritative.
+            "pid": host.pid if host is not None and host.active else os.getpid(),
             "uptime_seconds": host.uptime_seconds if host is not None and host.active else None,
         }
     return detail
@@ -1599,6 +1603,18 @@ def _restart_platform_component(data_root: Path, component_id: str) -> dict[str,
     }
 
 
+DASHBOARD_AUDIT_ACTOR = "DASHBOARD_USER"
+
+
+def _operations_console_logger(data_root: Path) -> logging.Logger:
+    """Return the one CENTRAL-backed logger for dashboard audit events."""
+    return component_logger(
+        data_root,
+        "operations_console",
+        central_database=data_root / SERVER_DATABASE_FILENAME,
+    )
+
+
 def _audit_configuration_change(
     data_root: Path,
     *,
@@ -1609,11 +1625,7 @@ def _audit_configuration_change(
 ) -> None:
     """Persist a bounded CENTRAL audit event for a successful setting change."""
     log_event(
-        component_logger(
-            data_root,
-            "operations_console",
-            central_database=data_root / SERVER_DATABASE_FILENAME,
-        ),
+        _operations_console_logger(data_root),
         logging.INFO,
         "configuration_changed",
         context={
@@ -1622,6 +1634,29 @@ def _audit_configuration_change(
             "previous_value": previous,
             "new_value": value,
         },
+    )
+
+
+def _audit_platform_data_action(
+    data_root: Path,
+    *,
+    action: str,
+    outcome: str,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    """Persist one secret-free, dashboard-initiated platform-data audit fact."""
+    context: dict[str, object] = {
+        "audit_action": action,
+        "audit_actor": DASHBOARD_AUDIT_ACTOR,
+        "audit_outcome": outcome,
+    }
+    if details:
+        context.update(details)
+    log_event(
+        _operations_console_logger(data_root),
+        logging.INFO,
+        f"platform_data_{action.lower()}",
+        context=context,
     )
 
 
@@ -2116,9 +2151,7 @@ def _audit_dashboard_provider_action(
 ) -> None:
     """Persist a secret-free audit fact for one host-wide Console action."""
     log_event(
-        component_logger(
-            data_root, "operations_console", central_database=data_root / SERVER_DATABASE_FILENAME,
-        ),
+        _operations_console_logger(data_root),
         level,
         f"provider_action_{outcome.lower()}",
         context={
@@ -2275,13 +2308,20 @@ def _central_database_section(data_root: Path) -> str:
         '</div>'
         '<p id="centralDatabaseMaintenanceStatus" role="status" aria-live="polite"></p></section>'
         f'<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="centralDatabaseRelocateModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-modal-glyph="relocate" data-i18n="configuration.relocate_platform_data">Verplaats platformgegevens</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-relocation="centralDatabaseRelocateModal">×</button></header><p data-i18n="configuration.relocate_platform_data_help">Verplaats alle platformgegevens als één geheel. De server stopt veilig en start daarna opnieuw.</p><dl class="installation-relocation-modal__locations"><div><dt data-i18n="configuration.current_folder">Huidige map</dt><dd><button class="local-folder-link" type="button" data-local-path="{escape(str(data_root.resolve()))}">{escape(str(data_root.resolve()))}</button></dd></div><div id="centralDatabaseRelocateDestination" hidden><dt data-i18n="configuration.new_folder">Nieuwe map</dt><dd id="centralDatabaseRelocateDestinationValue"></dd></div></dl><input id="centralDatabaseRelocateDirectory" type="hidden"><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="centralDatabaseRelocateBrowse" type="button" data-i18n="configuration.choose_folder">Kies map</button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="centralDatabaseRelocateSave" type="button" disabled data-i18n="configuration.relocate">Verplaatsen</button></div><p id="centralDatabaseRelocateStatus" role="status"></p></section></dialog>'
-        '<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="centralDataImportModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-modal-glyph="relocate" data-i18n="configuration.central_data_import">Importeer platformgegevens</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-central-import>×</button></header><p data-i18n="configuration.central_data_import_help">Kies een eerder geëxporteerd ZIP-bestand. Alle huidige platformgegevens worden vervangen.</p><input id="centralDataImportFile" type="file" accept="application/zip,.zip"><p class="installation-relocation-modal__warning" data-i18n="configuration.central_data_import_warning">Dit vervangt de volledige huidige platformstatus.</p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="centralDataImportConfirm" type="button" disabled data-i18n="configuration.central_data_import_confirm">Importeren en herstarten</button></div><p id="centralDataImportStatus" role="status"></p></section></dialog>'
+        '<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation installation-relocation-modal" id="centralDataImportModal" onclose="this.querySelector(\'#centralDataImportFile\').value=\'\';this.querySelector(\'#centralDataImportConfirm\').disabled=true;this.querySelector(\'#centralDataImportStatus\').textContent=\'\'"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-modal-glyph="import" data-i18n="configuration.central_data_import">Importeer platformgegevens</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-central-import>×</button></header><p data-i18n="configuration.central_data_import_help">Kies een eerder geëxporteerd ZIP-bestand. Alle huidige platformgegevens worden vervangen.</p><input id="centralDataImportFile" type="file" accept="application/zip,.zip"><p class="installation-relocation-modal__warning" data-i18n="configuration.central_data_import_warning">Dit vervangt de volledige huidige platformstatus.</p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="centralDataImportConfirm" type="button" disabled data-i18n="configuration.central_data_import_confirm">Importeren en herstarten</button></div><p id="centralDataImportStatus" role="status"></p></section></dialog>'
+        '<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation dashboard-modal-shell--destructive installation-relocation-modal" id="centralDataImportWarningModal"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 data-modal-glyph="warning" data-i18n="configuration.central_data_import_confirm_title">Bevestig import</h2><button class="dashboard-modal-shell__close" type="button" aria-label="Close" data-close-central-import-warning>×</button></header><p class="installation-relocation-modal__warning" data-i18n="configuration.central_data_import_confirm_warning">Alle bestaande platformgegevens worden definitief vervangen en kunnen verloren gaan.</p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" type="button" data-close-central-import-warning data-i18n="configuration.central_data_import_confirm_cancel">Annuleren</button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary dashboard-modal-shell__action--destructive" id="centralDataImportProceed" type="button" data-i18n="configuration.central_data_import_confirm_proceed">Ja, vervang gegevens en herstart</button></div></section></dialog>'
     )
 
 
 def _central_database_script() -> str:
     """Bind CENTRAL maintenance plus whole-state transfer controls."""
+    return '''for(const id of ['centralDatabaseRelocateModal','centralDataImportModal']){const dialog=document.getElementById(id);if(dialog&&dialog.parentElement!==document.body)document.body.append(dialog)}const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus'),translate=window.__engineeringPlatformDashboardTranslate;if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_saved')}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_failed')}finally{maintenance.disabled=false}});const modal=document.getElementById('centralDatabaseRelocateModal'),open=document.getElementById('centralDatabaseRelocate'),input=document.getElementById('centralDatabaseRelocateDirectory'),destination=document.getElementById('centralDatabaseRelocateDestination'),destinationValue=document.getElementById('centralDatabaseRelocateDestinationValue'),save=document.getElementById('centralDatabaseRelocateSave'),status=document.getElementById('centralDatabaseRelocateStatus');let prepared=false;const showDestination=result=>{input.value=result.directory;destinationValue.replaceChildren(window.__engineeringPlatformLocalFilesystemLink(result.value));destination.hidden=false;save.disabled=false;prepared=true;};const discard=()=>{if(!prepared||!input.value)return;prepared=false;fetch('/api/central-data/relocate/discard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:input.value}),keepalive:true});};open?.addEventListener('click',()=>modal.showModal());modal?.addEventListener('close',discard);modal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>modal.close());document.getElementById('centralDatabaseRelocateBrowse')?.addEventListener('click',async()=>{discard();const r=await fetch('/api/central-data/relocate/browse',{method:'POST'}),p=await r.json();if(r.ok&&p.value&&p.directory)showDestination(p);else status.textContent=p.error||translate('configuration.relocation_failed');});save?.addEventListener('click',async()=>{save.disabled=true;const r=await fetch('/api/central-data/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:input.value})}),p=await r.json();status.textContent=r.ok?translate('configuration.relocation_restarting'):p.error||translate('configuration.relocation_failed');if(r.ok){prepared=false;setTimeout(()=>location.reload(),2500)}else save.disabled=false;});const importModal=document.getElementById('centralDataImportModal'),importOpen=document.getElementById('centralDataImport'),importFile=document.getElementById('centralDataImportFile'),importSave=document.getElementById('centralDataImportConfirm'),importStatus=document.getElementById('centralDataImportStatus');importOpen?.addEventListener('click',()=>importModal.showModal());importModal?.querySelector('[data-close-central-import]')?.addEventListener('click',()=>importModal.close());importFile?.addEventListener('change',()=>{importSave.disabled=!importFile.files?.length;});importSave?.addEventListener('click',async()=>{const file=importFile.files?.[0];if(!file)return;importSave.disabled=true;const r=await fetch('/api/central-data/import',{method:'POST',headers:{'Content-Type':'application/zip','X-EP-Central-Import-Confirmed':'true'},body:file}),p=await r.json();importStatus.textContent=r.ok?translate('configuration.relocation_restarting'):p.error||translate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);else importSave.disabled=false;});'''
     return '''for(const id of ['centralDatabaseRelocateModal','centralDataImportModal','fileInboxRelocateModal']){const dialog=document.getElementById(id);if(dialog&&dialog.parentElement!==document.body)document.body.append(dialog)}const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus'),translate=window.__engineeringPlatformDashboardTranslate;if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_saved')}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_failed')}finally{maintenance.disabled=false}});const modal=document.getElementById('centralDatabaseRelocateModal'),open=document.getElementById('centralDatabaseRelocate'),input=document.getElementById('centralDatabaseRelocateDirectory'),destination=document.getElementById('centralDatabaseRelocateDestination'),destinationValue=document.getElementById('centralDatabaseRelocateDestinationValue'),save=document.getElementById('centralDatabaseRelocateSave'),status=document.getElementById('centralDatabaseRelocateStatus'),showDestination=value=>{input.value=value;destinationValue.replaceChildren(window.__engineeringPlatformLocalFilesystemLink(value));destination.hidden=false;save.disabled=false;};open?.addEventListener('click',()=>modal.showModal());modal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>modal.close());document.getElementById('centralDatabaseRelocateBrowse')?.addEventListener('click',async()=>{const r=await fetch('/api/central-data/relocate/browse',{method:'POST'}),p=await r.json();if(p.value)showDestination(p.value);});save?.addEventListener('click',async()=>{const r=await fetch('/api/central-data/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:input.value})}),p=await r.json();status.textContent=r.ok?translate('configuration.relocation_restarting'):p.error||translate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);});const importModal=document.getElementById('centralDataImportModal'),importOpen=document.getElementById('centralDataImport'),importFile=document.getElementById('centralDataImportFile'),importSave=document.getElementById('centralDataImportConfirm'),importStatus=document.getElementById('centralDataImportStatus');importOpen?.addEventListener('click',()=>importModal.showModal());importModal?.querySelector('[data-close-central-import]')?.addEventListener('click',()=>importModal.close());importFile?.addEventListener('change',()=>{importSave.disabled=!importFile.files?.length;});importSave?.addEventListener('click',async()=>{const file=importFile.files?.[0];if(!file)return;importSave.disabled=true;const r=await fetch('/api/central-data/import',{method:'POST',headers:{'Content-Type':'application/zip','X-EP-Central-Import-Confirmed':'true'},body:file}),p=await r.json();importStatus.textContent=r.ok?translate('configuration.relocation_restarting'):p.error||translate('configuration.relocation_failed');if(r.ok)setTimeout(()=>location.reload(),2500);else importSave.disabled=false;});'''
+
+
+def _central_database_script() -> str:
+    """Bind CENTRAL maintenance and whole-state transfer controls."""
+    return '''for(const id of ['centralDatabaseRelocateModal','centralDataImportModal']){const dialog=document.getElementById(id);if(dialog&&dialog.parentElement!==document.body)document.body.append(dialog)}const translate=window.__engineeringPlatformDashboardTranslate,maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus');maintenance?.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})}),result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_saved')}catch{maintenance.value=previous;maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_failed')}finally{maintenance.disabled=false}});const relocationModal=document.getElementById('centralDatabaseRelocateModal'),relocationOpen=document.getElementById('centralDatabaseRelocate'),relocationDirectory=document.getElementById('centralDatabaseRelocateDirectory'),relocationDestination=document.getElementById('centralDatabaseRelocateDestination'),relocationDestinationValue=document.getElementById('centralDatabaseRelocateDestinationValue'),relocationSave=document.getElementById('centralDatabaseRelocateSave'),relocationStatus=document.getElementById('centralDatabaseRelocateStatus');let relocationPrepared=false;const discardRelocation=()=>{if(!relocationPrepared||!relocationDirectory.value)return;relocationPrepared=false;fetch('/api/central-data/relocate/discard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:relocationDirectory.value}),keepalive:true})};relocationOpen?.addEventListener('click',()=>relocationModal.showModal());relocationModal?.addEventListener('close',discardRelocation);relocationModal?.querySelector('[data-close-relocation]')?.addEventListener('click',()=>relocationModal.close());document.getElementById('centralDatabaseRelocateBrowse')?.addEventListener('click',async()=>{discardRelocation();const response=await fetch('/api/central-data/relocate/browse',{method:'POST'}),result=await response.json();if(response.ok&&result.value&&result.directory){relocationDirectory.value=result.directory;relocationDestinationValue.replaceChildren(window.__engineeringPlatformLocalFilesystemLink(result.value));relocationDestination.hidden=false;relocationSave.disabled=false;relocationPrepared=true}else relocationStatus.textContent=result.error||translate('configuration.relocation_failed')});relocationSave?.addEventListener('click',async()=>{relocationSave.disabled=true;const response=await fetch('/api/central-data/relocate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({directory:relocationDirectory.value})}),result=await response.json();relocationStatus.textContent=response.ok?translate('configuration.relocation_restarting'):result.error||translate('configuration.relocation_failed');if(response.ok){relocationPrepared=false;setTimeout(()=>location.reload(),2500)}else relocationSave.disabled=false});const importModal=document.getElementById('centralDataImportModal'),importOpen=document.getElementById('centralDataImport'),importFile=document.getElementById('centralDataImportFile'),importSave=document.getElementById('centralDataImportConfirm'),importStatus=document.getElementById('centralDataImportStatus');if(importFile)importFile.accept='.epdata,application/vnd.engineering-platform.epdata+zip';const resetImport=()=>{importFile.value='';importSave.disabled=true;importStatus.textContent=''};importOpen?.addEventListener('click',()=>importModal.showModal());importModal?.addEventListener('close',resetImport);importModal?.querySelector('[data-close-central-import]')?.addEventListener('click',()=>importModal.close());importFile?.addEventListener('change',()=>{importSave.disabled=!importFile.files?.length});importSave?.addEventListener('click',async()=>{const file=importFile.files?.[0];if(!file)return;importSave.disabled=true;const response=await fetch('/api/central-data/import',{method:'POST',headers:{'Content-Type':'application/vnd.engineering-platform.epdata+zip','X-EP-Central-Import-Confirmed':'true'},body:file}),result=await response.json();importStatus.textContent=response.ok?translate('configuration.central_data_import_restarting'):result.error||translate('configuration.central_data_import_error.CENTRAL_IMPORT_FAILED');if(response.ok)setTimeout(()=>location.reload(),2500);else importSave.disabled=false});'''
 
 
 def _file_inbox_section(data_root: Path) -> str:
@@ -2349,7 +2389,7 @@ def _no_project_console_document(projects: list[dict[str, str]], data_root: Path
     )
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
-    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
+    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;window.addEventListener('DOMContentLoaded',()=>{const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT});</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
     empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong data-i18n="central.no_project_selected_title"></strong><span data-i18n="central.no_project_selected_body"></span><button class="no-project-selected__dismiss" id="noProjectSelectedDismiss" type="button" data-i18n-aria-label="action.close" data-i18n-title="action.close"><span aria-hidden="true">×</span></button></aside>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
@@ -2641,6 +2681,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if _central_execution_active(self.server.data_root):  # type: ignore[attr-defined]
                     raise central_data_transfer.CentralDataTransferError("CENTRAL_DATA_TRANSFER_BLOCKED")
                 filename, snapshot = central_data_transfer.export_snapshot(self.server.data_root)  # type: ignore[attr-defined]
+                _audit_platform_data_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="EXPORT",
+                    outcome="COMPLETED",
+                    details={"package_format": "EPDATA"},
+                )
             except (OSError, sqlite3.DatabaseError, central_data_transfer.CentralDataTransferError) as error:
                 self._send(409, {"error": str(error)})
                 return
@@ -2650,7 +2696,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self.server.dependabot_service.start()  # type: ignore[attr-defined]
                 self.server.central_data_transfer_active = False  # type: ignore[attr-defined]
         self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Type", "application/vnd.engineering-platform.epdata+zip")
         self.send_header("Content-Disposition", _attachment_content_disposition(filename))
         self.send_header("Content-Length", str(len(snapshot)))
         self.send_header("Cache-Control", "no-store")
@@ -2665,9 +2711,22 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return True
         if request.path == "/api/central-data/relocate/browse" and method == "do_POST":
             try:
-                self._send(200, {"value": _choose_local_directory(self.server.data_root)})  # type: ignore[attr-defined]
-            except ValueError as error:
+                directory = _choose_local_directory(self.server.data_root)  # type: ignore[attr-defined]
+                self._send(200, installation_relocation.prepare(self.server.data_root, directory))  # type: ignore[attr-defined]
+            except (ValueError, OSError) as error:
                 self._send(400, {"error": str(error)})
+            return True
+        if request.path == "/api/central-data/relocate/discard" and method == "do_POST":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8")) if 0 < length <= 4096 else None
+                if not isinstance(payload, dict) or set(payload) != {"directory"}:
+                    raise ValueError("PLATFORM_DATA_RELOCATION_BLOCKED")
+                installation_relocation.discard_prepared(self.server.data_root, payload["directory"])  # type: ignore[attr-defined]
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
+                self._send(409, {"error": str(error)})
+                return True
+            self._send(204, {})
             return True
         if request.path == "/api/central-data/relocate" and method == "do_POST":
             try:
@@ -2680,6 +2739,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": str(error)})
                 return True
             self._send(202, {**result, "restarting": True})
+            self.server.restart_after_shutdown = True  # type: ignore[attr-defined]
             Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
             return True
         if request.path == "/api/central-data/import" and method == "do_POST":
@@ -2689,7 +2749,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("CENTRAL_IMPORT_BLOCKED")
                 imports = self.server.data_root / "runtime" / "central-data-imports"  # type: ignore[attr-defined]
                 imports.mkdir(mode=0o700, parents=True, exist_ok=True)
-                upload = imports / f"upload-{uuid4().hex}.zip"
+                upload = imports / f"upload-{uuid4().hex}{central_data_transfer.PACKAGE_EXTENSION}"
                 with upload.open("wb") as output:
                     remaining = length
                     while remaining:
@@ -2703,6 +2763,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": str(error)})
                 return True
             self._send(202, {**result, "restarting": True})
+            self.server.restart_after_shutdown = True  # type: ignore[attr-defined]
             Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
             return True
         if request.path == "/api/central-database/download" and method == "do_GET":
@@ -3263,7 +3324,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         request = urlsplit(self.path)
-        if request.path in {HTTP_JSON_OPENAPI_PATH, "/swagger.json"}:
+        if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
             return
         if request.path == "/diagnostics/topology":
@@ -3395,10 +3456,21 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
 def serve(data_root: Path) -> int:
     relocation = installation_relocation.apply_pending(data_root)
+    if relocation is not None:
+        data_root = Path(relocation["value"])
     imported = central_data_transfer.apply_pending_import(data_root)
     data_root = data_root.resolve()
     identity = initialize(data_root)
     if relocation is not None:
+        _audit_platform_data_action(
+            data_root,
+            action="RELOCATE",
+            outcome="COMPLETED",
+            details={
+                "previous_location": relocation["previous"],
+                "new_location": relocation["value"],
+            },
+        )
         _audit_configuration_change(
             data_root,
             scope="PLATFORM_DATA",
@@ -3406,7 +3478,21 @@ def serve(data_root: Path) -> int:
             previous=relocation["previous"],
             value=relocation["value"],
         )
+        # An installed LaunchAgent owns an explicit data-root argument.  Once
+        # the audit record is durable, rewrite and reload that owned service
+        # rather than leaving a compatibility link at the old data location.
+        server_service.repoint_after_relocation(Path(relocation["previous"]), data_root)
     if imported is not None:
+        _audit_platform_data_action(
+            data_root,
+            action="IMPORT",
+            outcome="COMPLETED",
+            details={
+                "package_format": "EPDATA",
+                "entry_count": imported["entries"],
+                "schema_version": imported["schema_version"],
+            },
+        )
         _audit_configuration_change(
             data_root, scope="PLATFORM_DATA", key="import", previous="REPLACED",
             value=f"{imported['entries']}_ENTRIES",
@@ -3418,6 +3504,7 @@ def serve(data_root: Path) -> int:
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
     server.central_data_transfer_lock = RLock()  # type: ignore[attr-defined]
     server.central_data_transfer_active = False  # type: ignore[attr-defined]
+    server.restart_after_shutdown = False  # type: ignore[attr-defined]
     # Lifecycle composition is intentionally lazy: read-only Server import
     # and Console startup must stay independent of retired watcher modules.
     from .lifecycle_worker import LifecycleWorker
@@ -3475,6 +3562,7 @@ def serve(data_root: Path) -> int:
             definition.startup_event,
             context={"target_component": definition.id},
         )
+    restart_after_shutdown = False
     try:
         server.serve_forever()
     finally:
@@ -3483,6 +3571,9 @@ def serve(data_root: Path) -> int:
         worker.stop()
         server.server_close()
         (data_root / SERVER_RUNTIME_FILENAME).unlink(missing_ok=True)
+        restart_after_shutdown = server.restart_after_shutdown  # type: ignore[attr-defined]
+    if restart_after_shutdown:
+        os.execv(sys.executable, [sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(data_root)])
     return 0
 
 
@@ -3508,7 +3599,7 @@ def start(data_root: Path) -> dict[str, object]:
         environment["HOME"] = home
     # Unit tests exercise the lifecycle from an unpackaged source tree.  This
     # explicit test-only bridge is never inherited by an installed process.
-    if "unittest" in sys.argv[0]:
+    if "unittest" in sys.argv[0] or "pytest" in sys.modules:
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     child = subprocess.Popen([sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(runtime_root)], cwd=str(runtime_root), env=environment, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603
     _CHILDREN[child.pid] = child
