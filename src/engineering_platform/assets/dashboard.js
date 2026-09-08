@@ -106,6 +106,11 @@ function reviewerStatusLabel(value, fallback = t("format.not_available")) {
   const normalized = reviewerKey(raw) === "uitgevoerd" ? "completed" : reviewerKey(raw);
   return t(`reviewer.status.${normalized}`, {}, raw.replaceAll("_", " "));
 }
+function assuranceStatusLabel(value, fallback = t("format.not_available")) {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  return t(`lifecycle.assurance_status.${reviewerKey(raw)}`, {}, raw);
+}
 function reviewerCapabilityLabel(value, fallback = t("format.not_available")) {
   const raw = String(value || "").trim();
   return raw ? enumLabel(raw.toUpperCase(), raw) : fallback;
@@ -914,6 +919,7 @@ function queueItems(x, queueDepth) {
     const row = document.createElement("li"),
       number = document.createElement("span"),
       body = document.createElement("div"),
+      actions = document.createElement("div"),
       title = document.createElement("span"),
       meta = document.createElement("div"),
       modified = Date.parse(item.modified_at || ""),
@@ -928,6 +934,7 @@ function queueItems(x, queueDepth) {
     number.textContent = String(index + 1);
     title.className = "queue-item__title";
     meta.className = "queue-item__meta";
+    actions.className = "queue-item__actions";
     title.textContent = displayTitle;
     meta.textContent = t("queue.filename", {
       filename,
@@ -935,24 +942,72 @@ function queueItems(x, queueDepth) {
         ? locale.dateTime(new Date(modified))
         : t("format.timestamp_unavailable"),
     });
-    const defer = item.queue_source === "CENTRAL" ? null : document.createElement("button");
+    const central = item.queue_source === "CENTRAL";
+    const mutable = !central || ["QUEUED", "DEFERRED", "QUARANTINED"].includes(item.queue_state);
+    const defer = mutable ? document.createElement("button") : null;
     if (defer) {
       defer.className = "queue-defer";
       defer.type = "button";
-      defer.textContent = t("queue.defer_action");
-      defer.title = t("queue.defer_action");
-      defer.setAttribute("aria-label", t("queue.defer_action"));
+      const held = central && ["DEFERRED", "QUARANTINED"].includes(item.queue_state);
+      const actionKey = held ? "queue.resume" : "queue.defer";
+      defer.textContent = t(`${actionKey}_action`);
+      defer.title = t(`${actionKey}_action`);
+      defer.setAttribute("aria-label", t(`${actionKey}_action`));
       defer.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        deferQueueItem(item, defer);
+        if (item.queue_source === "CENTRAL") {
+          queueDisposition(item, held ? "QUEUED" : "DEFERRED", held ? "Operator resumed this submission from Operations Console." : "Operator deferred this submission from Operations Console.", defer);
+        } else deferQueueItem(item, defer);
       });
     }
     body.append(title, meta);
     row.append(number, body);
-    if (defer) row.append(defer);
+    if (defer) actions.append(defer);
+    if (item.queue_source === "CENTRAL" && ["QUEUED", "QUARANTINED"].includes(item.queue_state)) {
+      (item.queue_state === "QUEUED"
+        ? [["QUARANTINED", "queue.quarantine", "Operator quarantined this submission from Operations Console."],
+           ["DECLINED", "queue.decline", "Operator declined this submission from Operations Console."]]
+        : [["DECLINED", "queue.decline", "Operator declined this quarantined submission from Operations Console."]]
+      ).forEach(([disposition, actionKey, reason]) => {
+        const action = document.createElement("button");
+        action.className = `queue-defer${disposition === "DECLINED" ? " queue-defer--destructive" : ""}`;
+        action.type = "button";
+        action.textContent = t(`${actionKey}_action`);
+        action.title = t(`${actionKey}_action`);
+        action.setAttribute("aria-label", t(`${actionKey}_action`));
+        action.addEventListener("click", (event) => {
+          event.preventDefault(); event.stopPropagation();
+          queueDisposition(item, disposition, reason, action);
+        });
+        actions.append(action);
+      });
+    }
+    if (actions.childElementCount) row.append(actions);
     container.append(row);
   });
+}
+function queueDisposition(item, disposition, reason, button) {
+  const submissionId = String(item?.submission_id || item?.filename || "");
+  if (!submissionId) return;
+  const actionKey = { DEFERRED: "queue.defer", QUEUED: "queue.resume", QUARANTINED: "queue.quarantine", DECLINED: "queue.decline" }[disposition];
+  if (!actionKey) return;
+  confirmDashboardAction(
+    t(`${actionKey}_title`), t(`${actionKey}_description`, { title: submissionId }), t(`${actionKey}_action`),
+    { destructive: disposition === "DECLINED" },
+  )
+    .then((confirmed) => {
+      if (!confirmed) return;
+      button.disabled = true;
+      const operationId = crypto.randomUUID();
+      return fetch("/api/queue-disposition", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contract_version: "1.0", operation_id: operationId, submission_id: submissionId,
+          expected_state: item.queue_state, expected_revision: item.disposition_revision, disposition, reason }) })
+        .then(async (response) => ({ ok: response.ok, body: await response.json().catch(() => ({})) }))
+        .then((result) => { if (!result.ok) throw Error(result.body.error || t("queue.defer_failed")); return refreshDashboard(); })
+        .catch((error) => showDashboardError(error.message, t("queue.defer_failed")))
+        .finally(() => { button.disabled = false; });
+    });
 }
 function deferQueueItem(item, button) {
   const filename = String(item?.filename || "");
@@ -1971,6 +2026,30 @@ function lifecycleQualityEvidence(step) {
   void localizeDynamicEvidence(dynamicRows);
   return section;
 }
+function lifecycleAssuranceEvidence(step) {
+  const reviews = Array.isArray(step?.assurance_reviews) ? step.assurance_reviews : [];
+  if (!reviews.length) return null;
+  const section = document.createElement("section");
+  section.className = "lifecycle-detail-modal__quality-evidence";
+  const rounds = step?.repair_rounds || {};
+  section.append(Object.assign(document.createElement("h3"), { textContent: t("lifecycle.detail_assurance") }));
+  if (Number.isFinite(Number(rounds.used))) section.append(Object.assign(document.createElement("p"), {
+    className: "estimate-meta", textContent: t("lifecycle.repair_rounds", { used: rounds.used, maximum: rounds.maximum || 3 }),
+  }));
+  const list = document.createElement("ol"); list.className = "lifecycle-detail-modal__phase-list";
+  for (const review of reviews) {
+    if (!review || typeof review !== "object") continue;
+    const findings = Array.isArray(review.findings) ? review.findings : [];
+    const item = document.createElement("li");
+    const role = String(review.reviewer || ""); const status = String(review.status || "UNRESOLVED");
+    item.append(Object.assign(document.createElement("strong"), { textContent: `${reviewerLabel(role, role)} · ${assuranceStatusLabel(status, status)}` }));
+    const summary = findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean).join("; ");
+    item.append(Object.assign(document.createElement("span"), { textContent: summary || t("lifecycle.assurance_no_findings") }));
+    list.append(item);
+  }
+  if (!list.childElementCount) return null;
+  section.append(list); return section;
+}
 function lifecycleRepairEvidence(step) {
   const audit = Array.isArray(step?.repair_audit) ? step.repair_audit : [];
   if (!audit.length) return null;
@@ -2060,6 +2139,8 @@ function openLifecycleDetail(step, trigger) {
   content.append(phaseTiming);
   const qualityEvidence = lifecycleQualityEvidence(step);
   if (qualityEvidence) content.append(qualityEvidence);
+  const assuranceEvidence = lifecycleAssuranceEvidence(step);
+  if (assuranceEvidence) content.append(assuranceEvidence);
   const repairEvidence = lifecycleRepairEvidence(step);
   if (repairEvidence) content.append(repairEvidence);
   if (!modal.open) modal.showModal();

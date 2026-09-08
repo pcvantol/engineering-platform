@@ -47,6 +47,141 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
 
+    def test_queue_disposition_http_helpers_reject_ambiguous_json_and_foreign_origins(self) -> None:
+        """The queue mutation boundary treats origin and JSON ambiguity safely."""
+        self.assertTrue(server._same_origin({"Host": "localhost:8765"}))
+        self.assertTrue(server._same_origin({"Host": "localhost:8765", "Origin": "https://localhost:8765"}))
+        self.assertFalse(server._same_origin({"Host": "localhost:8765", "Origin": "https://other.example"}))
+        self.assertEqual(server._strict_json_object(b'{"operation_id":"once"}'), {"operation_id": "once"})
+        with self.assertRaises(ValueError):
+            server._strict_json_object(b'{"operation_id":"first","operation_id":"second"}')
+        with self.assertRaises(ValueError):
+            server._strict_json_object(b'[]')
+
+    def test_disconnected_read_only_probe_does_not_emit_server_traceback(self) -> None:
+        """A client closing a health response is not an operational server failure."""
+        class DisconnectedWriter:
+            def write(self, _: bytes) -> None:
+                raise BrokenPipeError("probe closed")
+
+        class DetachedHandler:
+            wfile = DisconnectedWriter()
+
+            def send_response(self, _: int) -> None: pass
+            def send_header(self, _: str, __: str) -> None: pass
+            def end_headers(self) -> None: pass
+
+        handler = DetachedHandler()
+        server._HealthHandler._send(handler, 200, {"ready": True})
+        server._HealthHandler._send_ndjson(handler, [{"event": "health"}])
+
+    def test_server_presentation_boundaries_reject_unsafe_headers_and_normalize_quota_data(self) -> None:
+        """Console-only helpers remain fail-closed for unsafe or malformed inputs."""
+        self.assertEqual(
+            server._attachment_content_disposition("qualification-report.md"),
+            'attachment; filename="qualification-report.md"',
+        )
+        self.assertEqual(
+            server._report_content_disposition("run-123"),
+            'attachment; filename="engineering-report-run-123.md"',
+        )
+        for unsafe in (None, "report\nInjected: value", "../../report.md"):
+            with self.assertRaises(ValueError):
+                server._attachment_content_disposition(unsafe)
+        for unsafe_id in (None, "../run", "run\r\n"):
+            with self.assertRaises(ValueError):
+                server._report_content_disposition(unsafe_id)
+
+        self.assertIsNone(server._remaining_rate_limit_capacity({}))
+        self.assertIsNone(server._remaining_rate_limit_capacity({"windows": ["malformed", {"used_percent": True}]}))
+        self.assertEqual(server._remaining_rate_limit_capacity({"windows": [{"used_percent": -4}, {"used_percent": 125}]}), 0.0)
+        normalized = server._normalize_rate_limits({
+            "rateLimits": {
+                "primary": {"usedPercent": 19.7, "windowDurationMins": 300, "resetsAt": 12},
+                "secondary": {"usedPercent": True, "windowDurationMins": 60, "resetsAt": 13},
+            },
+            "rateLimitResetCredits": {"availableCount": 2},
+        })
+        self.assertEqual(normalized, {
+            "windows": [{"label": "5-uursvenster", "used_percent": 20, "window_minutes": 300, "resets_at": 12}],
+            "reset_credits": 2,
+        })
+        self.assertEqual(server._rate_limit_window_label(10_080), "Weekvenster")
+        self.assertEqual(server._rate_limit_window_label(2_880), "2-daags venster")
+        self.assertEqual(server._rate_limit_window_label(120), "2-uursvenster")
+        self.assertEqual(server._rate_limit_window_label(15), "15-minutenvenster")
+
+    def test_github_rate_limit_projection_handles_unavailable_and_exhausted_resources(self) -> None:
+        with patch("engineering_platform.server.GitHubProvider") as provider:
+            provider.return_value.github.side_effect = RuntimeError("rate limit unavailable")
+            self.assertEqual(server._github_rate_limit_status(), {"limited": True})
+            provider.return_value.github.side_effect = None
+            provider.return_value.github.return_value = json.dumps({"resources": {"core": {"remaining": 3}}})
+            self.assertEqual(server._github_rate_limit_status(), {"limited": False})
+            provider.return_value.github.return_value = json.dumps({
+                "resources": {
+                    "core": {"remaining": 0, "reset": 50},
+                    "graphql": {"remaining": -1, "reset": 20},
+                    "search": "malformed",
+                },
+            })
+            self.assertEqual(server._github_rate_limit_status(), {"limited": True, "reset_at": 20})
+
+    def test_component_log_query_contract_rejects_invalid_filters_before_central_sql(self) -> None:
+        query = server._parse_central_log_query({
+            "page": ["2"], "page_size": ["25"], "start": ["2026-09-01"], "end": ["2026-09-02"],
+            "inclusive_end": ["1"], "search": ["%_term"], "level": ["warning"],
+            "event": [" run.finished ", "run.started", "run.started"], "sort": ["event"], "direction": ["asc"],
+        })
+        self.assertEqual((query.page, query.page_size, query.level, query.events, query.sort_key, query.direction),
+                         (2, 25, "WARNING", ("run.finished", "run.started"), "event", "asc"))
+        self.assertTrue(query.inclusive_end)
+        self.assertEqual(server._central_log_components("all")[0], PLATFORM_COMPONENT_IDS)  # type: ignore[index]
+        self.assertEqual(server._central_log_components("ep_server")[1], ("ep_server",))  # type: ignore[index]
+        self.assertIsNone(server._central_log_components("not-a-component"))
+        for invalid in (
+            {"page": ["zero"]}, {"page": ["0"]}, {"page_size": ["501"]},
+            {"level": ["verbose"]}, {"search": ["x" * 161]}, {"event": ["x" * 161]},
+            {"sort": ["unknown"]}, {"direction": ["sideways"]},
+        ):
+            with self.assertRaises(ValueError):
+                server._parse_central_log_query(invalid)
+
+    def test_local_only_provider_controls_fail_closed_before_starting_external_processes(self) -> None:
+        with patch("engineering_platform.server.sys.platform", "linux"):
+            with self.assertRaisesRegex(ValueError, "LOCAL_DIRECTORY_PICKER_UNAVAILABLE"):
+                server._choose_local_directory(self.root)
+            with self.assertRaisesRegex(ValueError, "local macOS Server"):
+                server._start_provider_login(self.root, "GITHUB")
+        with self.assertRaisesRegex(ValueError, "Unsupported provider login"):
+            server._start_provider_login(self.root, "OTHER")
+        with self.assertRaisesRegex(ValueError, "Unsupported provider logout"):
+            server._logout_provider(self.root, "OTHER")
+
+    def test_queue_operator_capability_commands_are_explicit(self) -> None:
+        parsed = server.build_parser().parse_args((
+            "grant-operator-capability", "--project-id", "project", "--consumer-id", "operator",
+            "--capability", "QUEUE_DECLINE",
+        ))
+        self.assertEqual((parsed.command, parsed.project_id, parsed.consumer_id, parsed.capability),
+                         ("grant-operator-capability", "project", "operator", "QUEUE_DECLINE"))
+
+    def test_queue_operator_capability_grant_and_revoke_are_durable(self) -> None:
+        server.initialize(self.root)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            server.project_topology.register_server_local_topology(connection, declaration={
+                "schema_version": "1.0", "project": {"id": "queue-project", "authority_repository_id": "queue-repository"},
+                "repository": {"id": "queue-repository", "role": "authority"}, "validation": {"kind": "none"},
+            })
+            from engineering_platform.submission_service import issue_consumer_credential
+            issue_consumer_credential(connection, consumer_id="queue-operator", project_id="queue-project")
+        arguments = ("--data-root", str(self.root), "--project-id", "queue-project", "--consumer-id", "queue-operator", "--capability", "QUEUE_DECLINE")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main(("grant-operator-capability", *arguments)), 0)
+            self.assertEqual(server.main(("revoke-operator-capability", *arguments)), 0)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertIsNotNone(connection.execute("SELECT revoked_at FROM ep_operator_capabilities WHERE consumer_id='queue-operator' AND project_id='queue-project' AND capability='QUEUE_DECLINE'").fetchone()[0])
+
     def test_execution_runtime_status_preserves_the_virtual_environment_launcher(self) -> None:
         launcher = Path(self.temporary.name) / "venv" / "bin" / "python"
         launcher.parent.mkdir(parents=True)

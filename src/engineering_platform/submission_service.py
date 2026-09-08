@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import unicodedata
 import secrets
 import sqlite3
 from pathlib import Path
@@ -24,6 +25,12 @@ MAX_FIELD_LENGTH = 128
 MAX_CONSTRAINT_BYTES = 8192
 VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "FILE_INBOX", "DEPENDABOT", "LEGACY_FILE"})
 VALID_EXECUTION_MODES = frozenset({"MANAGED", "GENESIS"})
+OPERATOR_QUEUE_STATES = frozenset({"DEFERRED", "QUARANTINED", "DECLINED"})
+OPERATOR_QUEUE_TRANSITIONS = {
+    "QUEUED": frozenset({"DEFERRED", "QUARANTINED", "DECLINED"}),
+    "DEFERRED": frozenset({"QUEUED"}),
+    "QUARANTINED": frozenset({"QUEUED", "DECLINED"}),
+}
 
 # This is the complete B8D lifecycle.  The final value deliberately says what
 # CENTRAL has *not* done: admission makes a submission eligible for a later
@@ -44,6 +51,62 @@ class SubmissionError(ValueError):
     def __init__(self, code: str, status: int = 400) -> None:
         super().__init__(code)
         self.code, self.status = code, status
+
+
+def operator_queue_disposition(connection: sqlite3.Connection, *, project_id: str,
+                               submission_id: str, disposition: str, reason: str,
+                               expected_state: str | None = None,
+                               expected_revision: int | None = None,
+                               operation_id: str | None = None,
+                               actor_reference: str = "LEGACY_NOT_RECORDED") -> dict[str, object]:
+    """Apply one auditable CENTRAL queue disposition; never delete intent."""
+    if (not isinstance(submission_id, str) or not isinstance(disposition, str)
+            or not isinstance(reason, str) or not isinstance(actor_reference, str)):
+        raise SubmissionError("INVALID_QUEUE_DISPOSITION")
+    normalized_reason = unicodedata.normalize("NFC", reason).strip()
+    if (disposition not in OPERATOR_QUEUE_STATES | {"QUEUED"} or not normalized_reason
+            or len(normalized_reason) > 500 or any(ord(char) < 32 and char not in "\t" for char in normalized_reason)):
+        raise SubmissionError("INVALID_QUEUE_DISPOSITION")
+    command_digest = hashlib.sha256(json.dumps(
+        [project_id, submission_id, expected_state, expected_revision, disposition, normalized_reason],
+        separators=(",", ":"),
+    ).encode()).hexdigest()
+    if operation_id is not None:
+        if not isinstance(operation_id, str) or not operation_id or len(operation_id) > 128:
+            raise SubmissionError("INVALID_QUEUE_DISPOSITION")
+        prior = connection.execute(
+            "SELECT command_digest,to_state,resulting_revision,recorded_at FROM ep_queue_disposition_operations WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if prior is not None:
+            if str(prior[0]) != command_digest:
+                raise SubmissionError("OPERATION_ID_CONFLICT", 409)
+            return {"submission_id": submission_id, "state": str(prior[1]), "reason": normalized_reason,
+                    "recorded_at": str(prior[3]), "resulting_revision": int(prior[2]), "operation_id": operation_id,
+                    "replayed": True}
+    row = connection.execute(
+        "SELECT state,admission,disposition_revision FROM ep_submissions WHERE project_id=? AND submission_id=?", (project_id, submission_id)
+    ).fetchone()
+    if row is None:
+        raise SubmissionError("SUBMISSION_NOT_FOUND", 404)
+    current, admission, revision = str(row[0]), str(row[1]), int(row[2])
+    if admission != "ADMITTED" or (expected_state is not None and expected_state != current) or (expected_revision is not None and expected_revision != revision):
+        raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
+    if connection.execute("SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE submission_id=?", (submission_id,)).fetchone() is not None:
+        raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
+    if disposition not in OPERATOR_QUEUE_TRANSITIONS.get(current, frozenset()):
+        raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
+    now = _now()
+    changed = connection.execute("UPDATE ep_submissions SET state=?,disposition_revision=disposition_revision+1 WHERE project_id=? AND submission_id=? AND state=? AND disposition_revision=?", (disposition, project_id, submission_id, current, revision)).rowcount
+    if changed != 1:
+        raise SubmissionError("QUEUE_DISPOSITION_CONFLICT", 409)
+    event = connection.execute(
+        "INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)",
+        (submission_id, "OPERATOR_QUEUE_" + disposition, json.dumps({"state": disposition, "reason": normalized_reason, "actor_reference": actor_reference, "from_state": current, "previous_revision": revision, "resulting_revision": revision + 1, "operation_id": operation_id}, sort_keys=True), now),
+    )
+    if operation_id is not None:
+        connection.execute("INSERT INTO ep_queue_disposition_operations(operation_id,project_id,submission_id,actor_reference,command_digest,from_state,to_state,previous_revision,resulting_revision,event_id,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (operation_id, project_id, submission_id, actor_reference, command_digest, current, disposition, revision, revision + 1, event.lastrowid, now))
+    return {"submission_id": submission_id, "state": disposition, "reason": normalized_reason, "recorded_at": now, "previous_revision": revision, "resulting_revision": revision + 1, "operation_id": operation_id}
 
 
 def _lifecycle_payload(*, transport: str, producer_id: str) -> dict[str, str]:
@@ -334,8 +397,8 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
     return {"credential_id": credential_id, "consumer_id": consumer_id, "project_id": project_id, "credential": token}
 
 
-PRODUCER_READBACK_CONTRACT_VERSION = "1.1"
-TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.1"
+PRODUCER_READBACK_CONTRACT_VERSION = "1.2"
+TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.2"
 _TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
@@ -377,6 +440,69 @@ def _read_constraints(value: object) -> dict[str, object] | None:
 
 def _terminal_artifact_id(run_id: str) -> str:
     return f"terminal-evidence:{run_id}"
+
+
+def _findings_artifact_id(run_id: str) -> str:
+    return f"assurance-findings:{run_id}"
+
+
+def _current_assurance(checkpoint: object) -> tuple[str, list[dict[str, object]], list[dict[str, object]]]:
+    """Project final assurance from one complete current review set.
+
+    Earlier review records are deliberately not overwritten: they remain
+    historical observations in the findings artifact.  Only the most recent
+    complete quality/security pair bound to the checkpoint's exact candidate
+    and policy can qualify terminal delivery.
+    """
+    profile = getattr(checkpoint, "assurance_profile", None)
+    reviews = list(getattr(checkpoint, "assurance_reviews", ()))
+    if not isinstance(profile, dict):
+        return "NOT_RECORDED", [], reviews
+    candidate, digest = profile.get("candidate_sha"), profile.get("digest")
+    if not isinstance(candidate, str) or not isinstance(digest, str):
+        return "UNRESOLVED", [], reviews
+    current = [
+        review for review in reviews
+        if isinstance(review, dict)
+        and review.get("candidate_sha") == candidate
+        and review.get("profile_digest") == digest
+    ]
+    latest = {
+        role: next((review for review in reversed(current) if review.get("reviewer") == role), None)
+        for role in ("quality", "security")
+    }
+    if any(review is None or review.get("status") == "UNRESOLVED" for review in latest.values()):
+        return "UNRESOLVED", current, reviews
+    if any(review.get("status") != "PASS" for review in latest.values() if isinstance(review, dict)):
+        return "FAIL", current, reviews
+    findings = [finding for review in latest.values() if isinstance(review, dict) for finding in review.get("findings", []) if isinstance(finding, dict)]
+    current_open = any(finding.get("blocking") and finding.get("disposition") == "OPEN" for finding in findings)
+    resolved = {
+        item.get("finding_id") for item in getattr(checkpoint, "assurance_resolutions", ())
+        if isinstance(item, dict) and item.get("disposition") in {"RESOLVED", "REJECTED", "RISK_ACCEPTED"}
+    }
+    historical_open = any(
+        finding.get("blocking") and finding.get("disposition") == "OPEN" and finding.get("id") not in resolved
+        for review in reviews if isinstance(review, dict)
+        for finding in review.get("findings", []) if isinstance(finding, dict)
+    )
+    return ("FAIL" if current_open or historical_open else "PASS"), current, reviews
+
+
+def _write_immutable_artifact(target: Path, payload: bytes) -> None:
+    """Create immutable evidence once; conflicting terminal rewrites fail closed."""
+    if target.exists():
+        try:
+            if target.read_bytes() == payload:
+                return
+        except OSError:
+            pass
+        raise SubmissionError("TERMINAL_EVIDENCE_IMMUTABLE_CONFLICT", 500)
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(payload)
+    temporary.chmod(0o600)
+    temporary.replace(target)
 
 
 def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]:
@@ -441,6 +567,23 @@ def write_terminal_evidence(
     revision, delivery_qualified = _repository_revision(checkpoint, outcome)
     artifact_id = _terminal_artifact_id(run_id)
     report_id = f"report:{run_id}"
+    assurance_status, current_reviews, reviews = _current_assurance(checkpoint)
+    findings = [finding for review in reviews for finding in review.get("findings", [])]
+    findings_id = _findings_artifact_id(run_id) if checkpoint.assurance_profile is not None else None
+    if findings_id is not None:
+        findings_payload = {
+            "artifact_type": "EP_ASSURANCE_FINDINGS", "contract_version": "1.0",
+            "run_id": run_id, "project_id": str(row[1]), "repository_id": str(row[2]),
+            "profile": checkpoint.assurance_profile, "reviews": reviews,
+            "resolutions": list(checkpoint.assurance_resolutions),
+        }
+        findings_target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "assurance-findings-v1.json"
+        findings_bytes = _canonical_json_bytes(findings_payload)
+        _write_immutable_artifact(findings_target, findings_bytes)
+        record_artifact(repository_root, findings_target, artifact_id=findings_id, artifact_type="EP_ASSURANCE_FINDINGS",
+                        content_type="application/json", created_at=_now(), run_id=run_id, submission_id=str(row[0]),
+                        mission_id=str(row[10]) if row[10] is not None else None, producer_id=str(row[4]),
+                        central_database=database, artifact_root=data_root / "artifacts")
     payload = {
         "artifact_type": "EP_TERMINAL_EVIDENCE", "contract_version": TERMINAL_EVIDENCE_CONTRACT_VERSION,
         "submission": {"id": str(row[0]), "project_id": str(row[1]), "repository_id": str(row[2]),
@@ -456,13 +599,17 @@ def write_terminal_evidence(
             "validation": list(checkpoint.validation_evidence), "quality": list(checkpoint.quality_evidence),
             "repair": list(checkpoint.repair_audit), "finalization": checkpoint.latest_repository_evidence,
         },
+        "assurance": {
+            "status": assurance_status,
+            "profile": checkpoint.assurance_profile,
+            "quality_review": next((review.get("status") for review in reversed(current_reviews) if review.get("reviewer") == "quality"), "NOT_RECORDED"),
+            "security_review": next((review.get("status") for review in reversed(current_reviews) if review.get("reviewer") == "security"), "NOT_RECORDED"),
+            "repair_rounds": {"used": checkpoint.repair_iterations, "maximum": 3},
+            "findings": {"open_blocking": sum(1 for review in current_reviews for finding in review.get("findings", []) if finding.get("blocking") and finding.get("disposition") == "OPEN"), "open_non_blocking": sum(1 for review in current_reviews for finding in review.get("findings", []) if not finding.get("blocking") and finding.get("disposition") in {"OPEN", "NON_BLOCKING"}), "artifact": None if findings_id is None else {"id": findings_id, "digest_algorithm": "sha256", "digest": hashlib.sha256(findings_bytes).hexdigest()}},
+        },
     }
     target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "terminal-evidence-v1.json"
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_bytes(_canonical_json_bytes(payload))
-    temporary.chmod(0o600)
-    temporary.replace(target)
+    _write_immutable_artifact(target, _canonical_json_bytes(payload))
     record_artifact(
         repository_root, target, artifact_id=artifact_id, artifact_type="EP_TERMINAL_EVIDENCE",
         content_type="application/json", created_at=_now(), run_id=run_id,
@@ -486,7 +633,7 @@ def producer_readback(
     row = connection.execute(
         """SELECT s.repository_id,s.producer_id,s.producer_type,s.producer_version,
                   s.prompt_digest,s.constraints,s.correlation_id,s.mission_id,
-                  s.engineering_action_id,s.state,s.admission,s.transport,s.created_at,
+                  s.engineering_action_id,s.state,s.admission,s.transport,s.created_at,s.disposition_revision,
                   d.run_id,d.state,d.operator_resolution,d.updated_at
              FROM ep_submissions AS s
              LEFT JOIN ep_parity_lifecycle_dispatches AS d
@@ -499,9 +646,20 @@ def producer_readback(
     (
         repository_id, producer_id, producer_type, producer_version, prompt_digest,
         raw_constraints, correlation_id, mission_id, engineering_action_id, submission_state,
-        admission, transport, created_at, run_id, dispatch_state,
+        admission, transport, created_at, disposition_revision, run_id, dispatch_state,
         operator_resolution, updated_at,
     ) = row
+    disposition_row = connection.execute(
+        "SELECT o.operation_id,o.event_id,o.actor_reference,e.payload,o.recorded_at FROM ep_queue_disposition_operations o JOIN ep_submission_events e ON e.event_id=o.event_id WHERE o.project_id=? AND o.submission_id=? ORDER BY o.recorded_at DESC LIMIT 1",
+        (project_id, submission_id),
+    ).fetchone()
+    disposition = {"state": str(submission_state), "terminal": str(submission_state) == "DECLINED", "execution_eligible": str(submission_state) == "QUEUED", "revision": int(disposition_revision), "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None}
+    if disposition_row is not None:
+        try:
+            reason = json.loads(str(disposition_row[3])).get("reason", "NOT_RECORDED")
+        except json.JSONDecodeError:
+            reason = "NOT_RECORDED"
+        disposition.update({"operation_id": str(disposition_row[0]), "event_reference": "event:" + str(disposition_row[1]), "actor_reference": str(disposition_row[2]), "reason": reason, "recorded_at": str(disposition_row[4])})
     constraints = _read_constraints(raw_constraints)
     if constraints is None:
         # Existing data is retained, but cannot be represented as qualified
@@ -603,19 +761,19 @@ def producer_readback(
             "engineering_action_id": engineering_action_id,
         },
         "provenance": {"status": provenance_status, "forge_execution": constraints.get("forge_execution")},
-        "run": run, "result": result, "evidence": evidence,
+        "disposition": disposition, "run": run, "result": result, "evidence": evidence,
     }
 
 
 def producer_evidence_artifact(
     connection: sqlite3.Connection, *, project_id: str, artifact_id: str,
 ) -> bytes | None:
-    """Return only a verified, project-scoped terminal evidence payload."""
+    """Return a verified, project-scoped terminal or assurance artifact."""
     row = connection.execute(
         """SELECT a.digest_algorithm,a.digest,a.storage_location
              FROM execution_artifact_records a
              JOIN ep_parity_lifecycle_dispatches d ON d.run_id=a.run_id
-            WHERE d.project_id=? AND a.artifact_id=? AND a.artifact_type='EP_TERMINAL_EVIDENCE'""",
+            WHERE d.project_id=? AND a.artifact_id=? AND a.artifact_type IN ('EP_TERMINAL_EVIDENCE','EP_ASSURANCE_FINDINGS')""",
         (project_id, artifact_id),
     ).fetchone()
     if row is None or row[0] != "sha256" or not isinstance(row[1], str):

@@ -104,7 +104,10 @@ class LifecycleWorker:
                       (prior.state IN ('CLAIMED','RUNNING') AND prior.submission_id!=s.submission_id)
                       OR (prior.state IN ('BLOCKED','FAILED') AND prior.operator_resolution='OPEN'
                           AND prior.submission_id!=s.submission_id)
-                      OR (prior.operator_resolution='RETRIED' AND prior.resolution_submission_id!=s.submission_id)
+                      OR (prior.operator_resolution='RETRIED' AND prior.resolution_submission_id!=s.submission_id
+                          AND NOT EXISTS (SELECT 1 FROM ep_parity_lifecycle_dispatches retry
+                              WHERE retry.submission_id=prior.resolution_submission_id
+                                AND retry.operator_resolution='RETRIED'))
                     )
                   )
                 ORDER BY s.project_id,

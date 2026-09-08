@@ -1,0 +1,21 @@
+name: Canonical versioning
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version-source:
+    name: Validate committed canonical version source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - name: Read-only source consistency
+        run: |
+          python3 -m pip install --quiet .
+          python3 tools/qualification/advance_platform_build.py --source-root . --check
+          python3 tools/qualification/platform_version_consistency.py --source-root .

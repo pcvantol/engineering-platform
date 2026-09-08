@@ -382,6 +382,13 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             evidence = checkpoint.get("quality_evidence")
             if isinstance(evidence, (list, tuple)) and evidence:
                 step["quality_evidence"] = list(evidence)
+            reviews = checkpoint.get("assurance_reviews")
+            if isinstance(reviews, (list, tuple)) and reviews:
+                step["assurance_reviews"] = list(reviews)
+                step["repair_rounds"] = {
+                    "used": _nonnegative_int(checkpoint.get("repair_iterations")),
+                    "maximum": 3,
+                }
         if step_id == "LOCAL_REPOSITORY_VALIDATION" and step["state"] not in {"PENDING", "SKIPPED"}:
             audit = checkpoint.get("local_validation_audit")
             if isinstance(audit, (list, tuple)) and audit:
@@ -444,4 +451,5 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             "required_validation_state": qualification.get("required_validation_state", "UNAVAILABLE"),
             "run_qualification": qualification.get("run_qualification", "UNAVAILABLE"),
         },
+        "repair_rounds": {"used": _nonnegative_int(checkpoint.get("repair_iterations")), "maximum": 3},
     }

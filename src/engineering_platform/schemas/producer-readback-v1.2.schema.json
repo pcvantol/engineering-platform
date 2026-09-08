@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/producer-readback-v1.2.schema.json",
+  "title": "Engineering Platform producer readback v1.2 disposition extension",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "submission", "producer", "correlation", "provenance", "disposition", "run", "result", "evidence"],
+  "properties": {
+    "contract_version": {"const": "1.2"},
+    "submission": {"type": "object", "additionalProperties": false, "required": ["id", "project_id", "repository_id", "state", "admission", "transport", "created_at", "accepted_request_digest"]},
+    "producer": {"type": "object", "additionalProperties": false, "required": ["id", "type", "version"]},
+    "correlation": {"type": "object", "additionalProperties": false, "required": ["correlation_id", "mission_id", "engineering_action_id"]},
+    "provenance": {"type": "object", "additionalProperties": false, "required": ["status", "forge_execution"]},
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "terminal", "execution_eligible", "revision", "operation_id", "event_reference", "reason", "actor_reference", "recorded_at"],
+      "properties": {
+        "state": {"enum": ["QUEUED", "DEFERRED", "QUARANTINED", "DECLINED"]},
+        "terminal": {"type": "boolean"},
+        "execution_eligible": {"type": "boolean"},
+        "revision": {"type": "integer", "minimum": 0},
+        "operation_id": {"type": ["string", "null"]},
+        "event_reference": {"type": ["string", "null"]},
+        "reason": {"type": "string"},
+        "actor_reference": {"type": "string"},
+        "recorded_at": {"type": ["string", "null"]}
+      }
+    },
+    "run": {"type": ["object", "null"]},
+    "result": {"type": "object", "additionalProperties": false, "required": ["outcome", "terminal", "delivery_qualified"]},
+    "evidence": {"type": "object", "additionalProperties": false, "required": ["status", "terminal_artifact", "repository"]}
+  }
+}

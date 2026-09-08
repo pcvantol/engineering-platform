@@ -174,6 +174,10 @@ class FakeAgent:
     def version(self) -> str:
         return "0.146.0"
 
+    def review(self, _: Path, selection: object, __: str, evidence: object = None) -> ReviewerResult:
+        """Default post-implementation assurance fixture: clean, read-only pass."""
+        return ReviewerResult(getattr(selection, "reviewer"), "No blocking finding.")
+
 
 class ReviewCapableFakeAgent(FakeAgent):
     def __init__(self, result: AgentResult) -> None:
@@ -425,6 +429,11 @@ class ClientContractTest(unittest.TestCase):
                     self.roots.append(root)
                     self.prompts.append(prompt_text)
                     if "Local repository validation gate" in prompt_text:
+                        return AgentResult(
+                            "COMPLETE", branch, commit_sha=commit,
+                            validation_evidence=({"command": "canonical suite", "result": "passed"},),
+                        )
+                    if "First implementation pull-request publication gate" in prompt_text:
                         self.pr_create_calls += 1
                         return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
                     if "Mandatory autonomous refactor" in prompt_text:
@@ -1315,7 +1324,7 @@ class ClientContractTest(unittest.TestCase):
     @patch("engineering_platform.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:
         review_message = json.dumps(
-            {"contribution": "reviewed", "recommendations": ["keep scope"]}
+            {"contract_version": "1.0", "contribution": "reviewed", "recommendations": ["keep scope"], "findings": []}
         )
         agent_message = json.dumps(
             {
@@ -1336,17 +1345,22 @@ class ClientContractTest(unittest.TestCase):
         run.side_effect = [
             subprocess.CompletedProcess(("codex",), 0, review_output, ""),
             subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
+            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             client = CodexCliClient(CodexCliProvider())
             review = client.review(root, __import__("engineering_platform.capability_review", fromlist=["ReviewerSelection"]).ReviewerSelection("validation", "scope", 1), "objective")
             result = client.invoke(root, "objective")
+            validation = client.validate(root, "validation objective")
         self.assertFalse(review.failed)
         self.assertEqual(review.recommendations, ("keep scope",))
         self.assertEqual(review.runtime_metadata["raw_provider_model"], "gpt-5.6-terra")
         self.assertEqual(review.usage["input_tokens"], 100)
         self.assertEqual(result.pull_request, 12)
+        self.assertEqual(validation.pull_request, 12)
+        self.assertIn("read-only", run.call_args_list[2].args[0])
+        self.assertFalse(hasattr(client, "_sandbox_override"))
 
     @patch("engineering_platform.execution_host.time.monotonic", side_effect=(10.0, 12.75))
     @patch("engineering_platform.execution_host.subprocess.run")
@@ -1666,12 +1680,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("do not rerun the development-host bootstrap", agent.prompts[0])
         self.assertIn(f"The only repository checkout for this transaction is `{self.root.resolve()}`", agent.prompts[0])
         self.assertIn("producer provenance only", agent.prompts[0])
-        self.assertEqual(agent.roots, [self.root, self.root])
-        self.assertIn("Mandatory autonomous refactor and quality-control stage", agent.prompts[1])
-        self.assertIn("Assess test coverage for every changed behavior", agent.prompts[1])
-        self.assertIn("Assess the applicable operator, contract, and implementation documentation", agent.prompts[1])
-        self.assertIn("In quality_evidence, record only work actually performed", agent.prompts[1])
-        self.assertEqual(state.quality_evidence, quality_evidence)
+        self.assertEqual(agent.roots, [self.root])
+        self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
+        self.assertEqual(state.assurance_profile["candidate_sha"], "a" * 40)
         self.assertEqual(repository.synchronize_calls, [self.root])
 
     def test_provider_recovery_preflight_rejects_every_ambiguous_restart_condition(self) -> None:
@@ -1717,13 +1728,60 @@ class LocalAgentRunnerTest(unittest.TestCase):
         with patch("engineering_platform.execution_host._complete_phase", side_effect=execution_host.EngineeringStorageError("offline")):
             execution_host.complete_phase(self.root, SimpleNamespace())
         agent = FakeAgent(AgentResult("WAITING"))
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        runner = EngineeringRunner(self.root, self.store, SubprocessRepositoryClient(), FakeGitHub([]), agent, lambda _: None)
         state = TransactionState("timing-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
         for measured in (True, "unknown", -1, 86_401):
             agent.last_execution_seconds = measured
             self.assertEqual(runner._record_agent_execution_time(state), state)
         agent.last_execution_seconds = 1.2345
         self.assertEqual(runner._record_agent_execution_time(state).agent_execution_seconds, 1.234)
+
+    def test_provider_process_boundary_records_only_a_verified_recovery_process(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("provider-process", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        with patch("engineering_platform.execution_host.write_runner_process") as written, \
+             patch.object(runner, "_recovery_state", return_value=None), \
+             patch("engineering_platform.execution_host.record_provider_started") as started:
+            runner._provider_process_boundary(state, {"pid": 42, "process_group": 42})
+            written.assert_called_once_with(self.root, state.run_id, {"pid": 42, "process_group": 42})
+            started.assert_not_called()
+        with patch("engineering_platform.execution_host.write_runner_process"), \
+             patch.object(runner, "_recovery_state", return_value={"state": "RECOVERY_STARTING", "process_receipt_id": "receipt-1"}), \
+             patch("engineering_platform.execution_host.record_provider_started") as started:
+            runner._provider_process_boundary(state, {"pid": 42, "process_group": 42})
+            started.assert_called_once_with(self.root, run_id=state.run_id, receipt_id="receipt-1", pid=42, process_group=42, central_database=runner.store.central_database)
+
+    def test_provider_invocation_records_only_safe_context_and_recovery_telemetry(self) -> None:
+        """Supplementary provider telemetry retains bounded context without authority."""
+        agent = FakeAgent(AgentResult("WAITING"))
+        agent.last_context_escalations = (
+            {"reason": "missing evidence", "boundary_kind": "run", "diagnostic": "safe diagnostic"},
+            "untrusted",
+        )
+        agent.last_execution_seconds = 2.0
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState("provider-context", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        self.store.save(state)
+        with patch("engineering_platform.execution_host.persist_provider_invocation", return_value="provider-1") as persist:
+            invocation_id = runner._persist_provider_invocation(
+                state, phase="EXECUTE_AGENT", observed_metadata={"raw_provider_model": "gpt-5.6-terra"},
+            )
+        self.assertEqual(invocation_id, "provider-1")
+        recorded = persist.call_args.args[1]
+        self.assertEqual(recorded.model, "gpt-5.6-terra")
+        self.assertEqual(recorded.churn["context_scope_effective"], "INVESTIGATION")
+        self.assertEqual(recorded.churn["context_escalation_count"], 1)
+        self.assertEqual(recorded.churn["context_escalation_reasons"], "missing evidence")
+
+        recovered = runner._recovery_record(
+            state, original="provider-1", replacement="provider-2", eligibility="ELIGIBLE",
+            result="RECOVERED", requested_at="then", started_at="then", completed_at="now",
+        )
+        self.store.save(recovered)
+        agent.last_execution_seconds = 0.5
+        merged = runner._record_agent_execution_time(state)
+        self.assertEqual(merged.provider_recovery_attempts, recovered.provider_recovery_attempts)
+        self.assertEqual(merged.agent_execution_seconds, 0.5)
 
     def test_optional_phase_wrappers_degrade_only_telemetry_storage_failures(self) -> None:
         with patch("engineering_platform.execution_host._start_phase", return_value=SimpleNamespace()) as start:
@@ -1745,6 +1803,95 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED")))
         self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed"},))))
         self.assertTrue(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed once; timed out once"},))))
+
+    def test_repair_result_requires_the_durable_plan_and_preserves_its_bounded_pr(self) -> None:
+        """Recovery never infers a repair plan or lets a provider switch PRs."""
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        missing = TransactionState(
+            "repair-plan-missing", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+            branch="codex/repair-plan-missing", pull_request=17, repair_iterations=1,
+        )
+        blocked = runner._advance_after_repair_agent_result(
+            missing, AgentResult("COMPLETE", branch=missing.branch, pull_request=17),
+        )
+        self.assertEqual((blocked.phase, blocked.next_action), ("BLOCKED", "repair_plan_missing"))
+        self.assertTrue(self.store.load(missing.run_id).terminal)
+
+        planned = missing.__class__(**{
+            **missing.__dict__,
+            "run_id": "repair-plan-conflict",
+            "repair_audit": ({
+                "iteration": "1", "outcome": "planned", "failed_checks": "required check",
+                "proposed_action": "repair only the required check",
+            },),
+        })
+        conflict = runner._advance_after_repair_agent_result(
+            planned, AgentResult("COMPLETE", branch=planned.branch, pull_request=18, diagnostic="changed PR"),
+        )
+        self.assertEqual((conflict.phase, conflict.next_action), ("BLOCKED", "bounded_scope_conflict"))
+        self.assertEqual(conflict.repair_audit[-1]["outcome"], "submitted_for_recheck")
+        self.assertEqual(self.store.load(planned.run_id).repair_audit, conflict.repair_audit)
+
+        failed_plan = planned.__class__(**{**planned.__dict__, "run_id": "repair-agent-failed"})
+        failed = runner._advance_after_repair_agent_result(
+            failed_plan, AgentResult("FAILED", branch=failed_plan.branch, pull_request=17, diagnostic="provider failure"),
+        )
+        self.assertEqual((failed.phase, failed.next_action), ("FAILED", "external_action_required"))
+        self.assertEqual(failed.repair_audit[-1]["outcome"], "agent_failed")
+
+    def test_repair_rereview_paths_fail_closed_for_missing_genesis_or_validation_evidence(self) -> None:
+        """A repair must return a candidate to the same assurance boundary."""
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+
+        def planned(run_id: str, *, mode: str = "MANAGED", rounds: int = 1) -> TransactionState:
+            return TransactionState(
+                run_id, "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+                branch="codex/repair-rereview", pull_request=17, execution_mode=mode,
+                repair_iterations=rounds,
+                repair_audit=({
+                    "iteration": str(rounds), "outcome": "planned", "failed_checks": "required check",
+                    "proposed_action": "repair bounded finding",
+                },),
+            )
+
+        genesis = planned("genesis-repair-missing", mode="GENESIS")
+        no_candidate = runner._advance_after_repair_agent_result(
+            genesis, AgentResult("COMPLETE", branch=genesis.branch),
+        )
+        self.assertEqual((no_candidate.phase, no_candidate.next_action), ("BLOCKED", "repair_candidate_unavailable"))
+
+        target = self.root / "genesis-repair-candidate"
+        target.mkdir()
+        review_state = planned("genesis-repair-reviewed", mode="GENESIS")
+        reviewed_state = review_state.__class__(**{**review_state.__dict__, "phase": "WAIT_FOR_TERMINAL_EVIDENCE"})
+        reconciled = TransactionState("genesis-repair-complete", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        with patch.object(runner, "_run_quality_assurance", return_value=(reviewed_state, AgentResult("COMPLETE", repository_path=str(target)))) as review, \
+             patch.object(runner, "_reconcile_genesis_result", return_value=reconciled) as reconcile:
+            advanced = runner._advance_after_repair_agent_result(
+                review_state, AgentResult("COMPLETE", branch=review_state.branch, repository_path=str(target)),
+            )
+        self.assertIs(advanced, reconciled)
+        self.assertEqual(review.call_args.kwargs["assurance_root"], target)
+        reconcile.assert_called_once()
+
+        exhausted = planned("managed-repair-validation-exhausted", rounds=3)
+        with patch.object(
+            runner, "_run_local_repository_validation",
+            side_effect=lambda state, _: (state, AgentResult("FAILED", validation_evidence=({"result": "failed"},))),
+        ):
+            blocked = runner._advance_after_repair_agent_result(
+                exhausted, AgentResult("COMPLETE", branch=exhausted.branch, pull_request=17),
+            )
+        self.assertEqual((blocked.phase, blocked.next_action), ("BLOCKED", "repair_budget_exhausted"))
+
+        inspected = planned("managed-repair-inspection-failure")
+        post_review = inspected.__class__(**{**inspected.__dict__, "phase": "WAIT_FOR_TERMINAL_EVIDENCE"})
+        review_result = AgentResult("COMPLETE", branch=inspected.branch, pull_request=17)
+        with patch.object(runner, "_run_local_repository_validation", side_effect=lambda state, _: (state, review_result)), \
+             patch.object(runner, "_run_quality_assurance", return_value=(post_review, review_result)), \
+             patch.object(runner.repository, "inspect", side_effect=RunnerError("unavailable")):
+            unavailable = runner._advance_after_repair_agent_result(inspected, review_result)
+        self.assertEqual((unavailable.phase, unavailable.next_action), ("BLOCKED", "repair_candidate_unavailable"))
 
     def test_validation_failure_and_commit_evidence_helpers_refuse_unverified_inputs(self) -> None:
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
@@ -2015,7 +2162,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
         ).run(self.prompt, run_id="managed-target-boundary")
 
-        self.assertEqual(agent.roots, [self.root, self.root])
+        self.assertEqual(agent.roots, [self.root])
         self.assertIn(
             f"The only repository checkout for this transaction is `{self.root.resolve()}`",
             agent.prompts[0],
@@ -2439,21 +2586,86 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent = LiveStatusFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
         runner.run(self.prompt, run_id="live-phase-run")
-        self.assertEqual(agent.live_phase, "QUALITY_CONTROL_AGENT")
-        self.assertEqual(agent.live_action, "autonomous_refactor_and_quality_control")
+        self.assertEqual(agent.live_phase, "EXECUTE_AGENT")
+        self.assertEqual(agent.live_action, "invoke_agent")
         self.assertEqual(agent.activity_action, "Codex bewerkt bestanden")
 
-    def test_autonomous_quality_control_cannot_replace_the_implementation_pr(self) -> None:
+    def test_quality_assurance_does_not_create_or_replace_the_implementation_pr(self) -> None:
         agent = SequencedFakeAgent([
             AgentResult("COMPLETE", "codex/implementation", 701),
             AgentResult("COMPLETE", "codex/implementation", 702),
         ])
         state = EngineeringRunner(
-            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
+            self.root, self.store, FakeRepository(), FakeGitHub([
+                PullRequestEvidence(701, "OPEN", True, True, head_branch="codex/implementation", base_branch="main"),
+            ]), agent, lambda _: None
         ).run(self.prompt, run_id="quality-scope-run")
 
-        self.assertEqual(state.phase, "BLOCKED")
-        self.assertEqual(state.next_action, "autonomous_quality_control_scope")
+        self.assertEqual(state.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(len(agent.prompts), 1)
+        self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
+
+    def test_first_implementation_publication_is_a_separate_post_assurance_dispatch(self) -> None:
+        """The product gate, not provider wording, owns first PR creation."""
+        sha = "a" * 40
+        profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+        reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
+                         "profile_digest": profile["digest"], "invocation_id": f"{role}-1",
+                         "findings": [], "contract_version": "1.0", "started_at": "now", "completed_at": "now"}
+                        for role in ("quality", "security"))
+        agent = SequencedFakeAgent([AgentResult("COMPLETE", "main", 71, commit_sha=sha)])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState("publication-gate", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
+                                 branch="main", owner_authorized=True, assurance_profile=profile, assurance_reviews=reviews)
+        published, result = runner._publish_first_implementation_pull_request(
+            state, AgentResult("COMPLETE", "main", commit_sha=sha)
+        )
+        self.assertFalse(published.terminal)
+        self.assertEqual(result.pull_request, 71)
+        self.assertIn("First implementation pull-request publication gate", agent.prompts[0])
+
+    def test_malformed_mandatory_review_is_unresolved_not_an_empty_pass(self) -> None:
+        class MalformedReviewer(FakeAgent):
+            def review(self, _: Path, selection: object, __: str, evidence: object = None) -> ReviewerResult:
+                return ReviewerResult(getattr(selection, "reviewer"), "malformed", contract_version=None)
+
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), MalformedReviewer(AgentResult("COMPLETE")), lambda _: None)
+        state = TransactionState("malformed-review", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="main")
+        blocked, _ = runner._run_quality_assurance(state, AgentResult("COMPLETE", "main", commit_sha="a" * 40))
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "mandatory_assurance_unresolved")
+
+    def test_reserved_repair_revalidates_and_rereviews_before_returning_to_pr_evidence(self) -> None:
+        """One repair consumes one durable round and cannot bypass assurance."""
+        sha = "a" * 40
+        branch = "codex/repair-rereview"
+        agent = SequencedFakeAgent([
+            AgentResult("COMPLETE", branch, commit_sha=sha),
+            AgentResult("COMPLETE", branch, commit_sha=sha,
+                        validation_evidence=({"command": "canonical suite", "result": "passed"},)),
+        ])
+        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch=branch, base_branch="main")])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), github, agent, lambda _: None)
+        state = TransactionState("repair-rereview", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+                                 branch=branch, pull_request=71, owner_authorized=True)
+        advanced = runner._repair(state, "quality review findings failed. Repair these bounded findings: finding-1")
+        self.assertEqual(advanced.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(advanced.repair_iterations, 1)
+        self.assertEqual(len(advanced.repair_audit), 1)
+        self.assertEqual(advanced.repair_audit[0]["repair_id"], "repair:repair-rereview:1")
+        self.assertEqual([item["status"] for item in advanced.assurance_reviews], ["PASS", "PASS"])
+        self.assertIn("Local repository validation gate", agent.prompts[1])
+
+    def test_fourth_shared_repair_dispatch_is_refused_before_provider_invocation(self) -> None:
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        exhausted = TransactionState("repair-exhausted", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+                                     branch="codex/repair", repair_iterations=3)
+        blocked = runner._repair(exhausted, "hosted check failed. Repair bounded finding.")
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "repair_budget_exhausted")
+        self.assertEqual(agent.prompts, [])
 
     def test_local_repository_validation_iterates_before_creating_the_implementation_pr(self) -> None:
         agent = SequencedFakeAgent([
@@ -2475,13 +2687,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
             state, AgentResult("COMPLETE", "codex/implementation")
         )
         self.assertEqual(validated.phase, "LOCAL_REPOSITORY_VALIDATION")
-        self.assertEqual(validated.local_validation_iterations, 2)
-        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed", "validated"])
-        self.assertEqual(validated.local_validation_audit[0]["proposed_action"], "FULL: full required repository suite")
-        self.assertEqual(validated.validation_evidence, ({"command": "python -m unittest tests.engineering", "result": "passed"},))
-        self.assertEqual(result.pull_request, 701)
-        self.assertIn("iteration 1 of 3", agent.prompts[0])
-        self.assertIn("Create one draft implementation pull request only after", agent.prompts[0])
+        self.assertEqual(validated.local_validation_iterations, 1)
+        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed"])
+        self.assertIsNone(result.pull_request)
+        self.assertIn("read-only", agent.prompts[0])
+        self.assertNotIn("draft implementation pull request", agent.prompts[0])
 
     def test_verified_implementation_validation_failure_enters_local_repair_route(self) -> None:
         sha = "b" * 40
@@ -2511,9 +2721,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         validated, result = runner._run_local_repository_validation(verified, initial)
 
         self.assertFalse(validated.terminal)
-        self.assertEqual(validated.local_validation_iterations, 2)
-        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed", "validated"])
-        self.assertEqual(result.pull_request, 701)
+        self.assertEqual(validated.local_validation_iterations, 1)
+        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed"])
+        self.assertIsNone(result.pull_request)
 
     def test_runner_routes_verified_failed_implementation_to_local_validation_before_pr(self) -> None:
         sha = "d" * 40
@@ -2549,12 +2759,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
 
         self.assertTrue(state.commit_evidence, state.diagnostic)
-        self.assertEqual(state.phase, "WAIT_FOR_OPERATOR_MERGE", state.diagnostic)
-        self.assertFalse(state.terminal)
+        self.assertEqual(state.phase, "BLOCKED", state.diagnostic)
+        self.assertTrue(state.terminal)
+        self.assertEqual(state.next_action, "implementation_pr_before_assurance")
         self.assertEqual(state.local_validation_iterations, 1)
         self.assertEqual(state.local_validation_audit[0]["outcome"], "validated")
-        self.assertEqual(len(agent.prompts), 3)
-        self.assertIn("Local repository validation gate — iteration 1 of 3", agent.prompts[1])
+        self.assertEqual(len(agent.prompts), 2)
+        self.assertIn("Local repository validation gate", agent.prompts[1])
 
     def test_unverified_or_external_implementation_failure_never_starts_local_repair(self) -> None:
         sha = "c" * 40
@@ -2571,7 +2782,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertFalse(runner._is_recoverable_implementation_validation_failure(state, result))
 
-    def test_failed_local_validation_uses_all_three_bounded_attempts(self) -> None:
+    def test_failed_local_validation_is_one_non_mutating_turn_before_shared_repair(self) -> None:
         failures = [
             AgentResult(
                 "FAILED", "codex/implementation", diagnostic="Required local suite failed.",
@@ -2591,10 +2802,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
             state, AgentResult("COMPLETE", "codex/implementation")
         )
 
-        self.assertTrue(blocked.terminal)
-        self.assertEqual(blocked.next_action, "local_validation_attempt_limit_reached")
-        self.assertEqual(blocked.local_validation_iterations, 3)
-        self.assertEqual(len(blocked.local_validation_audit), 3)
+        self.assertFalse(blocked.terminal)
+        self.assertEqual(blocked.local_validation_iterations, 1)
+        self.assertEqual(len(blocked.local_validation_audit), 1)
         self.assertEqual({item["outcome"] for item in blocked.local_validation_audit}, {"validation_failed"})
 
     def test_local_repository_validation_separates_proven_environment_instability(self) -> None:
@@ -3048,6 +3258,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(state.genesis_repository_path, str(target))
         self.assertEqual(state.genesis_commit_sha, commit)
         self.assertIsNone(state.pull_request)
+        self.assertEqual([review["reviewer"] for review in state.assurance_reviews], ["quality", "security"])
+        self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
 
     def test_genesis_selects_its_target_before_managed_cleanliness_checks(self) -> None:
         target = self.root.parent / f"genesis-clean-{self.root.name}"
@@ -3603,7 +3815,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ])
         runner = EngineeringRunner(
             self.root, self.store, FakeRepository(), github,
-            SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)]), lambda _: None,
+            SequencedFakeAgent([AgentResult("WAITING", "codex/finalize-later-merge", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)]), lambda _: None,
         )
 
         result = runner._poll(state)
@@ -3616,7 +3828,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)
         final_open = PullRequestEvidence(22, "OPEN", True, True)
         final_merged = PullRequestEvidence(22, "MERGED", True, True, "c" * 40)
-        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)])
+        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/finalize-full-run", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)])
         state = TransactionState("full-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/implementation", pull_request=21, owner_authorized=True)
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([implementation, final_open, final_merged]), agent, lambda _: None)
         result = runner._poll(state)
@@ -3642,20 +3854,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         result = EngineeringRunner(
             self.root, self.store, repository, github,
-            SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)]), lambda _: None,
+            SequencedFakeAgent([AgentResult("WAITING", "codex/finalize-autonomous-happy-path", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)]), lambda _: None,
         )._poll(state)
 
         self.assertEqual(result.phase, "COMPLETE")
         self.assertTrue(result.terminal)
         self.assertEqual(result.implementation_merge_commit, "b" * 40)
         self.assertEqual(result.finalization_merge_commit, "c" * 40)
-        self.assertEqual(repository.cleanup_calls, [("codex/implementation", "codex/final")])
+        self.assertEqual(repository.cleanup_calls, [("codex/implementation", "codex/finalize-autonomous-happy-path")])
         self.assertEqual(github.merge_calls, [])
 
     def test_merged_finalization_returned_by_agent_is_reconciled_without_ready(self) -> None:
         implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)
         final_merged = PullRequestEvidence(22, "MERGED", True, True, "c" * 40)
-        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)])
+        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/finalize-already-finalized", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)])
         state = TransactionState(
             "already-finalized", "pcvantol/djconnect", str(self.prompt),
             "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/implementation",
@@ -3677,6 +3889,27 @@ class LocalAgentRunnerTest(unittest.TestCase):
         result = runner._start_finalization(state, 21)
         self.assertEqual(result.pull_request, 23)
         self.assertEqual(runner.agent.prompts, [])
+
+    def test_finalization_result_on_an_uncheckpointed_branch_is_rejected(self) -> None:
+        state = TransactionState(
+            "finalization-branch-guard", "pcvantol/djconnect", str(self.prompt),
+            "FINALIZE_AGENT", owner_authorized=True,
+            transaction_kind="FINALIZATION", branch="codex/finalize-finalization-branch-guard",
+            finalization_branch="codex/finalize-finalization-branch-guard",
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+
+        blocked = runner._advance_after_finalization_agent_result(
+            state,
+            AgentResult("COMPLETE", branch="qualification/incorrect-finalization", pull_request=22),
+        )
+
+        self.assertEqual(blocked.phase, "BLOCKED")
+        self.assertEqual(blocked.next_action, "finalization_branch_mismatch")
+        self.assertIsNone(blocked.finalization_pull_request)
 
     def test_finalization_recovery_persists_existing_pr_without_invoking_agent(self) -> None:
         state = TransactionState(

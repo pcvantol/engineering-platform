@@ -191,6 +191,20 @@ def _record_provider_free_admission(
 
 def _default_runner(repository_root: Path, *, central_database: Path | None = None) -> EngineeringRunner:
     """Construct the installed historical runner without a watcher or Agent."""
+    if os.environ.get("EP_QUALIFICATION_DETERMINISTIC_FLOW") == "1":
+        from .qualification_runtime import DeterministicQualificationAgent, LocalQualificationGitHub
+        github: object = LocalQualificationGitHub(repository_root)
+        if os.environ.get("EP_QUALIFICATION_GITHUB_WRITE_FLOW") == "1":
+            remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
+            match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())
+            expected = os.environ.get("EP_QUALIFICATION_GITHUB_REPOSITORY")
+            if remote.returncode == 0 and match is not None and match.group(1) == expected:
+                github = GhCliClient(repository=match.group(1))
+        return EngineeringRunner(
+            repository_root,
+            StateStore(repository_root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=False),
+            SubprocessRepositoryClient(), github, DeterministicQualificationAgent(),
+        )
     remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
     match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())
     repository = match.group(1) if remote.returncode == 0 and match else None
@@ -279,7 +293,10 @@ class ParityLifecycleDispatcher:
                     WHERE project_id=? AND (
                         state IN ('CLAIMED','RUNNING')
                         OR (state IN ('BLOCKED','FAILED') AND operator_resolution='OPEN')
-                        OR (operator_resolution='RETRIED' AND resolution_submission_id!=?)
+                        OR (operator_resolution='RETRIED' AND resolution_submission_id!=?
+                            AND NOT EXISTS (SELECT 1 FROM ep_parity_lifecycle_dispatches retry
+                                WHERE retry.submission_id=ep_parity_lifecycle_dispatches.resolution_submission_id
+                                  AND retry.operator_resolution='RETRIED'))
                     ) LIMIT 1""",
                 (context.project_id, submission_id),
             ).fetchone()
@@ -482,7 +499,12 @@ class ParityLifecycleDispatcher:
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, "RUNNING", duplicate)
         try:
             with _historical_admission_environment(repository_root, self.data_root):
-                if not duplicate:
+                # INITIALIZE_ONLY qualification deliberately allocates the
+                # canonical dispatch before writing the runner input.  A
+                # later normal resume refers to that same dispatch, but must
+                # still materialize the input exactly once before invoking
+                # the runner.
+                if not duplicate or not prompt.is_file():
                     self._persist_historical_input(repository_root, candidate, run_id, prompt)
                 runner = self.runner_factory(repository_root)
                 state = runner.run(

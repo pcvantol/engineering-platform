@@ -27,7 +27,10 @@ RECOVERY_STATES = frozenset({
 })
 ACTIVE_RECOVERY_STATES = frozenset({"RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"})
 TERMINAL_RECOVERY_STATES = RECOVERY_STATES - ACTIVE_RECOVERY_STATES
-CONTROLLED_INTERRUPTION_PHASES = frozenset({"QUALITY_CONTROL_AGENT"})
+# Quality assurance is now a read-only reviewer pipeline, not a provider turn.
+# The only active provider boundary that can be interrupted and recovered is
+# the implementation invocation.
+CONTROLLED_INTERRUPTION_PHASES = frozenset({"EXECUTE_AGENT"})
 CONTROL_DIRECTORY = Path(".engineering/artifacts/provider-recovery-fault-injection")
 
 
@@ -64,24 +67,30 @@ def controlled_interruption_status(root: Path, *, run_id: str, phase: str) -> st
     return "ARMED" if armed.is_file() else "NOT_ARMED"
 
 
-def _validate_control_target(root: Path, *, run_id: str, phase: str) -> object:
+def _validate_control_target(root: Path, *, run_id: str, phase: str,
+                             central_database: Path | None = None) -> object:
     if phase not in CONTROLLED_INTERRUPTION_PHASES:
         raise ControlledInterruptionControlError("phase is not supported for controlled interruption")
     try:
-        state = StateStore(root / ".engineering" / "engineering-runs").load(run_id)
+        state = StateStore(
+            root / ".engineering" / "engineering-runs",
+            central_database=central_database,
+            emit_local_projection=False,
+        ).load(run_id)
     except StateError as error:
         raise ControlledInterruptionControlError(str(error)) from error
     if state.terminal:
         raise ControlledInterruptionControlError("run is terminal")
     # The hook is deliberately offered only before its lifecycle boundary.  A
     # phase already entered may have an active provider that cannot be raced.
-    if state.phase not in PHASES or state.phase in {"QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP"}:
+    if state.phase not in PHASES or state.phase in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP"}:
         raise ControlledInterruptionControlError("target phase is already active or has passed")
     return state
 
 
-def arm_controlled_interruption(root: Path, *, run_id: str, phase: str, armed_by: str | None = None, reason: str | None = None) -> dict[str, object]:
-    _validate_control_target(root, run_id=run_id, phase=phase)
+def arm_controlled_interruption(root: Path, *, run_id: str, phase: str, armed_by: str | None = None,
+                                reason: str | None = None, central_database: Path | None = None) -> dict[str, object]:
+    _validate_control_target(root, run_id=run_id, phase=phase, central_database=central_database)
     armed, consumed = _control_paths(root, run_id, phase)
     if consumed.is_file():
         raise ControlledInterruptionControlError("controlled interruption is already consumed")
@@ -112,7 +121,8 @@ def disarm_controlled_interruption(root: Path, *, run_id: str, phase: str) -> st
     return "DISARMED"
 
 
-def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str) -> bool:
+def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str,
+                                         central_database: Path | None = None) -> bool:
     """Durably consume the explicit qualification-only interruption hook.
 
     The marker is a run-bound artifact rather than a provider recovery row:
@@ -125,7 +135,7 @@ def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str)
     requested = os.environ.get("ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE")
     armed, path = _control_paths(root, run_id, phase)
     durable_armed = armed.is_file()
-    if (requested != f"{run_id}:{phase}" and not durable_armed) or load_recovery_state(root, run_id) is not None:
+    if (requested != f"{run_id}:{phase}" and not durable_armed) or load_recovery_state(root, run_id, central_database=central_database) is not None:
         return False
     artifact_id = f"provider-recovery-fault-injection:{run_id}:{phase}"
     directory = root / CONTROL_DIRECTORY
@@ -159,6 +169,7 @@ def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str)
             root, path, artifact_id=artifact_id,
             artifact_type="CONTROLLED_PROVIDER_INTERRUPTION", content_type="application/json",
             created_at=str(payload["consumed_at"]), run_id=run_id,
+            central_database=central_database,
         )
     except Exception:
         # The exclusive marker remains intentionally: after an uncertain
@@ -174,11 +185,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--phase", required=True)
     parser.add_argument("--reason")
+    parser.add_argument("--central-database", type=Path,
+                        help="Explicit CENTRAL lifecycle database for an installed Server run.")
     args = parser.parse_args(argv)
     root = args.repo.resolve()
     try:
         if args.command == "arm-controlled-interruption":
-            payload = arm_controlled_interruption(root, run_id=args.run_id, phase=args.phase, reason=args.reason)
+            payload = arm_controlled_interruption(
+                root, run_id=args.run_id, phase=args.phase, reason=args.reason,
+                central_database=args.central_database,
+            )
             print(json.dumps({"status": "ARMED", **payload}, sort_keys=True))
         elif args.command == "controlled-interruption-status":
             print(json.dumps({"status": controlled_interruption_status(root, run_id=args.run_id, phase=args.phase), "run_id": args.run_id, "phase": args.phase}, sort_keys=True))

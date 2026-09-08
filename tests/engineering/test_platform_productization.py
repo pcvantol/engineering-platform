@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import json
 import sqlite3
+import shutil
 import tempfile
 import tomllib
 import unittest
@@ -33,6 +34,7 @@ from engineering_platform.platform_bootstrap import (
     _link_workspace,
     _merge_databases,
     _merge_workspace,
+    _provision_workspace_paths,
     _worktree_roots,
     _merge_legacy_workspace,
     _validate_legacy_merge,
@@ -60,6 +62,28 @@ def _version_projection_files() -> tuple[str, ...]:
 
 
 class PlatformProductizationTest(unittest.TestCase):
+    def test_runtime_workspace_symlink_is_excluded_from_git_untracked_evidence(self) -> None:
+        """The platform-owned workspace link must not fail a clean-candidate gate."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            root.mkdir()
+            (root / ".git" / "info").mkdir(parents=True)
+            config = root / "src" / "engineering_platform"
+            config.mkdir(parents=True)
+            (config / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
+                (ROOT / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            workspace = root / ".git" / "engineering-platform"
+            workspace.mkdir()
+            (root / ".engineering").symlink_to(workspace, target_is_directory=True)
+
+            _provision_workspace_paths(root, workspace)
+
+            self.assertEqual(
+                (root / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines(),
+                [".engineering"],
+            )
     def test_release_version_is_consistent_across_every_canonical_component(self) -> None:
         """A release cannot publish a mixed Server, Console, Runner, or package version."""
         manifest = json.loads((ROOT / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json").read_text(encoding="utf-8"))
@@ -133,12 +157,44 @@ class PlatformProductizationTest(unittest.TestCase):
             for relative in _version_projection_files():
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text('version = "2.1.0"\n', encoding="utf-8")
+                shutil.copy2(ROOT / relative, target)
+            module.set_version(root, "2.1.0")
             self.assertEqual(module.advance(root), "2.1.1")
             self.assertEqual(module.advance(root), "2.1.2")
-            for path in root.rglob("*"):
-                if path.is_file():
-                    self.assertIn("2.1.2", path.read_text(encoding="utf-8"))
+            self.assertEqual(module._current_version(root), "2.1.2")
+
+    def test_canonical_versioning_can_advance_a_minor_and_resets_patch(self) -> None:
+        import importlib.util
+        script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+        spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in _version_projection_files():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            module.set_version(root, "2.1.6")
+            self.assertEqual(module.advance(root, component="minor"), "2.2.0")
+            self.assertEqual(module._current_version(root), "2.2.0")
+
+    def test_bootstrap_docs_only_classification_does_not_allocate_a_version(self) -> None:
+        import importlib.util
+        script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+        spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in _version_projection_files():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            module.set_version(root, "2.3.0")
+            self.assertEqual(module.advance(root, component="none"), "2.3.0")
 
     def test_release_build_can_set_an_exact_branch_version_across_all_projections(self) -> None:
         import importlib.util
@@ -152,13 +208,34 @@ class PlatformProductizationTest(unittest.TestCase):
             for relative in _version_projection_files():
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text('version = "2.1.6"\n', encoding="utf-8")
+                shutil.copy2(ROOT / relative, target)
+            module.set_version(root, "2.1.6")
             self.assertEqual(module.set_version(root, "2.2.0"), "2.2.0")
-            for path in root.rglob("*"):
-                if path.is_file():
-                    self.assertIn("2.2.0", path.read_text(encoding="utf-8"))
+            self.assertEqual(module._current_version(root), "2.2.0")
+            package_lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(package_lock["version"], "2.2.0")
+            self.assertEqual(package_lock["packages"][""]["version"], "2.2.0")
             with self.assertRaisesRegex(RuntimeError, "stable X.Y.Z"):
                 module.set_version(root, "2.2")
+
+    def test_version_writer_rejects_invalid_last_projection_without_partial_update(self) -> None:
+        import importlib.util
+        script = ROOT / "tools" / "qualification" / "advance_platform_build.py"
+        spec = importlib.util.spec_from_file_location("advance_platform_build", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in _version_projection_files():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            pyproject_before = (root / "pyproject.toml").read_bytes()
+            (root / "src" / "engineering_platform" / "platform_version.py").write_text("# missing canonical constant\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "runtime version projection drift"):
+                module.set_version(root, "2.2.1")
+            self.assertEqual((root / "pyproject.toml").read_bytes(), pyproject_before)
 
     def test_public_api_has_all_productization_capabilities(self) -> None:
         registered = set(capabilities())

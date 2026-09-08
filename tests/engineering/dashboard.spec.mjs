@@ -3290,8 +3290,12 @@ test.describe("Engineering Status browser smoke", () => {
         steps: [
           { id: "execute", presentation_key: "lifecycle.step.execute_agent", state: "COMPLETED" },
           { id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
-            timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL", duration_ms: 1000, outcome: "ACTIVE" }] },
-            quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }] },
+            timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL_AGENT", duration_ms: 1000, outcome: "ACTIVE" }] },
+            quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }],
+            assurance_reviews: [
+              { reviewer: "quality", status: "PASS", findings: [] },
+              { reviewer: "security", status: "PASS", findings: [] },
+            ] },
         ],
       },
     }, {}));
@@ -3302,10 +3306,14 @@ test.describe("Engineering Status browser smoke", () => {
     const modal = page.locator("#lifecycleDetailModal");
     await expect(modal).toBeVisible();
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.quality_control_agent"]);
-    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.quality_control"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.quality_control_agent"]);
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_quality_evidence"]);
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.quality_evidence.test_coverage"]);
     await expect(modal).toContainText("Gerichte regressietest toegevoegd.");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.quality"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.security"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
+    await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
   });
 
@@ -10091,8 +10099,13 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueList")).not.toContainText("Later uitvoeren");
   });
 
-  test("renders CENTRAL FIFO items without offering a legacy file deferral", async ({ page }) => {
+  test("maps CENTRAL queue actions to their matching confirmation modal", async ({ page }) => {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+      status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] },
+      component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
+    } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await selectDashboardLocale(page, "nl");
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => queueItems([
       {
@@ -10102,11 +10115,54 @@ test.describe("Engineering Status browser smoke", () => {
         producer_type: "CLI",
         action_intent: "UNSPECIFIED",
         modified_at: "2026-08-02T10:01:00Z",
-        queue_source: "CENTRAL",
+        queue_source: "CENTRAL", disposition_revision: 3,
+        queue_state: "DEFERRED",
       },
     ], 1));
     await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
-    await expect(page.locator("#queueList .queue-defer")).toHaveCount(0);
+    await page.locator("#queueItems").evaluate((element) => { element.open = true; });
+    await expect(page.locator("#queueList .queue-item__actions")).toHaveCount(1);
+    const messages = DASHBOARD_MESSAGES[await page.locator("html").getAttribute("lang")];
+    expect(await page.locator("#queueList button").allTextContents()).toEqual([messages["queue.resume_action"]]);
+    const resume = page.getByRole("button", { name: messages["queue.resume_action"], exact: true });
+    await expect(resume).toHaveCount(1);
+    await expect(page.getByRole("button", { name: messages["queue.defer_action"], exact: true })).toHaveCount(0);
+    await resume.click();
+    await expect(page.locator("#confirmationModalTitle")).toHaveText(messages["queue.resume_title"]);
+    await expect(page.locator("#confirmationModalText")).toHaveText(
+      messages["queue.resume_description"].replace("{title}", "sub-central-fifo"),
+    );
+    await expect(page.locator("#confirmationModalConfirm")).toHaveText(messages["queue.resume_action"]);
+    await page.locator("#confirmationModalCancel").click();
+
+    await page.evaluate(() => queueItems([{
+      submission_id: "sub-central-fifo", filename: "sub-central-fifo",
+      title_kind: "producer_submission", producer_type: "CLI", action_intent: "UNSPECIFIED",
+      modified_at: "2026-08-02T10:01:00Z", queue_source: "CENTRAL", disposition_revision: 4, queue_state: "QUEUED",
+    }], 1));
+    for (const [actionKey, titleKey] of [
+      ["queue.defer_action", "queue.defer_title"],
+      ["queue.quarantine_action", "queue.quarantine_title"],
+      ["queue.decline_action", "queue.decline_title"],
+    ]) {
+      const action = messages[actionKey], title = messages[titleKey];
+      await page.getByRole("button", { name: action, exact: true }).click();
+      await expect(page.locator("#confirmationModalTitle")).toHaveText(title);
+      await expect(page.locator("#confirmationModalConfirm")).toHaveText(action);
+      await page.locator("#confirmationModalCancel").click();
+    }
+    await expect(page.locator("#queueList .queue-item__actions .queue-defer")).toHaveCount(3);
+    const decline = page.getByRole("button", { name: messages["queue.decline_action"], exact: true });
+    await expect(decline).toHaveClass(/queue-defer--destructive/);
+    await expect(decline).toHaveAttribute("title", messages["queue.decline_action"]);
+    await expect(decline).toHaveAttribute("aria-label", messages["queue.decline_action"]);
+
+    await page.evaluate(() => queueItems([{
+      submission_id: "sub-central-fifo", filename: "sub-central-fifo", title_kind: "producer_submission",
+      producer_type: "CLI", action_intent: "UNSPECIFIED", modified_at: "2026-08-02T10:01:00Z",
+      queue_source: "CENTRAL", disposition_revision: 5, queue_state: "QUARANTINED",
+    }], 1));
+    expect(await page.locator("#queueList button").allTextContents()).toEqual([messages["queue.resume_action"], messages["queue.decline_action"]]);
   });
 
   test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {

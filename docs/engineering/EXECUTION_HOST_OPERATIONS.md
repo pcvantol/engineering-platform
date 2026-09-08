@@ -127,12 +127,13 @@ terminal date, and a repeated recovery cannot add a second run or count.
 ## Controlled provider-interruption qualification proof
 
 For the dedicated, one-shot recovery proof, an operator may arm only an
-already-admitted, non-terminal run before it reaches `QUALITY_CONTROL_AGENT`:
+already-admitted, non-terminal run before it reaches `EXECUTE_AGENT`:
 
 ```sh
 python3 -m tools.engineering.provider_recovery arm-controlled-interruption \
   --repo /Users/pcvantol/Documents/GitHub/djconnect \
-  --run-id <run-id> --phase QUALITY_CONTROL_AGENT
+  --run-id <run-id> --phase EXECUTE_AGENT \
+  --central-database <CENTRAL_DATA_ROOT>/epdata.sqlite
 ```
 
 Inspect the exact control with `controlled-interruption-status` and cancel an
@@ -143,6 +144,70 @@ hierarchy. Its atomic consumed artifact remains the authoritative evidence;
 once consumed it cannot be disarmed or fired again. Prompt text and submission
 provenance cannot create this control, and it never creates a retry submission
 or new root run.
+
+For qualification, run the control together with the recovery tests rather
+than treating an armed marker as a passing result. The required evidence is:
+`ARMED` before the boundary, one `CONSUMED` control artifact at
+`EXECUTE_AGENT`, one recovery/retry lineage, and one terminal outcome.
+The deterministic installed E2E lives in
+`tools/qualification/p_deterministic_execution_e2e.py`. It uses an isolated
+CENTRAL root and local Git fixture to exercise Genesis, Managed, and a third
+controlled-recovery lane. The third lane pauses only its deterministic
+qualification adapter after the canonical `INITIALIZE` checkpoint, arms the
+real run-bound control through the installed CLI, and verifies `CONSUMED`, one
+same-run `RECOVERED` lineage, terminal assurance evidence, and the run in the
+dashboard's project-scoped history. The dedicated provider-recovery unit suite
+additionally qualifies unsafe and ambiguous recovery branches.
+
+### Installed qualification runtime composition
+
+The installed E2E also exercises the real host-preflight runtime checks. Its
+temporary CENTRAL root owns a minimal executable under
+`managed-codex-cli/bin/codex`; it reports the fixed qualification runtime
+version and is written into that root's `server.json` before the Server starts.
+This is a composition fixture, not a provider fallback: the deterministic
+qualification agent remains the only component that performs the test work.
+The launcher exists so `runtime_executable` and `runtime_invocation` are
+verified through the same configured EP-managed runtime boundary as a normal
+installation. It is removed with the temporary qualification root and never
+creates or relies on an account-wide Codex installation.
+
+Consequently, CI always runs Genesis, Managed and armed recovery with a real
+preflight. The separate external GitHub profile below additionally proves the
+remote-write adapter and merge boundaries; it is not invoked by ordinary CI.
+
+### Explicit external Managed GitHub qualification
+
+The default deterministic qualification never contacts GitHub. To prove the
+Managed hand-off against an approved dummy repository, an operator must supply
+all three values deliberately:
+
+```sh
+python3 tools/qualification/p_deterministic_execution_e2e.py --source-root . \
+  --managed-repository /absolute/path/to/clean-dummy-checkout \
+  --managed-github-repository owner/approved-dummy-repository \
+  --allow-managed-github-writes
+```
+
+The command rejects a dirty checkout, a non-matching `origin`, unavailable
+GitHub access, or a missing explicit write flag. It commits and pushes an
+implementation branch, creates and verifies its PR, then acts as the explicit
+operator only for that named disposable fixture: it merges the implementation
+PR, verifies the host-created `codex/finalize-<run-id>` Finalization PR,
+merges it, and requires the canonical run to reach `COMPLETE`. It repeats the
+same real remote handoff and finalization for the armed recovery lane, proving
+the same-run `RECOVERED` lineage rather than merely an armed marker. Remote
+branches are deleted by the GitHub merge operation; the fixture repository and
+the optional persistent local qualification root are retained for inspection.
+This profile is intentionally excluded from CI and release gates.
+
+## CENTRAL project lanes
+
+CENTRAL retains a FIFO lane per project. It permits at most one active,
+blocked-with-open-resolution, or retry-pending run in that project. The
+Lifecycle Worker may dispatch one eligible run from each different project in
+parallel, so a Genesis and a Managed run in separate projects may overlap; a
+second run in either same project cannot.
 
 ## Local repository validation gate
 

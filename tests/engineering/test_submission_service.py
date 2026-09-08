@@ -26,6 +26,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", ("djconnect", "{}", "ACTIVE", now, now))
             connection.execute("INSERT INTO ep_repository_registrations VALUES(?,?,?,?,?,?,?)", ("djconnect", "djconnect", "djconnect", "authority", "{}", now, now))
             self.credential = submission_service.issue_consumer_credential(connection, consumer_id="cli", project_id="djconnect")["credential"]
+            connection.execute("INSERT INTO ep_operator_capabilities VALUES(?,?,?,?,?)", ("cli", "djconnect", "QUEUE_HOLD_RESUME", now, None))
+            connection.execute("INSERT INTO ep_operator_capabilities VALUES(?,?,?,?,?)", ("cli", "djconnect", "QUEUE_DECLINE", now, None))
 
     def tearDown(self) -> None:
         server.stop(self.root)
@@ -47,6 +49,94 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertEqual(http.submission_id, cli.submission_id)
             self.assertEqual(connection.execute("SELECT count(*) FROM ep_submission_prompt_history").fetchone()[0], 1)
 
+    def test_operator_dispositions_are_audited_and_only_resumable_from_hold_states(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("operator"), transport="HTTP"))
+            held = submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="QUARANTINED", reason="Needs operator review",
+            )
+            self.assertEqual(held["state"], "QUARANTINED")
+            readback = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)
+            self.assertEqual(readback["disposition"], {"state": "QUARANTINED", "terminal": False, "execution_eligible": False, "revision": 1, "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None})
+            self.assertEqual(
+                submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)["submission"]["state"],
+                "QUARANTINED",
+            )
+            self.assertEqual(submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="DECLINED", reason="The operator rejected the quarantined submission",
+            )["state"], "DECLINED")
+            declined_readback = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)
+            self.assertIsNone(declined_readback["run"])
+            self.assertEqual(declined_readback["result"]["outcome"], "NOT_STARTED")
+            self.assertTrue(declined_readback["disposition"]["terminal"])
+            events = [row[0] for row in connection.execute("SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,))]
+            self.assertEqual(events[-2:], ["OPERATOR_QUEUE_QUARANTINED", "OPERATOR_QUEUE_DECLINED"])
+            self.assertNotIn("OPERATOR_QUEUE_QUEUED", events[-2:])
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("resume"), transport="HTTP"))
+            held = submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="QUARANTINED", reason="Needs operator review",
+            )
+            resumed = submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="QUEUED", reason="Review completed",
+            )
+            self.assertEqual(resumed["state"], "QUEUED")
+            events = [row[0] for row in connection.execute("SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,))]
+            self.assertEqual(events[-2:], ["OPERATOR_QUEUE_QUARANTINED", "OPERATOR_QUEUE_QUEUED"])
+
+            deferred = submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="DEFERRED", reason="Schedule later",
+            )
+            self.assertEqual(deferred["state"], "DEFERRED")
+            self.assertEqual(submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="QUEUED", reason="Schedule resumed",
+            )["state"], "QUEUED")
+            self.assertEqual(submission_service.operator_queue_disposition(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                disposition="DECLINED", reason="No longer wanted",
+            )["state"], "DECLINED")
+            with self.assertRaisesRegex(submission_service.SubmissionError, "QUEUE_DISPOSITION_CONFLICT"):
+                submission_service.operator_queue_disposition(
+                    connection, project_id="djconnect", submission_id=submitted.submission_id,
+                    disposition="QUEUED", reason="Must not revive a decline",
+                )
+
+    def test_claimed_submission_rejects_queue_mutation_without_audit_event(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("claimed"), transport="HTTP"))
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-claimed", "djconnect", "CLAIMED", "now", "now", "MANAGED"))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submitted.submission_id, "djconnect", "djconnect", "run-claimed", "CLAIMED", "prompt", "now", "now", "NONE"))
+            before = connection.execute("SELECT state,disposition_revision FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone()
+            with self.assertRaisesRegex(submission_service.SubmissionError, "QUEUE_DISPOSITION_CONFLICT"):
+                submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason="Too late")
+            self.assertEqual(connection.execute("SELECT state,disposition_revision FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone(), before)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind LIKE 'OPERATOR_QUEUE_%'", (submitted.submission_id,)).fetchone()[0], 0)
+
+    def test_queue_operation_id_replays_once_and_rejects_payload_collision(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("operation"), transport="HTTP"))
+            first = submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason="Investigate source", expected_state="QUEUED", expected_revision=0, operation_id="queue-operation-1", actor_reference="operator-a")
+            replay = submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason="Investigate source", expected_state="QUEUED", expected_revision=0, operation_id="queue-operation-1", actor_reference="operator-a")
+            self.assertEqual((first["state"], replay["state"]), ("QUARANTINED", "QUARANTINED"))
+            self.assertTrue(replay["replayed"])
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind='OPERATOR_QUEUE_QUARANTINED'", (submitted.submission_id,)).fetchone()[0], 1)
+            with self.assertRaisesRegex(submission_service.SubmissionError, "OPERATION_ID_CONFLICT"):
+                submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="DECLINED", reason="Different command", expected_state="QUARANTINED", expected_revision=1, operation_id="queue-operation-1", actor_reference="operator-a")
+
+    def test_queue_disposition_rejects_non_string_or_control_reason_without_mutation(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("invalid-reason"), transport="HTTP"))
+            for reason in (None, {}, [], True, "\x00bad", "\n"):
+                with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_QUEUE_DISPOSITION"):
+                    submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason=reason)  # type: ignore[arg-type]
+            self.assertEqual(connection.execute("SELECT state,disposition_revision FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone(), ("QUEUED", 0))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind LIKE 'OPERATOR_QUEUE_%'", (submitted.submission_id,)).fetchone()[0], 0)
+
     def test_http_auth_scope_and_acceptance(self) -> None:
         server.start(self.root)
         request = Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions", data=json.dumps(self.payload("http")).encode(), headers={"Authorization": f"Bearer {self.credential}", "Content-Type": "application/json"}, method="POST")
@@ -57,6 +147,66 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with self.assertRaises(HTTPError) as rejected:
             urlopen(wrong)  # nosec B310
         self.assertEqual(rejected.exception.code, 401)
+
+    def test_console_queue_actions_change_only_the_selected_submission_and_are_audited(self) -> None:
+        """Exercise the browser-facing queue action endpoint against CENTRAL."""
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(
+                connection, submission_service.request_from_mapping("djconnect", self.payload("console-actions"), transport="HTTP"),
+            )
+        server.start(self.root)
+        endpoint = f"http://127.0.0.1:{self.port}/api/queue-disposition?project=djconnect"
+
+        current_state, current_revision = "QUEUED", 0
+        def action(disposition: str, reason: str) -> dict[str, object]:
+            nonlocal current_state, current_revision
+            revision, expected_state = current_revision, current_state
+            body = json.dumps({"contract_version": "1.0", "operation_id": f"operation-{disposition}-{revision}", "submission_id": submitted.submission_id, "expected_state": expected_state, "expected_revision": revision, "disposition": disposition, "reason": reason}).encode()
+            request = Request(endpoint, data=body, method="POST", headers={
+                "Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}", "Authorization": f"Bearer {self.credential}",
+            })
+            with urlopen(request) as response:  # nosec B310
+                result = json.loads(response.read())
+            current_state, current_revision = result["state"], result["resulting_revision"]
+            return result
+
+        self.assertEqual(action("DEFERRED", "Wait for the maintenance window")["state"], "DEFERRED")
+        self.assertEqual(action("QUEUED", "Maintenance window is open")["state"], "QUEUED")
+        # Quarantine is a separate operator hold and must be independently resumable.
+        self.assertEqual(action("QUARANTINED", "Investigate the source envelope")["state"], "QUARANTINED")
+        self.assertEqual(action("QUEUED", "Investigation completed")["state"], "QUEUED")
+        self.assertEqual(action("DECLINED", "The request is no longer needed")["state"], "DECLINED")
+        body = json.dumps({"contract_version": "1.0", "operation_id": "must-not-revive", "submission_id": submitted.submission_id, "expected_state": "DECLINED", "expected_revision": current_revision, "disposition": "QUEUED", "reason": "Must not revive a declined request"}).encode()
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(Request(endpoint, data=body, method="POST", headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}", "Authorization": f"Bearer {self.credential}"}))  # nosec B310
+        self.assertEqual(rejected.exception.code, 409)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            events = [row[0] for row in connection.execute(
+                "SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,)
+            )]
+        self.assertEqual(events[-5:], [
+            "OPERATOR_QUEUE_DEFERRED", "OPERATOR_QUEUE_QUEUED",
+            "OPERATOR_QUEUE_QUARANTINED", "OPERATOR_QUEUE_QUEUED", "OPERATOR_QUEUE_DECLINED",
+        ])
+
+    def test_console_queue_actions_reject_cross_origin_and_unknown_project(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(
+                connection, submission_service.request_from_mapping("djconnect", self.payload("console-denial"), transport="HTTP"),
+            )
+        server.start(self.root)
+        body = json.dumps({"submission_id": submitted.submission_id, "disposition": "DEFERRED", "reason": "Later"}).encode()
+        cases = (
+            (f"http://127.0.0.1:{self.port}/api/queue-disposition?project=djconnect", "https://untrusted.example", 403),
+            (f"http://127.0.0.1:{self.port}/api/queue-disposition?project=other", f"http://127.0.0.1:{self.port}", 409),
+        )
+        for endpoint, origin, expected in cases:
+            request = Request(endpoint, data=body, method="POST", headers={"Content-Type": "application/json", "Origin": origin})
+            with self.assertRaises(HTTPError) as rejected:
+                urlopen(request)  # nosec B310
+            self.assertEqual(rejected.exception.code, expected)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(connection.execute("SELECT state FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone()[0], "QUEUED")
 
     def test_authenticated_producer_readback_is_exactly_correlated_and_terminal_evidence_backed(self) -> None:
         server.start(self.root)
@@ -82,7 +232,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions/{submission_id}"
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             initial = json.loads(response.read())
-        self.assertEqual(initial["contract_version"], "1.1")
+        self.assertEqual(initial["contract_version"], "1.2")
         self.assertEqual(initial["correlation"], {
             "correlation_id": "forge-correlation-1", "mission_id": "mission-1", "engineering_action_id": "action-1",
         })
@@ -94,7 +244,13 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-readback", "djconnect", "COMPLETE", "now", "now", "MANAGED"))
             connection.execute("INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("run-readback", "2026-01-01", "now", "now", "now", 0, 0, "COMPLETE", None, None, None, "MANAGED", "djconnect", "djconnect", "test"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submission_id, "djconnect", "djconnect", "run-readback", "COMPLETE", "/private/prompt", "now", "now", "NONE"))
-            checkpoint = TransactionState(run_id="run-readback", repository="djconnect", prompt_path="prompt", phase="COMPLETE", terminal=True, action_intent="VALIDATION_ONLY")
+            profile = {"version": "validation-profile@1", "digest": "sha256:" + "b" * 64, "candidate_sha": "c" * 40}
+            finding = {"id": "security-1", "fingerprint": "d" * 32, "category": "SECURITY", "criterion": "post_implementation_assurance", "observation": "Project isolation lacks a negative test.", "severity": "HIGH", "confidence": "MEDIUM", "blocking": True, "disposition": "OPEN"}
+            reviews = (
+                {"reviewer": "quality", "status": "PASS", "candidate_sha": "c" * 40, "profile_digest": profile["digest"], "invocation_id": "quality-1", "findings": []},
+                {"reviewer": "security", "status": "FAIL", "candidate_sha": "c" * 40, "profile_digest": profile["digest"], "invocation_id": "security-1", "findings": [finding]},
+            )
+            checkpoint = TransactionState(run_id="run-readback", repository="djconnect", prompt_path="prompt", phase="COMPLETE", terminal=True, action_intent="VALIDATION_ONLY", assurance_profile=profile, assurance_reviews=reviews, repair_iterations=2)
             connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps(checkpoint.to_dict()), "COMPLETE", "now"))
             connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)", ("run-readback", "COMPLETE", "safe", "now", None, "/private/report", "now"))
         artifact_id = submission_service.write_terminal_evidence(self.root, repository_root=self.root, run_id="run-readback")
@@ -104,6 +260,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             stored_artifact = submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id=artifact_id)
             self.assertIsNotNone(stored_artifact)
             self.assertEqual(json.loads(stored_artifact or b"{}")['run']['id'], "run-readback")
+            findings_artifact = submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id="assurance-findings:run-readback")
+            self.assertEqual(json.loads(findings_artifact or b"{}")["reviews"], list(reviews))
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             terminal = json.loads(response.read())
         self.assertEqual(terminal["run"]["id"], "run-readback")
@@ -116,6 +274,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             artifact = json.loads(response.read())
         self.assertEqual(artifact["submission"]["id"], submission_id)
         self.assertEqual(artifact["run"]["id"], "run-readback")
+        self.assertEqual(artifact["assurance"]["repair_rounds"], {"used": 2, "maximum": 3})
+        self.assertEqual(artifact["assurance"]["findings"]["artifact"]["id"], "assurance-findings:run-readback")
 
         # The projection is CENTRAL state, not a process-local cache: a Server
         # restart preserves the exact submission/run/evidence correlation.
@@ -152,6 +312,35 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertEqual(corrupt["evidence"]["status"], "CORRUPT")  # type: ignore[index]
             self.assertFalse(corrupt["result"]["delivery_qualified"])  # type: ignore[index]
             self.assertIsNone(submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id=artifact_id))
+
+    def test_terminal_assurance_requires_a_complete_current_pair_and_explicit_historical_resolution(self) -> None:
+        """A missing/stale review cannot become PASS through empty aggregation."""
+        candidate, digest = "c" * 40, "sha256:" + "b" * 64
+        profile = {"version": "validation-profile@1", "digest": digest, "candidate_sha": candidate}
+        quality = {"reviewer": "quality", "status": "PASS", "candidate_sha": candidate,
+                   "profile_digest": digest, "invocation_id": "quality-current", "findings": []}
+        security = {"reviewer": "security", "status": "PASS", "candidate_sha": candidate,
+                    "profile_digest": digest, "invocation_id": "security-current", "findings": []}
+        base = dict(run_id="assurance-current", repository="djconnect", prompt_path="prompt",
+                    phase="COMPLETE", terminal=True, assurance_profile=profile)
+        self.assertEqual(submission_service._current_assurance(TransactionState(**base))[0], "UNRESOLVED")
+        self.assertEqual(submission_service._current_assurance(TransactionState(**base, assurance_reviews=(quality,)))[0], "UNRESOLVED")
+        stale = {**security, "candidate_sha": "d" * 40}
+        self.assertEqual(submission_service._current_assurance(TransactionState(**base, assurance_reviews=(quality, stale)))[0], "UNRESOLVED")
+
+        old_finding = {"id": "old-security", "fingerprint": "e" * 32, "category": "SECURITY",
+                       "criterion": "isolation", "observation": "Missing denial test", "severity": "HIGH",
+                       "confidence": "HIGH", "blocking": True, "disposition": "OPEN"}
+        old_security = {**security, "status": "FAIL", "invocation_id": "security-old", "findings": [old_finding]}
+        unresolved = TransactionState(**base, assurance_reviews=(old_security, quality, security))
+        self.assertEqual(submission_service._current_assurance(unresolved)[0], "FAIL")
+        resolved = TransactionState(
+            **base, assurance_reviews=(old_security, quality, security),
+            assurance_resolutions=({"finding_id": "old-security", "disposition": "RESOLVED",
+                                    "resolution_ref": "repair:assurance-current:1|quality-current,security-current",
+                                    "candidate_sha": candidate},),
+        )
+        self.assertEqual(submission_service._current_assurance(resolved)[0], "PASS")
 
     def test_forge_provenance_is_required_and_part_of_idempotency_identity(self) -> None:
         payload = self.payload("forge-replay")

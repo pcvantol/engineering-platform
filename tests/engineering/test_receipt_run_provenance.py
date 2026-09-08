@@ -68,7 +68,11 @@ class ReceiptRunProvenancePersistenceTest(unittest.TestCase):
             db.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51)))")
             db.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,51 FROM ep_installations_schema52")
             db.execute("DROP TABLE ep_installations_schema52")
-            db.execute("DELETE FROM engineering_schema_migrations WHERE version IN (52,53)")
+            # Keep the canary a genuine schema-51 installation.  Newer Server
+            # migrations may already have been applied by setUp; retaining one
+            # would make `_schema_version` report the current schema and skip
+            # the provenance upgrade this fixture is meant to exercise.
+            db.execute("DELETE FROM engineering_schema_migrations WHERE version >= 52")
             db.execute("UPDATE engineering_metadata SET value='51' WHERE key='installation.schema_version'")
             db.execute("PRAGMA legacy_alter_table=OFF")
 
@@ -78,7 +82,10 @@ class ReceiptRunProvenancePersistenceTest(unittest.TestCase):
         server.initialize(self.root)
         with sqlite3.connect(self.database) as db:
             self.assertEqual(db.execute("SELECT submission_id,run_id,project_id,repository_id,installation_id FROM ep_receipt_run_provenance ORDER BY submission_id").fetchall(), [("sub-a", "run-a", "project-a", "repo-a", self.installation), ("sub-b", "run-b", "project-b", "repo-b", self.installation)])
-            self.assertEqual(db.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], 53)
+            self.assertEqual(
+                db.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
+                server.SERVER_STORE_SCHEMA_VERSION,
+            )
 
     def test_schema_51_upgrade_rejects_an_incomplete_or_conflicting_import(self) -> None:
         self._downgrade_to_schema_51()

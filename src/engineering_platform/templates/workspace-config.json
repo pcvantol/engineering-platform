@@ -3,7 +3,7 @@
   "platform": {
     "id": "engineering-platform",
     "name": "Engineering Platform",
-    "version": "2.1.6",
+    "version": "2.3.0",
     "generation": 2,
     "documentation_namespace": "engineering-platform",
     "capability_registry_version": 1

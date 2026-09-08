@@ -377,6 +377,15 @@ export const DASHBOARD_MESSAGES = {
     "queue.defer_description": "Move {title} out of the active queue? It is retained in Inbox/_deferred and will not be executed until it is returned manually.",
     "queue.defer_failed": "The Inbox item could not be deferred safely.",
     "queue.defer_title": "Defer execution",
+    "queue.resume_action": "Resume",
+    "queue.resume_description": "Return {title} to the active queue? It may be executed when it reaches the front of the queue.",
+    "queue.resume_title": "Resume execution",
+    "queue.quarantine_action": "Quarantine",
+    "queue.quarantine_description": "Place {title} in quarantine? It remains preserved and cannot be executed until an operator resumes it.",
+    "queue.quarantine_title": "Quarantine execution",
+    "queue.decline_action": "Decline",
+    "queue.decline_description": "Decline {title}? This closes the submission and it cannot be resumed from the queue.",
+    "queue.decline_title": "Decline execution",
     "queue.filename": "Filename: {filename} · changed: {modified}",
     "queue.runtime_invocation_blocked": "The Inbox is waiting because the local Codex CLI cannot start. To repair it manually, run: npm install -g @openai/codex@latest",
     "queue.managed_branch_blocked": "The Inbox is paused because this workspace is on a working branch. The Execution Host may only claim work from main.",
@@ -1013,6 +1022,15 @@ export const DASHBOARD_MESSAGES = {
     "queue.defer_description": "{title} uit de actieve wachtrij halen? Het bestand blijft bewaard in Inbox/_deferred en wordt pas weer uitgevoerd wanneer het handmatig wordt teruggezet.",
     "queue.defer_failed": "De Inbox-opdracht kon niet veilig worden uitgesteld.",
     "queue.defer_title": "Uitvoering uitstellen",
+    "queue.resume_action": "Hervatten",
+    "queue.resume_description": "{title} terugzetten in de actieve wachtrij? De uitvoering kan starten zodra deze vooraan staat.",
+    "queue.resume_title": "Uitvoering hervatten",
+    "queue.quarantine_action": "In quarantaine zetten",
+    "queue.quarantine_description": "{title} in quarantaine zetten? De inzending blijft bewaard en kan pas na hervatten door een operator worden uitgevoerd.",
+    "queue.quarantine_title": "Uitvoering in quarantaine zetten",
+    "queue.decline_action": "Afwijzen",
+    "queue.decline_description": "{title} afwijzen? Hiermee wordt de inzending gesloten en kan deze niet vanuit de wachtrij worden hervat.",
+    "queue.decline_title": "Uitvoering afwijzen",
     "queue.filename": "Bestandsnaam: {filename} · gewijzigd: {modified}",
     "queue.runtime_invocation_blocked": "De Inbox wacht omdat de lokale Codex CLI niet kan starten. Herstel dit handmatig met: npm install -g @openai/codex@latest",
     "queue.managed_branch_blocked": "De Inbox is gepauzeerd omdat deze werkmap op een werkbranch staat. De Execution Host mag alleen werk vanaf main claimen.",
@@ -1649,6 +1667,15 @@ export const DASHBOARD_MESSAGES = {
     "queue.defer_description": "{title} aus der aktiven Warteschlange verschieben? Die Datei bleibt in Inbox/_deferred erhalten und wird erst nach einer manuellen Rückgabe ausgeführt.",
     "queue.defer_failed": "Der Inbox-Auftrag konnte nicht sicher zurückgestellt werden.",
     "queue.defer_title": "Ausführung zurückstellen",
+    "queue.resume_action": "Fortsetzen",
+    "queue.resume_description": "{title} wieder in die aktive Warteschlange stellen? Die Ausführung kann beginnen, sobald sie an der Reihe ist.",
+    "queue.resume_title": "Ausführung fortsetzen",
+    "queue.quarantine_action": "In Quarantäne verschieben",
+    "queue.quarantine_description": "{title} in Quarantäne verschieben? Die Übermittlung bleibt erhalten und kann erst nach einer Operatorfreigabe ausgeführt werden.",
+    "queue.quarantine_title": "Ausführung in Quarantäne verschieben",
+    "queue.decline_action": "Ablehnen",
+    "queue.decline_description": "{title} ablehnen? Dadurch wird die Übermittlung geschlossen und kann nicht mehr aus der Warteschlange fortgesetzt werden.",
+    "queue.decline_title": "Ausführung ablehnen",
     "queue.filename": "Dateiname: {filename} · geändert: {modified}",
     "queue.runtime_invocation_blocked": "Die Inbox wartet, weil die lokale Codex-CLI nicht starten kann. Manuelle Reparatur: npm install -g @openai/codex@latest",
     "queue.managed_branch_blocked": "Die Inbox ist pausiert, weil dieser Arbeitsbereich auf einem Arbeitsbranch steht. Der Execution Host darf Arbeit nur von main beanspruchen.",
@@ -2220,6 +2247,15 @@ export const DASHBOARD_MESSAGES = {
     "queue.defer_description": "Retirer {title} de la file active ? Le fichier reste conservé dans Inbox/_deferred et ne sera exécuté qu’après un retour manuel.",
     "queue.defer_failed": "L’élément Inbox n’a pas pu être reporté en toute sécurité.",
     "queue.defer_title": "Reporter l’exécution",
+    "queue.resume_action": "Reprendre",
+    "queue.resume_description": "Remettre {title} dans la file active ? L’exécution pourra démarrer lorsqu’elle arrivera en tête.",
+    "queue.resume_title": "Reprendre l’exécution",
+    "queue.quarantine_action": "Mettre en quarantaine",
+    "queue.quarantine_description": "Mettre {title} en quarantaine ? La soumission reste conservée et ne pourra être exécutée qu’après reprise par un opérateur.",
+    "queue.quarantine_title": "Mettre l’exécution en quarantaine",
+    "queue.decline_action": "Refuser",
+    "queue.decline_description": "Refuser {title} ? La soumission sera clôturée et ne pourra plus être reprise depuis la file.",
+    "queue.decline_title": "Refuser l’exécution",
     "queue.filename": "Nom du fichier : {filename} · modifié : {modified}",
     "queue.runtime_invocation_blocked": "La boîte de réception attend car l’interface CLI Codex locale ne peut pas démarrer. Réparation manuelle : npm install -g @openai/codex@latest",
     "queue.managed_branch_blocked": "La boîte de réception est en pause car cet espace de travail est sur une branche de travail. L’Execution Host ne peut réclamer du travail que depuis main.",
@@ -2791,6 +2827,15 @@ export const DASHBOARD_MESSAGES = {
     "queue.defer_description": "¿Quitar {title} de la cola activa? El archivo se conserva en Inbox/_deferred y no se ejecutará hasta que se devuelva manualmente.",
     "queue.defer_failed": "El elemento de Inbox no se pudo aplazar de forma segura.",
     "queue.defer_title": "Aplazar ejecución",
+    "queue.resume_action": "Reanudar",
+    "queue.resume_description": "¿Devolver {title} a la cola activa? La ejecución podrá comenzar cuando llegue al primer puesto.",
+    "queue.resume_title": "Reanudar ejecución",
+    "queue.quarantine_action": "Poner en cuarentena",
+    "queue.quarantine_description": "¿Poner {title} en cuarentena? El envío se conserva y solo podrá ejecutarse tras reanudarlo un operador.",
+    "queue.quarantine_title": "Poner la ejecución en cuarentena",
+    "queue.decline_action": "Rechazar",
+    "queue.decline_description": "¿Rechazar {title}? El envío se cerrará y no podrá reanudarse desde la cola.",
+    "queue.decline_title": "Rechazar ejecución",
     "queue.filename": "Nombre de archivo: {filename} · modificado: {modified}",
     "queue.runtime_invocation_blocked": "La bandeja de entrada está esperando porque la CLI local de Codex no puede iniciarse. Reparación manual: npm install -g @openai/codex@latest",
     "queue.managed_branch_blocked": "La bandeja de entrada está en pausa porque este espacio de trabajo está en una rama de trabajo. El Execution Host solo puede reclamar trabajo desde main.",
@@ -3321,6 +3366,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.detail_quality_evidence":"Uitge
 Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.detail_quality_evidence":"Durchgeführte Qualitätsverbesserungen","lifecycle.quality_evidence.refactor":"Refaktorierung","lifecycle.quality_evidence.test_coverage":"Testabdeckung","lifecycle.quality_evidence.documentation":"Dokumentation","lifecycle.quality_evidence.validation":"Validierung","lifecycle.quality_evidence.no_change_required":"Keine Änderung erforderlich"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"lifecycle.detail_quality_evidence":"Améliorations de qualité réalisées","lifecycle.quality_evidence.refactor":"Refactorisation","lifecycle.quality_evidence.test_coverage":"Couverture de tests","lifecycle.quality_evidence.documentation":"Documentation","lifecycle.quality_evidence.validation":"Validation","lifecycle.quality_evidence.no_change_required":"Aucune modification nécessaire"});
 Object.assign(DASHBOARD_MESSAGES.es, {"lifecycle.detail_quality_evidence":"Mejoras de calidad realizadas","lifecycle.quality_evidence.refactor":"Refactorización","lifecycle.quality_evidence.test_coverage":"Cobertura de pruebas","lifecycle.quality_evidence.documentation":"Documentación","lifecycle.quality_evidence.validation":"Validación","lifecycle.quality_evidence.no_change_required":"No se requiere ningún cambio"});
+Object.assign(DASHBOARD_MESSAGES.en, {"lifecycle.detail_assurance":"Quality and security assurance","lifecycle.repair_rounds":"Repair rounds: {used}/{maximum}","lifecycle.assurance_no_findings":"No findings recorded"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.detail_assurance":"Kwaliteits- en beveiligingscontrole","lifecycle.repair_rounds":"Herstelrondes: {used}/{maximum}","lifecycle.assurance_no_findings":"Geen bevindingen vastgelegd"});
+Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.detail_assurance":"Qualitäts- und Sicherheitsprüfung","lifecycle.repair_rounds":"Reparaturrunden: {used}/{maximum}","lifecycle.assurance_no_findings":"Keine Befunde erfasst"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"lifecycle.detail_assurance":"Assurance qualité et sécurité","lifecycle.repair_rounds":"Cycles de correction : {used}/{maximum}","lifecycle.assurance_no_findings":"Aucune conclusion enregistrée"});
+Object.assign(DASHBOARD_MESSAGES.es, {"lifecycle.detail_assurance":"Garantía de calidad y seguridad","lifecycle.repair_rounds":"Rondas de reparación: {used}/{maximum}","lifecycle.assurance_no_findings":"No se registraron hallazgos"});
 Object.assign(DASHBOARD_MESSAGES.en, {"lifecycle.detail_repair_evidence":"Executed pull request check repairs","lifecycle.detail_repair_iteration":"Repair iteration {iteration}","lifecycle.repair_outcome.submitted_for_recheck":"Submitted for recheck","lifecycle.repair_outcome.agent_failed":"Agent repair failed","lifecycle.repair_outcome.agent_timed_out":"Agent repair timed out"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.detail_repair_evidence":"Uitgevoerd PR-controleherstel","lifecycle.detail_repair_iteration":"Hersteliteratie {iteration}","lifecycle.repair_outcome.submitted_for_recheck":"Ingediend voor hercontrole","lifecycle.repair_outcome.agent_failed":"Agentherstel mislukt","lifecycle.repair_outcome.agent_timed_out":"Agentherstel heeft de tijdslimiet overschreden"});
 Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.detail_repair_evidence":"Durchgeführte PR-Prüfreparaturen","lifecycle.detail_repair_iteration":"Reparaturiteration {iteration}","lifecycle.repair_outcome.submitted_for_recheck":"Zur erneuten Prüfung eingereicht","lifecycle.repair_outcome.agent_failed":"Agentenreparatur fehlgeschlagen","lifecycle.repair_outcome.agent_timed_out":"Zeitlimit der Agentenreparatur überschritten"});
@@ -3375,6 +3425,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"telemetry.phase.quality_control":"Kwalite
 Object.assign(DASHBOARD_MESSAGES.de, {"telemetry.phase.quality_control":"Qualitätskontrolle"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"telemetry.phase.quality_control":"Contrôle qualité"});
 Object.assign(DASHBOARD_MESSAGES.es, {"telemetry.phase.quality_control":"Control de calidad"});
+Object.assign(DASHBOARD_MESSAGES.en, {"telemetry.phase.quality_control_agent":"Autonomous quality control","reviewer.quality":"Quality review","reviewer.security":"Security review","lifecycle.assurance_status.pass":"Passed","lifecycle.assurance_status.fail":"Failed","lifecycle.assurance_status.unresolved":"Unresolved"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"telemetry.phase.quality_control_agent":"Autonome kwaliteitscontrole","reviewer.quality":"Kwaliteitsreview","reviewer.security":"Beveiligingsreview","lifecycle.assurance_status.pass":"Geslaagd","lifecycle.assurance_status.fail":"Mislukt","lifecycle.assurance_status.unresolved":"Niet opgehelderd"});
+Object.assign(DASHBOARD_MESSAGES.de, {"telemetry.phase.quality_control_agent":"Autonome Qualitätskontrolle","reviewer.quality":"Qualitätsprüfung","reviewer.security":"Sicherheitsprüfung","lifecycle.assurance_status.pass":"Bestanden","lifecycle.assurance_status.fail":"Fehlgeschlagen","lifecycle.assurance_status.unresolved":"Ungeklärt"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"telemetry.phase.quality_control_agent":"Contrôle qualité autonome","reviewer.quality":"Revue qualité","reviewer.security":"Revue de sécurité","lifecycle.assurance_status.pass":"Réussi","lifecycle.assurance_status.fail":"Échec","lifecycle.assurance_status.unresolved":"Non résolu"});
+Object.assign(DASHBOARD_MESSAGES.es, {"telemetry.phase.quality_control_agent":"Control de calidad autónomo","reviewer.quality":"Revisión de calidad","reviewer.security":"Revisión de seguridad","lifecycle.assurance_status.pass":"Correcto","lifecycle.assurance_status.fail":"Fallido","lifecycle.assurance_status.unresolved":"Sin resolver"});
 Object.assign(DASHBOARD_MESSAGES.en, {"workspace_progress.primary_codex_commands":"{count} primary Codex commands executed","telemetry.phase.capability_review":"Capability review","lifecycle.step.reconcile_agent":"End reconciliation","lifecycle.step.wait_for_reconciliation_merge":"Reconciliation merge","operational.stale_run":"Execution no longer active","operational.waiting_for_operator_merge":"Implementation merge","operational.stale_host_ownership":"Execution Host ownership is no longer active; no execution is currently running."});
 Object.assign(DASHBOARD_MESSAGES.nl, {"workspace_progress.primary_codex_commands":"{count} primaire Codex-opdrachten uitgevoerd","telemetry.phase.capability_review":"Specialistenreview","lifecycle.step.reconcile_agent":"Eind-reconciliatie","lifecycle.step.wait_for_reconciliation_merge":"Reconciliatie-merge","operational.stale_run":"Uitvoering niet meer actief","operational.waiting_for_operator_merge":"Implementatie-merge","operational.stale_host_ownership":"De uitvoeringseigenaar is niet meer actief; er draait momenteel geen uitvoering."});
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace_progress.primary_codex_commands":"{count} primäre Codex-Befehle ausgeführt","telemetry.phase.capability_review":"Fähigkeitsprüfung","lifecycle.step.reconcile_agent":"Endabgleich","lifecycle.step.wait_for_reconciliation_merge":"Abgleich-Merge","operational.stale_run":"Ausführung nicht mehr aktiv","operational.waiting_for_operator_merge":"Implementierungs-Merge","operational.stale_host_ownership":"Die Ausführungsinstanz ist nicht mehr aktiv; derzeit läuft keine Ausführung."});

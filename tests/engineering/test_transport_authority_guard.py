@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from engineering_platform.platform_components import (
     PLATFORM_COMPONENT_IDS,
@@ -121,6 +124,28 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         self.assertIn("time.monotonic() + DEPENDABOT_BINDING_TIMEOUT_SECONDS", qualification)
         self.assertIn("DEPENDABOT_DISPATCH_TIMEOUT_SECONDS = 60", qualification)
         self.assertIn("timeout=DEPENDABOT_DISPATCH_TIMEOUT_SECONDS", qualification)
+
+    def test_installed_bootstrap_retries_only_the_transient_post_crash_store_window(self) -> None:
+        """Crash recovery may retry idempotent topology bootstrap, never credential issuance."""
+        root = Path(__file__).resolve().parents[2]
+        specification = importlib.util.spec_from_file_location(
+            "p_transport_installed_ingress_matrix",
+            root / "tools" / "qualification" / "p_transport_installed_ingress_matrix.py",
+        )
+        self.assertIsNotNone(specification)
+        module = importlib.util.module_from_spec(specification)  # type: ignore[arg-type]
+        specification.loader.exec_module(module)  # type: ignore[union-attr]
+        unavailable = subprocess.CompletedProcess(("server",), 2, "", '{"error":"EP Server store is unavailable.","ready":false}')
+        success = subprocess.CompletedProcess(("server",), 0, '{"result":"REGISTERED"}', "")
+        with patch.object(module.subprocess, "run", side_effect=(unavailable, success)) as invoked, \
+             patch.object(module.time, "sleep") as slept:
+            self.assertEqual(module.command(Path("server"), "bootstrap-topology"), {"result": "REGISTERED"})
+        self.assertEqual(invoked.call_count, 2)
+        slept.assert_called_once_with(module.BOOTSTRAP_TOPOLOGY_RETRY_DELAY_SECONDS)
+        with patch.object(module.subprocess, "run", return_value=unavailable) as invoked:
+            with self.assertRaisesRegex(RuntimeError, "issue-consumer-credential"):
+                module.command(Path("server"), "issue-consumer-credential")
+        invoked.assert_called_once()
 
     def test_browser_fixture_uses_the_server_boundary_and_no_local_finder_route(self) -> None:
         """Dashboard browser evidence must not revive the retired direct listener."""

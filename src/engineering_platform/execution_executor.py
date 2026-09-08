@@ -16,7 +16,12 @@ import time
 from threading import Event, Thread
 from typing import Callable, Mapping
 
-from .capability_review import ReviewerResult, ReviewerSelection, reviewer_prompt
+from .capability_review import (
+    MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+    ReviewerResult,
+    ReviewerSelection,
+    reviewer_prompt,
+)
 from .codex_observability import codex_final_message as _codex_final_message, extract_codex_runtime_metadata, extract_codex_usage
 from .evidence_projection import ToolProxyEnvironment
 from .execution_context import additional_workspace_write_roots
@@ -382,13 +387,30 @@ class CodexCliClient:
         schema = {
             "type": "object",
             "additionalProperties": False,
-            "required": ["contribution", "recommendations"],
+            "required": ["contract_version", "contribution", "recommendations", "findings"],
             "properties": {
+                "contract_version": {"type": "string", "const": MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION},
                 "contribution": {"type": "string", "maxLength": 240},
                 "recommendations": {
                     "type": "array",
-                    "maxItems": 3,
+                    "maxItems": 64,
                     "items": {"type": "string", "maxLength": 240},
+                },
+                "findings": {
+                    "type": "array", "maxItems": 64,
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "required": ["id", "observation", "category", "criterion", "severity", "confidence", "evidence_ref"],
+                        "properties": {
+                            "id": {"type": "string", "maxLength": 240},
+                            "observation": {"type": "string", "maxLength": 240},
+                            "category": {"type": "string", "maxLength": 240},
+                            "criterion": {"type": "string", "maxLength": 240},
+                            "severity": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+                            "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                            "evidence_ref": {"type": "string", "maxLength": 240},
+                        },
+                    },
                 },
             },
         }
@@ -444,6 +466,8 @@ class CodexCliClient:
                 selection.reviewer,
                 str(raw["contribution"]),
                 tuple(str(value) for value in raw["recommendations"]),
+                tuple(dict(value) for value in raw["findings"]),
+                str(raw["contract_version"]),
                 usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
                 churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
                 usage_snapshots=self.last_usage_snapshots,
@@ -528,7 +552,7 @@ class CodexCliClient:
                 "codex",
                 "exec",
                 "--sandbox",
-                MANAGED_EXECUTION_SANDBOX,
+                getattr(self, "_sandbox_override", MANAGED_EXECUTION_SANDBOX),
                 "-C",
                 str(root),
                 "--json",
@@ -604,6 +628,22 @@ class CodexCliClient:
                 terminal_condition="provider_turn_interrupted" if interruption else "codex_invocation_failed",
                 interruption_reason=interruption,
             ) from error
+
+    def validate(self, root: Path, prompt: str) -> AgentResult:
+        """Run the local-validation provider turn without repository writes.
+
+        The host, rather than an instruction in the prompt, selects the
+        sandbox.  The override is scoped to this synchronous call so a later
+        implementation, repair, or publication invocation retains its normal
+        bounded write capability.
+        """
+        if hasattr(self, "_sandbox_override"):
+            raise RunnerError("nested validation sandbox override is invalid")
+        self._sandbox_override = "read-only"
+        try:
+            return self.invoke(root, prompt)
+        finally:
+            del self._sandbox_override
 
     def _run_invocation(
         self, command: tuple[str, ...], root: Path, environment: Mapping[str, str] | None = None

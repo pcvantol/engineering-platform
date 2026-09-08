@@ -8,19 +8,21 @@ from pathlib import Path
 import subprocess
 import sys
 
-from advance_platform_build import advance, set_version
+from advance_platform_build import _current_version
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Advance, build, and optionally install an EP wheel")
+    parser = argparse.ArgumentParser(description="Build an already-versioned EP wheel without source mutation")
     parser.add_argument("--source-root", type=Path, default=Path.cwd())
     parser.add_argument("--wheel-directory", type=Path)
     parser.add_argument("--install-python", type=Path)
-    parser.add_argument("--version", help="build this exact stable X.Y.Z release instead of advancing a patch")
+    parser.add_argument("--version", help="require this already-committed stable X.Y.Z release")
     parser.add_argument("--sdist", action="store_true", help="also create the matching source distribution")
     args = parser.parse_args(argv)
     root = args.source_root.resolve()
-    version = set_version(root, args.version) if args.version else advance(root)
+    version = _current_version(root)
+    if args.version is not None and args.version != version:
+        raise RuntimeError(f"requested build version {args.version} does not match committed source {version}; prepare it first")
     wheel_directory = (args.wheel_directory or root / "dist").resolve()
     wheel_directory.mkdir(parents=True, exist_ok=True)
     if args.sdist:

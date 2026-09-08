@@ -28,10 +28,17 @@ Genesis target. A Genesis run only evaluates its target profile; a Managed run
 only evaluates its repository profile. JSON status files are projections, not
 an ownership or lifecycle authority.
 
-Lifecycle phase identifiers are compatibility contracts. Their presentation is
-mode-aware: the shared `REPAIR_AGENT` phase is projected as pull-request check
-repair for Managed work and autonomous quality repair for Genesis. This is a
-display-only distinction; no checkpoint or transaction state is translated.
+Lifecycle phase identifiers are compatibility contracts. `QUALITY_CONTROL_AGENT`
+is the shared post-implementation assurance boundary: it invokes independent
+read-only Quality and Security reviewers on one pinned candidate. It cannot
+write the repository, create a PR, or approve an implementer's work. Findings
+are immutable, versioned checkpoint evidence; a missing, malformed, or
+candidate-mismatched required review is `UNRESOLVED`, never a pass. Only the
+shared `REPAIR_AGENT` role may correct accepted blockers. Its run-wide,
+persistent budget is three rounds total, spanning local validation, assurance,
+hosted checks and finalization; a new SHA, phase, resume or PR does not reset
+it. The Console projects the same stored review identities and repair rounds
+for live and historical runs.
 
 The immutable profile lists repository, remote, upstream, clean-worktree,
 branch, workspace authorization, host and capability qualification, providers,
@@ -60,7 +67,37 @@ previous lease history.
 EP serializes mutating work at the repository/execution-scope boundary: no more
 than one mutating execution may own a scope at once. FIFO is the default queue
 ordering within that scope, but admission and selection remain policy-driven;
-FIFO is not a second planning authority. The active mutation lease starts with
+FIFO is not a second planning authority.
+
+## CENTRAL queue operator handling
+
+CENTRAL owns the durable queue record after admission; Forge remains the
+authority for the originating Action intent.  Consequently, an Operations
+Console operator must never delete a queued submission or silently make it
+disappear.  Queue handling is an explicit, per-submission, reasoned state
+transition with an append-only audit event and producer-visible readback.
+
+The state machine is `QUEUED -> DEFERRED|QUARANTINED|DECLINED`,
+`DEFERRED -> QUEUED`, and `QUARANTINED -> QUEUED|DECLINED`. `DECLINED` has no
+outgoing transition. Direct `QUARANTINED -> DECLINED` never creates an
+intermediate `QUEUED` state or a worker-eligible window. A declined submission
+is terminal but retained with its correlation and reason. A lifecycle worker
+selects only admitted `QUEUED` submissions; queue disposition never cancels a
+claimed run.
+
+Forge observes these dispositions through the canonical producer-readback
+contract and reconciles its own Action state.  EP does not invoke Forge
+internals, mutate Forge storage, or infer cancellation.  Until a versioned
+Forge callback contract exists, readback is the required reconciliation path.
+Queue commands carry a versioned operation ID, expected state and monotone
+revision, and are arbitrated with the worker claim in CENTRAL. Origin checking
+is CSRF protection only, never operator authentication. The authenticated
+consumer must additionally hold an active, project-scoped capability:
+`QUEUE_HOLD_RESUME` for defer/quarantine/resume and `QUEUE_DECLINE` for the
+terminal decline transition. Consumer credentials do not imply either grant.
+The installation owner grants or revokes this narrow capability with the
+Server CLI; it is not a producer-facing or dashboard-managed role system.
+The active mutation lease starts with
 the accepted execution and is retained through provider work, validation,
 delivery, finalization and reconciliation. It is released only after terminal
 or governed recovery evidence establishes that the scope is safe for later

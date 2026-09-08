@@ -60,6 +60,7 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("GET",), r"/api/prompt-history/[a-z0-9][a-z0-9-]{0,63}/(?:report|chat|details)", PROJECT, "project_history", "Project run detail"),
     ConsoleRoute(("GET",), r"/api/telemetry/[0-9]{4}-[0-9]{2}-[0-9]{2}", PROJECT, "project_history", "Project telemetry detail"),
     ConsoleRoute(("POST",), r"/api/execution-(?:dismiss|retry)", PROJECT, "project_execution", "Project execution action"),
+    ConsoleRoute(("POST",), r"/api/queue-disposition", PROJECT, "project_execution", "Project queue disposition action"),
     ConsoleRoute(("POST",), r"/api/dashboard-translate", PROJECT, "project_console", "Project Console translation"),
     ConsoleRoute(("GET",), r"/diagnostics/topology", TRANSPORT_INTERNAL, "transport", "Transport topology diagnostic"),
     ConsoleRoute(("GET",), r"/(?:healthz|readyz)", TRANSPORT_INTERNAL, "transport", "Transport probe"),
