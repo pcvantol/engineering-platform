@@ -58,6 +58,23 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             server._strict_json_object(b'[]')
 
+    def test_disconnected_read_only_probe_does_not_emit_server_traceback(self) -> None:
+        """A client closing a health response is not an operational server failure."""
+        class DisconnectedWriter:
+            def write(self, _: bytes) -> None:
+                raise BrokenPipeError("probe closed")
+
+        class DetachedHandler:
+            wfile = DisconnectedWriter()
+
+            def send_response(self, _: int) -> None: pass
+            def send_header(self, _: str, __: str) -> None: pass
+            def end_headers(self) -> None: pass
+
+        handler = DetachedHandler()
+        server._HealthHandler._send(handler, 200, {"ready": True})
+        server._HealthHandler._send_ndjson(handler, [{"event": "health"}])
+
     def test_server_presentation_boundaries_reject_unsafe_headers_and_normalize_quota_data(self) -> None:
         """Console-only helpers remain fail-closed for unsafe or malformed inputs."""
         self.assertEqual(

@@ -2685,7 +2685,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if route is not None:
             self.send_header("EP-Console-Route-Owner", route.owner)
         self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError):
+            # Health probes may abandon a response while the Server finishes
+            # rendering it.  The request has no mutation authority; avoid a
+            # traceback that obscures qualification diagnostics.
+            return
 
     def _send_ndjson(self, entries: list[dict[str, object]]) -> None:
         encoded = ("\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + ("\n" if entries else "")).encode("utf-8")
@@ -2697,7 +2703,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if route is not None:
             self.send_header("EP-Console-Route-Owner", route.owner)
         self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _send_console_asset(self, request: SplitResult) -> bool:
         """Serve installed Console assets without selecting a project/root."""

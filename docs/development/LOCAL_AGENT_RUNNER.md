@@ -40,16 +40,13 @@ is a separate Engineering Platform release. The private dashboard displays
 them with the corresponding live components, while its status bar displays the
 Engineering Platform version and Git commit.
 
-`Canonical versioning` is the only CI writer of the checked-in release
-projections. On the first non-bot push to a feature branch it adds one
-`build: advance canonical EP patch version X.Y.Z` commit. On a non-bot push to
-`main` it adds one `build: advance canonical EP minor version X.Y.0` commit.
-The workflow serializes writes per ref, skips `release-*` branches, and uses
-`advance_platform_build.py` so the package, manifest, configuration and
-workspace-template projections remain identical. A protected branch must
-explicitly allow the repository GitHub Actions token to create these bot
-commits; otherwise the workflow correctly fails instead of silently claiming a
-version bump.
+`BOOTSTRAP_RELEASE_CADENCE_V2` (`engineering-platform-bootstrap-release-cadence-v2`)
+makes CI read-only. One bounded engineering increment defaults to `PATCH`;
+documentation-only work is explicit `NO_BUMP`; `MINOR` is an explicit
+capability/release boundary; and `MAJOR`/`EXACT` require applicable authority.
+Version preparation happens before final qualification through the protected
+delivery seam. Repair, requalification and main merge reuse that operation and
+never create a secondary allocation. Existing V1 receipts remain historical.
 
 The event policy is shared with Forge and Workspace and is canonically defined
 by Forge Platform in [Canonical product versioning](https://github.com/pcvantol/forge-platform/blob/main/docs/architecture/CANONICAL_PRODUCT_VERSIONING.md).

@@ -98,7 +98,7 @@ jobs:
           python3 -m pip install "dist/engineering_platform-${{ needs.release-context.outputs.version }}-py3-none-any.whl"
           python3 -m compileall -q src/engineering_platform
           PYTHONPATH=src python3 tools/qualification/console_route_ownership_guard.py --source-root src
-          python3 tools/qualification/platform_version_consistency.py --source-root .
+          python3 tools/qualification/platform_version_consistency.py --source-root . --installed-python "$(command -v python3)"
           python3 -m unittest discover -s tests -p 'test_*.py'
           python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
           # This uses an isolated CENTRAL root and local bare Git origin; the
