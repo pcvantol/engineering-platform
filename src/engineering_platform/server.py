@@ -92,7 +92,7 @@ SERVER_CONFIGURATION_VERSION = 2
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 55
+SERVER_STORE_SCHEMA_VERSION = 56
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -1209,10 +1209,21 @@ def _migrate_schema_55(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE ep_installations_schema54")
     connection.execute("ALTER TABLE ep_submissions ADD COLUMN disposition_revision INTEGER NOT NULL DEFAULT 0")
     connection.execute("CREATE TABLE ep_queue_disposition_operations (operation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id), actor_reference TEXT NOT NULL, command_digest TEXT NOT NULL, from_state TEXT NOT NULL, to_state TEXT NOT NULL, previous_revision INTEGER NOT NULL, resulting_revision INTEGER NOT NULL, event_id INTEGER NOT NULL REFERENCES ep_submission_events(event_id), recorded_at TEXT NOT NULL)")
-    connection.execute("CREATE TABLE ep_operator_capabilities (consumer_id TEXT NOT NULL, project_id TEXT NOT NULL, capability TEXT NOT NULL CHECK(capability IN ('QUEUE_HOLD_RESUME','QUEUE_DECLINE')), granted_at TEXT NOT NULL, revoked_at TEXT, PRIMARY KEY(consumer_id,project_id,capability))")
     connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(55)")
     connection.execute("UPDATE engineering_metadata SET value='55' WHERE key='installation.schema_version'")
     connection.execute("UPDATE ep_installations SET schema_version=55")
+
+
+def _migrate_schema_56(connection: sqlite3.Connection) -> None:
+    """Add explicitly granted, project-scoped queue operator capabilities."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema55")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56)))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,56 FROM ep_installations_schema55")
+    connection.execute("DROP TABLE ep_installations_schema55")
+    connection.execute("CREATE TABLE IF NOT EXISTS ep_operator_capabilities (consumer_id TEXT NOT NULL, project_id TEXT NOT NULL, capability TEXT NOT NULL CHECK(capability IN ('QUEUE_HOLD_RESUME','QUEUE_DECLINE')), granted_at TEXT NOT NULL, revoked_at TEXT, PRIMARY KEY(consumer_id,project_id,capability))")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(56)")
+    connection.execute("UPDATE engineering_metadata SET value='56' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=56")
 
 
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
@@ -1280,14 +1291,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
@@ -1316,9 +1327,12 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_52(connection)
                             if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52}:
                                 _migrate_schema_53(connection)
-                            if current_schema != 54:
+                            if current_schema < 54:
                                 _migrate_schema_54(connection)
-                            _migrate_schema_55(connection)
+                            if current_schema < 55:
+                                _migrate_schema_55(connection)
+                            if current_schema < 56:
+                                _migrate_schema_56(connection)
                             connection.execute("COMMIT")
                             connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
@@ -1347,6 +1361,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_53(connection)
         _migrate_schema_54(connection)
         _migrate_schema_55(connection)
+        _migrate_schema_56(connection)
         connection.execute("COMMIT")
         connection.execute("PRAGMA legacy_alter_table=OFF")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -2576,6 +2591,31 @@ def _operator_capability(connection: sqlite3.Connection, token: object, project_
     return actor if grant is not None else ""
 
 
+def _same_origin(headers: Mapping[str, str]) -> bool:
+    """Accept only an absent or same-host HTTP(S) browser origin.
+
+    Origin is CSRF protection, never an authentication substitute.  The
+    capability check at the mutation boundary remains authoritative.
+    """
+    origin, host = headers.get("Origin", "") or "", headers.get("Host", "") or ""
+    return origin in {"", f"http://{host}", f"https://{host}"}
+
+
+def _strict_json_object(raw: bytes) -> dict[str, object]:
+    """Decode one JSON object while rejecting duplicate member names."""
+    def no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+    value = json.loads(raw.decode("utf-8"), object_pairs_hook=no_duplicates)
+    if not isinstance(value, dict):
+        raise ValueError("JSON object required")
+    return value
+
+
 def _admit_server_owned_file_inbox(
     data_root: Path, envelope: dict[str, object], receipt_id: str, received_at: str,
 ) -> dict[str, object]:
@@ -3333,7 +3373,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, result)
             return
         if method == "do_POST" and request.path == "/api/queue-disposition":
-            if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+            if not _same_origin(self.headers):
                 self._send(403, {"error": "INVALID_ORIGIN"})
                 return
             if not isinstance(selected, str) or selected not in project_ids:
@@ -3343,7 +3383,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 2 <= length <= 1024:
                     raise ValueError
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                payload = _strict_json_object(self.rfile.read(length))
                 expected = {"contract_version", "operation_id", "submission_id", "expected_state", "expected_revision", "disposition", "reason"}
                 if (not isinstance(payload, dict) or set(payload) != expected
                         or payload.get("contract_version") != "1.0"
@@ -3747,7 +3787,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -3763,6 +3803,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--external-resource-identity")
     parser.add_argument("--binding-id")
     parser.add_argument("--reason")
+    parser.add_argument("--capability", choices=("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"))
     return parser
 
 
@@ -3844,6 +3885,20 @@ def main(argv: list[str] | None = None) -> int:
             from .submission_service import issue_consumer_credential
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = issue_consumer_credential(connection, consumer_id=args.consumer_id, project_id=args.project_id)
+        elif args.command in {"grant-operator-capability", "revoke-operator-capability"}:
+            if not args.project_id or not args.consumer_id or not args.capability:
+                raise ServerConfigurationError("--project-id, --consumer-id and --capability are required for queue operator capability management.")
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                if args.command == "grant-operator-capability":
+                    registered = connection.execute("SELECT 1 FROM ep_consumer_registrations WHERE consumer_id=? AND project_id=? AND status='ACTIVE'", (args.consumer_id, args.project_id)).fetchone()
+                    if registered is None:
+                        raise ServerConfigurationError("ACTIVE_SCOPED_CONSUMER_REQUIRED")
+                    connection.execute("INSERT INTO ep_operator_capabilities(consumer_id,project_id,capability,granted_at,revoked_at) VALUES(?,?,?,?,NULL) ON CONFLICT(consumer_id,project_id,capability) DO UPDATE SET granted_at=excluded.granted_at,revoked_at=NULL", (args.consumer_id, args.project_id, args.capability, _utcnow()))
+                    result = {"result": "GRANTED", "consumer_id": args.consumer_id, "project_id": args.project_id, "capability": args.capability}
+                else:
+                    changed = connection.execute("UPDATE ep_operator_capabilities SET revoked_at=? WHERE consumer_id=? AND project_id=? AND capability=? AND revoked_at IS NULL", (_utcnow(), args.consumer_id, args.project_id, args.capability)).rowcount
+                    result = {"result": "REVOKED" if changed else "NOT_ACTIVE", "consumer_id": args.consumer_id, "project_id": args.project_id, "capability": args.capability}
         elif args.command == "register-producer-binding":
             if not all((args.producer_type, args.external_resource_type, args.external_resource_identity, args.project_id, args.repository_id, args.reason)):
                 raise ServerConfigurationError("--producer-type, --external-resource-type, --external-resource-identity, --project-id, --repository-id and --reason are required for producer binding registration.")
