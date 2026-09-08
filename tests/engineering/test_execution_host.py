@@ -1623,6 +1623,21 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent.last_execution_seconds = 1.2345
         self.assertEqual(runner._record_agent_execution_time(state).agent_execution_seconds, 1.234)
 
+    def test_provider_process_boundary_records_only_a_verified_recovery_process(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("provider-process", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        with patch("engineering_platform.execution_host.write_runner_process") as written, \
+             patch.object(runner, "_recovery_state", return_value=None), \
+             patch("engineering_platform.execution_host.record_provider_started") as started:
+            runner._provider_process_boundary(state, {"pid": 42, "process_group": 42})
+            written.assert_called_once_with(self.root, state.run_id, {"pid": 42, "process_group": 42})
+            started.assert_not_called()
+        with patch("engineering_platform.execution_host.write_runner_process"), \
+             patch.object(runner, "_recovery_state", return_value={"state": "RECOVERY_STARTING", "process_receipt_id": "receipt-1"}), \
+             patch("engineering_platform.execution_host.record_provider_started") as started:
+            runner._provider_process_boundary(state, {"pid": 42, "process_group": 42})
+            started.assert_called_once_with(self.root, run_id=state.run_id, receipt_id="receipt-1", pid=42, process_group=42, central_database=runner.store.central_database)
+
     def test_optional_phase_wrappers_degrade_only_telemetry_storage_failures(self) -> None:
         with patch("engineering_platform.execution_host._start_phase", return_value=SimpleNamespace()) as start:
             self.assertIsNotNone(execution_host.start_phase(self.root, "phase-run", "VALIDATION"))
