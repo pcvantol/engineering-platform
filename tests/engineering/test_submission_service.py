@@ -128,6 +128,15 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             with self.assertRaisesRegex(submission_service.SubmissionError, "OPERATION_ID_CONFLICT"):
                 submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="DECLINED", reason="Different command", expected_state="QUARANTINED", expected_revision=1, operation_id="queue-operation-1", actor_reference="operator-a")
 
+    def test_queue_disposition_rejects_non_string_or_control_reason_without_mutation(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("invalid-reason"), transport="HTTP"))
+            for reason in (None, {}, [], True, "\x00bad", "\n"):
+                with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_QUEUE_DISPOSITION"):
+                    submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason=reason)  # type: ignore[arg-type]
+            self.assertEqual(connection.execute("SELECT state,disposition_revision FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone(), ("QUEUED", 0))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind LIKE 'OPERATOR_QUEUE_%'", (submitted.submission_id,)).fetchone()[0], 0)
+
     def test_http_auth_scope_and_acceptance(self) -> None:
         server.start(self.root)
         request = Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions", data=json.dumps(self.payload("http")).encode(), headers={"Authorization": f"Bearer {self.credential}", "Content-Type": "application/json"}, method="POST")
