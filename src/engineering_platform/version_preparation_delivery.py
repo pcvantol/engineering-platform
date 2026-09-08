@@ -203,6 +203,8 @@ class VersionPreparationDelivery:
         pr = github.create_or_recover_pull_request(branch, base_branch, f"build: prepare version {request.determined_target_version}", body)
         if pr.head_branch != branch:
             raise VersionPreparationError("recovered pull request does not bind the candidate branch")
+        if pr.head_sha != candidate_sha:
+            raise VersionPreparationError("pull request head changed after version candidate publication")
         return {**prepared, "candidate_commit_sha": candidate_sha, "branch": branch, "pull_request_id": pr.number}
 
     @staticmethod

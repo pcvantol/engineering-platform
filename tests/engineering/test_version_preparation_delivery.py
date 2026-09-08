@@ -78,7 +78,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
             def apply(self, _worktree: Path, _request: object) -> None: pass
         class GitHub:
             def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
-                return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base)
+                return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base, head_sha="a" * 40)
             def qualification_for_exact_head(self, number: int, sha: str) -> dict[str, object]:
                 return {"pull_request_id": number, "exact_qualified_sha": sha, "conclusion": "PASS", "checks": []}
         digest = hashlib.sha256(b".version-operations/operation-0001.json\nproduct-version.json").hexdigest()
@@ -88,6 +88,20 @@ class VersionPreparationRequestTest(unittest.TestCase):
             result = VersionPreparationDelivery(Git(), Helper()).execute(Path(directory), Path(directory), parsed, GitHub(), base_branch="main", evidence_root=Path(directory))
             self.assertEqual(result["pull_request_id"], 9)
             self.assertTrue(Path(str(result["delivery_evidence_path"])).is_file())
+
+    def test_publish_rejects_a_pull_request_head_that_raced_the_candidate_push(self) -> None:
+        class Git:
+            def command(self, _root: Path, *args: str) -> str:
+                if args[-2:] == ("branch", "--show-current"): return "ep/version-preparation/operation-0001"
+                if args[-1] == "HEAD": return "a" * 40
+                return ""
+        class GitHub:
+            def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
+                return PullRequestEvidence(9, "OPEN", True, True, head_branch=branch, base_branch=base, head_sha="b" * 40)
+        parsed = VersionPreparationRequest.parse(request())
+        prepared = {"operation_id": parsed.operation_id, "changed_paths": ("product-version.json",), "prepared_operation_digest": parsed.prepared_operation_digest}
+        with self.assertRaisesRegex(VersionPreparationError, "head changed"):
+            VersionPreparationDelivery(Git(), object()).publish_candidate(Path("."), parsed, prepared, GitHub(), base_branch="main")
 
     def test_existing_worktree_path_is_rejected_before_git_write(self) -> None:
         class Git:
