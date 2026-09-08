@@ -91,7 +91,12 @@ internals, mutate Forge storage, or infer cancellation.  Until a versioned
 Forge callback contract exists, readback is the required reconciliation path.
 Queue commands carry a versioned operation ID, expected state and monotone
 revision, and are arbitrated with the worker claim in CENTRAL. Origin checking
-is CSRF protection only, never operator authentication.
+is CSRF protection only, never operator authentication. The authenticated
+consumer must additionally hold an active, project-scoped capability:
+`QUEUE_HOLD_RESUME` for defer/quarantine/resume and `QUEUE_DECLINE` for the
+terminal decline transition. Consumer credentials do not imply either grant.
+The installation owner grants or revokes this narrow capability with the
+Server CLI; it is not a producer-facing or dashboard-managed role system.
 The active mutation lease starts with
 the accepted execution and is retained through provider work, validation,
 delivery, finalization and reconciliation. It is released only after terminal
