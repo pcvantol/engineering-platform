@@ -79,6 +79,7 @@ class VersionPreparationRequestTest(unittest.TestCase):
         digest = hashlib.sha256(b"product-version.json\n.version-operations/operation-0001.json").hexdigest()
         parsed = VersionPreparationRequest.parse(request(prepared_operation_digest=digest))
         with tempfile.TemporaryDirectory() as directory:
+            Path(directory, ".version-preparation.json").write_text(__import__("json").dumps({"contract_version": "1", "product_id": "forge", "repository_id": "pcvantol/forge", "helper_path": "scripts/advance_product_version.py", "receipt_directory": ".version-operations", "allowed_projection_paths": ["product-version.json"], "policy_revision": "v1"}), encoding="utf-8")
             result = VersionPreparationDelivery(Git(), Helper()).execute(Path(directory), Path(directory), parsed, GitHub(), base_branch="main", evidence_root=Path(directory))
             self.assertEqual(result["pull_request_id"], 9)
             self.assertTrue(Path(str(result["delivery_evidence_path"])).is_file())

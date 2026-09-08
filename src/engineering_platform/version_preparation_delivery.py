@@ -22,10 +22,37 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _PATH = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*$")
 _REQUEST_KEYS = frozenset({"contract_version", "operation_id", "product_id", "component_id", "repository_id", "policy_revision", "policy_digest", "source_event_set", "source_event_policy", "expected_source_revision", "expected_target_branch_revision", "expected_version", "requested_change", "determined_target_version", "allowed_projection_paths", "prepared_operation_digest", "authorization_reference", "delivery_mode"})
+_HELPER_KEYS = frozenset({"contract_version", "product_id", "repository_id", "helper_path", "receipt_directory", "allowed_projection_paths", "policy_revision"})
 
 
 class VersionPreparationError(RunnerError):
     pass
+
+
+@dataclass(frozen=True)
+class ProductHelperDeclaration:
+    product_id: str
+    repository_id: str
+    helper_path: str
+    receipt_directory: str
+    allowed_projection_paths: tuple[str, ...]
+    policy_revision: str
+
+    @classmethod
+    def load(cls, worktree: Path) -> "ProductHelperDeclaration":
+        try: value = json.loads((worktree / ".version-preparation.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error: raise VersionPreparationError("product version helper declaration is unreadable") from error
+        if not isinstance(value, dict) or set(value) != _HELPER_KEYS or value.get("contract_version") != "1":
+            raise VersionPreparationError("product version helper declaration has unknown fields or schema")
+        fields = ("product_id", "repository_id", "helper_path", "policy_revision")
+        receipt_directory = value.get("receipt_directory")
+        if (not all(isinstance(value.get(key), str) and _PATH.fullmatch(value[key]) for key in fields)
+                or not isinstance(receipt_directory, str) or "/.." in receipt_directory or receipt_directory.startswith("/")):
+            raise VersionPreparationError("product version helper declaration has invalid paths or identities")
+        paths = value.get("allowed_projection_paths")
+        if not isinstance(paths, list) or not paths or not all(isinstance(path, str) and _PATH.fullmatch(path) for path in paths):
+            raise VersionPreparationError("product version helper declaration has invalid projection paths")
+        return cls(value["product_id"], value["repository_id"], value["helper_path"], receipt_directory, tuple(paths), value["policy_revision"])
 
 
 @dataclass(frozen=True)
@@ -99,6 +126,11 @@ class VersionPreparationDelivery:
         status = self.git.command(repository, "git", "status", "--porcelain", "--untracked-files=all")
         if status:
             raise VersionPreparationError("repository checkout is not clean")
+        declaration = ProductHelperDeclaration.load(worktree)
+        if (declaration.product_id != request.product_id or declaration.repository_id != request.repository_id
+                or declaration.policy_revision != request.policy_revision
+                or tuple(request.allowed_projection_paths) != declaration.allowed_projection_paths):
+            raise VersionPreparationError("product helper declaration does not bind the admitted operation")
         self.helper.apply(worktree, request)
         changed = tuple(filter(None, self.git.command(worktree, "git", "diff", "--name-only").splitlines()))
         receipt = tuple(path for path in changed if path.endswith(f"/{request.operation_id}.json"))
