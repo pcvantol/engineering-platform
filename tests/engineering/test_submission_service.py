@@ -210,6 +210,10 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
 
     def test_authenticated_producer_readback_is_exactly_correlated_and_terminal_evidence_backed(self) -> None:
         server.start(self.root)
+        with urlopen(f"http://127.0.0.1:{self.port}/v1/producer-compatibility") as response:  # nosec B310
+            compatibility = json.loads(response.read())
+        self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2"], "terminal_evidence": ["1.2"]})
+        self.assertEqual(compatibility["producer"]["id"], "engineering-platform")
         payload = self.payload("readback")
         payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "1.0"},
                         "correlation_id": "forge-correlation-1", "mission_id": "mission-1",
@@ -271,7 +275,9 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(terminal["evidence"]["repository"]["revision"], None)
         self.assertNotIn("/private", json.dumps(terminal))
         with urlopen(Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/artifacts/{artifact_id}", headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
-            artifact = json.loads(response.read())
+            returned_artifact_bytes = response.read()
+            artifact = json.loads(returned_artifact_bytes)
+        self.assertEqual(returned_artifact_bytes, stored_artifact)
         self.assertEqual(artifact["submission"]["id"], submission_id)
         self.assertEqual(artifact["run"]["id"], "run-readback")
         self.assertEqual(artifact["assurance"]["repair_rounds"], {"used": 2, "maximum": 3})

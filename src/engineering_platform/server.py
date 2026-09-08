@@ -69,7 +69,7 @@ from .component_logging import (
 )
 from .ep_consumer_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
-from .platform_version import EngineeringPlatformManifest
+from .platform_version import CURRENT_PLATFORM_VERSION, EngineeringPlatformManifest
 from .providers import (
     GitHubProvider,
     CodexCliProvider,
@@ -150,6 +150,13 @@ def _http_json_openapi_document() -> dict[str, object]:
             "description": "Canonical authenticated submission ingress and platform health.",
         },
         "paths": {
+            "/v1/producer-compatibility": {
+                "get": {
+                    "summary": "Read the immutable producer compatibility declaration",
+                    "description": "Read-only installation identity and supported producer contracts; it never admits or executes a submission.",
+                    "responses": {"200": {"description": "Compatibility declaration v1.0"}},
+                },
+            },
             "/health": {
                 "get": {
                     "summary": "Read aggregated Engineering Platform component health",
@@ -2693,6 +2700,19 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             # traceback that obscures qualification diagnostics.
             return
 
+    def _send_artifact_bytes(self, payload: bytes, instance_id: str) -> None:
+        """Return the verified immutable artifact bytes without JSON re-encoding."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("EP-Server-Instance", instance_id)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _send_ndjson(self, entries: list[dict[str, object]]) -> None:
         encoded = ("\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + ("\n" if entries else "")).encode("utf-8")
         self.send_response(200)
@@ -3493,6 +3513,21 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
             return
+        if request.path == "/v1/producer-compatibility":
+            # This is an installation identity and contract declaration only.
+            # It performs no project lookup, admission, execution, or provider
+            # interaction, so consumers can preflight before POSTing a request.
+            identity = initialize(self.server.data_root).instance_id  # type: ignore[attr-defined]
+            self._send(200, {
+                "contract_version": "1.0",
+                "producer": {"id": "engineering-platform", "version": CURRENT_PLATFORM_VERSION},
+                "instance": {"id": identity},
+                "contracts": {
+                    "producer_readback": [submission_service.PRODUCER_READBACK_CONTRACT_VERSION],
+                    "terminal_evidence": [submission_service.TERMINAL_EVIDENCE_CONTRACT_VERSION],
+                },
+            }, identity)
+            return
         if request.path == "/diagnostics/topology":
             try:
                 self._send(200, operations_projection(self.server.data_root), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
@@ -3541,7 +3576,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if payload is None:
                     self._send(404, {"error": "EVIDENCE_ARTIFACT_NOT_FOUND"})
                 else:
-                    self._send(200, json.loads(payload), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+                    self._send_artifact_bytes(payload, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except (sqlite3.Error, ValueError, json.JSONDecodeError):
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
