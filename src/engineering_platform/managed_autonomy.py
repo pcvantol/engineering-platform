@@ -9,6 +9,8 @@ from pathlib import Path
 import sqlite3
 from typing import Iterable
 
+from . import central_database as central_database_module
+
 from .storage import (
     EngineeringStorageError,
     load_run_lineage,
@@ -45,7 +47,7 @@ def _connection(root: Path, central_database: Path | None) -> sqlite3.Connection
     if central_database is None:
         return open_storage(root)
     database = central_database.resolve()
-    if database.name != "engineering.db":
+    if database.name != central_database_module.DATABASE_FILENAME:
         raise EngineeringStorageError("CENTRAL_MANAGED_AUTONOMY_DATABASE_INVALID")
     return sqlite3.connect(database, isolation_level=None)
 

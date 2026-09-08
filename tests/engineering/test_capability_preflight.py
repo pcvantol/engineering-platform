@@ -150,6 +150,20 @@ class CapabilityPreflightTest(unittest.TestCase):
             )
             status = provider_readiness.status(self.root, require_github=False)
         self.assertEqual(status["codex"]["state"], "AUTH_REQUIRED")
+        codex.return_value.command.assert_called_once_with("login", "status")
+
+    def test_codex_readiness_retries_one_transient_check_failure_after_server_restart(self) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        with patch("engineering_platform.provider_readiness.CodexCliProvider") as codex:
+            codex.return_value.status.return_value.qualified = True
+            codex.return_value.command.side_effect = [
+                completed(("codex", "login", "status"), 1, "", "temporary connection failure"),
+                completed(("codex", "login", "status"), 0, "Logged in using ChatGPT\n", ""),
+            ]
+            status = provider_readiness.host_status(self.root, require_github=False)
+
+        self.assertEqual(status["codex"]["state"], "READY")
+        self.assertEqual(codex.return_value.command.call_count, 2)
 
     def test_provider_runtime_details_report_only_executable_paths_and_versions(self) -> None:
         completed = __import__("subprocess").CompletedProcess

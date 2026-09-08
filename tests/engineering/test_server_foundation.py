@@ -69,9 +69,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn("launch_agent_path", details["installation"])
         self.assertEqual(database["installation"], {
             "central_data_path": str(self.root.resolve()),
-            "database_path": str((self.root / "engineering.db").resolve()),
+            "database_path": str((self.root / server.SERVER_DATABASE_FILENAME).resolve()),
         })
-        self.assertEqual(database["database_size_bytes"], (self.root / "engineering.db").stat().st_size)
+        self.assertEqual(database["database_size_bytes"], (self.root / server.SERVER_DATABASE_FILENAME).stat().st_size)
         self.assertIn("relay_binary_path", relay["installation"])
         self.assertIn("launch_agent_path", relay["installation"])
 
@@ -109,6 +109,20 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(worker["process_state"], "IN_PROCESS")
         self.assertEqual(worker["process_host"], {
             "component": "ep_server", "pid": 321, "uptime_seconds": 61,
+        })
+
+    @patch("engineering_platform.server.os.getpid", return_value=4321)
+    @patch("engineering_platform.server.LaunchdProvider")
+    def test_in_process_components_report_the_current_server_pid_without_launchd(self, launchd: object, _pid: object) -> None:
+        """Manual and qualification starts still have an authoritative host PID."""
+        launchd.return_value.runtime_details.return_value = None
+        server.initialize(self.root)
+
+        worker = server._platform_component_detail(self.root, "lifecycle_worker")
+
+        self.assertEqual(worker["process_state"], "IN_PROCESS")
+        self.assertEqual(worker["process_host"], {
+            "component": "ep_server", "pid": 4321, "uptime_seconds": None,
         })
 
     def test_launchagent_configuration_projects_boolean_and_dictionary_policies(self) -> None:
@@ -271,7 +285,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/readyz") as response:
             readiness = json.loads(response.read().decode("utf-8"))
         self.assertEqual(readiness["lifecycle_worker"]["state"], "RUNNING")
-        for path in ("/openapi.json", "/swagger.json"):
+        for path in ("/v1/openapi.json", "/openapi.json", "/swagger.json"):
             with urlopen(f"http://127.0.0.1:{port}{path}") as response:
                 document = json.loads(response.read().decode("utf-8"))
             self.assertEqual(document["openapi"], "3.0.3")
@@ -514,6 +528,41 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(logger.call_count, 2)
 
     @patch("engineering_platform.server.log_event")
+    @patch("engineering_platform.server.component_logger")
+    def test_platform_data_actions_write_distinct_dashboard_audit_events(
+        self, logger: object, logged: object,
+    ) -> None:
+        server._audit_platform_data_action(
+            self.root,
+            action="EXPORT",
+            outcome="COMPLETED",
+            details={"package_format": "EPDATA"},
+        )
+        server._audit_platform_data_action(
+            self.root,
+            action="IMPORT",
+            outcome="COMPLETED",
+            details={"package_format": "EPDATA", "entry_count": 3, "schema_version": 53},
+        )
+        server._audit_platform_data_action(
+            self.root,
+            action="RELOCATE",
+            outcome="COMPLETED",
+            details={"previous_location": "/old/central", "new_location": "/new/central"},
+        )
+
+        self.assertEqual([call.args[2] for call in logged.call_args_list], [
+            "platform_data_export", "platform_data_import", "platform_data_relocate",
+        ])
+        self.assertEqual(logged.call_args_list[0].kwargs["context"], {
+            "audit_action": "EXPORT", "audit_actor": "DASHBOARD_USER",
+            "audit_outcome": "COMPLETED", "package_format": "EPDATA",
+        })
+        self.assertEqual(logged.call_args_list[1].kwargs["context"]["entry_count"], 3)
+        self.assertEqual(logged.call_args_list[2].kwargs["context"]["new_location"], "/new/central")
+        self.assertEqual(logger.call_count, 3)
+
+    @patch("engineering_platform.server.log_event")
     @patch("engineering_platform.server._central_provider_readiness")
     def test_failed_dashboard_provider_action_is_audited_without_diagnostic_output(
         self, readiness: object, logged: object,
@@ -534,7 +583,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
         server._audit_dashboard_provider_action(self.root, "CODEX", "install", "COMPLETED")
 
-        with sqlite3.connect(self.root / "engineering.db") as connection:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
             ).fetchone()
@@ -596,7 +645,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
         detail = server._platform_component_detail(self.root, "http_ingress")
 
-        self.assertEqual(detail["swagger_endpoint"], "/openapi.json")
+        self.assertEqual(detail["swagger_endpoint"], "/v1/openapi.json")
 
     def test_dashboard_relay_requires_the_real_launch_agent_and_server(self) -> None:
         server.initialize(self.root)
@@ -717,14 +766,29 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.start(self.root)
         with urlopen(f"http://127.0.0.1:{port}/api/central-data/export") as response:
             backup = response.read()
-            self.assertEqual(response.headers.get_content_type(), "application/zip")
+            self.assertEqual(response.headers.get_content_type(), "application/vnd.engineering-platform.epdata+zip")
         with tempfile.NamedTemporaryFile(suffix=".zip") as file:
             file.write(backup); file.flush()
             import zipfile
-            with zipfile.ZipFile(file.name) as archive, tempfile.NamedTemporaryFile(suffix=".db") as database:
-                database.write(archive.read("engineering.db")); database.flush()
+            with zipfile.ZipFile(file.name) as package, tempfile.NamedTemporaryFile(suffix=".db") as database:
+                with zipfile.ZipFile(io.BytesIO(package.read(server.central_data_transfer.PAYLOAD_NAME))) as archive:
+                    database.write(archive.read(server.SERVER_DATABASE_FILENAME)); database.flush()
                 with sqlite3.connect(database.name) as connection:
                     self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            payload = json.loads(connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='operations_console' "
+                "AND json_extract(payload, '$.event')='platform_data_export' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0])
+        self.assertEqual({key: payload[key] for key in (
+            "event", "audit_action", "audit_actor", "audit_outcome", "package_format",
+        )}, {
+            "event": "platform_data_export", "audit_action": "EXPORT",
+            "audit_actor": "DASHBOARD_USER", "audit_outcome": "COMPLETED",
+            "package_format": "EPDATA",
+        })
         request = Request(
             f"http://127.0.0.1:{port}/api/central-database/configuration",
             data=b'{"interval_seconds":86400}', method="POST", headers={"Content-Type": "application/json"},
@@ -868,7 +932,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn("maintenance.value=previous", script)
         self.assertIn("Number(result.interval_seconds)!==requested", script)
         self.assertIn("window.__engineeringPlatformLocalFilesystemLink", script)
-        self.assertIn("destinationValue.replaceChildren", script)
+        self.assertIn("relocationDestinationValue.replaceChildren", script)
 
     def test_relocation_destination_paths_use_the_canonical_copy_control(self) -> None:
         self.assertIn("window.__engineeringPlatformLocalFilesystemLink", server._central_database_script())
@@ -884,6 +948,18 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn("`window.__engineeringPlatformLocalFilesystemLink(value)`", design_system)
         self.assertIn("must not open Finder", design_system)
         self.assertIn("File Inbox relocation", design_system)
+
+    def test_design_system_documents_platform_data_package_and_restart_contract(self) -> None:
+        design_system = (
+            Path(__file__).parents[2]
+            / "src" / "engineering_platform" / "OPERATIONS_CONSOLE_DESIGN_SYSTEM.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("`.epdata` package", design_system)
+        self.assertIn("canonical checksum", design_system)
+        self.assertIn("platform_data_export", design_system)
+        self.assertIn("DASHBOARD_USER", design_system)
+        self.assertIn("exactly equal", design_system)
+        self.assertIn("starts the same Server command again", design_system)
 
     def test_runtime_directory_route_is_retired_in_the_central_console(self) -> None:
         identity = server.initialize(self.root)

@@ -27,7 +27,7 @@ class ProviderUsageTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
             server.initialize(data)
-            database = data / "engineering.db"
+            database = data / server.SERVER_DATABASE_FILENAME
             persist_provider_invocation(checkout, ProviderInvocation(
                 "inbox-central-provider", 1, "codex_cli", "gpt-5.6-terra", "EXECUTE_AGENT", "agent",
                 "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", 1000,
@@ -37,7 +37,7 @@ class ProviderUsageTests(unittest.TestCase):
                 provider_usage_summary(checkout, "inbox-central-provider", central_database=database)["output_tokens"], 2
             )
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
-            with sqlite3.connect(data / "engineering.db") as connection:
+            with sqlite3.connect(data / server.SERVER_DATABASE_FILENAME) as connection:
                 self.assertIsNotNone(connection.execute(
                     "SELECT 1 FROM provider_invocations WHERE run_id='inbox-central-provider'"
                 ).fetchone())

@@ -18,7 +18,7 @@ import sqlite3
 import uuid
 from typing import Callable, Protocol
 
-from . import submission_service
+from . import central_database, submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
@@ -56,7 +56,7 @@ class ParityLifecycleDispatchError(RuntimeError):
 
 def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> dict[str, str]:
     """Explicitly release a failed CENTRAL run's project FIFO gate."""
-    with sqlite3.connect(data_root / "engineering.db") as connection:
+    with sqlite3.connect(central_database.path(data_root)) as connection:
         connection.execute("BEGIN IMMEDIATE")
         cursor = connection.execute(
             """UPDATE ep_parity_lifecycle_dispatches
@@ -74,7 +74,7 @@ def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> d
 
 def retry_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> submission_service.SubmissionResult:
     """Create the only FIFO-successor allowed to resolve a failed run."""
-    with sqlite3.connect(data_root / "engineering.db") as connection:
+    with sqlite3.connect(central_database.path(data_root)) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
@@ -218,7 +218,7 @@ def _historical_admission_environment(repository_root: Path, data_root: Path):
     previous = {key: os.environ.get(key) for key in keys}
     os.environ[keys[0]] = str(ENGINEERING_STORAGE_SCHEMA_VERSION)
     os.environ[keys[1]] = str(repository_root)
-    os.environ[CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT] = str(data_root / "engineering.db")
+    os.environ[CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT] = str(central_database.path(data_root))
     try:
         yield
     finally:
@@ -235,7 +235,7 @@ class ParityLifecycleDispatcher:
     def __init__(self, data_root: Path, *, runner_factory: RunnerFactory | None = None) -> None:
         self.data_root = data_root.resolve()
         self.runner_factory = runner_factory or (
-            lambda root: _default_runner(root, central_database=self.data_root / "engineering.db")
+            lambda root: _default_runner(root, central_database=central_database.path(self.data_root))
         )
 
     def _prompt_path(self, context: ParityProjectContext, run_id: str) -> Path:
@@ -246,7 +246,7 @@ class ParityLifecycleDispatcher:
         return path
 
     def _claim(self, submission_id: str) -> tuple[ParityProjectContext, HistoricalCandidate, str, Path, bool]:
-        with sqlite3.connect(self.data_root / "engineering.db") as connection:
+        with sqlite3.connect(central_database.path(self.data_root)) as connection:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -322,7 +322,13 @@ class ParityLifecycleDispatcher:
             producer_id=candidate.producer_id, producer_type=candidate.producer_type,
             producer_version=candidate.producer_version, contract_version="1.0",
             prompt_content=candidate.prompt,
-            prompt_metadata={"filename": prompt.name, "digest": candidate.prompt_digest, "title": "CENTRAL parity submission"},
+            prompt_metadata={
+                "filename": prompt.name, "digest": candidate.prompt_digest,
+                "title": "CENTRAL parity submission",
+                # This is provenance copied verbatim from the already admitted
+                # CENTRAL request; it grants no Forge execution authority.
+                "constraints": candidate.constraints,
+            },
             target_identity={"project_id": candidate.context.project_id, "repository_id": candidate.context.repository_id, "path": str(repository_root)},
             original_envelope=candidate.producer_envelope(), correlation_id=candidate.correlation_id,
             mission_id=candidate.mission_id, engineering_action_id=candidate.engineering_action_id,
@@ -354,7 +360,7 @@ class ParityLifecycleDispatcher:
     def _set_state(self, submission_id: str, run_id: str, state: str) -> None:
         if state not in {"CLAIMED", "RUNNING", *TERMINAL_STATES}:
             raise ParityLifecycleDispatchError("INVALID_DISPATCH_STATE")
-        with sqlite3.connect(self.data_root / "engineering.db") as connection:
+        with sqlite3.connect(central_database.path(self.data_root)) as connection:
             now = _utcnow()
             connection.execute("UPDATE ep_execution_runs SET state=?,updated_at=? WHERE run_id=?", (state, now, run_id))
             resolution = OPERATOR_RESOLUTION_OPEN if state in {"BLOCKED", "FAILED"} else "NONE"
@@ -368,7 +374,7 @@ class ParityLifecycleDispatcher:
     @staticmethod
     def _terminal_history_exists(repository_root: Path, run_id: str, data_root: Path) -> bool:
         return any(item.get("run_id") == run_id for item in prompt_history(
-            repository_root, central_database=data_root / "engineering.db"
+            repository_root, central_database=central_database.path(data_root)
         ))
 
     @classmethod
@@ -392,20 +398,34 @@ class ParityLifecycleDispatcher:
             getattr(runner, "reviewer_records", ()),
             getattr(getattr(runner, "agent", None), "last_runtime_metadata", None),
             getattr(getattr(runner, "agent", None), "last_execution_metadata", None),
-            central_database=data_root / "engineering.db",
+            central_database=central_database.path(data_root),
         )
-        record_terminal_report(repository_root, report, central_database=data_root / "engineering.db")
+        record_terminal_report(repository_root, report, central_database=central_database.path(data_root))
         record_artifact(
             repository_root, report, artifact_id=f"report:{state.run_id}",
             artifact_type="TERMINAL_REPORT", content_type="text/markdown",
             created_at=_utcnow(), run_id=state.run_id,
-            central_database=data_root / "engineering.db", artifact_root=data_root / "artifacts",
+            central_database=central_database.path(data_root), artifact_root=data_root / "artifacts",
         )
+        # Write the producer-facing receipt from the verified terminal
+        # checkpoint and stored report, never from a later HTTP projection.
+        # A failure here leaves the dispatch non-terminal rather than exposing
+        # a successful-looking run without its required evidence artifact.
+        try:
+            submission_service.write_terminal_evidence(
+                data_root, repository_root=repository_root, run_id=state.run_id,
+            )
+        except submission_service.SubmissionError as error:
+            # Historical terminal rows can predate a retained checkpoint. They
+            # keep their truthful dispatch history, but receive no invented
+            # checkpoint/artifact or delivery qualification.
+            if error.code not in {"TERMINAL_EVIDENCE_BINDING_UNAVAILABLE", "TERMINAL_CHECKPOINT_INVALID"}:
+                raise
         analyze_terminal_report(repository_root, state.run_id, report)
 
     def reconcile_terminal_history(self) -> None:
         """Backfill only missing Console rows for terminal CENTRAL runs."""
-        with sqlite3.connect(self.data_root / "engineering.db") as connection:
+        with sqlite3.connect(central_database.path(self.data_root)) as connection:
             rows = connection.execute(
                 "SELECT project_id,repository_id,run_id FROM ep_parity_lifecycle_dispatches "
                 "WHERE state IN ('COMPLETE','BLOCKED','FAILED') ORDER BY claimed_at"
@@ -420,7 +440,7 @@ class ParityLifecycleDispatcher:
             try:
                 state = StateStore(
                     context.local_repository_root / ".engineering" / "engineering-runs",
-                    central_database=self.data_root / "engineering.db",
+                    central_database=central_database.path(self.data_root),
                     emit_local_projection=False,
                 ).load(run_id)
             except StateError:

@@ -11,6 +11,23 @@ from engineering_platform import central_database, server
 
 
 class CentralDatabaseMaintenanceTests(unittest.TestCase):
+    def test_legacy_central_filename_is_promoted_without_a_compatibility_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "central"
+            data_root.mkdir()
+            legacy = data_root / central_database.LEGACY_DATABASE_FILENAME
+            with sqlite3.connect(legacy) as connection:
+                connection.execute("CREATE TABLE proof (value TEXT)")
+                connection.execute("INSERT INTO proof VALUES ('retained')")
+
+            central_database.migrate_legacy_database(data_root)
+
+            database = central_database.path(data_root)
+            self.assertTrue(database.is_file())
+            self.assertFalse(legacy.exists())
+            with sqlite3.connect(database) as connection:
+                self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "retained")
+
     def test_provider_capacity_history_and_reserve_are_installation_owned(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             data_root = Path(temporary) / "central"
@@ -43,7 +60,7 @@ class CentralDatabaseMaintenanceTests(unittest.TestCase):
             server.initialize(data_root)
             moment = datetime(2026, 9, 2, tzinfo=timezone.utc)
 
-            self.assertEqual(central_database.path(data_root), data_root.resolve() / "engineering.db")
+            self.assertEqual(central_database.path(data_root), data_root.resolve() / central_database.DATABASE_FILENAME)
             self.assertEqual(central_database.update_maintenance_configuration(data_root, 60)["interval_seconds"], 60)
             self.assertEqual(central_database.run_periodic_maintenance(data_root, now=moment)["state"], "COMPACTED")
             self.assertEqual(

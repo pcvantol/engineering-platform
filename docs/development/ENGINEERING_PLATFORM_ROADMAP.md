@@ -1,5 +1,41 @@
 # Engineering Platform Roadmap
 
+## Policy governance and effective assurance profiles — documented target
+
+The coordinated `POLICY_GOVERNANCE_AND_EFFECTIVE_PROFILES_V1` increment adds
+[EP-owned policy/assurance architecture](../engineering/POLICY_GOVERNANCE_AND_ASSURANCE_PROFILES.md)
+and its [scoped roadmap/DAG](POLICY_GOVERNANCE_V1_ROADMAP.md).
+This is documentation, not implementation or live policy activation.
+
+EP owns effective admission, review/quality/security, validation, provider and
+repair policies; Workspace presents permitted policy management, Forge plans
+bounded work/releases, and Forge Platform composes compatible artifacts. A
+policy is not a grant, consumed budget is not an editable preference, and the
+current three-round bound cannot reset on a new SHA/PR/restart. Standalone EP
+retains approved local policy without requiring Forge or Workspace availability.
+
+The local lane is `POL-0 -> POL-E -> POL-B -> POL-Q`, with explicit release
+execution `POL-E -> VR-X -> VR-Q`. The latter joins Forge-owned release planning
+before production installer composition; it does not make a matching version
+string proof of a published artifact. All implementation nodes are PLANNED.
+Existing #100 assurance and #102 dependency admission remain separate owning
+work; this architecture does not approve or claim their implementation complete.
+Full policy-administration UI is not a new first-canary gate, and no executable
+programme DAG, installation, package version or grant changes in this increment.
+
+## Server deployment and discovery sequencing
+
+EP's target server is headless, launchd-managed on macOS, with one EP-owned
+CENTRAL runtime root outside source/Git and versioned HTTP application ingress.
+It retains EP-only execution authority. Stable instance identity, configured
+and authenticated Forge peer binding, and restart-safe CENTRAL/evidence are
+minimum seams for the first Forge→EP→Forge canary. LAN DNS-SD/mDNS discovery,
+configured/unicast/tailnet bootstrap, general server-peer pairing UX and
+installer composition are later productization work and do not block that
+canary. Discovery is never authorization and may not silently move a binding.
+
+See [EP Server deployment and discovery](../engineering/EP_SERVER_DEPLOYMENT_AND_DISCOVERY.md).
+
 ## Current standalone/bootstrap critical path — 2026-09-06
 
 This section is the current sequencing authority where older roadmap prose or derived cross-product projections conflict with the post-P-TRANSPORT decisions.
