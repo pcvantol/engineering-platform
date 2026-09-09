@@ -496,6 +496,22 @@ jobs:
           PUBLISHED_RECEIPT="engineering-platform-release-published-$VERSION-$SOURCE_SHA.json"
           PENDING="engineering-platform-cleanup-pending-$VERSION-$SOURCE_SHA.json"
           RECEIPT="engineering-platform-release-complete-$VERSION-$SOURCE_SHA.json"
+          target_exists() {
+            test -e "$1" || test -L "$1"
+          }
+          PENDING_READBACK_DIR=""
+          cleanup_pending_readback() {
+            local status=$?
+            if test -n "$PENDING_READBACK_DIR" && target_exists "$PENDING_READBACK_DIR"; then
+              if ! rm -rf -- "$PENDING_READBACK_DIR" || target_exists "$PENDING_READBACK_DIR"; then
+                echo 'Pending receipt readback target remains after failed cleanup.' >&2
+                status=1
+              fi
+            fi
+            trap - EXIT
+            exit "$status"
+          }
+          trap cleanup_pending_readback EXIT
           mkdir published-readback
           gh release download "$TAG" --pattern "$PUBLISHED_RECEIPT" --dir published-readback
           cmp "published-input/release-operation/operations/$OPERATION_ID.json" "published-readback/$PUBLISHED_RECEIPT"
@@ -504,9 +520,16 @@ jobs:
           # restart may only advance the exact pending operation to terminal
           # completion; it must not silently reconstruct a fresh PUBLISHED
           # record from an ephemeral artifact.
-          PENDING_READBACK_DIR="$RUNNER_TEMP/ep-pending-readback"
-          mkdir "$PENDING_READBACK_DIR"
-          if gh release download "$TAG" --pattern "$PENDING" --dir "$PENDING_READBACK_DIR"; then
+          PENDING_READBACK_DIR="$(mktemp -d "$RUNNER_TEMP/ep-pending-readback-XXXXXX")"
+          # A failed asset download is not evidence that the asset is absent.
+          # First obtain the release's complete asset identity list; only a
+          # successful list that omits this exact name permits a fresh cleanup
+          # attempt from PUBLISHED.  A listed receipt must be readable.
+          PENDING_ASSET_NAMES="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          pending_receipt_present=0
+          if printf '%s\n' "$PENDING_ASSET_NAMES" | grep -Fqx -- "$PENDING"; then
+            gh release download "$TAG" --pattern "$PENDING" --dir "$PENDING_READBACK_DIR"
+            test -f "$PENDING_READBACK_DIR/$PENDING"
             PYTHONPATH=src python3 - "$OPERATION_ID" \
               "published-input/release-operation/operations/$OPERATION_ID.json" \
               "$PENDING_READBACK_DIR/$PENDING" <<'PY'
@@ -550,6 +573,7 @@ jobs:
           finally:
               store.release(operation_id)
           PY
+            pending_receipt_present=1
           fi
           PYTHONPATH=src python3 - "$OPERATION_ID" "$VERSION" "$SOURCE_SHA" <<'PY'
           import os
@@ -572,15 +596,23 @@ jobs:
           test -f published-input/release-operation/registry-readback-digests.json || test -L published-input/release-operation/registry-readback-digests.json
           cleanup_failed=0
           failed_targets=()
-          for target in published-readback published-input/dist published-input/release-operation/registry-readback-digests.json; do
-            if test -e "$target" || test -L "$target"; then
-              if ! rm -rf -- "$target" || test -e "$target" || test -L "$target"; then
+          for target in published-readback published-input/dist published-input/release-operation/registry-readback-digests.json "$PENDING_READBACK_DIR"; do
+            if target_exists "$target"; then
+              if ! rm -rf -- "$target" || target_exists "$target"; then
                 cleanup_failed=1
-                failed_targets+=("$target")
+                if test "$target" = "$PENDING_READBACK_DIR"; then
+                  failed_targets+=("pending-readback")
+                else
+                  failed_targets+=("$target")
+                fi
               fi
             fi
           done
           if test "$cleanup_failed" = 1; then
+            if test "$pending_receipt_present" = 1; then
+              echo 'Existing durable CLEANUP_PENDING receipt retained after repeat cleanup failure.' >&2
+              exit 1
+            fi
             python3 - "${failed_targets[@]}" > cleanup-pending.json <<'PY'
           import json
           import sys
@@ -590,12 +622,13 @@ jobs:
                   "published-readback",
                   "published-input/dist",
                   "published-input/release-operation/registry-readback-digests.json",
+                  "pending-readback",
               ],
               "failed_targets": sys.argv[1:],
               "error": "failed to remove an operation-local temporary path",
           }, sort_keys=True))
           PY
-            pending_action="$(PYTHONPATH=src python3 - "$OPERATION_ID" <<'PY'
+            PYTHONPATH=src python3 - "$OPERATION_ID" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -608,53 +641,37 @@ jobs:
               current = store.load(operation_id)
               if current is None:
                   raise ReleaseOperationError("durable release evidence is unavailable")
-              if current.state == "PUBLISHED":
-                  store.mark_cleanup_pending(
-                      current,
-                      evidence=json.loads(Path("cleanup-pending.json").read_text(encoding="utf-8")),
-                  )
-                  print("NEW_PENDING")
-              elif current.state == "CLEANUP_PENDING":
-                  print("RETAINED_PENDING")
-              else:
+              if current.state != "PUBLISHED":
                   raise ReleaseOperationError("durable release evidence is not a resumable cleanup operation")
+              store.mark_cleanup_pending(
+                  current,
+                  evidence=json.loads(Path("cleanup-pending.json").read_text(encoding="utf-8")),
+              )
           finally:
               store.release(operation_id)
           PY
-            )"
             cp "published-input/release-operation/operations/$OPERATION_ID.json" "$PENDING"
-            if test "$pending_action" = "NEW_PENDING"; then
-              gh release upload "$TAG" "$PENDING"
-              rm -f "$PENDING_READBACK_DIR/$PENDING"
-              gh release download "$TAG" --pattern "$PENDING" --dir "$PENDING_READBACK_DIR"
-              cmp "$PENDING" "$PENDING_READBACK_DIR/$PENDING"
-            elif test "$pending_action" = "RETAINED_PENDING"; then
-              test -f "$PENDING_READBACK_DIR/$PENDING"
-              cmp "$PENDING" "$PENDING_READBACK_DIR/$PENDING"
-            else
-              echo "Unexpected cleanup-pending operation result: $pending_action" >&2
+            gh release upload "$TAG" "$PENDING"
+            # The initial readback directory is a declared cleanup target.
+            # Confirm a newly-uploaded receipt over stdout so confirmation
+            # cannot recreate that target after it was proven absent.
+            gh release download "$TAG" --pattern "$PENDING" --output - | cmp "$PENDING" -
+            rm -f -- "$PENDING" cleanup-pending.json
+            if target_exists "$PENDING" || target_exists cleanup-pending.json; then
+              echo 'Temporary cleanup-pending evidence remains after durable confirmation.' >&2
               exit 1
             fi
             exit 1
           fi
+          # The loop above has verified that this operation-local target is
+          # gone.  Later receipt confirmation is stream-only, so disarm the
+          # failure-path trap before terminalizing the operation.
+          PENDING_READBACK_DIR=""
           if test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true; then
             gh release edit "$TAG" --draft=false
           fi
           test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = false
-          python3 - > cleanup-complete.json <<'PY'
-          import json
-          print(json.dumps({
-              "result": "COMPLETE",
-              "temporary_paths": [
-                  "published-readback",
-                  "published-input/dist",
-                  "published-input/release-operation/registry-readback-digests.json",
-              ],
-              "github_release": {"draft": False},
-          }, sort_keys=True))
-          PY
           PYTHONPATH=src python3 - "$OPERATION_ID" <<'PY'
-          import json
           import sys
           from pathlib import Path
           from engineering_platform.release_operation import ReleaseOperationError, ReleaseOperationStore
@@ -668,17 +685,29 @@ jobs:
                   raise ReleaseOperationError("durable release evidence is unavailable")
               store.complete(
                   published,
-                  evidence=json.loads(Path("cleanup-complete.json").read_text(encoding="utf-8")),
+                  evidence={
+                      "result": "COMPLETE",
+                      "temporary_paths": [
+                          "published-readback",
+                          "published-input/dist",
+                          "published-input/release-operation/registry-readback-digests.json",
+                          "pending-readback",
+                      ],
+                      "github_release": {"draft": False},
+                  },
               )
           finally:
               store.release(operation_id)
           PY
           cp "published-input/release-operation/operations/$OPERATION_ID.json" "$RECEIPT"
-          mkdir "$RUNNER_TEMP/ep-complete-readback"
-          if gh release download "$TAG" --pattern "$RECEIPT" --dir "$RUNNER_TEMP/ep-complete-readback"; then
-            cmp "$RECEIPT" "$RUNNER_TEMP/ep-complete-readback/$RECEIPT"
+          # Completion receipt confirmation is stream-only: terminalization
+          # must not create a new cleanup target after the cleanup evidence
+          # was made durable.
+          if gh release download "$TAG" --pattern "$RECEIPT" --output - | cmp "$RECEIPT" -; then
+            :
           else
             gh release upload "$TAG" "$RECEIPT"
+            gh release download "$TAG" --pattern "$RECEIPT" --output - | cmp "$RECEIPT" -
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
