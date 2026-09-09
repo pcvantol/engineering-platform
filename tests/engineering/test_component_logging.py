@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from engineering_platform import component_logging, server
 from engineering_platform.platform_components import RETIRED_COMPONENT_ALIASES
+from engineering_platform.platform_version import CURRENT_PLATFORM_VERSION
 from tools.qualification import logging_retirement_guard
 
 
@@ -84,9 +85,9 @@ class ComponentLoggingTest(unittest.TestCase):
                 record = json.loads(connection.execute(
                     "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
                 ).fetchone()[0])
-            self.assertEqual(record["component_version"], "2.3.0")
+            self.assertEqual(record["component_version"], CURRENT_PLATFORM_VERSION)
             self.assertEqual(record["target_component"], "dashboard_relay")
-            self.assertEqual(record["target_component_version"], "2.3.0")
+            self.assertEqual(record["target_component_version"], CURRENT_PLATFORM_VERSION)
 
     def test_supported_writer_uses_server_central_sink_without_caller_selection(self) -> None:
         """A normal supported component writer cannot fall back to its checkout."""
