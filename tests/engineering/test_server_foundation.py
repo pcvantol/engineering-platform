@@ -182,12 +182,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
             "engineering_platform.server.operational_installation.resolve"
-        ) as resolve, patch("engineering_platform.server.operational_installation.record_status", return_value={"state": "REGISTERED"}) as record_status, patch("engineering_platform.server.operational_installation.package_identity", return_value={"version": "2.3.1"}):
+        ) as resolve, patch("engineering_platform.server.operational_installation.record_status", return_value={"state": "REGISTERED"}) as record_status, patch("engineering_platform.server.operational_installation.package_identity", return_value={"version": "2.3.1"}) as package_identity, patch("engineering_platform.server.operational_installation.validate_package_identity") as validate_package_identity:
             resolve.return_value.payload.return_value = {"interpreter": str(selected)}
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(server.main(("operational-diagnose", "--data-root", str(self.root))), 0)
             resolve.assert_called_once_with(self.root, interpreter=selected)
             record_status.assert_called_once_with(resolve.return_value)
+            validate_package_identity.assert_called_once_with(resolve.return_value, package_identity.return_value)
 
     def test_queue_operator_capability_grant_and_revoke_are_durable(self) -> None:
         server.initialize(self.root)

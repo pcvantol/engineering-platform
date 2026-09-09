@@ -3896,10 +3896,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "operational-diagnose":
             selected = server_service.configured_interpreter(args.data_root) or Path(sys.executable)
             installation = operational_installation.resolve(args.data_root, interpreter=selected)
+            package = operational_installation.package_identity(selected)
+            operational_installation.validate_package_identity(installation, package)
             result = {
                 "installation": installation.payload(),
                 "record": operational_installation.record_status(installation),
-                "package": operational_installation.package_identity(selected),
+                "package": package,
             }
         elif args.command == "service-install":
             initialize(args.data_root)

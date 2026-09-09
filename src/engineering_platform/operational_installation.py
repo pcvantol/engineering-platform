@@ -128,3 +128,13 @@ def package_identity(interpreter: str | Path, *, runner: Callable[..., subproces
     if not isinstance(value, dict) or set(value) != {"interpreter", "version", "metadata", "package"} or not all(isinstance(item, str) and item for item in value.values()):
         raise OperationalInstallationError("selected interpreter returned incomplete EP package identity")
     return value
+
+
+def validate_package_identity(installation: OperationalInstallation, identity: Mapping[str, str]) -> None:
+    """Ensure the queried package is the configured service runtime, not PATH."""
+    if set(identity) != {"interpreter", "version", "metadata", "package"}:
+        raise OperationalInstallationError("selected interpreter returned incomplete EP package identity")
+    if normalized(identity["interpreter"]) != normalized(installation.interpreter):
+        raise OperationalInstallationError("package identity belongs to a different interpreter")
+    if identity["version"] != installation.configured_version:
+        raise OperationalInstallationError("package version does not match selected operational runtime")
