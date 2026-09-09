@@ -53,6 +53,30 @@ receipts remain product-specific. A production publication or an actual Mac
 installation/update remains outside this source order until separately
 authorized.
 
+## Subagent orchestration and efficiency — retained audit and planned lane
+
+`EP_SUBAGENT_ORCHESTRATION_AND_EFFICIENCY_V1` records the
+[source findings and target design](../engineering/SUBAGENT_ORCHESTRATION_AND_EFFICIENCY.md),
+[scoped roadmap](SUBAGENT_ORCHESTRATION_V1_ROADMAP.md) and
+[documentary dependency DAG](SUBAGENT_ORCHESTRATION_V1_DAG.json).
+The source audit at `62eb6c4631cc23b9e4d2a53043216be6f20bfaae` was reconciled
+against `0c282bacc40731221da267bcff289e0687ca945c`; isolated diagnostics are
+retained without promoting them to production or installed qualification.
+
+Nine OPEN findings cover mandatory-context loss, advisory-result consumption,
+selection/fan-out, shared telemetry, mandatory-review accounting, unnecessary
+provider turns, utility semantics, event deduplication and role specialization.
+Start with `SA-CTX`/`SA-ISO`, then `SA-OBS`; validation, selection, findings-consumer
+and role lanes follow their exact DAG edges. All runtime work is PLANNED.
+`SA-PUB` additionally requires qualified evidence from the separately owned
+post-assurance publication contract; this lane does not close that repair.
+
+The full family is not a new first-canary gate. A concrete context/assurance defect
+on the selected canary path still requires a scoped safety assessment/fix.
+Reuse existing policy, provider, CENTRAL, lease and review/repair contracts.
+This NO_BUMP documentation changes no source behavior, runtime, release, grant,
+budget, active policy, Mission or executable programme DAG.
+
 ## Repository observation and safe cleanup — documented target
 
 The coordinated `PROJECT_HYGIENE_AND_REPOSITORY_RECONCILIATION_V1` increment

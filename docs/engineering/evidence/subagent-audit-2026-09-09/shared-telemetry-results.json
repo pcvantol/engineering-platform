@@ -1,0 +1,15 @@
+{
+  "scope": "reduced shared-state sequence harness, not the original class or live EP",
+  "source_sha": "62eb6c4631cc23b9e4d2a53043216be6f20bfaae",
+  "reviewer_A": {
+    "contribution": "result_A",
+    "expected_input_tokens": 101,
+    "observed_input_tokens": 202,
+    "observed_telemetry_invocation": "B"
+  },
+  "reviewer_B": {
+    "contribution": "result_B",
+    "input_tokens": 202
+  },
+  "result": "cross-review telemetry attribution reproduced; result content remains local"
+}

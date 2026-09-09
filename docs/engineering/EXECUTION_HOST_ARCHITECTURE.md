@@ -156,3 +156,14 @@ own lifecycle activities.
 A recovered record is phase-scoped historical evidence: it may be retained for
 reporting, but it can be consumed only by its recorded lifecycle phase and
 cannot satisfy or interfere with a later provider phase.
+
+## Planned subagent orchestration and efficiency follow-up
+
+The [retained source audit and target design](SUBAGENT_ORCHESTRATION_AND_EFFICIENCY.md)
+and [SA roadmap/DAG](../development/SUBAGENT_ORCHESTRATION_V1_ROADMAP.md) record
+OPEN context, result-consumption, invocation-isolation and measurement findings.
+They describe future bounded improvements, not qualified runtime behavior or a
+second lifecycle. Existing reviewer independence, read-only assurance, publication
+ordering, run-wide repair limits and lease ownership remain unchanged. A future
+typed specialist-finding consumer requires its explicit qualified contract; this
+link does not enable sharing reviewer reasoning or inherited approvals.
