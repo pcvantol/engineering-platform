@@ -2122,7 +2122,29 @@ First implementation pull-request publication gate:
             except (CodexInvocationError, ProviderReadinessBlocked) as error:
                 if isinstance(error, ProviderReadinessBlocked):
                     return error.state, implementation
-                return self._terminalize_provider_invocation_error(publication, error), implementation
+                # The provider may have created the draft PR and lost only
+                # its acknowledgement. Before terminalizing (and before any
+                # future provider retry), reconcile exactly one readback for
+                # this already-pinned branch, base, and candidate SHA. A
+                # branch match alone is deliberately never enough.
+                try:
+                    recovered = self.github.pull_request_for_head_branch(before.branch)
+                except RunnerError:
+                    recovered = None
+                if (
+                    recovered is not None
+                    and recovered.state == "OPEN"
+                    and recovered.is_draft
+                    and recovered.head_branch == before.branch
+                    and recovered.base_branch == "main"
+                    and recovered.head_sha == before.head_sha
+                ):
+                    published = AgentResult(
+                        "COMPLETE", branch=before.branch,
+                        pull_request=recovered.number, commit_sha=before.head_sha,
+                    )
+                else:
+                    return self._terminalize_provider_invocation_error(publication, error), implementation
         try:
             after = self.repository.inspect(self.root)
         except RunnerError:
