@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from engineering_platform.installation_update_plan import InstallationUpdatePlan
-from engineering_platform.installation_update_operation import InstallationUpdateOperationError, InstallationUpdateSession, create, status, transition
+from engineering_platform.installation_update_operation import InstallationUpdateOperationError, InstallationUpdateSession, cleanup, create, status, transition
 
 
 def plan(root: Path) -> InstallationUpdatePlan:
@@ -70,3 +70,40 @@ class InstallationUpdateOperationTests(unittest.TestCase):
                 transition(update, state, {})
             observed = status(Path(temporary), "update-0001")
             self.assertEqual((observed["state"], observed["target_version"], observed["target_digest"]), ("CLEANUP_PENDING", "2.3.2", "sha256:" + "b" * 64))
+
+    def test_status_and_transition_reject_malformed_or_conflicting_recovery_evidence(self):
+        with TemporaryDirectory() as temporary:
+            root, update = Path(temporary), plan(Path(temporary))
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "ID is invalid"):
+                status(root, "../not-an-operation")
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "unreadable"):
+                status(root, "update-0001")
+            create(update)
+            self.assertEqual(transition(update, "PREPARED", {})["state"], "PREPARED")
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "conflicts"):
+                transition(update, "PREPARED", {"changed": True})
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "evidence is invalid"):
+                transition(update, "INVENTORIED", ["not-a-mapping"])  # type: ignore[arg-type]
+            operation = root / "operations" / "update-0001" / "operation.json"
+            operation.write_text("{}")
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "invalid"):
+                create(update)
+
+    def test_cleanup_rejects_preverification_and_non_operation_targets(self):
+        with TemporaryDirectory() as temporary:
+            update = plan(Path(temporary)); create(update)
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "requires verified"):
+                cleanup(update)
+            for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED"):
+                transition(update, state, {})
+            invalid = InstallationUpdatePlan(**{**update.payload(), "cleanup_targets": (str(Path(temporary) / "outside"),)})
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "exact plan"):
+                cleanup(invalid)
+
+    def test_session_refuses_actions_before_lock_ownership(self):
+        with TemporaryDirectory() as temporary:
+            session = InstallationUpdateSession(plan(Path(temporary)))
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "does not own"):
+                session.advance("INVENTORIED", {})
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "does not own"):
+                session.cleanup()
