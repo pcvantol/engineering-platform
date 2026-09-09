@@ -74,6 +74,9 @@ class OperationalInstallationTests(unittest.TestCase):
                                                  expected_artifact_digest="sha256:" + "a" * 64,
                                                  replacement=replacement)["version"], "2.3.2")
             self.assertEqual(load(root)["artifact_digest"], "sha256:" + "c" * 64)
+            self.assertEqual(replace_for_update(root, expected_version="2.3.2",
+                                                 expected_artifact_digest="sha256:" + "c" * 64,
+                                                 replacement=replacement), replacement)
             with self.assertRaisesRegex(OperationalInstallationRecordError, "changed before"):
                 replace_for_update(root, expected_version="2.3.1", expected_artifact_digest="sha256:" + "a" * 64,
                                    replacement=replacement)
