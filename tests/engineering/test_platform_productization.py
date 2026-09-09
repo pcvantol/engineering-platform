@@ -215,6 +215,11 @@ class PlatformProductizationTest(unittest.TestCase):
             package_lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
             self.assertEqual(package_lock["version"], "2.2.0")
             self.assertEqual(package_lock["packages"][""]["version"], "2.2.0")
+            manifest = json.loads((root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                {manifest[field] for field in ("platform_version", "runner_version", "dashboard_version", "watcher_version")},
+                {"2.2.0"},
+            )
             with self.assertRaisesRegex(RuntimeError, "stable X.Y.Z"):
                 module.set_version(root, "2.2")
 
