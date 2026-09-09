@@ -31,6 +31,25 @@ claiming Mac-wide uniqueness. No conflict in that bounded inventory is not
 `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`. Cross-account service discovery
 and any removal/cutover remain an explicitly authorized future operation.
 
+## Operational update recovery boundary
+
+The EP-owned update plan, lock, journal and executor are source-level
+primitives for one registered installation. Before its first durable
+`INVENTORIED` transition, the executor re-hashes the exact wheel named by the
+plan; a delayed or modified artifact fails before inventory or service
+quiescence. It then permits only the ordered lifecycle
+`INVENTORIED → QUIESCED → BACKED_UP → MIGRATED → ACTIVATED → VERIFIED →
+CLEANUP_PENDING|COMPLETE`. An interruption retains the last durable
+transition; restart resumes only the remaining idempotent actions under the
+same installation lock. Cleanup can resume from `CLEANUP_PENDING` without
+repeating runtime activation.
+
+This update primitive refuses a lower EP version. Rollback needs compatible
+software *and* data evidence and is therefore a separate, explicitly
+authorized recovery operation; an older wheel is never silently treated as a
+rollback. The source contracts do not run an update, construct a runtime,
+stop a service, or delete a machine artifact by themselves.
+
 ## Explicit development profile
 
 A source-development Server is an explicit `development` runtime profile, not

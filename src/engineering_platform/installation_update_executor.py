@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from .installation_update_operation import InstallationUpdateOperationError, InstallationUpdateSession, status
-from .installation_update_plan import InstallationUpdatePlan
+from .installation_update_plan import InstallationUpdatePlan, InstallationUpdatePlanError, verify_exact_artifact
 from . import operational_installation_record
 
 
@@ -76,6 +76,20 @@ def _verified(plan: InstallationUpdatePlan, action: EvidenceAction) -> dict[str,
     return evidence
 
 
+def _inventory(plan: InstallationUpdatePlan, action: EvidenceAction) -> dict[str, object]:
+    """Recheck wheel bytes before accepting the owning inventory evidence."""
+    try:
+        artifact = verify_exact_artifact(plan)
+    except InstallationUpdatePlanError as error:
+        raise InstallationUpdateExecutorError("installation update exact artifact is unavailable") from error
+    # Product composition owns the shape of its inventory evidence (including
+    # target interpreter and compatibility facts), so do not wrap or replace
+    # it here. The verified artifact is enforced at the transition boundary;
+    # the immutable plan retains its exact path/digest/version identity.
+    _ = artifact
+    return _evidence(action(plan), "inventory")
+
+
 def execute(plan: InstallationUpdatePlan, actions: InstallationUpdateActions) -> dict[str, object]:
     """Run or resume one exact plan, without discovering an alternative runtime.
 
@@ -96,7 +110,8 @@ def execute(plan: InstallationUpdatePlan, actions: InstallationUpdateActions) ->
                 if current["state"] == state:
                     continue
                 if current["state"] == predecessors[state]:
-                    current = session.advance(state, _evidence(action(plan), state.lower()))
+                    evidence = _inventory(plan, action) if state == "INVENTORIED" else _evidence(action(plan), state.lower())
+                    current = session.advance(state, evidence)
             if current["state"] == "MIGRATED":
                 current = session.advance("ACTIVATED", _activate(plan, actions.activate))
             if current["state"] == "ACTIVATED":

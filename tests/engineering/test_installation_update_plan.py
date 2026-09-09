@@ -38,3 +38,14 @@ class InstallationUpdatePlanTests(unittest.TestCase):
             executable = root / "python"; root.mkdir(); executable.write_text(""); executable.chmod(0o755); self._record(root, executable)
             with self.assertRaisesRegex(InstallationUpdatePlanError, "does not match"):
                 prepare(root, operation_id="update-0001", artifact=wheel, target_version="2.3.2", target_digest="sha256:" + "a" * 64, target_source_revision="c" * 40)
+
+    def test_plan_refuses_downgrade_without_a_compatible_recovery_operation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtime"; root.mkdir()
+            executable = root / "python"; executable.write_text(""); executable.chmod(0o755)
+            self._record(root, executable)
+            wheel = Path(temporary) / "older.whl"; wheel.write_bytes(b"older wheel")
+            digest = "sha256:" + hashlib.sha256(wheel.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(InstallationUpdatePlanError, "downgrade or rollback"):
+                prepare(root, operation_id="update-0001", artifact=wheel, target_version="2.3.0",
+                        target_digest=digest, target_source_revision="c" * 40)

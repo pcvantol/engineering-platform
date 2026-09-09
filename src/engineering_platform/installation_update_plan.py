@@ -43,6 +43,27 @@ def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _version(value: str, label: str) -> tuple[int, int, int]:
+    match = _VERSION.fullmatch(value)
+    if match is None:
+        raise InstallationUpdatePlanError(f"{label} version is invalid")
+    return tuple(int(part) for part in value.split("."))
+
+
+def verify_exact_artifact(plan: InstallationUpdatePlan) -> dict[str, str]:
+    """Re-read the planned wheel before an update leaves ``PREPARED``.
+
+    A plan records a wheel digest, not a durable copy of its bytes.  An
+    interrupted or delayed execution must therefore recheck the same named
+    artifact before quiescing the operational service; choosing a newer wheel
+    or trusting a changed path would break the plan's identity binding.
+    """
+    artifact = Path(plan.artifact).expanduser().resolve()
+    if _digest(artifact) != plan.target_digest:
+        raise InstallationUpdatePlanError("target artifact changed after update preparation")
+    return {"path": str(artifact), "digest": plan.target_digest, "version": plan.target_version}
+
+
 def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_version: str,
             target_digest: str, target_source_revision: str) -> InstallationUpdatePlan:
     """Bind an update to one record and wheel without changing the machine.
@@ -59,6 +80,15 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
         current = operational_installation_record.load(root)
     except operational_installation_record.OperationalInstallationRecordError as error:
         raise InstallationUpdatePlanError("registered operational installation is unavailable") from error
+    current_version = str(current["version"])
+    current_semver, target_semver = _version(current_version, "registered operational"), _version(target_version, "target")
+    if target_semver < current_semver:
+        # A database rollback must be explicitly proven compatible.  This
+        # update primitive has no reverse-migration authority, so it may not
+        # turn an older wheel into an accidental rollback.
+        raise InstallationUpdatePlanError("downgrade or rollback requires a compatible recovery operation")
+    if target_semver == current_semver and target_digest != str(current["artifact_digest"]):
+        raise InstallationUpdatePlanError("same release identity cannot use different artifact bytes")
     exact_artifact = Path(artifact).expanduser().resolve()
     if _digest(exact_artifact) != target_digest:
         raise InstallationUpdatePlanError("target artifact does not match the requested digest")
@@ -68,7 +98,7 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
     ))
     return InstallationUpdatePlan(
         operation_id=operation_id, installation_id=str(current["installation_id"]), data_root=str(root),
-        current_version=str(current["version"]), current_digest=str(current["artifact_digest"]),
+        current_version=current_version, current_digest=str(current["artifact_digest"]),
         target_version=target_version, target_digest=target_digest,
         target_source_revision=target_source_revision, artifact=str(exact_artifact),
         cleanup_targets=cleanup,

@@ -102,3 +102,49 @@ class InstallationUpdateExecutorTests(unittest.TestCase):
                 value = dict(actions.activate(_plan)); value["version"] = "2.3.3"; return value
             with self.assertRaisesRegex(InstallationUpdateExecutorError, "target identity"):
                 execute(plan, InstallationUpdateActions(actions.inventory, actions.quiesce, actions.backup, actions.migrate, wrong, actions.verify))
+
+    def test_changed_wheel_fails_before_inventory_or_service_quiescence(self) -> None:
+        with TemporaryDirectory() as temporary:
+            plan = self._plan(Path(temporary)); calls: list[str] = []
+            Path(plan.artifact).write_bytes(b"different bytes")
+            with self.assertRaisesRegex(InstallationUpdateExecutorError, "exact artifact"):
+                execute(plan, self._actions(plan, calls))
+            self.assertEqual(calls, [])
+
+    def test_cleanup_pending_resumes_without_repeating_runtime_actions(self) -> None:
+        with TemporaryDirectory() as temporary:
+            plan = self._plan(Path(temporary)); first_calls: list[str] = []
+            for target in plan.cleanup_targets:
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+            # A symlinked operation cache is deliberately retained and makes
+            # the first cleanup fail closed after the runtime is verified.
+            outside = Path(temporary) / "outside"; outside.mkdir()
+            Path(plan.cleanup_targets[0]).symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(InstallationUpdateExecutorError, "execution failed"):
+                execute(plan, self._actions(plan, first_calls))
+            self.assertEqual(first_calls, ["inventory", "quiesce", "backup", "migrate", "activate", "verify"])
+            Path(plan.cleanup_targets[0]).unlink()
+            resumed_calls: list[str] = []
+            self.assertEqual(execute(plan, self._actions(plan, resumed_calls))["state"], "COMPLETE")
+            self.assertEqual(resumed_calls, [])
+
+    def test_crash_during_migration_keeps_last_durable_transition_for_reboot_resume(self) -> None:
+        with TemporaryDirectory() as temporary:
+            plan = self._plan(Path(temporary)); failed_calls: list[str] = []
+            actions = self._actions(plan, failed_calls)
+
+            def crash(_plan):
+                failed_calls.append("migrate")
+                raise RuntimeError("simulated reboot")
+
+            with self.assertRaisesRegex(RuntimeError, "simulated reboot"):
+                execute(plan, InstallationUpdateActions(
+                    actions.inventory, actions.quiesce, actions.backup, crash,
+                    actions.activate, actions.verify,
+                ))
+            from engineering_platform.installation_update_operation import status
+            self.assertEqual(status(Path(plan.data_root), plan.operation_id)["state"], "BACKED_UP")
+            self.assertEqual(failed_calls, ["inventory", "quiesce", "backup", "migrate"])
+            resumed_calls: list[str] = []
+            self.assertEqual(execute(plan, self._actions(plan, resumed_calls))["state"], "COMPLETE")
+            self.assertEqual(resumed_calls, ["migrate", "activate", "verify"])
