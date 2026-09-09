@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from engineering_platform.operational_installation import OperationalInstallationError, inventory, package_identity, record_status, resolve, validate_health, validate_package_identity
+from engineering_platform.operational_installation import OperationalInstallationError, inventory, package_identity, record_status, resolve, validate_health, validate_package_identity, validate_registered_package_identity
 from engineering_platform.operational_installation_record import record
 
 
@@ -109,6 +109,13 @@ class OperationalInstallationTests(unittest.TestCase):
             other = Path(directory) / "other-python"; other.write_text("#!/bin/sh\n"); other.chmod(0o755)
             with self.assertRaisesRegex(OperationalInstallationError, "different interpreter"):
                 validate_package_identity(installation, {**identity, "interpreter": str(other)})
+
+    def test_registered_record_must_match_selected_package_without_configured_product_version(self) -> None:
+        identity = {"interpreter": "/runtime/python", "version": "2.3.0", "metadata": "/metadata", "package": "/package"}
+        with self.assertRaisesRegex(OperationalInstallationError, "registered installation version"):
+            validate_registered_package_identity({"state": "REGISTERED", "version": "2.3.1"}, identity)
+        validate_registered_package_identity({"state": "REGISTERED", "version": "2.3.0"}, identity)
+        validate_registered_package_identity({"state": "UNREGISTERED"}, identity)
 
     def test_inventory_exposes_old_path_package_and_conflicting_service_without_selecting_it(self) -> None:
         with TemporaryDirectory() as directory:

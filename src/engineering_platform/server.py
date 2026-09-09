@@ -3906,9 +3906,11 @@ def main(argv: list[str] | None = None) -> int:
             installation = operational_installation.resolve(args.data_root, interpreter=selected)
             package = operational_installation.package_identity(selected)
             operational_installation.validate_package_identity(installation, package)
+            record = operational_installation.record_status(installation)
+            operational_installation.validate_registered_package_identity(record, package)
             result = {
                 "installation": installation.payload(),
-                "record": operational_installation.record_status(installation),
+                "record": record,
                 "package": package,
             }
         elif args.command == "operational-inventory":

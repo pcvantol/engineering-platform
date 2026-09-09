@@ -145,6 +145,22 @@ def validate_package_identity(installation: OperationalInstallation, identity: M
         raise OperationalInstallationError("package version does not match selected operational runtime")
 
 
+def validate_registered_package_identity(record: Mapping[str, object], identity: Mapping[str, str]) -> None:
+    """Bind a registered release claim to the exact interpreter's package.
+
+    Configuration versions are optional because ``server.json`` has its own
+    schema revision. A registered operational installation always names an EP
+    release, so it must agree with metadata from the selected interpreter.
+    """
+    if record.get("state") != "REGISTERED":
+        return
+    version = record.get("version")
+    if not isinstance(version, str) or not version:
+        raise OperationalInstallationError("registered operational installation lacks package version")
+    if identity.get("version") != version:
+        raise OperationalInstallationError("registered installation version does not match selected package")
+
+
 def inventory(installation: OperationalInstallation, *, service_references: Mapping[str, str | Path],
               candidates: Iterable[str | Path], runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> Mapping[str, object]:
     """Classify explicit candidate interpreters without selecting or mutating one.
