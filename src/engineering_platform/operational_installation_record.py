@@ -54,7 +54,9 @@ def record(data_root: Path, *, installation_id: str, version: str, channel: str,
            artifact_digest: str, source_revision: str, interpreter: Path,
            roles: Mapping[str, str], desired_state: str, observed_state: str,
            verification: Mapping[str, object], cleanup: Mapping[str, object]) -> dict[str, object]:
-    root, executable = Path(data_root).resolve(), Path(interpreter).expanduser().resolve()
+    # Retain the venv launcher spelling.  ``resolve`` follows the launcher
+    # symlink to its base Python and silently changes the registered runtime.
+    root, executable = Path(data_root).resolve(), Path(interpreter).expanduser().absolute()
     if not all(isinstance(item, str) and item for item in (installation_id, version, channel, artifact_digest, source_revision, desired_state, observed_state)):
         raise OperationalInstallationRecordError("operational installation identity is invalid")
     if _DIGEST.fullmatch(artifact_digest) is None or _REVISION.fullmatch(source_revision) is None or not executable.is_file():

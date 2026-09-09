@@ -13,6 +13,24 @@ installed artifact's site-packages. The Console uses only the CENTRAL's
 secret-free topology projection; browser selection is presentation state and
 is never request authority.
 
+## Operational-installation diagnosis scope
+
+`operational-diagnose` reads the selected Server LaunchAgent interpreter (not
+`PATH`), the registered EP installation identity and the selected interpreter's
+installed package metadata. `operational-inventory` separately reports only
+explicitly supplied candidate interpreters and service references, normalized
+as data paths while retaining each venv launcher spelling as a runtime
+identity. Thus two venv launchers that share a base Python remain distinct
+candidate installations.
+
+The product invariant is `PER_PRODUCT_MAX_OPERATIONAL_RELEASE_INSTALLATIONS =
+1` with required scope `MACOS_MACHINE`. The current read-only inventory can
+observe only the current OS user's explicit references; it reports
+`CURRENT_OS_USER_EXPLICIT_REFERENCES_ONLY` and `INCOMPLETE` rather than
+claiming Mac-wide uniqueness. No conflict in that bounded inventory is not
+`SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`. Cross-account service discovery
+and any removal/cutover remain an explicitly authorized future operation.
+
 ## Explicit development profile
 
 A source-development Server is an explicit `development` runtime profile, not

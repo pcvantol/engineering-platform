@@ -32,8 +32,20 @@ class OperationalInstallation:
 
 
 def normalized(path: str | Path) -> Path:
-    """Normalize symlinks and whitespace-bearing paths before comparison."""
+    """Normalize a durable data path, including symlinks, before comparison."""
     return Path(path).expanduser().resolve(strict=False)
+
+
+def launcher(path: str | Path) -> Path:
+    """Return an absolute interpreter *invocation* path without resolving it.
+
+    A virtual environment's ``bin/python`` is normally a symlink to a shared
+    base interpreter.  Resolving it would make two different EP venvs appear
+    to be one runtime and would make the base interpreter look like it owns
+    the package.  The lexical absolute launcher is therefore the operational
+    identity; data roots continue to use :func:`normalized`.
+    """
+    return Path(path).expanduser().absolute()
 
 
 def _object(path: Path, label: str) -> Mapping[str, object]:
@@ -67,10 +79,10 @@ def resolve(data_root: Path, *, interpreter: str | Path,
     claimed = runtime.get("instance_id")
     if claimed is not None and claimed != instance_id:
         raise OperationalInstallationError("operational runtime belongs to a different instance")
-    selected = normalized(interpreter)
+    selected = launcher(interpreter)
     if not selected.is_file():
         raise OperationalInstallationError("selected operational interpreter is unavailable")
-    candidates = tuple(str(normalized(candidate)) for candidate in path_candidates)
+    candidates = tuple(str(launcher(candidate)) for candidate in path_candidates)
     return OperationalInstallation(str(selected), str(root), instance_id, version, pid, candidates)
 
 
@@ -92,7 +104,7 @@ def record_status(installation: OperationalInstallation) -> Mapping[str, object]
         raise OperationalInstallationError("operational installation record is unreadable") from error
     if (record.get("installation_id") != installation.instance_id
             or (installation.configured_version is not None and record.get("version") != installation.configured_version)
-            or normalized(str(record.get("interpreter", ""))) != normalized(installation.interpreter)):
+            or launcher(str(record.get("interpreter", ""))) != launcher(installation.interpreter)):
         raise OperationalInstallationError("operational installation record does not match selected runtime")
     return {
         "state": "REGISTERED",
@@ -120,7 +132,7 @@ def validate_health(installation: OperationalInstallation, response: Mapping[str
 
 def package_identity(interpreter: str | Path, *, runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> Mapping[str, str]:
     """Ask the exact selected interpreter, never the caller's PATH, for EP metadata."""
-    selected = normalized(interpreter)
+    selected = launcher(interpreter)
     program = (
         "import importlib.metadata,json,pathlib,sys;d=importlib.metadata.distribution('engineering-platform');"
         "print(json.dumps({'interpreter':sys.executable,'version':d.version,'metadata':str(d._path),"
@@ -142,7 +154,7 @@ def validate_package_identity(installation: OperationalInstallation, identity: M
     """Ensure the queried package is the configured service runtime, not PATH."""
     if set(identity) != {"interpreter", "version", "metadata", "package"}:
         raise OperationalInstallationError("selected interpreter returned incomplete EP package identity")
-    if normalized(identity["interpreter"]) != normalized(installation.interpreter):
+    if launcher(identity["interpreter"]) != launcher(installation.interpreter):
         raise OperationalInstallationError("package identity belongs to a different interpreter")
     if installation.configured_version is not None and identity["version"] != installation.configured_version:
         raise OperationalInstallationError("package version does not match selected operational runtime")
@@ -172,16 +184,16 @@ def inventory(installation: OperationalInstallation, *, service_references: Mapp
     contract/operator.  It does not pretend to enumerate every account or
     disk location, and it never promotes a PATH candidate to operational use.
     """
-    selected = normalized(installation.interpreter)
+    selected = launcher(installation.interpreter)
     references: dict[str, Path] = {}
     for label, value in service_references.items():
         if not isinstance(label, str) or not label or not isinstance(value, (str, Path)):
             raise OperationalInstallationError("operational service reference is invalid")
-        candidate = normalized(value)
+        candidate = launcher(value)
         if not candidate.is_absolute():
             raise OperationalInstallationError("operational service reference must be absolute")
         references[label] = candidate
-    paths = {selected, *(normalized(candidate) for candidate in candidates), *references.values()}
+    paths = {selected, *(launcher(candidate) for candidate in candidates), *references.values()}
     entries: list[dict[str, object]] = []
     for interpreter in sorted(paths, key=str):
         labels = sorted(label for label, value in references.items() if value == interpreter)
@@ -192,5 +204,16 @@ def inventory(installation: OperationalInstallation, *, service_references: Mapp
         except OperationalInstallationError as error:
             entries.append({"interpreter": str(interpreter), "status": "UNAVAILABLE_OR_NOT_EP", "service_references": labels, "diagnostic": str(error)})
     conflicts = [entry for entry in entries if entry["status"] == "CONFLICTING_SERVICE_REFERENCE"]
-    return {"selected_interpreter": str(selected), "coverage": "EXPLICIT_PATHS_ONLY", "entries": entries,
-            "conflicting_service_references": conflicts, "single_operational_installation": not conflicts}
+    # This call intentionally has no authority to enumerate other macOS
+    # accounts, system LaunchDaemons, or arbitrary disks.  Absence of a
+    # conflict among explicit paths is useful evidence, but never proof of the
+    # machine-wide invariant.
+    scope = {
+        "required": "MACOS_MACHINE",
+        "observed": "CURRENT_OS_USER_EXPLICIT_REFERENCES_ONLY",
+        "status": "INCOMPLETE",
+    }
+    return {"selected_interpreter": str(selected), "coverage": "EXPLICIT_PATHS_ONLY", "scope": scope,
+            "entries": entries, "conflicting_service_references": conflicts,
+            "single_operational_installation": False,
+            "single_operational_installation_status": "UNVERIFIED_SCOPE" if not conflicts else "CONFLICTS_DETECTED"}
