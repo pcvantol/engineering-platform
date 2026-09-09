@@ -2263,6 +2263,18 @@ First implementation pull-request publication gate:
     ) -> TransactionState:
         """Route a validated durable result to its existing phase handler."""
         if lifecycle_phase == "EXECUTE_AGENT":
+            if (
+                state.next_action == "publish_first_implementation_pull_request"
+                and result.pull_request is not None
+            ):
+                # A durable publication acknowledgement is not a fresh
+                # implementation result. Reconcile its exact draft identity
+                # through the existing publication gate; never re-run local
+                # validation/reviews or create another PR.
+                published, publication_result = self._publish_first_implementation_pull_request(state, result)
+                if published.terminal:
+                    return published
+                return self._continue_after_quality_control(published, publication_result, evidence)
             return self._advance_after_primary_agent_result(state, result, evidence)
         if lifecycle_phase == "QUALITY_CONTROL_AGENT":
             # The assurance phase has no mutating provider invocation to
