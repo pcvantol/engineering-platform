@@ -446,7 +446,8 @@ class ClientContractTest(unittest.TestCase):
             agent = DeliveryAgent()
             github = FakeGitHub([
                 PullRequestEvidence(
-                    701, "OPEN", True, True, head_branch=branch, base_branch="main"
+                    701, "OPEN", True, True, is_draft=True,
+                    head_branch=branch, base_branch="main", head_sha=commit,
                 )
             ])
             first_host = EngineeringRunner(
@@ -1759,9 +1760,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "untrusted",
         )
         agent.last_execution_seconds = 2.0
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([
-            PullRequestEvidence(71, "OPEN", True, True, is_draft=True, head_branch="main", base_branch="main", head_sha=sha),
-        ]), agent, lambda _: None)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
         state = TransactionState("provider-context", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
         self.store.save(state)
         with patch("engineering_platform.execution_host.persist_provider_invocation", return_value="provider-1") as persist:
