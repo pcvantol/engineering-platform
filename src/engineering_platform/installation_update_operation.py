@@ -23,6 +23,13 @@ _STATES = ("PREPARED", "INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTI
 _NEXT = {state: _STATES[index + 1:index + 2] for index, state in enumerate(_STATES)}
 _NEXT["VERIFIED"] = ("CLEANUP_PENDING", "COMPLETE")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
+_V1_FIELDS = frozenset({"schema_version", "operation_id", "plan", "plan_digest", "state", "events"})
+_V2_FIELDS = _V1_FIELDS | frozenset({"prepared_candidate", "prepared_candidate_digest"})
+_CANDIDATE_FIELDS = frozenset({
+    "operation_id", "installation_id", "operation_root", "staged_artifact",
+    "artifact_digest", "candidate_venv", "interpreter", "pip_cache", "package",
+})
+_PACKAGE_IDENTITY_FIELDS = frozenset({"interpreter", "version", "metadata", "package"})
 
 
 class InstallationUpdateOperationError(ValueError):
@@ -55,19 +62,76 @@ def _write(path: Path, value: Mapping[str, object]) -> None:
         raise
 
 
+def _binding(value: object) -> dict[str, object] | None:
+    """Validate the bounded, token-free candidate identity stored in a journal."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != _CANDIDATE_FIELDS:
+        raise InstallationUpdateOperationError("prepared candidate binding is invalid")
+    for field in _CANDIDATE_FIELDS - {"package"}:
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise InstallationUpdateOperationError("prepared candidate binding is invalid")
+    package = value.get("package")
+    if (not isinstance(package, dict) or set(package) != _PACKAGE_IDENTITY_FIELDS
+            or not all(isinstance(item, str) and item for item in package.values())):
+        raise InstallationUpdateOperationError("prepared candidate binding is invalid")
+    return {
+        **{field: str(value[field]) for field in _CANDIDATE_FIELDS - {"package"}},
+        "package": {field: str(package[field]) for field in _PACKAGE_IDENTITY_FIELDS},
+    }
+
+
+def _normalize(value: object, *, expected: dict[str, object] | None = None,
+               operation_id: str | None = None) -> dict[str, object]:
+    """Read schema-1 journals and normalize new journals to schema 2.
+
+    Earlier journals did not have a prepared-candidate binding.  They retain
+    their exact plan and lifecycle history but are explicitly unbound until a
+    current, EP-owned candidate is verified and persisted.
+    """
+    if not isinstance(value, dict):
+        raise InstallationUpdateOperationError("installation update operation is invalid")
+    schema = value.get("schema_version")
+    if schema == 1 and set(value) == _V1_FIELDS:
+        normalized: dict[str, object] = {
+            **value,
+            "schema_version": 2,
+            "prepared_candidate": None,
+            "prepared_candidate_digest": None,
+        }
+    elif schema == 2 and set(value) == _V2_FIELDS:
+        normalized = dict(value)
+    else:
+        raise InstallationUpdateOperationError("installation update operation is invalid")
+    plan = normalized.get("plan")
+    if not isinstance(plan, dict):
+        raise InstallationUpdateOperationError("installation update operation is invalid")
+    if expected is not None and plan != expected:
+        raise InstallationUpdateOperationError("installation update operation does not bind the exact plan")
+    if operation_id is not None and normalized.get("operation_id") != operation_id:
+        raise InstallationUpdateOperationError("installation update operation does not bind the exact plan")
+    plan_digest = "sha256:" + hashlib.sha256(_canonical(plan)).hexdigest()
+    if (normalized.get("plan_digest") != plan_digest or normalized.get("state") not in _STATES
+            or not isinstance(normalized.get("events"), list)):
+        raise InstallationUpdateOperationError("installation update operation is invalid")
+    binding = _binding(normalized.get("prepared_candidate"))
+    binding_digest = normalized.get("prepared_candidate_digest")
+    if binding is None:
+        if binding_digest is not None:
+            raise InstallationUpdateOperationError("prepared candidate binding is invalid")
+    elif binding_digest != "sha256:" + hashlib.sha256(_canonical(binding)).hexdigest():
+        raise InstallationUpdateOperationError("prepared candidate binding is invalid")
+    normalized["prepared_candidate"] = binding
+    return normalized
+
+
 def _load(plan: InstallationUpdatePlan) -> dict[str, object]:
     try:
         value = json.loads(_path(plan).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise InstallationUpdateOperationError("installation update operation is unreadable") from error
-    if not isinstance(value, dict) or set(value) != {"schema_version", "operation_id", "plan", "plan_digest", "state", "events"}:
-        raise InstallationUpdateOperationError("installation update operation is invalid")
     expected = _plan(plan)
-    if value["schema_version"] != 1 or value["operation_id"] != plan.operation_id or value["plan"] != expected:
-        raise InstallationUpdateOperationError("installation update operation does not bind the exact plan")
-    if value["plan_digest"] != "sha256:" + hashlib.sha256(_canonical(expected)).hexdigest() or value["state"] not in _STATES or not isinstance(value["events"], list):
-        raise InstallationUpdateOperationError("installation update operation is invalid")
-    return value
+    return _normalize(value, expected=expected, operation_id=plan.operation_id)
 
 
 def create(plan: InstallationUpdatePlan) -> dict[str, object]:
@@ -75,9 +139,10 @@ def create(plan: InstallationUpdatePlan) -> dict[str, object]:
     path, payload = _path(plan), _plan(plan)
     if path.exists():
         return _load(plan)
-    value: dict[str, object] = {"schema_version": 1, "operation_id": plan.operation_id, "plan": payload,
+    value: dict[str, object] = {"schema_version": 2, "operation_id": plan.operation_id, "plan": payload,
                                 "plan_digest": "sha256:" + hashlib.sha256(_canonical(payload)).hexdigest(),
-                                "state": "PREPARED", "events": [{"state": "PREPARED", "evidence": {}}]}
+                                "state": "PREPARED", "events": [{"state": "PREPARED", "evidence": {}}],
+                                "prepared_candidate": None, "prepared_candidate_digest": None}
     _write(path, value)
     return value
 
@@ -92,16 +157,77 @@ def status(data_root: Path, operation_id: str) -> dict[str, object]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise InstallationUpdateOperationError("installation update operation is unreadable") from error
-    if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("operation_id") != operation_id:
-        raise InstallationUpdateOperationError("installation update operation is invalid")
-    plan = value.get("plan")
-    if not isinstance(plan, dict) or value.get("state") not in _STATES or not isinstance(value.get("events"), list):
-        raise InstallationUpdateOperationError("installation update operation is invalid")
-    return {"operation_id": operation_id, "state": value["state"], "plan_digest": value.get("plan_digest"),
+    normalized = _normalize(value, operation_id=operation_id)
+    plan = normalized["plan"]
+    assert isinstance(plan, dict)  # guaranteed by ``_normalize``
+    binding = normalized["prepared_candidate"]
+    return {"operation_id": operation_id, "state": normalized["state"], "plan_digest": normalized.get("plan_digest"),
             "installation_id": plan.get("installation_id"), "current_version": plan.get("current_version"),
             "target_version": plan.get("target_version"), "target_digest": plan.get("target_digest"),
             "target_source_revision": plan.get("target_source_revision"), "cleanup_targets": plan.get("cleanup_targets"),
-            "events": value["events"]}
+            "events": normalized["events"],
+            "prepared_candidate": binding,
+            "prepared_candidate_digest": normalized["prepared_candidate_digest"]}
+
+
+def _prepared_candidate(plan: InstallationUpdatePlan, candidate: object, *, runner: object) -> dict[str, object]:
+    """Re-verify a candidate and require the plan to name its staged wheel."""
+    from . import installation_update_preparation
+
+    try:
+        observed = installation_update_preparation.verify_prepared_candidate(
+            plan,
+            candidate=candidate if isinstance(candidate, installation_update_preparation.PreparedUpdateCandidate) else None,
+            runner=runner,
+        )
+    except installation_update_preparation.InstallationUpdatePreparationError as error:
+        raise InstallationUpdateOperationError("prepared candidate binding is invalid") from error
+    if not isinstance(candidate, installation_update_preparation.PreparedUpdateCandidate):
+        raise InstallationUpdateOperationError("prepared candidate binding is invalid")
+    payload = observed.payload()
+    if candidate.payload() != payload:
+        raise InstallationUpdateOperationError("prepared candidate binding conflicts with the exact plan")
+    if Path(plan.artifact).expanduser().absolute() != Path(str(payload["staged_artifact"])).expanduser().absolute():
+        raise InstallationUpdateOperationError("prepared candidate binding requires the staged execution plan")
+    return _binding(payload) or {}
+
+
+def _bind_prepared_candidate(plan: InstallationUpdatePlan, candidate: object, *, runner: object) -> dict[str, object]:
+    """Persist one verified candidate while the existing session owns its lock."""
+    binding = _prepared_candidate(plan, candidate, runner=runner)
+    value = _load(plan)
+    current = value["prepared_candidate"]
+    if value["state"] != "PREPARED":
+        raise InstallationUpdateOperationError("prepared candidate binding requires the prepared operation state")
+    if current is not None:
+        if current == binding:
+            return value
+        raise InstallationUpdateOperationError("prepared candidate binding conflicts with existing operation evidence")
+    value["prepared_candidate"] = binding
+    value["prepared_candidate_digest"] = "sha256:" + hashlib.sha256(_canonical(binding)).hexdigest()
+    _write(_path(plan), value)
+    return value
+
+
+def recover_prepared_candidate(plan: InstallationUpdatePlan, *, runner: object) -> object:
+    """Reopen a durable binding and prove it still names the exact candidate.
+
+    This is read-only.  A caller that needs to create the binding must use the
+    existing :class:`InstallationUpdateSession`, rather than introducing a
+    second lock or lifecycle engine.
+    """
+    from . import installation_update_preparation
+
+    value = _load(plan)
+    binding = value["prepared_candidate"]
+    if binding is None:
+        raise InstallationUpdateOperationError("installation update has no prepared candidate binding")
+    try:
+        candidate = installation_update_preparation.PreparedUpdateCandidate(**binding)
+    except (TypeError, ValueError) as error:
+        raise InstallationUpdateOperationError("prepared candidate binding is invalid") from error
+    _prepared_candidate(plan, candidate, runner=runner)
+    return candidate
 
 
 def transition(plan: InstallationUpdatePlan, state: str, evidence: Mapping[str, object]) -> dict[str, object]:
@@ -186,6 +312,18 @@ class InstallationUpdateSession:
         if not self._owned:
             raise InstallationUpdateOperationError("installation update session does not own the lock")
         return cleanup(self.plan)
+
+    def bind_prepared_candidate(self, candidate: object, *, runner: object) -> dict[str, object]:
+        """Durably bind a verified non-operational candidate under this lock."""
+        if not self._owned:
+            raise InstallationUpdateOperationError("installation update session does not own the lock")
+        return _bind_prepared_candidate(self.plan, candidate, runner=runner)
+
+    def recover_prepared_candidate(self, *, runner: object) -> object:
+        """Read and verify the bound candidate while this operation is serialized."""
+        if not self._owned:
+            raise InstallationUpdateOperationError("installation update session does not own the lock")
+        return recover_prepared_candidate(self.plan, runner=runner)
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         if self._owned:

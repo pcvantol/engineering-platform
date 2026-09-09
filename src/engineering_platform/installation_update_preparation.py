@@ -145,7 +145,6 @@ def _paths(plan: InstallationUpdatePlan) -> _OperationPaths:
         ("operation download directory", paths.download),
         ("staged operation artifact", paths.staged_artifact),
         ("candidate runtime", paths.candidate),
-        ("candidate interpreter", paths.interpreter),
         ("operation pip cache", paths.pip_cache),
         ("candidate runtime marker", paths.marker),
     ):
@@ -230,17 +229,24 @@ def _write_marker(path: Path, expected: Mapping[str, object]) -> None:
         raise
 
 
+def _read_marker(plan: InstallationUpdatePlan, paths: _OperationPaths, staged: Path) -> None:
+    """Require the existing marker to name exactly this candidate identity."""
+    expected = _marker(plan, paths, staged)
+    if paths.marker.is_symlink() or not paths.marker.is_file():
+        raise InstallationUpdatePreparationError("candidate runtime marker is invalid")
+    try:
+        observed = json.loads(paths.marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallationUpdatePreparationError("candidate runtime marker is unreadable") from error
+    if observed != expected:
+        raise InstallationUpdatePreparationError("candidate runtime does not match the exact update plan")
+
+
 def _ensure_marker(plan: InstallationUpdatePlan, paths: _OperationPaths, staged: Path) -> None:
+    """Create the identity marker only before the candidate exists."""
     expected = _marker(plan, paths, staged)
     if paths.marker.exists() or paths.marker.is_symlink():
-        if paths.marker.is_symlink() or not paths.marker.is_file():
-            raise InstallationUpdatePreparationError("candidate runtime marker is invalid")
-        try:
-            observed = json.loads(paths.marker.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise InstallationUpdatePreparationError("candidate runtime marker is unreadable") from error
-        if observed != expected:
-            raise InstallationUpdatePreparationError("candidate runtime does not match the exact update plan")
+        _read_marker(plan, paths, staged)
         return
     if paths.candidate.exists() or paths.candidate.is_symlink():
         raise InstallationUpdatePreparationError("candidate runtime exists without operation identity")
@@ -248,6 +254,114 @@ def _ensure_marker(plan: InstallationUpdatePlan, paths: _OperationPaths, staged:
         _write_marker(paths.marker, expected)
     except OSError as error:
         raise InstallationUpdatePreparationError("candidate runtime marker could not be retained") from error
+
+
+def _verified_candidate(
+    plan: InstallationUpdatePlan,
+    paths: _OperationPaths,
+    *,
+    candidate: PreparedUpdateCandidate | None,
+    runner: Runner,
+) -> PreparedUpdateCandidate:
+    """Re-read every durable candidate fact without recreating it.
+
+    A caller's original wheel is deliberately absent from this read-only
+    recovery boundary.  The stage, marker, and candidate interpreter are the
+    operation-owned facts that must survive a lost response or reboot.
+    """
+    staged = paths.staged_artifact
+    if _digest(staged) != plan.target_digest:
+        raise InstallationUpdatePreparationError("staged operation artifact differs from the exact update plan")
+    _read_marker(plan, paths, staged)
+    # A venv launcher is normally a symlink to its base interpreter, which is
+    # intentionally outside the candidate directory.  The *venv directory*
+    # and its ``bin`` directory must be EP-owned real directories; the final
+    # launcher itself may be that expected venv symlink.  Resolving the
+    # launcher as a containment check would incorrectly reject every normal
+    # venv on recovery and tempt a caller to select a base interpreter.
+    launcher_directory = paths.interpreter.parent
+    if (paths.candidate.is_symlink() or not paths.candidate.is_dir()
+            or launcher_directory.is_symlink() or not launcher_directory.is_dir()
+            or not paths.interpreter.is_file()):
+        raise InstallationUpdatePreparationError("candidate runtime is unavailable")
+    try:
+        identity = operational_installation.package_identity(paths.interpreter, runner=runner)
+    except operational_installation.OperationalInstallationError as error:
+        raise InstallationUpdatePreparationError("candidate interpreter does not provide the planned EP package") from error
+    observed = PreparedUpdateCandidate(
+        operation_id=plan.operation_id,
+        installation_id=plan.installation_id,
+        operation_root=str(paths.operation),
+        staged_artifact=str(staged),
+        artifact_digest=plan.target_digest,
+        candidate_venv=str(paths.candidate),
+        interpreter=str(paths.interpreter),
+        pip_cache=str(paths.pip_cache),
+        package=_package_in_candidate(paths, identity, plan),
+    )
+    if candidate is not None:
+        if not isinstance(candidate, PreparedUpdateCandidate) or candidate.payload() != observed.payload():
+            raise InstallationUpdatePreparationError("prepared candidate does not match the exact update plan")
+    return observed
+
+
+def verify_prepared_candidate(
+    plan: InstallationUpdatePlan,
+    *,
+    candidate: PreparedUpdateCandidate | None = None,
+    runner: Runner = subprocess.run,
+) -> PreparedUpdateCandidate:
+    """Verify a previously prepared candidate without touching its source wheel.
+
+    This is the reboot/resume readback for OI-4a.  It does not acquire a new
+    lock, create a virtual environment, install a package, or replace a
+    runtime.  A later installation session supplies the existing lifecycle
+    lock while it persists or consumes this result.
+    """
+    paths = _paths(plan)
+    return _verified_candidate(plan, paths, candidate=candidate, runner=runner)
+
+
+def staged_execution_plan(
+    plan: InstallationUpdatePlan,
+    *,
+    candidate: PreparedUpdateCandidate | None = None,
+    runner: Runner = subprocess.run,
+) -> InstallationUpdatePlan:
+    """Rebind an exact plan to its durable operation-owned staged wheel.
+
+    ``prepare_candidate`` has already copied and hashed the supplied wheel.
+    Replanning against that staged copy makes the later executor independent
+    of a temporary download path while rechecking the currently registered
+    installation.  All non-artifact plan facts must remain unchanged.
+    """
+    prepared = verify_prepared_candidate(plan, candidate=candidate, runner=runner)
+    try:
+        rebound = installation_update_plan.prepare(
+            Path(plan.data_root),
+            operation_id=plan.operation_id,
+            artifact=Path(prepared.staged_artifact),
+            target_version=plan.target_version,
+            target_digest=plan.target_digest,
+            target_source_revision=plan.target_source_revision,
+        )
+    except installation_update_plan.InstallationUpdatePlanError as error:
+        raise InstallationUpdatePreparationError("staged candidate cannot be rebound to the registered installation") from error
+    unchanged = (
+        "operation_id", "installation_id", "data_root", "current_version",
+        "current_digest", "target_version", "target_digest",
+        "target_source_revision", "cleanup_targets", "steps",
+    )
+    if any(getattr(rebound, field) != getattr(plan, field) for field in unchanged):
+        raise InstallationUpdatePreparationError("registered installation changed before staged candidate binding")
+    # ``prepare`` re-hashes the staged path.  Preserve this explicit check at
+    # the boundary so a future change cannot accidentally make rebinding trust
+    # only the caller's old source path.
+    try:
+        installation_update_plan.verify_exact_artifact(rebound)
+    except installation_update_plan.InstallationUpdatePlanError as error:
+        raise InstallationUpdatePreparationError("staged operation artifact differs from the exact update plan") from error
+    return rebound
 
 
 def _base_interpreter(value: str | Path) -> Path:
@@ -292,7 +406,8 @@ def _create_or_recover_venv(paths: _OperationPaths, *, builder: Path, runner: Ru
     command = (str(builder), "-I", "-m", "venv", *( ("--clear",) if incomplete else () ), str(paths.candidate))
     if not paths.candidate.exists() or incomplete:
         _run(runner, command, environment=_venv_environment(), label="candidate venv creation")
-    if not paths.interpreter.is_file():
+    launcher_directory = paths.interpreter.parent
+    if launcher_directory.is_symlink() or not launcher_directory.is_dir() or not paths.interpreter.is_file():
         raise InstallationUpdatePreparationError("candidate venv did not provide its interpreter")
 
 
