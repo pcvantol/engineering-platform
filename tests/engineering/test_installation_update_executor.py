@@ -10,7 +10,7 @@ from engineering_platform.installation_update_executor import (
 )
 from engineering_platform.installation_update_operation import InstallationUpdateSession
 from engineering_platform.installation_update_plan import prepare
-from engineering_platform.operational_installation_record import record
+from engineering_platform.operational_installation_record import record, replace_for_update
 
 
 class InstallationUpdateExecutorTests(unittest.TestCase):
@@ -59,6 +59,41 @@ class InstallationUpdateExecutorTests(unittest.TestCase):
             self.assertEqual(execute(plan, self._actions(plan, calls))["state"], "COMPLETE")
             self.assertEqual(calls, ["activate", "verify"])
 
+    def test_reboot_recovery_resumes_after_each_durable_transition(self) -> None:
+        expected_calls = {
+            "PREPARED": ["inventory", "quiesce", "backup", "migrate", "activate", "verify"],
+            "INVENTORIED": ["quiesce", "backup", "migrate", "activate", "verify"],
+            "QUIESCED": ["backup", "migrate", "activate", "verify"],
+            "BACKED_UP": ["migrate", "activate", "verify"],
+            "MIGRATED": ["activate", "verify"],
+            "ACTIVATED": ["verify"],
+            "VERIFIED": [],
+        }
+        for recovered_state, expected in expected_calls.items():
+            with self.subTest(recovered_state=recovered_state), TemporaryDirectory() as temporary:
+                plan = self._plan(Path(temporary)); staging_calls: list[str] = []
+                actions = self._actions(plan, staging_calls)
+                with InstallationUpdateSession(plan) as session:
+                    current = "PREPARED"
+                    for state, action in (("INVENTORIED", actions.inventory), ("QUIESCED", actions.quiesce),
+                                          ("BACKED_UP", actions.backup), ("MIGRATED", actions.migrate)):
+                        if recovered_state == current:
+                            break
+                        session.advance(state, action(plan))
+                        current = state
+                    if recovered_state in {"ACTIVATED", "VERIFIED"}:
+                        replacement = actions.activate(plan)
+                        replace_for_update(
+                            Path(plan.data_root), expected_version=plan.current_version,
+                            expected_artifact_digest=plan.current_digest, replacement=replacement,
+                        )
+                        session.advance("ACTIVATED", replacement)
+                    if recovered_state == "VERIFIED":
+                        session.advance("VERIFIED", actions.verify(plan))
+                calls: list[str] = []
+                self.assertEqual(execute(plan, self._actions(plan, calls))["state"], "COMPLETE")
+                self.assertEqual(calls, expected)
+
     def test_rejects_activation_that_does_not_bind_the_target_identity(self) -> None:
         with TemporaryDirectory() as temporary:
             plan = self._plan(Path(temporary)); calls: list[str] = []
@@ -67,4 +102,3 @@ class InstallationUpdateExecutorTests(unittest.TestCase):
                 value = dict(actions.activate(_plan)); value["version"] = "2.3.3"; return value
             with self.assertRaisesRegex(InstallationUpdateExecutorError, "target identity"):
                 execute(plan, InstallationUpdateActions(actions.inventory, actions.quiesce, actions.backup, actions.migrate, wrong, actions.verify))
-
