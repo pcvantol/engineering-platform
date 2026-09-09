@@ -235,8 +235,9 @@ class PreparedCandidateBindingTests(unittest.TestCase):
                 session.bind_prepared_candidate(candidate, runner=runner)
                 self.assertEqual(session.recover_prepared_candidate(runner=runner), candidate)
             upgraded = json.loads(journal.read_text(encoding="utf-8"))
-            self.assertEqual(upgraded["schema_version"], 2)
+            self.assertEqual(upgraded["schema_version"], 3)
             self.assertEqual(upgraded["prepared_candidate"], candidate.payload())
+            self.assertIn("prepared_record_provenance", upgraded)
 
     def test_rejects_symlinked_stage_and_candidate_escape(self) -> None:
         with TemporaryDirectory() as temporary:
