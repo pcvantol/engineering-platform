@@ -88,7 +88,7 @@ SERVER_CONFIGURATION_FILENAME = "server.json"
 SERVER_IDENTITY_FILENAME = "runtime-identity.json"
 SERVER_RUNTIME_FILENAME = "runtime.json"
 SERVER_DATABASE_FILENAME = central_database.DATABASE_FILENAME
-SERVER_CONFIGURATION_VERSION = 2
+SERVER_CONFIGURATION_VERSION = 3
 # ADR-0026 defines the first standalone store as the canonical schema-40
 # product definitions plus immutable control provenance.  This server-owned
 # bootstrap is deliberately separate from the retired predecessor migration
@@ -559,6 +559,7 @@ class ServerConfiguration:
     bind_host: str
     bind_port: int
     managed_codex_cli_prefix: str
+    product_version: str
 
     @classmethod
     def load(cls, data_root: Path) -> "ServerConfiguration":
@@ -570,11 +571,17 @@ class ServerConfiguration:
         if not isinstance(raw, dict):
             raise ServerConfigurationError("EP Server configuration is invalid.")
         legacy_keys = {"version", "bind_host", "bind_port"}
-        current_keys = legacy_keys | {"managed_codex_cli_prefix"}
+        version_two_keys = legacy_keys | {"managed_codex_cli_prefix"}
+        current_keys = version_two_keys | {"product_version"}
         if set(raw) == legacy_keys and raw.get("version") == 1:
             prefix = str(default_engineering_platform_codex_cli_prefix())
+            product_version = ""
+        elif set(raw) == version_two_keys and raw.get("version") == 2:
+            prefix = raw.get("managed_codex_cli_prefix")
+            product_version = ""
         elif set(raw) == current_keys and raw.get("version") == SERVER_CONFIGURATION_VERSION:
             prefix = raw.get("managed_codex_cli_prefix")
+            product_version = raw.get("product_version")
         else:
             raise ServerConfigurationError("EP Server configuration is invalid.")
         candidate = Path(prefix).expanduser() if isinstance(prefix, str) else None
@@ -585,9 +592,11 @@ class ServerConfiguration:
             or not 1 <= raw["bind_port"] <= 65535
             or candidate is None
             or not candidate.is_absolute()
+            or not isinstance(product_version, str)
         ):
             raise ServerConfigurationError("EP Server configuration is invalid.")
-        return cls(int(raw["version"]), raw["bind_host"], raw["bind_port"], str(candidate.resolve(strict=False)))
+        return cls(int(raw["version"]), raw["bind_host"], raw["bind_port"],
+                   str(candidate.resolve(strict=False)), product_version)
 
 
 @dataclass(frozen=True)
@@ -1283,17 +1292,20 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _write_json(config_path, asdict(ServerConfiguration(
             SERVER_CONFIGURATION_VERSION, bind_host, bind_port,
             str(default_engineering_platform_codex_cli_prefix()),
+            _console_platform_version(),
         )))
     configuration = ServerConfiguration.load(data_root)
     # Version 1 inferred the CLI installation at each process boundary from
     # HOME.  Upgrade it once, under the server's stable account identity, so
     # child workers and later restarts inherit one installation authority.
-    if configuration.version != SERVER_CONFIGURATION_VERSION:
+    if (configuration.version != SERVER_CONFIGURATION_VERSION
+            or configuration.product_version != _console_platform_version()):
         configuration = ServerConfiguration(
             SERVER_CONFIGURATION_VERSION,
             configuration.bind_host,
             configuration.bind_port,
             configuration.managed_codex_cli_prefix,
+            _console_platform_version(),
         )
         _write_json(config_path, asdict(configuration))
     identity_path = data_root / SERVER_IDENTITY_FILENAME
@@ -3846,7 +3858,8 @@ def health(data_root: Path) -> dict[str, object]:
             payload = json.loads(response.read())
         operational_installation.validate_health(
             operational_installation.OperationalInstallation(
-                "", str(data_root.resolve()), str(result["instance_id"]), None, None, (),
+                "", str(data_root.resolve()), str(result["instance_id"]),
+                ServerConfiguration.load(data_root).product_version, None, (),
             ), payload,
         )
         return {**result, "healthy": True, "ready": True}
@@ -3892,11 +3905,10 @@ def main(argv: list[str] | None = None) -> int:
             initialize(args.data_root)
             configuration = ServerConfiguration.load(args.data_root)
             if (configuration.bind_host, configuration.bind_port) != (args.bind_host, args.bind_port):
-                _write_json(args.data_root / SERVER_CONFIGURATION_FILENAME, {
-                    "version": configuration.version, "bind_host": args.bind_host,
-                    "bind_port": args.bind_port,
-                    "managed_codex_cli_prefix": configuration.managed_codex_cli_prefix,
-                })
+                _write_json(args.data_root / SERVER_CONFIGURATION_FILENAME, asdict(ServerConfiguration(
+                    configuration.version, args.bind_host, args.bind_port,
+                    configuration.managed_codex_cli_prefix, configuration.product_version,
+                )))
             result = start(args.data_root)
         elif args.command == "serve": return serve(args.data_root)
         elif args.command == "stop": result = stop(args.data_root)

@@ -58,6 +58,21 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with patch("engineering_platform.server.status", return_value=report), patch("engineering_platform.server.urlopen", return_value=Response()):
             self.assertEqual(server.health(self.root)["healthy"], False)
 
+    def test_health_rejects_a_reachable_wrong_product_release(self) -> None:
+        server.initialize(self.root)
+        report = server.status(self.root)
+        report = {**report, "running": True, "bind": {"host": "127.0.0.1", "port": 1}}
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self):
+                return json.dumps({
+                    "service": "engineering-platform-server", "instance_id": report["instance_id"],
+                    "healthy": True, "product_version": "0.0.0",
+                }).encode("utf-8")
+        with patch("engineering_platform.server.status", return_value=report), patch("engineering_platform.server.urlopen", return_value=Response()):
+            self.assertEqual(server.health(self.root)["healthy"], False)
+
     def test_queue_disposition_http_helpers_reject_ambiguous_json_and_foreign_origins(self) -> None:
         """The queue mutation boundary treats origin and JSON ambiguity safely."""
         self.assertTrue(server._same_origin({"Host": "localhost:8765"}))
@@ -501,8 +516,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with patch("engineering_platform.server.default_engineering_platform_codex_cli_prefix", return_value=prefix):
             server.initialize(self.root)
         configuration = json.loads((self.root / "server.json").read_text(encoding="utf-8"))
-        self.assertEqual(configuration["version"], 2)
+        self.assertEqual(configuration["version"], 3)
         self.assertEqual(configuration["managed_codex_cli_prefix"], str(prefix))
+        self.assertEqual(configuration["product_version"], server._console_platform_version())
 
     def test_managed_cli_prefix_is_not_derived_from_a_worker_home(self) -> None:
         prefix = "/Users/canonical/.local/share/engineering-platform/codex-cli"
