@@ -291,10 +291,11 @@ def load_validation_failure_diagnostic(
 _format_cli_failure = format_cli_failure
 
 # A managed Engineering transaction has already passed host-owned admission,
-# repository synchronization and an exclusive execution lease.  It must be
-# able to create its bounded branch, commit, and draft PR; `workspace-write`
+# repository synchronization and an exclusive execution lease. It must be able
+# to create its bounded branch and commit; the later, separately host-gated
+# publication dispatch may create the first draft PR. `workspace-write`
 # deliberately rejects Git index writes and therefore cannot complete that
-# contract.  Review-only invocations remain read-only below.
+# contract. Review-only invocations remain read-only below.
 MANAGED_EXECUTION_SANDBOX = "danger-full-access"
 
 class CodexCliClient:
