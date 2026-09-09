@@ -192,26 +192,28 @@ but it never becomes a second lifecycle, planning or repository authority.
 
 ### Standalone installation boundary
 
-The extracted EP product provides a signed native macOS installer for its
-own host runtime. The app is a user-facing wrapper around the one idempotent
-`engineering-platform-host --install` engine; it does not duplicate host
-mutation logic. That engine installs the pinned EP package and supported
-provider CLIs, creates an empty installation-owned data root/database,
-configures Server-owned lifecycle services, verifies one-writer health and then
-opens the loopback Console for explicit first-run provider login. This is
-distinct from predecessor developer-machine bootstrap: EP does not inherit
-product-specific signing, lab or runner requirements.
+The target extracted EP product has one EP-owned component-provisioning
+contract, invoked by the Forge Platform native installer rather than duplicated
+there. Its operational invariant is
+`PER_PRODUCT_MAX_OPERATIONAL_RELEASE_INSTALLATIONS = 1` at
+`MACOS_MACHINE` scope: an exact selected EP release, data root, structural
+venv launcher, service account, system-domain service reference and health
+identity must all bind to one installation record. The future provisioner owns
+the pinned EP package, service/migration/backup/rollback behavior and its
+product evidence; Forge Platform only composes that contract with other
+products. This is a target architecture, not a claim that a live machine
+cutover has already occurred.
 
-One macOS user has one EP installation. The engine acquires an
-installation-wide lock and detects any existing installation marker, writer and
-database before changing host state. It requires an explicit non-destructive
-choice to reuse existing data, replace it only after a verified backup, or
-remove the exact EP data root and start clean after a second confirmation.
-`engineering-platform-host --verify` is read-only and returns token-free,
-structured diagnostics for the native installer: it either offers a confirmed
-EP-managed repair or an official external help link for matters EP cannot fix.
-It never treats missing provider login as a successful installation or admits
-work while that condition remains unresolved.
+The existing `engineering-platform-host --install` and per-user LaunchAgent
+behaviour are retained legacy compatibility surfaces. They can neither discover
+all macOS accounts/services nor prove the target invariant, and must never be
+treated as an alternate official runtime once the product-owned system-domain
+provisioner exists. Before any target mutation, that provisioner must acquire
+the installation lock, retain machine-scope inventory and legacy-service
+quiescence evidence, verify the exact artifact, make a verified backup, perform
+compatible migration, verify the live runtime identity, and complete or retain
+cleanup evidence. A missing provider login remains non-admitting; it is never a
+successful installation signal.
 
 The installer creates no project by inference. A Workspace consumer connects a
 new or existing Git checkout only by supplying canonical project identity; EP

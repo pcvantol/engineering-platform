@@ -35,7 +35,13 @@ cache is binary/cache only and is separate from EP authority/data isolation.
 
 ## Installation data-root and store contract
 
-EP resolves its installation-owned root with `platformdirs.user_data_dir("Engineering Platform")` (the approved `user_data_dir("Engineering Platform")` abstraction). The resolved directory is per user and machine, independent of checkout and consumer repository path, portable across supported operating systems, and deterministic for one installed EP identity. Consumers never construct or write this path.
+This retired Phase-2 control resolved its installation-owned root with
+`platformdirs.user_data_dir("Engineering Platform")` (the approved
+`user_data_dir("Engineering Platform")` abstraction). Its per-user directory is
+historical evidence, not the current target operational authority: the target
+is one EP release installation at `MACOS_MACHINE` scope, selected through the
+future EP-owned system-domain provisioner. Consumers never construct or write
+either location.
 
 On this macOS host the abstraction resolves to:
 

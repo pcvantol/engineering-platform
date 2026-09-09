@@ -242,6 +242,34 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             resolve.assert_called_once_with(self.root, interpreter=selected, path_candidates=[candidate])
             inventory.assert_called_once_with(resolve.return_value, service_references={"legacy": candidate}, candidates=[candidate])
 
+    def test_system_service_inventory_is_read_only_product_evidence(self) -> None:
+        other_home = Path(self.temporary.name) / "Other User"
+        observation = {
+            "coverage": "SYSTEM_SHARED_AND_DECLARED_USER_SERVICE_SURFACES",
+            "scope": {"status": "INCOMPLETE"},
+            "single_operational_installation": False,
+        }
+        with patch(
+            "engineering_platform.server.system_server_service.machine_scope_inventory",
+            return_value=observation,
+        ) as inventory, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(server.main((
+                "system-service-inventory", "--data-root", str(self.root),
+                "--declared-user-home", str(other_home),
+            )), 0)
+        inventory.assert_called_once_with(self.root, user_homes=[other_home])
+        self.assertEqual(json.loads(output.getvalue()), observation)
+
+    def test_system_service_inventory_reports_invalid_paths_as_cli_readiness_errors(self) -> None:
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(server.main((
+                "system-service-inventory", "--data-root", "relative-root",
+            )), 2)
+        self.assertEqual(json.loads(output.getvalue()), {
+            "error": "EP Server data root must be absolute.",
+            "ready": False,
+        })
+
     def test_operational_readback_never_falls_back_to_the_calling_path_runtime(self) -> None:
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=None), patch(
             "engineering_platform.server.operational_installation.resolve"

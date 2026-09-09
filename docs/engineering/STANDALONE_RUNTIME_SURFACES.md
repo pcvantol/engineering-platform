@@ -50,6 +50,54 @@ the installation record owns version, digest, source revision and observed
 channel, while a release source locator and qualification receipt remain with
 the qualified release evidence.
 
+## System-domain Server service foundation
+
+The future operational Server supervisor is one product-owned macOS
+`LaunchDaemon`, in the `system` domain, rather than a per-user `LaunchAgent`.
+Its service definition binds the fixed label
+`com.engineeringplatform.server`, a normalized absolute EP data root, the
+structural installed-venv launcher identity, and an explicit non-root service
+account. It never selects an interpreter through `PATH`, runs the Server as
+`root`, or accepts an arbitrary command. Exact EP-package and artifact identity
+remain evidence that only the later provisioner may bind to this descriptor.
+That provisioner must never follow a service-account-owned runtime-log symlink
+while performing a privileged update.
+
+The source-level definition and observer reject relative/PATH-like runtime
+identity, a non-venv launcher, root as the service account, changed plist
+content, a symlinked/nonregular plist, a missing configured account, and a
+different data-root binding. Its read-only observer normalizes aliases such as
+`/tmp` versus `/private/tmp`, opens directories and plist files through pinned
+descriptors without following links, and records unreadable or raced surfaces
+rather than associating stale bytes with a current path. No daemon-write,
+`launchctl`, stop, replace or uninstall API is exported by this increment. A
+later EP-owned provisioner must first bind its root-authorized
+controller to durable machine-scope inventory, legacy-service quiescence,
+exact artifact, backup/migration, health and cleanup evidence; it must use a
+trusted directory-descriptor implementation for every privileged filesystem
+mutation. This foundation does not create an account, choose an artifact,
+perform a database migration, delete an old environment, or make a live
+cutover decision.
+
+`engineering-platform-server system-service-inventory --data-root <absolute-root>`
+is the read-only, machine-readable evidence surface for this boundary.
+`--declared-user-home <absolute-home>` may add explicit user LaunchAgent
+locations to its inspection; it always also inspects the shared
+`/Library/LaunchAgents` surface. It reports canonical system references,
+conflicting system/user references, malformed EP service records, inspected
+locations, and inaccessible locations. Declared homes are not an account
+directory authority, so this inventory always reports `INCOMPLETE` Mac scope
+and `single_operational_installation: false`. A root caller and an empty
+inspection result therefore still do not establish
+`SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`.
+
+The existing `service-install` command remains the legacy per-user
+LaunchAgent lifecycle while the product-owned migration/provisioner operation
+is completed. The new source contract neither starts a LaunchDaemon nor
+removes that legacy agent by itself; both actions require a qualified,
+authorized EP installation operation with backup/migration/health/cleanup
+evidence.
+
 ## Operational update recovery boundary
 
 The EP-owned update plan, lock, journal and executor are source-level

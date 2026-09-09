@@ -36,8 +36,10 @@ No functional product, release, deployment or publication behavior changed.
 ## 2.x extraction target: central installation store and multi-project scope
 
 The package extraction is not a per-repository copy of the current runtime.
-Engineering Platform 2.x will install once per local user/machine and own one
-central installation database outside consumer repositories. Every EP-owned
+The target Engineering Platform operational release installs once per macOS
+machine and owns one central installation database outside consumer
+repositories. The historical per-user installer/LaunchAgent is compatibility
+evidence only; it cannot establish this machine-wide invariant. Every EP-owned
 operational record is scoped by the canonical Workspace `project_id`, including
 Inbox routing, queue, lease, lifecycle, telemetry, Prompt History, Engineering
 Reports and Execution Receipts. The dashboard will select an active project and
@@ -63,8 +65,8 @@ own EP machine/platform block:
 - Engineering database size; and
 - database schema version.
 
-They describe the one local EP installation rather than a registered Workspace
-project. Project name, workspace/repository location, tracked files, branch
+They describe the one machine-scoped operational EP installation rather than a
+registered Workspace project. Project name, workspace/repository location, tracked files, branch
 and commit remain project-scoped.
 
 See [ADR-0019](../adr/0019-engineering-platform-central-installation-store.md)

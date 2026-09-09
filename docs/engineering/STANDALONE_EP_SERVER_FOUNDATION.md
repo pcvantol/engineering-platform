@@ -43,6 +43,27 @@ runtime and initialized data root; it never invokes the self-daemonizing
 `start` helper or accepts arbitrary commands. `service-uninstall` removes only
 that owned LaunchAgent and preserves CENTRAL and installation identity.
 
+### System-domain migration boundary
+
+The production-target supervisor is a separate EP-owned system-domain
+LaunchDaemon contract. It is intentionally not an alias for `service-install`:
+the latter is a legacy per-user lifecycle and cannot establish machine-wide
+uniqueness. This increment defines and reads the future fixed label, exact
+installed interpreter, absolute data-root argument and non-root service
+account; it accepts neither `PATH` selection nor arbitrary commands. It does
+not expose a privileged mutation API. A later EP provisioner must require root
+authorization and use descriptor-anchored filesystem operations only after it
+has durably bound machine-scope inventory, legacy-service quiescence, exact
+artifact, backup/migration and postflight evidence.
+
+The read-only `system-service-inventory` command reports system, shared-user
+and explicitly declared user-service references, conflicts and inaccessible
+inspection locations. It intentionally retains `MACOS_MACHINE` scope as incomplete until
+a later product-owned privileged account-discovery and cutover operation
+provides durable coverage evidence. No source-only contract changes the
+current Mac, removes a LaunchAgent, creates an account, migrates CENTRAL or
+claims a single operational installation.
+
 The existing Execution Host remains unchanged and retains its current execution
 authority. The server does not read a source checkout, `.engineering`, or any
 DJConnect state at runtime.
