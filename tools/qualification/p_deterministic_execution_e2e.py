@@ -106,8 +106,10 @@ def configure_deterministic_runtime(data_root: Path, root: Path) -> Path:
     configuration_path = data_root / SERVER_CONFIGURATION_FILENAME
     configuration = json.loads(configuration_path.read_text(encoding="utf-8"))
     if not isinstance(configuration, dict) or set(configuration) != {
-        "version", "bind_host", "bind_port", "managed_codex_cli_prefix",
+        "version", "bind_host", "bind_port", "managed_codex_cli_prefix", "product_version",
     }:
+        raise RuntimeError("QUALIFICATION_SERVER_CONFIGURATION_INVALID")
+    if not isinstance(configuration["product_version"], str) or not configuration["product_version"]:
         raise RuntimeError("QUALIFICATION_SERVER_CONFIGURATION_INVALID")
     configuration["managed_codex_cli_prefix"] = str(prefix.resolve())
     configuration_path.write_text(json.dumps(configuration, sort_keys=True) + "\n", encoding="utf-8")

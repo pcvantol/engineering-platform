@@ -34,10 +34,11 @@ class DeterministicExecutionE2ETests(unittest.TestCase):
 
     def test_isolated_runtime_is_executable_and_becomes_server_runtime_authority(self) -> None:
         self.configuration.write_text(json.dumps({
-            "version": 2,
+            "version": 3,
             "bind_host": "127.0.0.1",
             "bind_port": 8765,
             "managed_codex_cli_prefix": "/unavailable/production-runtime",
+            "product_version": "2.3.2",
         }), encoding="utf-8")
 
         executable = self.module.configure_deterministic_runtime(self.data, self.root)
