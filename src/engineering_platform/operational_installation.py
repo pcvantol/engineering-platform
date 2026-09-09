@@ -138,3 +138,35 @@ def validate_package_identity(installation: OperationalInstallation, identity: M
         raise OperationalInstallationError("package identity belongs to a different interpreter")
     if identity["version"] != installation.configured_version:
         raise OperationalInstallationError("package version does not match selected operational runtime")
+
+
+def inventory(installation: OperationalInstallation, *, service_references: Mapping[str, str | Path],
+              candidates: Iterable[str | Path], runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> Mapping[str, object]:
+    """Classify explicit candidate interpreters without selecting or mutating one.
+
+    This intentionally inventories only paths supplied by the owning service
+    contract/operator.  It does not pretend to enumerate every account or
+    disk location, and it never promotes a PATH candidate to operational use.
+    """
+    selected = normalized(installation.interpreter)
+    references: dict[str, Path] = {}
+    for label, value in service_references.items():
+        if not isinstance(label, str) or not label or not isinstance(value, (str, Path)):
+            raise OperationalInstallationError("operational service reference is invalid")
+        candidate = normalized(value)
+        if not candidate.is_absolute():
+            raise OperationalInstallationError("operational service reference must be absolute")
+        references[label] = candidate
+    paths = {selected, *(normalized(candidate) for candidate in candidates), *references.values()}
+    entries: list[dict[str, object]] = []
+    for interpreter in sorted(paths, key=str):
+        labels = sorted(label for label, value in references.items() if value == interpreter)
+        try:
+            identity = dict(package_identity(interpreter, runner=runner))
+            status = "SELECTED" if interpreter == selected else ("CONFLICTING_SERVICE_REFERENCE" if labels else "PATH_OR_EXPLICIT_CANDIDATE")
+            entries.append({"interpreter": str(interpreter), "status": status, "service_references": labels, "identity": identity})
+        except OperationalInstallationError as error:
+            entries.append({"interpreter": str(interpreter), "status": "UNAVAILABLE_OR_NOT_EP", "service_references": labels, "diagnostic": str(error)})
+    conflicts = [entry for entry in entries if entry["status"] == "CONFLICTING_SERVICE_REFERENCE"]
+    return {"selected_interpreter": str(selected), "coverage": "EXPLICIT_PATHS_ONLY", "entries": entries,
+            "conflicting_service_references": conflicts, "single_operational_installation": not conflicts}
