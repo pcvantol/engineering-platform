@@ -17,6 +17,7 @@ import re
 
 from .installation_update_plan import InstallationUpdatePlan
 from .operational_installation_lock import OperationalInstallationLock
+from . import operational_installation_record
 
 
 _STATES = ("PREPARED", "INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE")
@@ -25,11 +26,17 @@ _NEXT["VERIFIED"] = ("CLEANUP_PENDING", "COMPLETE")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 _V1_FIELDS = frozenset({"schema_version", "operation_id", "plan", "plan_digest", "state", "events"})
 _V2_FIELDS = _V1_FIELDS | frozenset({"prepared_candidate", "prepared_candidate_digest"})
+_V3_FIELDS = _V2_FIELDS | frozenset({"prepared_record_provenance", "prepared_record_provenance_digest"})
+_V4_FIELDS = _V3_FIELDS | frozenset({"execution_admission", "execution_admission_digest"})
 _CANDIDATE_FIELDS = frozenset({
     "operation_id", "installation_id", "operation_root", "staged_artifact",
     "artifact_digest", "candidate_venv", "interpreter", "pip_cache", "package",
 })
 _PACKAGE_IDENTITY_FIELDS = frozenset({"interpreter", "version", "metadata", "package"})
+_ADMISSION_FIELDS = frozenset({"schema_version", "operation_id", "plan_digest", "installation_id",
+                               "registered_installation", "prepared_candidate"})
+_ADMISSION_RECORD_FIELDS = frozenset({"installation_id", "version", "artifact_digest", "source_revision",
+                                      "interpreter", "roles", "record_digest"})
 
 
 class InstallationUpdateOperationError(ValueError):
@@ -81,6 +88,66 @@ def _binding(value: object) -> dict[str, object] | None:
     }
 
 
+def _admission_binding(value: object) -> dict[str, object] | None:
+    """Validate the typed OI-4c evidence before treating its digest as useful."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != _ADMISSION_FIELDS or value.get("schema_version") != 1:
+        raise InstallationUpdateOperationError("execution admission binding is invalid")
+    if not all(isinstance(value.get(field), str) and value[field]
+               for field in ("operation_id", "plan_digest", "installation_id")):
+        raise InstallationUpdateOperationError("execution admission binding is invalid")
+    registered = value.get("registered_installation")
+    if (not isinstance(registered, dict) or set(registered) != _ADMISSION_RECORD_FIELDS
+            or not all(isinstance(registered.get(field), str) and registered[field]
+                       for field in _ADMISSION_RECORD_FIELDS - {"roles"})
+            or not isinstance(registered.get("roles"), dict)):
+        raise InstallationUpdateOperationError("execution admission binding is invalid")
+    candidate = _binding(value.get("prepared_candidate"))
+    if candidate is None:
+        raise InstallationUpdateOperationError("execution admission binding is invalid")
+    return {
+        "schema_version": 1,
+        "operation_id": str(value["operation_id"]),
+        "plan_digest": str(value["plan_digest"]),
+        "installation_id": str(value["installation_id"]),
+        "registered_installation": dict(registered),
+        "prepared_candidate": candidate,
+    }
+
+
+def _provenance_binding(value: object) -> dict[str, object] | None:
+    """Canonical pre-admission record proof captured with the OI-4b binding."""
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != _ADMISSION_RECORD_FIELDS
+            or not all(isinstance(value.get(field), str) and value[field]
+                       for field in _ADMISSION_RECORD_FIELDS - {"roles"})
+            or not isinstance(value.get("roles"), dict)):
+        raise InstallationUpdateOperationError("prepared record provenance is invalid")
+    return dict(value)
+
+
+def _current_record_provenance(plan: InstallationUpdatePlan) -> dict[str, object]:
+    try:
+        record = operational_installation_record.load(Path(plan.data_root))
+    except operational_installation_record.OperationalInstallationRecordError as error:
+        raise InstallationUpdateOperationError("registered installation provenance is unavailable") from error
+    if (record["installation_id"] != plan.installation_id
+            or record["version"] != plan.current_version
+            or record["artifact_digest"] != plan.current_digest):
+        raise InstallationUpdateOperationError("registered installation changed before prepared candidate binding")
+    return {
+        "installation_id": record["installation_id"],
+        "version": record["version"],
+        "artifact_digest": record["artifact_digest"],
+        "source_revision": record["source_revision"],
+        "interpreter": record["interpreter"],
+        "roles": record["roles"],
+        "record_digest": "sha256:" + hashlib.sha256(_canonical(record)).hexdigest(),
+    }
+
+
 def _normalize(value: object, *, expected: dict[str, object] | None = None,
                operation_id: str | None = None) -> dict[str, object]:
     """Read schema-1 journals and normalize new journals to schema 2.
@@ -100,6 +167,10 @@ def _normalize(value: object, *, expected: dict[str, object] | None = None,
             "prepared_candidate_digest": None,
         }
     elif schema == 2 and set(value) == _V2_FIELDS:
+        normalized = dict(value)
+    elif schema == 3 and set(value) == _V3_FIELDS:
+        normalized = dict(value)
+    elif schema == 4 and set(value) == _V4_FIELDS:
         normalized = dict(value)
     else:
         raise InstallationUpdateOperationError("installation update operation is invalid")
@@ -122,6 +193,21 @@ def _normalize(value: object, *, expected: dict[str, object] | None = None,
     elif binding_digest != "sha256:" + hashlib.sha256(_canonical(binding)).hexdigest():
         raise InstallationUpdateOperationError("prepared candidate binding is invalid")
     normalized["prepared_candidate"] = binding
+    if schema in {3, 4}:
+        provenance = _provenance_binding(normalized.get("prepared_record_provenance"))
+        provenance_digest = normalized.get("prepared_record_provenance_digest")
+        if provenance is None or provenance_digest != "sha256:" + hashlib.sha256(_canonical(provenance)).hexdigest():
+            raise InstallationUpdateOperationError("prepared record provenance is invalid")
+        normalized["prepared_record_provenance"] = provenance
+    if schema == 4:
+        admission = normalized.get("execution_admission")
+        admission_digest = normalized.get("execution_admission_digest")
+        admission = _admission_binding(admission)
+        if admission is None:
+            if admission_digest is not None:
+                raise InstallationUpdateOperationError("execution admission binding is invalid")
+        elif admission_digest != "sha256:" + hashlib.sha256(_canonical(admission)).hexdigest():
+            raise InstallationUpdateOperationError("execution admission binding is invalid")
     return normalized
 
 
@@ -167,7 +253,11 @@ def status(data_root: Path, operation_id: str) -> dict[str, object]:
             "target_source_revision": plan.get("target_source_revision"), "cleanup_targets": plan.get("cleanup_targets"),
             "events": normalized["events"],
             "prepared_candidate": binding,
-            "prepared_candidate_digest": normalized["prepared_candidate_digest"]}
+            "prepared_candidate_digest": normalized["prepared_candidate_digest"],
+            "prepared_record_provenance": normalized.get("prepared_record_provenance"),
+            "prepared_record_provenance_digest": normalized.get("prepared_record_provenance_digest"),
+            "execution_admission": normalized.get("execution_admission"),
+            "execution_admission_digest": normalized.get("execution_admission_digest")}
 
 
 def _prepared_candidate(plan: InstallationUpdatePlan, candidate: object, *, runner: object) -> dict[str, object]:
@@ -195,16 +285,28 @@ def _prepared_candidate(plan: InstallationUpdatePlan, candidate: object, *, runn
 def _bind_prepared_candidate(plan: InstallationUpdatePlan, candidate: object, *, runner: object) -> dict[str, object]:
     """Persist one verified candidate while the existing session owns its lock."""
     binding = _prepared_candidate(plan, candidate, runner=runner)
+    provenance = _current_record_provenance(plan)
     value = _load(plan)
     current = value["prepared_candidate"]
     if value["state"] != "PREPARED":
         raise InstallationUpdateOperationError("prepared candidate binding requires the prepared operation state")
     if current is not None:
         if current == binding:
+            existing_provenance = value.get("prepared_record_provenance")
+            if existing_provenance is None:
+                value["schema_version"] = 3
+                value["prepared_record_provenance"] = provenance
+                value["prepared_record_provenance_digest"] = "sha256:" + hashlib.sha256(_canonical(provenance)).hexdigest()
+                _write(_path(plan), value)
+            elif existing_provenance != provenance:
+                raise InstallationUpdateOperationError("registered installation changed after prepared candidate binding")
             return value
         raise InstallationUpdateOperationError("prepared candidate binding conflicts with existing operation evidence")
+    value["schema_version"] = 3
     value["prepared_candidate"] = binding
     value["prepared_candidate_digest"] = "sha256:" + hashlib.sha256(_canonical(binding)).hexdigest()
+    value["prepared_record_provenance"] = provenance
+    value["prepared_record_provenance_digest"] = "sha256:" + hashlib.sha256(_canonical(provenance)).hexdigest()
     _write(_path(plan), value)
     return value
 
@@ -228,6 +330,53 @@ def recover_prepared_candidate(plan: InstallationUpdatePlan, *, runner: object) 
         raise InstallationUpdateOperationError("prepared candidate binding is invalid") from error
     _prepared_candidate(plan, candidate, runner=runner)
     return candidate
+
+
+def execution_admission(plan: InstallationUpdatePlan) -> dict[str, object] | None:
+    """Return the immutable OI-4c admission evidence, if any, without mutation."""
+    value = _load(plan)
+    admission = value.get("execution_admission")
+    return None if admission is None else dict(admission)
+
+
+def prepared_record_provenance(plan: InstallationUpdatePlan) -> dict[str, object] | None:
+    """Read the OI-4b provenance binding; legacy V1/V2 journals remain unbound."""
+    value = _load(plan)
+    provenance = value.get("prepared_record_provenance")
+    return None if provenance is None else dict(provenance)
+
+
+def bind_execution_admission(plan: InstallationUpdatePlan, admission: Mapping[str, object]) -> dict[str, object]:
+    """Persist one exact pre-cleanup admission while the session owns the lock.
+
+    The OI-4c module constructs and revalidates this typed evidence.  This
+    journal boundary only makes it immutable and rejects attempts to attach it
+    to an unbound or already-progressed operation.
+    """
+    if not isinstance(admission, Mapping):
+        raise InstallationUpdateOperationError("execution admission evidence is invalid")
+    candidate = _admission_binding(dict(admission))
+    if candidate is None:
+        raise InstallationUpdateOperationError("execution admission evidence is invalid")
+    value = _load(plan)
+    if (value["state"] != "PREPARED" or value["prepared_candidate"] is None
+            or value.get("prepared_record_provenance") is None):
+        raise InstallationUpdateOperationError("execution admission requires a bound prepared operation")
+    if (candidate["operation_id"] != plan.operation_id
+            or candidate["installation_id"] != plan.installation_id
+            or candidate["plan_digest"] != value["plan_digest"]
+            or candidate["prepared_candidate"] != value["prepared_candidate"]):
+        raise InstallationUpdateOperationError("execution admission does not bind the exact prepared operation")
+    existing = value.get("execution_admission")
+    if existing is not None:
+        if existing != candidate:
+            raise InstallationUpdateOperationError("execution admission conflicts with existing evidence")
+        return value
+    value["schema_version"] = 4
+    value["execution_admission"] = candidate
+    value["execution_admission_digest"] = "sha256:" + hashlib.sha256(_canonical(candidate)).hexdigest()
+    _write(_path(plan), value)
+    return value
 
 
 def transition(plan: InstallationUpdatePlan, state: str, evidence: Mapping[str, object]) -> dict[str, object]:
@@ -324,6 +473,21 @@ class InstallationUpdateSession:
         if not self._owned:
             raise InstallationUpdateOperationError("installation update session does not own the lock")
         return recover_prepared_candidate(self.plan, runner=runner)
+
+    def execution_admission(self) -> dict[str, object] | None:
+        if not self._owned:
+            raise InstallationUpdateOperationError("installation update session does not own the lock")
+        return execution_admission(self.plan)
+
+    def prepared_record_provenance(self) -> dict[str, object] | None:
+        if not self._owned:
+            raise InstallationUpdateOperationError("installation update session does not own the lock")
+        return prepared_record_provenance(self.plan)
+
+    def bind_execution_admission(self, admission: Mapping[str, object]) -> dict[str, object]:
+        if not self._owned:
+            raise InstallationUpdateOperationError("installation update session does not own the lock")
+        return bind_execution_admission(self.plan, admission)
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         if self._owned:
