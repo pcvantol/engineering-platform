@@ -1683,11 +1683,10 @@ class EngineeringRunner:
                 isinstance(recovery, dict)
                 and recovery.get("state") == "RECOVERED"
                 and recovery.get("lifecycle_phase") == state.phase
-                # EXECUTE_AGENT contains two distinct product dispatches:
-                # implementation and the later immutable PR publication.
-                # A recovered implementation result (necessarily no PR for
-                # a new run) must never be replayed as publication evidence.
-                and state.next_action != "publish_first_implementation_pull_request"
+                # EXECUTE_AGENT contains two distinct product dispatches.
+                # The recovered result remains phase-bound; the publication
+                # gate below verifies an immutable draft PR by readback
+                # before it can be accepted.
             ):
                 replacement_id = recovery.get("replacement_invocation_id")
                 if (
@@ -2072,7 +2071,13 @@ Local repository validation gate — read-only measurement:
         the already reviewed candidate; the host pins its SHA before and after
         the PR hand-off.
         """
-        if state.execution_mode == "GENESIS" or state.pull_request or implementation.pull_request:
+        recovered_publication = (
+            state.next_action == "publish_first_implementation_pull_request"
+            and implementation.pull_request is not None
+        )
+        if state.execution_mode == "GENESIS" or state.pull_request or (
+            implementation.pull_request and not recovered_publication
+        ):
             return state, implementation
         if not self._current_local_validation_passes(state):
             return self._save_terminal(state, "BLOCKED", "implementation_publication_assurance_required", "First implementation PR publication requires current passing local validation for the reviewed candidate."), implementation
@@ -2094,13 +2099,18 @@ First implementation pull-request publication gate:
 - Do not edit files, index, commits, branch, tests, configuration, or evidence. Do not merge, release, or change repository settings.
 - Create exactly one draft implementation pull request for the existing bounded branch and current HEAD. Return that existing branch, the GitHub pull-request number and the unchanged current commit SHA.
 """
-        try:
-            published = self._invoke_agent_with_timing(publication, prompt)
-            publication = self._record_agent_execution_time(publication)
-        except (CodexInvocationError, ProviderReadinessBlocked) as error:
-            if isinstance(error, ProviderReadinessBlocked):
-                return error.state, implementation
-            return self._terminalize_provider_invocation_error(publication, error), implementation
+        if recovered_publication:
+            # A lost acknowledgement is reconciled from its durable provider
+            # result. Never issue a second PR-create turn for that run.
+            published = implementation
+        else:
+            try:
+                published = self._invoke_agent_with_timing(publication, prompt)
+                publication = self._record_agent_execution_time(publication)
+            except (CodexInvocationError, ProviderReadinessBlocked) as error:
+                if isinstance(error, ProviderReadinessBlocked):
+                    return error.state, implementation
+                return self._terminalize_provider_invocation_error(publication, error), implementation
         try:
             after = self.repository.inspect(self.root)
         except RunnerError:

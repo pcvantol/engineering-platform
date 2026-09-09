@@ -2662,9 +2662,36 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 blocked, _ = runner._publish_first_implementation_pull_request(
                     state, AgentResult("COMPLETE", "main", commit_sha=sha)
                 )
-                self.assertTrue(blocked.terminal)
-                self.assertEqual(blocked.next_action, "implementation_publication_assurance_required")
-                self.assertEqual(agent.prompts, [])
+            self.assertTrue(blocked.terminal)
+            self.assertEqual(blocked.next_action, "implementation_publication_assurance_required")
+
+    def test_recovered_publication_result_is_reconciled_without_a_second_provider_turn(self) -> None:
+        sha, branch, pr_number = "a" * 40, "codex/recovered-publication", 71
+        profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+        reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
+                         "profile_digest": profile["digest"], "findings": []}
+                        for role in ("quality", "security"))
+        github = FakeGitHub([PullRequestEvidence(
+            pr_number, "OPEN", False, False, is_draft=True,
+            head_branch=branch, base_branch="main", head_sha=sha,
+        )])
+        agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(clean=True, branch=branch, contains=False), github, agent, lambda _: None,
+        )
+        state = TransactionState(
+            "recovered-publication", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch=branch, owner_authorized=True, next_action="publish_first_implementation_pull_request",
+            last_verified_sha=sha, validation_evidence=({"command": "canonical suite", "result": "passed"},),
+            local_validation_audit=({"outcome": "validated"},), assurance_profile=profile, assurance_reviews=reviews,
+        )
+        published, result = runner._publish_first_implementation_pull_request(
+            state, AgentResult("COMPLETE", branch, pr_number, commit_sha=sha),
+        )
+        self.assertFalse(published.terminal)
+        self.assertEqual(result.pull_request, pr_number)
+        self.assertEqual(agent.prompts, [])
 
     def test_managed_host_orders_first_pr_after_validation_and_both_reviews(self) -> None:
         """Exercise the real transitions; the adapter observes PR creation only at publication."""
