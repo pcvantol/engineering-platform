@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "operation_id": "ep-version-2.3.2-main-reconciliation-001",
+  "product": "engineering-platform",
+  "component": "server",
+  "policy_revision": "engineering-platform-bootstrap-release-cadence-v2",
+  "expected_source_revision": "1375cbec44a0586a7b2025a4dd20bf57b7d85f23",
+  "baseline_version": "2.3.0",
+  "target_version": "2.3.2",
+  "release_class": "PATCH",
+  "classification_rationale": "Reconcile main after immutable PyPI 2.3.1 publication; select the next unused version without rewriting published bytes.",
+  "state": "prepared",
+  "allowed_projection_paths": [
+    "pyproject.toml",
+    "package.json",
+    "package-lock.json",
+    "src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json",
+    "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json",
+    "src/engineering_platform/templates/workspace-config.json",
+    "src/engineering_platform/platform_version.py"
+  ],
+  "projection_sha256_after": {
+    "package-lock.json": "sha256:0818de379d5185ab8c16587ebe9e242c1fbff7e112aa9c22d3360ad24610fdf3",
+    "package.json": "sha256:c154ebc55f84b5e977396cbca0cafcec1b28efcf96d171940410d453f66e82c2",
+    "pyproject.toml": "sha256:7cb623cffae96d101b87fe967460e486c06e1f326ac7865bf2d24e344c211567",
+    "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json": "sha256:68203cca3cbfc85e7b8652f75764eb3af00d18ec0966fb71f84a0ddc44460b9a",
+    "src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json": "sha256:2f8a494e70f8df0e45951b6d1a160cf242f825370fb97c63d15836de053c139c",
+    "src/engineering_platform/platform_version.py": "sha256:05ef1b0fe8e76e1fe8e7d4653976dd1dafea7dca2223d57cf6b5caa3e78c9939",
+    "src/engineering_platform/templates/workspace-config.json": "sha256:e75c9b0ed681b7d2021133df449a4cc2ae6a93f75b69f9a8053f1cfbb21bc824"
+  }
+}
