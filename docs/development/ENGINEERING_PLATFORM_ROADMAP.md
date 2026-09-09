@@ -1,5 +1,31 @@
 # Engineering Platform Roadmap
 
+## Release and operational installation lifecycle V1 — active coordinated plan
+
+Repository evidence on 2026-09-09 establishes that `origin/main` is
+`b3cd4b2`, while the remote `release-2.3.1` candidate is `3c934ee` and PyPI
+already holds immutable 2.3.1 wheel and sdist bytes. Main consistently
+projects 2.3.0, so the published version must be reconciled by a protected
+main PR without changing the published identity. The observed Mac has one
+2.3.1 server process/data root but a distinct 2.3.0 PlatformIO PATH candidate;
+this is an investigation fact, not an authorization to remove or cut over
+either installation. CENTRAL schema 56, engineering-storage schema 41 and
+repository-attachment schema 1.0 remain separate contracts.
+
+| Increment | Owning repository | Bounded result | Dependencies / acceptance |
+| --- | --- | --- | --- |
+| RL-1 | engineering-platform | Durable EP release-operation record, exclusive operation lock, exact wheel/sdist identities and separate `PUBLISHED`/`RELEASE_COMPLETE` states | Source-only; rejects concurrent operation and version/digest collision; supports resume after publication response loss. |
+| RL-2 | engineering-platform | Protected-main release workflow, exact-main qualification, registry readback, receipt and scoped cleanup | RL-1; reconcile 2.3.1 provenance without re-publication or version rollback. |
+| OI-1 | engineering-platform | Read-only operational-installation resolver/diagnostic | RL-1; distinguish registered runtime from PATH candidates, normalize symlinks and prove health payload identity. |
+| OI-2 | engineering-platform | One EP-owned install/update/repair record and crash-resumable lifecycle | OI-1/RL-2; one operational resolver, migration compatibility, scoped cleanup and development isolation. |
+| FP-1 | forge-platform | Reconcile universal composition with EP-owned installation provision | Requires fresh remote baseline; no duplicate EP migration/installation engine. |
+| F-1/W-1/AC-1 | forge, workspace, ai-development-contracts | Respectively consume release evidence, retain own version closure, and retain generic workflow/evidence rules | After EP contracts are published; no product runtime authority transfers. |
+
+RL-1 is the active implementation increment in this branch. RL-2, OI-1 and
+later cross-repository work are intentionally not claimed complete. No live
+publication, installation, cutover, service mutation or artifact deletion is
+authorized by RL-1.
+
 ## Repository observation and safe cleanup — documented target
 
 The coordinated `PROJECT_HYGIENE_AND_REPOSITORY_RECONCILIATION_V1` increment

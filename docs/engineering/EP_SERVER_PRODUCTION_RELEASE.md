@@ -1,9 +1,38 @@
 # EP Server production release
 
-Production publication is branch-driven and fail-closed. Create a branch from
-the current `main` with the exact name `release-X.Y.Z`, for example
-`release-2.2.0`. The creation event starts **EP Server production release**.
-Ordinary pushes, pull requests and branches with any other name cannot publish.
+Production publication is main-first and fail-closed. A protected version
+preparation PR updates the one canonical version source and its derived EP
+projections on `main`; the resulting exact `main` commit is then qualified,
+built and published. A release branch can freeze a candidate, but it is never
+the exclusive source of a published version change.
+
+The existing branch-create workflow is a predecessor and must be replaced by
+the `RELEASE_OPERATION_LIFECYCLE_V1` delivery increment before another EP
+publication. It remains evidence for prior releases; it is not authority to
+re-publish or rewrite their bytes.
+
+## Release-operation lifecycle V1
+
+EP persists one durable release operation before registry side effects. It binds
+operation ID, `engineering-platform`/`server`, version, policy revision, exact
+post-merge source SHA, exact wheel and sdist SHA-256 identities, qualification,
+publication receipt and cleanup result. The state sequence is:
+
+```text
+PREPARED -> QUALIFIED -> PUBLISHED -> CLEANUP_PENDING -> RELEASE_COMPLETE
+                                  \-> RELEASE_COMPLETE
+```
+
+`PUBLISHED` is registry success only; it does not claim closure. Re-entry with
+the same operation reloads the record and exact artifacts. A second concurrent
+operation is excluded. An already published version can be adopted only when
+source provenance and both artifact digests match; differing bytes or
+provenance fail closed. Publication performs registry readback and digest
+comparison before it records `PUBLISHED`. Cleanup is operation-scoped and its
+failure remains `CLEANUP_PENDING`; recovery artifacts have explicit retention.
+
+The initial implementation supplies this durable EP-owned state boundary only.
+It neither publishes, changes a version, nor selects/changes a local runtime.
 
 The workflow verifies that the checkout is clean and descended from `main`.
 It then writes the exact branch version to every canonical EP projection and
