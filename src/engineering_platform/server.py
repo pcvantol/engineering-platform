@@ -48,6 +48,7 @@ from . import host_admin
 from . import installation_relocation
 from . import installation_update_plan, installation_update_operation
 from . import operational_installation
+from . import product_installation_readback
 from . import local_repository_binding
 from . import project_topology
 from . import submission_service
@@ -3905,7 +3906,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-inventory", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -3966,6 +3967,70 @@ def _development_profile_for(args: argparse.Namespace) -> development_profile.De
     return development_profile.require(**inputs)
 
 
+def _operational_inventory_inputs(args: argparse.Namespace) -> dict[str, Path]:
+    """Parse only explicit EP diagnostic references, never PATH selection."""
+    references: dict[str, Path] = {}
+    for raw in args.service_reference:
+        label, separator, path = raw.partition("=")
+        if not separator or not label or not path or label in references:
+            raise ServerConfigurationError("--service-reference must be a unique label=absolute-interpreter path")
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            raise ServerConfigurationError("--service-reference interpreter path must be absolute")
+        references[label] = candidate
+    return references
+
+
+def _operational_product_readback(args: argparse.Namespace) -> dict[str, object]:
+    """Produce EP-owned install evidence without a caller-runtime fallback.
+
+    This is the narrow boundary for a composition consumer.  In contrast with
+    historical local diagnostics, an absent owned LaunchAgent cannot fall back
+    to ``sys.executable``: that would let an incidental shell/PATH package
+    become the supposedly selected operational runtime.
+    """
+    selected = server_service.configured_interpreter(args.data_root)
+    if selected is None:
+        return product_installation_readback.unavailable_readback(
+            reason="OWNED_SERVICE_INTERPRETER_UNAVAILABLE",
+        )
+    references = _operational_inventory_inputs(args)
+    installation = operational_installation.resolve(
+        args.data_root,
+        interpreter=selected,
+        path_candidates=args.candidate_interpreter,
+    )
+    inventory = operational_installation.inventory(
+        installation,
+        service_references=references,
+        candidates=args.candidate_interpreter,
+    )
+    record = operational_installation.record_status(installation)
+    if record.get("state") == "UNREGISTERED":
+        return product_installation_readback.readback(
+            installation,
+            record=record,
+            package=None,
+            health_response=None,
+            inventory=inventory,
+        )
+    package = operational_installation.package_identity(selected)
+    configuration = ServerConfiguration.load(args.data_root)
+    try:
+        response: Mapping[str, object] | None = _health_response(
+            {"host": configuration.bind_host, "port": configuration.bind_port}
+        )
+    except (URLError, OSError, ValueError, operational_installation.OperationalInstallationError):
+        response = None
+    return product_installation_readback.readback(
+        installation,
+        record=record,
+        package=package,
+        health_response=response,
+        inventory=inventory,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -4011,16 +4076,23 @@ def main(argv: list[str] | None = None) -> int:
             result = operational_installation.qualify_runtime_response(
                 installation, record=record, package=package, response=response,
             )
+        elif args.command == "operational-readback":
+            result = _operational_product_readback(args)
+        elif args.command == "operational-update-assess":
+            if not all((args.operation_id, args.artifact, args.target_version, args.target_digest, args.target_source_revision)):
+                raise ServerConfigurationError("--operation-id, --artifact, --target-version, --target-digest and --target-source-revision are required")
+            observation = _operational_product_readback(args)
+            result = product_installation_readback.assess_update(
+                args.data_root,
+                operation_id=args.operation_id,
+                artifact=args.artifact,
+                target_version=args.target_version,
+                target_digest=args.target_digest,
+                target_source_revision=args.target_source_revision,
+                current_observation=observation,
+            )
         elif args.command == "operational-inventory":
-            references: dict[str, Path] = {}
-            for raw in args.service_reference:
-                label, separator, path = raw.partition("=")
-                if not separator or not label or not path or label in references:
-                    raise ServerConfigurationError("--service-reference must be a unique label=absolute-interpreter path")
-                candidate = Path(path)
-                if not candidate.is_absolute():
-                    raise ServerConfigurationError("--service-reference interpreter path must be absolute")
-                references[label] = candidate
+            references = _operational_inventory_inputs(args)
             selected = server_service.configured_interpreter(args.data_root) or Path(sys.executable)
             installation = operational_installation.resolve(args.data_root, interpreter=selected, path_candidates=args.candidate_interpreter)
             result = operational_installation.inventory(installation, service_references=references, candidates=args.candidate_interpreter)
@@ -4185,6 +4257,7 @@ def main(argv: list[str] | None = None) -> int:
                 else: result = {"agent_id": args.agent_id, "reset": agent_trust.reset(connection, args.agent_id)}
     except (OSError, RuntimeError, PermissionError, ServerConfigurationError,
             operational_installation.OperationalInstallationError,
+            product_installation_readback.ProductInstallationReadbackError,
             development_profile.DevelopmentProfileError,
             local_repository_binding.LocalRepositoryBindingError,
             external_producer_binding.ProducerBindingError) as error:

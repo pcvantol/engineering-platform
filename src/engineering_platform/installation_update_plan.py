@@ -87,8 +87,14 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
         # update primitive has no reverse-migration authority, so it may not
         # turn an older wheel into an accidental rollback.
         raise InstallationUpdatePlanError("downgrade or rollback requires a compatible recovery operation")
-    if target_semver == current_semver and target_digest != str(current["artifact_digest"]):
-        raise InstallationUpdatePlanError("same release identity cannot use different artifact bytes")
+    if target_semver == current_semver:
+        if target_digest != str(current["artifact_digest"]):
+            raise InstallationUpdatePlanError("same release identity cannot use different artifact bytes")
+        if target_source_revision != str(current["source_revision"]):
+            # Provenance is part of the release identity.  Reusing matching
+            # bytes from a different source revision must not make a distinct
+            # candidate look already installed or safely resumable.
+            raise InstallationUpdatePlanError("same release identity cannot use different source revision")
     exact_artifact = Path(artifact).expanduser().resolve()
     if _digest(exact_artifact) != target_digest:
         raise InstallationUpdatePlanError("target artifact does not match the requested digest")
