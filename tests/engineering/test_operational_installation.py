@@ -13,7 +13,7 @@ class OperationalInstallationTests(unittest.TestCase):
     def _root(self, directory: str) -> tuple[Path, Path]:
         root = Path(directory) / "EP Runtime With Spaces"
         root.mkdir()
-        (root / "server.json").write_text(json.dumps({"version": "2.3.1"}))
+        (root / "server.json").write_text(json.dumps({"version": 2, "product_version": "2.3.1"}))
         (root / "runtime-identity.json").write_text(json.dumps({"instance_id": "instance-1"}))
         interpreter = root / "venv" / "bin" / "python"
         interpreter.parent.mkdir(parents=True)
@@ -56,7 +56,7 @@ class OperationalInstallationTests(unittest.TestCase):
                    verification={"result": "PASS"}, cleanup={"result": "COMPLETE"})
             status = record_status(installation)
             self.assertEqual((status["state"], status["artifact_digest"]), ("REGISTERED", "sha256:" + "a" * 64))
-            (root / "server.json").write_text(json.dumps({"version": "2.3.2"}))
+            (root / "server.json").write_text(json.dumps({"version": 2, "product_version": "2.3.2"}))
             with self.assertRaisesRegex(OperationalInstallationError, "does not match"):
                 record_status(resolve(root, interpreter=interpreter))
 
@@ -66,7 +66,7 @@ class OperationalInstallationTests(unittest.TestCase):
             (root / "server.json").write_text("[]")
             with self.assertRaisesRegex(OperationalInstallationError, "invalid"):
                 resolve(root, interpreter=interpreter)
-            (root / "server.json").write_text(json.dumps({"version": "2.3.1"}))
+            (root / "server.json").write_text(json.dumps({"version": 2, "product_version": "2.3.1"}))
             (root / "runtime.json").write_text(json.dumps({"pid": "bad"}))
             with self.assertRaisesRegex(OperationalInstallationError, "PID"):
                 resolve(root, interpreter=interpreter)
@@ -79,6 +79,14 @@ class OperationalInstallationTests(unittest.TestCase):
             interpreter.unlink()
             with self.assertRaisesRegex(OperationalInstallationError, "interpreter"):
                 resolve(root, interpreter=interpreter)
+
+    def test_schema_revision_is_never_interpreted_as_a_product_version(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            (root / "server.json").write_text(json.dumps({"version": 56}))
+            installation = resolve(root, interpreter=interpreter)
+            self.assertIsNone(installation.configured_version)
+            validate_package_identity(installation, {"interpreter": str(interpreter), "version": "2.3.1", "metadata": "/metadata", "package": "/package"})
 
     def test_selected_interpreter_package_identity_is_fail_closed(self) -> None:
         with TemporaryDirectory() as directory:
