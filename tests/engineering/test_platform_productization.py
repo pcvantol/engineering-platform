@@ -113,6 +113,7 @@ class PlatformProductizationTest(unittest.TestCase):
 
         self.assertTrue(smoke.is_file())
         self.assertIn('platform_version_consistency.py --source-root .', workflow)
+        self.assertIn(".github/workflows/ep-server-production-release.yml", workflow)
         self.assertIn("EP_VERSION_COMPONENT_DRIFT", smoke.read_text(encoding="utf-8"))
 
     def test_production_release_is_main_sha_versioned_and_has_hard_publish_gates(self) -> None:
@@ -129,9 +130,13 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertIn("pypa/gh-action-pypi-publish", workflow)
         self.assertIn("id-token: write", workflow)
         self.assertNotIn("secrets.PYPI_API_TOKEN", workflow)
-        self.assertIn("registry-readback-and-release-evidence", workflow)
+        self.assertIn("registry-readback-and-published-evidence", workflow)
         self.assertIn("--no-cache-dir", workflow)
         self.assertIn("PyPI readback does not match the exact qualified distributions", workflow)
+        self.assertIn("engineering-platform-release-published-$VERSION-$SOURCE_SHA.json", workflow)
+        self.assertIn("record-release-complete", workflow)
+        self.assertIn("Promote PUBLISHED evidence to RELEASE_COMPLETE", workflow)
+        self.assertIn("group: engineering-platform-production-release", workflow)
         self.assertIn("RELEASE_COMPLETE", workflow)
         self.assertIn("engineering-platform-release-evidence", workflow)
         self.assertTrue(qualifier.is_file())

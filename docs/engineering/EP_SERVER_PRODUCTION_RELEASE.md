@@ -23,22 +23,25 @@ PREPARED -> QUALIFIED -> PUBLISHED -> CLEANUP_PENDING -> RELEASE_COMPLETE
                                   \-> RELEASE_COMPLETE
 ```
 
-`PUBLISHED` is registry success only; it does not claim closure. Re-entry with
-the same operation reloads the record and exact artifacts. A second concurrent
-operation is excluded. An already published version can be adopted only when
-source provenance and both artifact digests match; differing bytes or
-provenance fail closed. Publication performs registry readback and digest
-comparison before it records `PUBLISHED`. Cleanup is operation-scoped and its
-failure remains `CLEANUP_PENDING`; recovery artifacts have explicit retention.
+`PUBLISHED` is registry success only; it does not claim closure. The workflow
+stores that exact state as an immutable GitHub release asset after registry
+readback, and the terminal job must read it back byte-for-byte before it can
+record a separate `RELEASE_COMPLETE` asset. Re-entry with the same operation
+reloads the record and exact artifacts. A second concurrent operation is
+excluded. An already published version can be adopted only when source
+provenance and both artifact digests match; differing bytes or provenance fail
+closed. Publication performs registry readback and digest comparison before it
+records `PUBLISHED`. Cleanup is operation-scoped and its failure remains
+`CLEANUP_PENDING`; recovery artifacts have explicit retention.
 
 The initial implementation supplies this durable EP-owned state boundary only.
 It neither publishes, changes a version, nor selects/changes a local runtime.
 
-The workflow verifies that the checkout is clean and descended from `main`.
-It then writes the exact branch version to every canonical EP projection and
-commits only those version files to the release branch. The wheel and source
-distribution are built from that resulting commit, not from a developer
-worktree.
+The workflow verifies that the checkout is clean and is the requested current
+protected `main` commit. Version preparation has already been merged through
+the protected source route; the release workflow never writes a version. The
+wheel and source distribution are built from that exact commit, never from a
+developer worktree.
 
 Before PyPI publication, the workflow requires: version-consistency and
 installed-ingress/API/Postman checks, the complete unit and coverage contract,
