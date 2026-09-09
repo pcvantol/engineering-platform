@@ -23,6 +23,7 @@ and repository-attachment schema 1.0 remain separate contracts.
 | OI-4a | engineering-platform | EP-owned exact-wheel staging and non-operational candidate preparation | SOURCE_FIXED: #164. An existing exact update plan stages and re-hashes its wheel atomically beneath the operation root, then creates or resumes only an operation-scoped candidate venv and pip cache. It proves the candidate interpreter/package identity and fails closed on changed bytes, unsafe paths, markers, identities and locks. It does not alter services, data, migration, records, CLI selection, publication or a live installation. |
 | OI-4b | engineering-platform | Durable binding and reboot recovery of the exact staged candidate | CANDIDATE_SOURCE_FIX: `codex/ep-prepared-operation-binding-v1`. The schema-3 journal binds operation, staged wheel, candidate venv, launcher, cache, package identity and a canonical current-record provenance snapshot; it refuses a source-wheel plan after binding and validates real-venv launcher symlinks, source disappearance, journal/marker/stage tampering and candidate escape. It still does not admit the candidate to execution. |
 | OI-4c | engineering-platform | Locked pre-cleanup admission of the durable staged candidate | SOURCE_FIXED on `codex/ep-oi4c-execution-admission-v1`. The EP-owned admission re-verifies only the OI-4b staged candidate and its package/launcher identity under the existing installation lock, then durably binds the complete current registered-installation provenance. It refuses changed records, candidate/service selection, paths and journal evidence, and never re-reads a caller source wheel. It performs no activation, service, migration, cutover or cleanup operation. |
+| OI-5a | engineering-platform | System-domain Server service and machine-scope inventory evidence foundation | The bounded source increment defines one future non-root-account LaunchDaemon descriptor with a normalized data root and structural venv launcher, plus a read-only `system-service-inventory` surface. It uses descriptor-bound snapshots for system, shared-user and explicitly declared user service references; malformed, inaccessible and raced observations remain explicit. Account discovery remains incomplete, so it never claims `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`. It exports no privileged daemon mutation: a later EP-owned provisioner must bind root authorization to durable inventory/quiesce/backup/migration/health/cleanup evidence before it can create an account, migrate/cut over or remove the legacy LaunchAgent. |
 | FP-1 | forge-platform | Reconcile universal composition with EP-owned installation provision and consume the shared release-evidence semantics | SOURCE_FIXED: #21 `6395be9`, #22 `e666664`, #23 `ed91e81`, #27 `f77e5ea`, #28 `dd4d336`, #29 `8aa1139`, #30 `124b8fac`, #31 `6377980`, #32 `54fb36f`, #33 `ed227a3`, #34 `d8fbe36`. Composition verifies producer artifact bytes, retains resilient coordination evidence and does not create a second EP engine. Product adapters and live product operations remain product-owned. |
 | F-1/W-1/AC-1 | forge, workspace, ai-development-contracts | Respectively consume release evidence, retain own version closure, and retain generic workflow/evidence rules | SOURCE_FIXED in Forge #62 `a84cf637` / #63 `8b8dd1af` / #65 `72e8dbb` / #67 `ce8accc` / #68 `847b552`, Workspace #18 `28ca0bc` / #19 `8291ef1` / #22 `b8a16a4` / #24 `4e268224` / #25 `bad3dd7`, and AI-development-contracts #10 `6ec3b443`. AI-development-contracts remains generic and owns no product runtime authority. |
 
@@ -43,9 +44,15 @@ mutation or artifact deletion remains a separate authorization.
    must explicitly retain one selected operational runtime or remove the
    unused candidate; an operation-root candidate is not a second permanent
    installation by default.
-3. Forge Platform consumes the EP-owned installation provision only after
-   that EP execution admission exists; it must not grow a second EP
-   migration, installation or runtime-selection engine.
+3. Qualify OI-5a's system-domain service/inventory source boundary, then add
+   only an EP-owned privileged account-discovery and service-migration
+   provisioner operation. That later operation must retain one selected
+   runtime, backup/migration/health/cleanup evidence and an explicit
+   machine-scope coverage receipt; it must not treat this source contract or a
+   per-user LaunchAgent as a completed cutover.
+4. Forge Platform consumes the EP-owned installation provision only after
+   that EP execution admission and product provisioner exists; it must not
+   grow a second EP migration, installation or runtime-selection engine.
 
 The related Forge Platform, Forge and Workspace workflow repairs already
 share the main-first, immutable-artifact, durable-PUBLISHED and resumable

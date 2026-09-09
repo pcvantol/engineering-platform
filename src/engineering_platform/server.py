@@ -54,6 +54,7 @@ from . import project_topology
 from . import submission_service
 from . import server_relay
 from . import server_service
+from . import system_server_service
 from . import storage
 from . import managed_codex_runtime
 from . import provider_readiness
@@ -3906,7 +3907,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -3933,6 +3934,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-source-revision")
     parser.add_argument("--candidate-interpreter", action="append", type=Path, default=[])
     parser.add_argument("--service-reference", action="append", default=[])
+    parser.add_argument("--declared-user-home", action="append", type=Path, default=[])
     return parser
 
 
@@ -4096,6 +4098,13 @@ def main(argv: list[str] | None = None) -> int:
             selected = server_service.configured_interpreter(args.data_root) or Path(sys.executable)
             installation = operational_installation.resolve(args.data_root, interpreter=selected, path_candidates=args.candidate_interpreter)
             result = operational_installation.inventory(installation, service_references=references, candidates=args.candidate_interpreter)
+        elif args.command == "system-service-inventory":
+            # This is a read-only, product-owned evidence surface.  It does
+            # not enumerate accounts itself, launch a daemon, or promote a
+            # caller-declared home list into a Mac-wide uniqueness claim.
+            result = system_server_service.machine_scope_inventory(
+                args.data_root, user_homes=args.declared_user_home,
+            )
         elif args.command == "installation-update-plan":
             if not all((args.operation_id, args.artifact, args.target_version, args.target_digest, args.target_source_revision)):
                 raise ServerConfigurationError("--operation-id, --artifact, --target-version, --target-digest and --target-source-revision are required")
@@ -4256,6 +4265,7 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.command == "agent-revoke": result = {"agent_id": args.agent_id, "revoked": agent_trust.revoke(connection, args.agent_id)}
                 else: result = {"agent_id": args.agent_id, "reset": agent_trust.reset(connection, args.agent_id)}
     except (OSError, RuntimeError, PermissionError, ServerConfigurationError,
+            system_server_service.SystemServerServiceError,
             operational_installation.OperationalInstallationError,
             product_installation_readback.ProductInstallationReadbackError,
             development_profile.DevelopmentProfileError,

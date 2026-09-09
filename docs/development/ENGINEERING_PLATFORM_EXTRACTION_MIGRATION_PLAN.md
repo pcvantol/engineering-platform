@@ -19,15 +19,25 @@ standalone, local-first Execution Operations Platform
 > Earlier Workspace-supplied `project_id` wording remains historical consumer
 > registration context and must not be read as topology authority.
 
+> **OI-5 operational-installation supersession:** Historical per-user EP
+> installer, application-data-root and LaunchAgent wording below is retained as
+> migration provenance only. The current target invariant is
+> `PER_PRODUCT_MAX_OPERATIONAL_RELEASE_INSTALLATIONS = 1` at
+> `MACOS_MACHINE` scope. A future EP-owned provisioner, invoked by the Forge
+> Platform installer, must bind the selected release/artifact, structural venv,
+> data root, system-domain service and live health identity to one durable
+> installation record. No legacy per-user service proves or substitutes for
+> that target, and this note does not authorize a live cutover.
+
 ## Review objective
 
 Turn Engineering Platform (EP) from the current repository-local implementation
 into a neutral, independently released product without losing operational
 evidence, creating competing writers, or changing Forge/Workspace ownership.
 
-The end state is one EP installation per local user/machine, one
-installation-owned SQLite database, and one isolated execution queue per
-canonical Workspace project. DJConnect and Forge/Workspace consume an
+The end state is one selected operational EP release installation per macOS
+machine, one installation-owned SQLite database, and one isolated execution
+queue per canonical Workspace project. DJConnect and Forge/Workspace consume an
 immutable, pinned EP wheel; neither retains EP source code.
 
 This is a staged migration, not a rewrite or a history rewrite.
@@ -566,41 +576,39 @@ or authority transition is implied by repository extraction alone.
 
 #### Native macOS installation and first-run contract
 
-The native installer is an EP product surface, not a DJConnect bootstrap
-adapter. Its signed macOS application is a user-friendly wrapper around the
-idempotent installed command `engineering-platform-host --install`; it does
-not maintain a second installation implementation. The application packages
-or retrieves only the verified, pinned EP release, obtains the operator's
-explicit confirmation and then invokes that command to perform the following
-sequence:
+The target native flow is a Forge Platform installer composition, not a
+DJConnect bootstrap adapter. EP contributes one EP-owned provisioner; the
+universal installer neither duplicates EP service/migration logic nor uses a
+legacy per-user command as an alternate authority. This is a target sequence,
+not evidence of an executed macOS cutover:
 
-1. inspect any existing EP installation and acquire an installation-wide
-   installer lock, so two installers or a running writer cannot race;
-2. verify the signed/notarized application, the pinned wheel and every
-   supported dependency installer before invoking it;
-3. install or upgrade the EP wheel and the supported Codex CLI and GitHub CLI
-   dependencies when absent, using only EP-approved installers and explicit
-   privilege elevation where macOS requires it;
-4. create the per-user EP application-data root, an empty installation-owned
-   SQLite database, backups/log/runtime directories and OS credential-store
-   entries with restrictive permissions;
-5. install and load the EP dashboard and watcher LaunchAgents, configured
-   only with the new installation root and installed EP commands;
-6. verify the installed command versions, database integrity/schema, service
-   health, one-writer ownership and the watcher ready record including its
-   resolved Inbox root; and
-7. only after all checks pass, open the loopback Operations Console for the
-   initial provider setup.
+1. acquire the EP installation lock and inventory machine-domain, shared and
+   discovered-user service references before a second writer can be created;
+2. verify the signed/notarized installer, exact pinned EP artifact and digest
+   before preparing an isolated EP venv;
+3. let the universal installer handle machine/tool and provider prerequisites
+   through its own contracts; EP receives only the resulting approved inputs,
+   never provider credentials;
+4. retain the selected EP installation identity, data root, backup/migration
+   directory and service-account permissions under the EP contract;
+5. quiesce verified legacy references, back up compatible data, migrate and
+   activate the exact EP runtime as one system-domain service only after its
+   durable operation evidence permits that cutover;
+6. verify installed package/version/digest, database integrity/schema, actual
+   service health and runtime identity; then complete or retain cleanup; and
+7. return a machine-readable EP result to the universal installer for the
+   final component summary and dashboard link.
 
 ##### Single-installation and existing-data decision
 
-EP permits exactly one installation for one local macOS user. Before any
-write, `engineering-platform-host --install` resolves the canonical
-installation data root, acquires an installation-wide exclusive lock and
-checks its signed installation marker, database, service labels and active
-writer lease. A second native app, a command-line invocation, or an already
-running writer must therefore fail closed rather than create a second database
-or a competing watcher.
+EP permits exactly one selected operational release installation per macOS
+machine. Before any write, the future EP-owned provisioner must resolve the
+canonical installation record, acquire its exclusive lock, inventory the
+machine service scope, and check exact artifact provenance, data compatibility,
+service references and active writer lease. A second native app, command-line
+invocation or running writer must fail closed rather than create a second
+database or competing runtime. The historical per-user
+`engineering-platform-host --install` behavior is not proof of this invariant.
 
 When a previous EP data root or database is found, the native installer must
 stop before changing it and present one explicit choice:
