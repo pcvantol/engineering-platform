@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from engineering_platform.operational_installation import OperationalInstallationError, package_identity, record_status, resolve, validate_health
+from engineering_platform.operational_installation import OperationalInstallationError, package_identity, record_status, resolve, validate_health, validate_package_identity
 from engineering_platform.operational_installation_record import record
 
 
@@ -89,3 +89,15 @@ class OperationalInstallationTests(unittest.TestCase):
             for result, marker in ((process.CompletedProcess((), 1, "", ""), "does not provide"), (process.CompletedProcess((), 0, "[]", ""), "incomplete"), (process.CompletedProcess((), 0, "{}", ""), "incomplete")):
                 with self.subTest(marker=marker), self.assertRaisesRegex(OperationalInstallationError, marker):
                     package_identity(interpreter, runner=lambda *_a, **_k: result)
+
+    def test_package_identity_must_match_the_selected_runtime(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation = resolve(root, interpreter=interpreter)
+            identity = {"interpreter": str(interpreter), "version": "2.3.1", "metadata": "/metadata", "package": "/package"}
+            validate_package_identity(installation, identity)
+            with self.assertRaisesRegex(OperationalInstallationError, "version does not match"):
+                validate_package_identity(installation, {**identity, "version": "2.3.0"})
+            other = Path(directory) / "other-python"; other.write_text("#!/bin/sh\n"); other.chmod(0o755)
+            with self.assertRaisesRegex(OperationalInstallationError, "different interpreter"):
+                validate_package_identity(installation, {**identity, "interpreter": str(other)})
