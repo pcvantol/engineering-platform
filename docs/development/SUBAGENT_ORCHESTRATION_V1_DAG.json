@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "increment": "EP_SUBAGENT_ORCHESTRATION_AND_EFFICIENCY_V1",
+  "documentary_only": true,
+  "execution_authority": false,
+  "automatic_dispatch": false,
+  "version_change": "NO_BUMP",
+  "source_repository": "pcvantol/engineering-platform",
+  "source_audit_revision": "62eb6c4631cc23b9e4d2a53043216be6f20bfaae",
+  "source_reconciled_revision": "0c282bacc40731221da267bcff289e0687ca945c",
+  "source_observation_date": "2026-09-09",
+  "full_family_required_for_first_canary": false,
+  "canary_safety_note": "A concrete context-integrity or assurance defect affecting a selected canary still requires a scoped safety assessment/fix; the full optimization graph is not a blanket prerequisite.",
+  "design": "../engineering/SUBAGENT_ORCHESTRATION_AND_EFFICIENCY.md",
+  "roadmap": "SUBAGENT_ORCHESTRATION_V1_ROADMAP.md",
+  "external_requirements": [
+    {
+      "id": "SA-PUBLICATION-CONTRACT",
+      "owner": "engineering-platform",
+      "kind": "external_evidence_gate",
+      "status": "REQUIRED_EVIDENCE_UNVERIFIED",
+      "depends_on": [],
+      "owning_work": "EP_MANAGED_POST_ASSURANCE_PUBLICATION_CLOSURE_V1",
+      "requirement": "Read back qualification of the existing post-assurance publication contract for the exact source/artifact before SA-PUB activation; this documentary graph does not implement or close that work.",
+      "evidence": []
+    }
+  ],
+  "nodes": [
+    {
+      "id": "SA-0",
+      "owner": "engineering-platform",
+      "kind": "documentation",
+      "status": "DOCUMENTED",
+      "depends_on": [],
+      "findings": [
+        "SA-F01",
+        "SA-F02",
+        "SA-F03",
+        "SA-F04",
+        "SA-F05",
+        "SA-F06",
+        "SA-F07",
+        "SA-F08",
+        "SA-F09"
+      ],
+      "delivery": "Retain the source audit, target design and documentary DAG",
+      "acceptance": "Pinned sources, nine finding IDs, forensic limits, discoverable links and acyclic dependencies; canonical only on protected main.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-CTX",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-0"
+      ],
+      "findings": [
+        "SA-F01"
+      ],
+      "delivery": "Preserve the complete mandatory role contract",
+      "acceptance": "Production-module tests: oversized first/combined sections, unstructured input, actual mandatory-role routing and explicit overflow; no omitted required safety/acceptance under PASS.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-ISO",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-0"
+      ],
+      "findings": [
+        "SA-F04"
+      ],
+      "delivery": "Isolate invocation results, telemetry and cancellation state",
+      "acceptance": "Real adapter tests with controlled parallel interleavings, distinct usage/content, success/failure/timeout/cancel and snapshot reset; no cross-invocation attribution.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-OBS",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-ISO"
+      ],
+      "findings": [
+        "SA-F05",
+        "SA-F07",
+        "SA-F08"
+      ],
+      "delivery": "Complete the invocation ledger and correct measurement semantics",
+      "acceptance": "Mandatory Q/S and failure/recovery IDs join usage/timing; unknown remains unknown; event replay/id deduplication; legacy proxy counters stay historical and are not fabricated adoption.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-VAL",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-CTX",
+        "SA-OBS"
+      ],
+      "findings": [
+        "SA-F06"
+      ],
+      "delivery": "Execute known validation controls without an LLM turn",
+      "acceptance": "Actual Managed and validation-only paths retain candidate/profile/exit evidence, full required controls and bounded failure diagnostics; zero provider calls for eligible deterministic control execution.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-PUB",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-VAL",
+        "SA-PUBLICATION-CONTRACT"
+      ],
+      "findings": [
+        "SA-F06"
+      ],
+      "delivery": "Use a deterministic host-owned first-PR publication adapter",
+      "acceptance": "Current validation, both independent reviews and authority precede dispatch; unchanged SHA; ambiguous response/restart reconciles one exact PR with no new provider turn or duplicate publication.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-SEL",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-OBS"
+      ],
+      "findings": [
+        "SA-F03"
+      ],
+      "delivery": "Select useful optional specialists under bounded capacity",
+      "acceptance": "Capability/path/risk selection rejects misleading md/yaml/coordinator triggers; selected/skipped rationale and consumer recorded; finite wave/concurrency allowance, mandatory work reserved and saturation tested.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-LOOP",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-CTX",
+        "SA-OBS"
+      ],
+      "findings": [
+        "SA-F02",
+        "SA-F07"
+      ],
+      "delivery": "Join bounded specialist findings to genuine dispositions",
+      "acceptance": "Actual proposed/accepted/rejected/deferred/implemented/verified transitions with references; no-consumer skip; no private-reasoning/approval sharing, invented adoption or scope/repair-budget expansion.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-ROLE",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-CTX",
+        "SA-OBS"
+      ],
+      "findings": [
+        "SA-F09"
+      ],
+      "delivery": "Qualify role rubrics and explicit provider/model/effort policy",
+      "acceptance": "Versioned Q/S coverage, unresolved criteria, requested versus observed settings, incompatible-capability denial and comparative detection quality; preserve existing effective-profile authority.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-PAR",
+      "owner": "engineering-platform",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-CTX",
+        "SA-ISO",
+        "SA-OBS",
+        "SA-SEL"
+      ],
+      "findings": [
+        "SA-F04",
+        "SA-F05"
+      ],
+      "delivery": "Qualify bounded parallel mandatory reviews",
+      "acceptance": "Independent read-only invocations on one immutable candidate/profile; complete-set join, timeout/failure/cancel/stale tests and no early publication; preserve sequential behavior until qualified.",
+      "qualification_evidence": []
+    },
+    {
+      "id": "SA-Q",
+      "owner": "engineering-platform",
+      "kind": "qualification",
+      "status": "PLANNED",
+      "depends_on": [
+        "SA-VAL",
+        "SA-PUB",
+        "SA-SEL",
+        "SA-LOOP",
+        "SA-ROLE",
+        "SA-PAR"
+      ],
+      "findings": [
+        "SA-F01",
+        "SA-F02",
+        "SA-F03",
+        "SA-F04",
+        "SA-F05",
+        "SA-F06",
+        "SA-F07",
+        "SA-F08",
+        "SA-F09"
+      ],
+      "delivery": "Qualify integrated correctness and measured efficiency",
+      "acceptance": "Exact-source/artifact/provider/profile comparative corpus, predeclared thresholds, complete usage coverage and wall time, unique verified findings and non-regression; installed proof separate from source merge.",
+      "qualification_evidence": []
+    }
+  ]
+}

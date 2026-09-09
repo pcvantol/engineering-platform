@@ -1,0 +1,15 @@
+{
+  "source_sha": "62eb6c4631cc23b9e4d2a53043216be6f20bfaae",
+  "scope": "isolated copied function bodies; not full-suite or installed proof",
+  "context": {
+    "projected_bytes": 18002,
+    "omitted_sections": 2,
+    "safety_preserved": false,
+    "acceptance_preserved": false
+  },
+  "one_command_two_events": {
+    "actual_distinct_command_ids": 1,
+    "reported_shell_command_calls": 2,
+    "reported_repeated_file_reads": 1
+  }
+}
