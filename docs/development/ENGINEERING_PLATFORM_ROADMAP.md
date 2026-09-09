@@ -16,7 +16,7 @@ repository-attachment schema 1.0 remain separate contracts.
 | --- | --- | --- | --- |
 | RL-1 | engineering-platform | Durable EP release-operation record, exclusive operation lock, exact wheel/sdist identities and separate `PUBLISHED`/`RELEASE_COMPLETE` states | Source-only; rejects concurrent operation and version/digest collision; supports resume after publication response loss. |
 | RL-2 | engineering-platform | Protected-main release workflow, exact-main qualification, registry readback, receipt and scoped cleanup | RL-1; reconcile 2.3.1 provenance without re-publication or version rollback. |
-| OI-1 | engineering-platform | Read-only operational-installation resolver/diagnostic | RL-1; distinguish registered runtime from PATH candidates, normalize symlinks and prove health payload identity. |
+| OI-1 | engineering-platform | Read-only operational-installation resolver/diagnostic | RL-1; distinguish registered runtime from PATH candidates, normalize symlinks and prove health payload identity. ACTIVE. |
 | OI-2 | engineering-platform | One EP-owned install/update/repair record and crash-resumable lifecycle | OI-1/RL-2; one operational resolver, migration compatibility, scoped cleanup and development isolation. |
 | FP-1 | forge-platform | Reconcile universal composition with EP-owned installation provision | Requires fresh remote baseline; no duplicate EP migration/installation engine. |
 | F-1/W-1/AC-1 | forge, workspace, ai-development-contracts | Respectively consume release evidence, retain own version closure, and retain generic workflow/evidence rules | After EP contracts are published; no product runtime authority transfers. |

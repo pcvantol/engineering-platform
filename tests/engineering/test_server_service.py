@@ -49,6 +49,11 @@ class ServerServiceTests(unittest.TestCase):
 
         self.assertEqual(server_service._installed_interpreter(launcher), launcher.absolute())
 
+    def test_configured_interpreter_reads_only_the_owned_service_record(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        server_service.write_plist(paths, Path(sys.executable))
+        self.assertEqual(server_service.configured_interpreter(self.root, home=self.home), Path(sys.executable).absolute())
+
     def test_uninitialized_data_root_fails_closed(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "initialized"):
             server_service.install(self.root.parent / "missing", interpreter=Path(__file__).resolve(), home=self.home, runner=self.runner)
