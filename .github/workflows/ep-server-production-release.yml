@@ -504,28 +504,51 @@ jobs:
           # restart may only advance the exact pending operation to terminal
           # completion; it must not silently reconstruct a fresh PUBLISHED
           # record from an ephemeral artifact.
-          mkdir "$RUNNER_TEMP/ep-pending-readback"
-          if gh release download "$TAG" --pattern "$PENDING" --dir "$RUNNER_TEMP/ep-pending-readback"; then
+          PENDING_READBACK_DIR="$RUNNER_TEMP/ep-pending-readback"
+          mkdir "$PENDING_READBACK_DIR"
+          if gh release download "$TAG" --pattern "$PENDING" --dir "$PENDING_READBACK_DIR"; then
             PYTHONPATH=src python3 - "$OPERATION_ID" \
               "published-input/release-operation/operations/$OPERATION_ID.json" \
-              "$RUNNER_TEMP/ep-pending-readback/$PENDING" <<'PY'
+              "$PENDING_READBACK_DIR/$PENDING" <<'PY'
+          from dataclasses import asdict
           import json
           import sys
           from pathlib import Path
           from engineering_platform.release_operation import ReleaseOperation, ReleaseOperationError, ReleaseOperationStore
 
           operation_id, published_path, pending_path = sys.argv[1:]
-          published = ReleaseOperation.parse(json.loads(Path(published_path).read_text(encoding="utf-8")))
-          pending = ReleaseOperation.parse(json.loads(Path(pending_path).read_text(encoding="utf-8")))
+          published_bytes = Path(published_path).read_bytes()
+          pending_bytes = Path(pending_path).read_bytes()
+          published = ReleaseOperation.parse(json.loads(published_bytes))
+          pending = ReleaseOperation.parse(json.loads(pending_bytes))
+
+          def canonical_bytes(operation):
+              return (json.dumps(
+                  asdict(operation), sort_keys=True, separators=(",", ":"), allow_nan=False,
+              ) + "\\n").encode("utf-8")
+
           if (
-              published.operation_id != operation_id
+              published_bytes != canonical_bytes(published)
+              or pending_bytes != canonical_bytes(pending)
+              or published.operation_id != operation_id
               or pending.operation_id != operation_id
+              or published.state != "PUBLISHED"
               or pending.state != "CLEANUP_PENDING"
               or not ReleaseOperationStore.same_identity(published, pending)
+              or pending.qualification != published.qualification
               or pending.publication_receipt != published.publication_receipt
           ):
-              raise ReleaseOperationError("durable cleanup-pending receipt does not match PUBLISHED release identity")
-          Path(published_path).write_bytes(Path(pending_path).read_bytes())
+            raise ReleaseOperationError("durable cleanup-pending receipt does not match PUBLISHED release identity")
+          store = ReleaseOperationStore(Path("published-input/release-operation"))
+          store.acquire(operation_id)
+          try:
+              current = store.load(operation_id)
+              if current != published:
+                  raise ReleaseOperationError("published release operation changed before pending recovery")
+              store.replace(current, pending)
+              store.record_publication(pending)
+          finally:
+              store.release(operation_id)
           PY
           fi
           PYTHONPATH=src python3 - "$OPERATION_ID" "$VERSION" "$SOURCE_SHA" <<'PY'
@@ -544,15 +567,17 @@ jobs:
           finally:
               store.release(operation_id)
           PY
-          test -d published-readback
-          test -d published-input/dist
-          test -f published-input/release-operation/registry-readback-digests.json
+          test -d published-readback || test -L published-readback
+          test -d published-input/dist || test -L published-input/dist
+          test -f published-input/release-operation/registry-readback-digests.json || test -L published-input/release-operation/registry-readback-digests.json
           cleanup_failed=0
           failed_targets=()
           for target in published-readback published-input/dist published-input/release-operation/registry-readback-digests.json; do
-            if test -e "$target" && ! rm -rf -- "$target"; then
-              cleanup_failed=1
-              failed_targets+=("$target")
+            if test -e "$target" || test -L "$target"; then
+              if ! rm -rf -- "$target" || test -e "$target" || test -L "$target"; then
+                cleanup_failed=1
+                failed_targets+=("$target")
+              fi
             fi
           done
           if test "$cleanup_failed" = 1; then
@@ -570,7 +595,7 @@ jobs:
               "error": "failed to remove an operation-local temporary path",
           }, sort_keys=True))
           PY
-            PYTHONPATH=src python3 - "$OPERATION_ID" <<'PY'
+            pending_action="$(PYTHONPATH=src python3 - "$OPERATION_ID" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -580,23 +605,35 @@ jobs:
           store = ReleaseOperationStore(Path("published-input/release-operation"))
           store.acquire(operation_id)
           try:
-              published = store.load(operation_id)
-              if published is None:
+              current = store.load(operation_id)
+              if current is None:
                   raise ReleaseOperationError("durable release evidence is unavailable")
-              store.mark_cleanup_pending(
-                  published,
-                  evidence=json.loads(Path("cleanup-pending.json").read_text(encoding="utf-8")),
-              )
+              if current.state == "PUBLISHED":
+                  store.mark_cleanup_pending(
+                      current,
+                      evidence=json.loads(Path("cleanup-pending.json").read_text(encoding="utf-8")),
+                  )
+                  print("NEW_PENDING")
+              elif current.state == "CLEANUP_PENDING":
+                  print("RETAINED_PENDING")
+              else:
+                  raise ReleaseOperationError("durable release evidence is not a resumable cleanup operation")
           finally:
               store.release(operation_id)
           PY
-            PENDING="engineering-platform-cleanup-pending-$VERSION-$SOURCE_SHA.json"
+            )"
             cp "published-input/release-operation/operations/$OPERATION_ID.json" "$PENDING"
-            mkdir "$RUNNER_TEMP/ep-pending-readback"
-            if gh release download "$TAG" --pattern "$PENDING" --dir "$RUNNER_TEMP/ep-pending-readback"; then
-              cmp "$PENDING" "$RUNNER_TEMP/ep-pending-readback/$PENDING"
-            else
+            if test "$pending_action" = "NEW_PENDING"; then
               gh release upload "$TAG" "$PENDING"
+              rm -f "$PENDING_READBACK_DIR/$PENDING"
+              gh release download "$TAG" --pattern "$PENDING" --dir "$PENDING_READBACK_DIR"
+              cmp "$PENDING" "$PENDING_READBACK_DIR/$PENDING"
+            elif test "$pending_action" = "RETAINED_PENDING"; then
+              test -f "$PENDING_READBACK_DIR/$PENDING"
+              cmp "$PENDING" "$PENDING_READBACK_DIR/$PENDING"
+            else
+              echo "Unexpected cleanup-pending operation result: $pending_action" >&2
+              exit 1
             fi
             exit 1
           fi
