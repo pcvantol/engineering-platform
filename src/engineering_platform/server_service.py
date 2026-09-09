@@ -101,6 +101,22 @@ def write_plist(paths: ServicePaths, interpreter: Path) -> Path:
     return paths.plist_path
 
 
+def configured_interpreter(data_root: Path, *, home: Path | None = None) -> Path | None:
+    """Read the owned service's fixed interpreter without consulting PATH."""
+    plist = default_paths(data_root, home).plist_path
+    if not plist.is_file():
+        return None
+    try:
+        with plist.open("rb") as stream:
+            arguments = plistlib.load(stream).get("ProgramArguments")
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    if (not isinstance(arguments, list) or len(arguments) < 3 or not isinstance(arguments[0], str)
+            or arguments[1:3] != ["-m", "engineering_platform.server"]):
+        return None
+    return _installed_interpreter(arguments[0])
+
+
 def install(data_root: Path, *, interpreter: str | Path | None = None, home: Path | None = None,
             runner: Runner | None = None) -> Mapping[str, str]:
     paths = default_paths(data_root, home)

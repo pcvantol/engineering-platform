@@ -166,6 +166,17 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual((parsed.command, parsed.project_id, parsed.consumer_id, parsed.capability),
                          ("grant-operator-capability", "project", "operator", "QUEUE_DECLINE"))
 
+    def test_operational_diagnose_uses_owned_service_interpreter(self) -> None:
+        selected = Path(self.temporary.name) / "selected-python"
+        selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+            "engineering_platform.server.operational_installation.resolve"
+        ) as resolve, patch("engineering_platform.server.operational_installation.package_identity", return_value={"version": "2.3.1"}):
+            resolve.return_value.payload.return_value = {"interpreter": str(selected)}
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(("operational-diagnose", "--data-root", str(self.root))), 0)
+            resolve.assert_called_once_with(self.root, interpreter=selected)
+
     def test_queue_operator_capability_grant_and_revoke_are_durable(self) -> None:
         server.initialize(self.root)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
