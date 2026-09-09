@@ -28,6 +28,23 @@ class ReleaseOperationTests(unittest.TestCase):
             store.record_publication(completed)
             self.assertEqual(completed.state, "RELEASE_COMPLETE")
 
+    def test_prepublication_prepare_binds_exact_artifacts_before_registry_side_effects(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = ReleaseOperationStore(Path(temporary))
+            evidence = {"exact_main_sha": "a" * 40, "artifact_digests": dict(operation().artifacts)}
+            qualified = store.prepare_qualified(operation(), evidence=evidence)
+            self.assertEqual(qualified.state, "QUALIFIED")
+            self.assertEqual(store.prepare_qualified(operation(), evidence=evidence), qualified)
+            changed = ReleaseOperation.create(
+                operation_id="release-0001", product="engineering-platform", component="server",
+                version="2.3.1", policy_revision="release-lifecycle-v1", source_revision="a" * 40,
+                artifacts={"wheel": "sha256:" + "d" * 64, "sdist": "sha256:" + "c" * 64},
+            )
+            with self.assertRaisesRegex(ReleaseOperationError, "different immutable identity"):
+                store.prepare_qualified(changed, evidence=evidence)
+            with self.assertRaisesRegex(ReleaseOperationError, "qualification evidence changed"):
+                store.prepare_qualified(operation(), evidence={"exact_main_sha": "b" * 40})
+
     def test_same_release_identity_with_different_bytes_fails_closed(self) -> None:
         with TemporaryDirectory() as temporary:
             store = ReleaseOperationStore(Path(temporary))

@@ -182,6 +182,38 @@ class ReleaseOperationStore:
         _atomic_json(self._path(operation.operation_id), asdict(operation))
         return operation
 
+    @staticmethod
+    def same_identity(left: ReleaseOperation, right: ReleaseOperation) -> bool:
+        """Compare immutable release facts without accepting later-state drift."""
+        return (
+            left.operation_id, left.product, left.component, left.version,
+            left.policy_revision, left.source_revision, dict(left.artifacts),
+        ) == (
+            right.operation_id, right.product, right.component, right.version,
+            right.policy_revision, right.source_revision, dict(right.artifacts),
+        )
+
+    def prepare_qualified(self, operation: ReleaseOperation, *, evidence: Mapping[str, object]) -> ReleaseOperation:
+        """Create or reopen one exact pre-publication operation.
+
+        This boundary is intentionally usable before a registry side effect.
+        A retry can only reuse the same operation when its source, policy and
+        both artifact bytes are identical. Later persisted states are returned
+        unchanged after their original qualification evidence is checked.
+        """
+        existing = self.load(operation.operation_id)
+        if existing is None:
+            existing = self.save(operation)
+        elif not self.same_identity(existing, operation):
+            raise ReleaseOperationError("release operation ID already binds different immutable identity")
+        if existing.state == "PREPARED":
+            return self.replace(existing, existing.transition("QUALIFIED", evidence=evidence))
+        if existing.state not in {"QUALIFIED", "PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"}:
+            raise ReleaseOperationError("release operation cannot resume from its current state")
+        if existing.qualification != dict(evidence):
+            raise ReleaseOperationError("release operation qualification evidence changed during recovery")
+        return existing
+
     def replace(self, previous: ReleaseOperation, current: ReleaseOperation) -> ReleaseOperation:
         if current.operation_id != previous.operation_id or self.load(previous.operation_id) != previous:
             raise ReleaseOperationError("release operation changed before transition")
