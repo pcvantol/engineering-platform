@@ -74,6 +74,37 @@ class ServerServiceTests(unittest.TestCase):
         self.assertFalse(paths.plist_path.exists())
         self.assertEqual(calls, [["launchctl", "bootout", f"gui/{server_service.os.getuid()}", str(paths.plist_path)]])
 
+    def test_replace_runtime_switches_only_the_expected_owned_interpreter(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        old, new = Path(sys.executable), Path(self.temporary.name) / "replacement-python"
+        new.symlink_to(old)
+        server_service.write_plist(paths, old)
+        calls: list[list[str]] = []
+
+        def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            result = server_service.replace_runtime(self.root, expected_interpreter=old, interpreter=new,
+                                                    home=self.home, runner=runner)
+        self.assertEqual(result["state"], "replaced")
+        self.assertEqual(calls, [
+            ["launchctl", "bootout", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+            ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+        ])
+        self.assertEqual(server_service.configured_interpreter(self.root, home=self.home), new.absolute())
+        calls.clear()
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            server_service.replace_runtime(self.root, expected_interpreter=old, interpreter=new,
+                                           home=self.home, runner=runner)
+        self.assertEqual(calls, [["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)]])
+
+    def test_replace_runtime_rejects_an_unexpected_or_missing_service(self) -> None:
+        with self.assertRaisesRegex(server_service.ServerServiceError, "expected operational interpreter"):
+            server_service.replace_runtime(self.root, expected_interpreter=Path(sys.executable),
+                                           interpreter=Path(sys.executable), home=self.home, runner=self.runner)
+
     def test_relocation_rewrites_and_reloads_an_installed_agent(self) -> None:
         paths = server_service.default_paths(self.root, self.home)
         paths.launch_agents_dir.mkdir(parents=True)

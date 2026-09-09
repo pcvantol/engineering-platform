@@ -139,6 +139,39 @@ def uninstall(data_root: Path, *, home: Path | None = None, runner: Runner | Non
     return {"state": "uninstalled", "label": LABEL, "plist": str(paths.plist_path), "data_root": str(paths.data_root)}
 
 
+def replace_runtime(data_root: Path, *, expected_interpreter: str | Path, interpreter: str | Path,
+                    home: Path | None = None, runner: Runner | None = None) -> Mapping[str, str]:
+    """Switch the one owned LaunchAgent to one exact replacement interpreter.
+
+    This is an installer primitive, not a PATH-based repair command.  It
+    refuses an absent or changed service reference, stops that one owned
+    service, and only then bootstraps its replacement.  Callers persist their
+    installation record after this function reports activation success.
+    """
+    paths = default_paths(data_root, home)
+    current = configured_interpreter(data_root, home=home)
+    expected, replacement = _installed_interpreter(expected_interpreter), _installed_interpreter(interpreter)
+    if current is None or current not in {expected, replacement}:
+        raise ServerServiceError("EP Server service does not reference the expected operational interpreter.")
+    if replacement == expected:
+        return {"state": "unchanged", "label": LABEL, "plist": str(paths.plist_path), "interpreter": str(replacement)}
+    # Stop the service while its existing plist still binds the old runtime.
+    # If a crash follows the stop, the unchanged plist permits an exact retry.
+    # If it follows the new write, the next retry observes the replacement and
+    # only completes the idempotent bootstrap below.
+    if current == expected:
+        result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
+        if result.returncode and "could not find service" not in (result.stderr or "").lower():
+            raise ServerServiceError("Unable to stop the owned EP Server LaunchAgent for runtime replacement.")
+        plist = write_plist(paths, replacement)
+    else:
+        plist = paths.plist_path
+    result = _launchctl(("bootstrap", _domain(), str(plist)), runner)
+    if result.returncode and "service already loaded" not in (result.stderr or "").lower():
+        raise ServerServiceError("Unable to activate the replacement EP Server runtime.")
+    return {"state": "replaced", "label": LABEL, "plist": str(plist), "interpreter": str(replacement)}
+
+
 def repoint_after_relocation(previous: Path, destination: Path, *, home: Path | None = None,
                              runner: Runner | None = None) -> bool:
     """Reload an installed owned LaunchAgent with its moved data root.
