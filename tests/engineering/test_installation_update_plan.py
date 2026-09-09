@@ -49,3 +49,17 @@ class InstallationUpdatePlanTests(unittest.TestCase):
             with self.assertRaisesRegex(InstallationUpdatePlanError, "downgrade or rollback"):
                 prepare(root, operation_id="update-0001", artifact=wheel, target_version="2.3.0",
                         target_digest=digest, target_source_revision="c" * 40)
+
+    def test_plan_refuses_same_bytes_from_a_different_source_revision(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtime"; root.mkdir()
+            executable = root / "python"; executable.write_text(""); executable.chmod(0o755)
+            wheel = Path(temporary) / "same.whl"; wheel.write_bytes(b"same qualified bytes")
+            digest = "sha256:" + hashlib.sha256(wheel.read_bytes()).hexdigest()
+            record(root, installation_id="installation-1", version="2.3.1", channel="stable",
+                   artifact_digest=digest, source_revision="b" * 40, interpreter=executable,
+                   roles={"server": "com.engineeringplatform.server"}, desired_state="ACTIVE",
+                   observed_state="ACTIVE", verification={"result": "PASS"}, cleanup={"result": "COMPLETE"})
+            with self.assertRaisesRegex(InstallationUpdatePlanError, "different source revision"):
+                prepare(root, operation_id="update-0001", artifact=wheel, target_version="2.3.1",
+                        target_digest=digest, target_source_revision="c" * 40)

@@ -31,6 +31,25 @@ claiming Mac-wide uniqueness. No conflict in that bounded inventory is not
 `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`. Cross-account service discovery
 and any removal/cutover remain an explicitly authorized future operation.
 
+`operational-readback` is the product-owned, machine-readable consumer surface
+for this same resolver. It uses only the fixed interpreter from the EP Server
+LaunchAgent. If that owned service reference is absent or invalid, it returns
+an explicit `UNKNOWN` observation and never falls back to the invoking shell,
+`sys.executable`, or `PATH`. A registered runtime is `ACTIVE` only after the
+actual health response proves its service, instance, package and executable
+identity and classifies the live artifact-verification state against the
+registered digest. A reachable response from a different instance is
+`UNHEALTHY`, not evidence for the selected installation.
+
+The command accepts the same explicitly supplied candidate-interpreter and
+service-reference inputs as `operational-inventory`, and embeds their bounded
+evidence in its response. Current coverage remains `PARTIAL`; a caller cannot
+supply a `MACHINE_WIDE` mapping or turn a no-conflict explicit scan into a
+single-installation claim. The response keeps release-source facts separate:
+the installation record owns version, digest, source revision and observed
+channel, while a release source locator and qualification receipt remain with
+the qualified release evidence.
+
 ## Operational update recovery boundary
 
 The EP-owned update plan, lock, journal and executor are source-level
@@ -49,6 +68,15 @@ software *and* data evidence and is therefore a separate, explicitly
 authorized recovery operation; an older wheel is never silently treated as a
 rollback. The source contracts do not run an update, construct a runtime,
 stop a service, or delete a machine artifact by themselves.
+
+`operational-update-assess` is a read-only precondition for a composition
+consumer. It first obtains the product-owned `ACTIVE`/`HEALTHY` readback, then
+re-hashes the exact named wheel against the candidate version, digest and
+source revision. It reports `UPDATE_AVAILABLE`, `UP_TO_DATE`, `INCOMPATIBLE`
+or `UNKNOWN`; a same version/digest from another source revision is
+incompatible. The assessment is not update authorization or execution: the
+EP-owned installation lock, backup, migration, activation, postflight and
+cleanup remain required at execution time.
 
 ## Explicit development profile
 
@@ -147,8 +175,12 @@ contract and EP-owned lifecycle.
 
 ## Forge Platform handoff
 
-Forge Platform installs qualified Server and Project Agent artifacts
-independently. For the Server role it needs the installed executable, data
-root, lifecycle commands, health endpoint, and the integrated Console surface;
-it must not recreate EP service internals. For the Agent role it uses the
-existing per-user lifecycle contract.
+Forge Platform consumes qualified Server and Project Agent artifacts without
+recreating EP service internals. For the Server role its future product adapter
+uses the EP-owned readback and exact-candidate assessment surface, retaining
+the coordinator's own source locator and qualification evidence for
+correlation. It may not pass an interpreter, `PATH`, service label, data root,
+migration, credential or cleanup instruction back into EP. A product-owned
+execution/resume adapter is still required before any installation action; no
+source command above performs a live update. For the Agent role Forge Platform
+uses the existing per-user lifecycle contract.

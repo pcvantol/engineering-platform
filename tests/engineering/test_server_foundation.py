@@ -242,6 +242,85 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             resolve.assert_called_once_with(self.root, interpreter=selected, path_candidates=[candidate])
             inventory.assert_called_once_with(resolve.return_value, service_references={"legacy": candidate}, candidates=[candidate])
 
+    def test_operational_readback_never_falls_back_to_the_calling_path_runtime(self) -> None:
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=None), patch(
+            "engineering_platform.server.operational_installation.resolve"
+        ) as resolve, patch("engineering_platform.server.operational_installation.package_identity") as package_identity:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(server.main(("operational-readback", "--data-root", str(self.root))), 0)
+        observation = json.loads(output.getvalue())
+        self.assertEqual((observation["state"], observation["health_state"]), ("UNKNOWN", "UNKNOWN"))
+        self.assertEqual(observation["evidence"]["reason"], "OWNED_SERVICE_INTERPRETER_UNAVAILABLE")
+        self.assertIsNone(observation["selected_runtime_identity"])
+        resolve.assert_not_called()
+        package_identity.assert_not_called()
+
+    def test_operational_readback_binds_explicit_inventory_to_the_owned_resolver(self) -> None:
+        selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
+        candidate = Path(self.temporary.name) / "old-python"; candidate.write_text("#!/bin/sh\n"); candidate.chmod(0o755)
+        observation = {"state": "ABSENT", "component": "engineering-platform-server"}
+        inventory_result = {
+            "selected_interpreter": str(selected), "coverage": "EXPLICIT_PATHS_ONLY",
+            "scope": {"required": "MACOS_MACHINE", "observed": "CURRENT_OS_USER_EXPLICIT_REFERENCES_ONLY", "status": "INCOMPLETE"},
+            "entries": [], "conflicting_service_references": [], "single_operational_installation": False,
+        }
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+            "engineering_platform.server.operational_installation.resolve"
+        ) as resolve, patch("engineering_platform.server.operational_installation.inventory", return_value=inventory_result) as inventory, patch(
+            "engineering_platform.server.operational_installation.record_status", return_value={"state": "UNREGISTERED"}
+        ) as record_status, patch(
+            "engineering_platform.server.product_installation_readback.readback", return_value=observation
+        ) as readback:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main((
+                    "operational-readback", "--data-root", str(self.root),
+                    "--candidate-interpreter", str(candidate),
+                    "--service-reference", f"legacy={candidate}",
+                )), 0)
+        resolve.assert_called_once_with(self.root, interpreter=selected, path_candidates=[candidate])
+        inventory.assert_called_once_with(
+            resolve.return_value,
+            service_references={"legacy": candidate},
+            candidates=[candidate],
+        )
+        record_status.assert_called_once_with(resolve.return_value)
+        readback.assert_called_once_with(
+            resolve.return_value,
+            record=record_status.return_value,
+            package=None,
+            health_response=None,
+            inventory=inventory_result,
+        )
+
+    def test_operational_update_assessment_requires_the_product_owned_readback(self) -> None:
+        artifact = Path(self.temporary.name) / "exact.whl"; artifact.write_bytes(b"wheel")
+        observation = {
+            "contract_version": "1.0", "component": "engineering-platform-server",
+            "state": "ACTIVE", "health_state": "HEALTHY", "installation_identity": "instance-1",
+        }
+        with patch("engineering_platform.server._operational_product_readback", return_value=observation) as readback, patch(
+            "engineering_platform.server.product_installation_readback.assess_update",
+            return_value={"state": "UPDATE_AVAILABLE"},
+        ) as assess:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main((
+                    "operational-update-assess", "--data-root", str(self.root),
+                    "--operation-id", "update-0001", "--artifact", str(artifact),
+                    "--target-version", "2.3.2", "--target-digest", "sha256:" + "a" * 64,
+                    "--target-source-revision", "b" * 40,
+                )), 0)
+        readback.assert_called_once()
+        assess.assert_called_once_with(
+            self.root,
+            operation_id="update-0001",
+            artifact=artifact,
+            target_version="2.3.2",
+            target_digest="sha256:" + "a" * 64,
+            target_source_revision="b" * 40,
+            current_observation=observation,
+        )
+
     def test_installation_update_plan_is_explicit_and_read_only(self) -> None:
         artifact = Path(self.temporary.name) / "exact.whl"; artifact.write_bytes(b"wheel")
         with patch("engineering_platform.server.installation_update_plan.prepare") as prepare:
