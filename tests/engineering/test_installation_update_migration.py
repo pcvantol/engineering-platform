@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from engineering_platform.installation_update_migration import InstallationUpdateMigrationError, migrate
 from engineering_platform.installation_update_plan import InstallationUpdatePlan
+from engineering_platform.operational_installation import OperationalInstallationError
 
 
 class InstallationUpdateMigrationTests(unittest.TestCase):
@@ -37,3 +38,33 @@ class InstallationUpdateMigrationTests(unittest.TestCase):
             with patch("engineering_platform.installation_update_migration.operational_installation.package_identity", return_value={"interpreter": str(target), "version": "2.3.1", "metadata": "metadata", "package": "package"}):
                 with self.assertRaisesRegex(InstallationUpdateMigrationError, "planned EP version"):
                     migrate(plan, interpreter=target)
+
+    def test_fails_closed_when_target_identity_or_migration_fails(self):
+        with TemporaryDirectory() as temporary:
+            root, target = Path(temporary), Path(temporary) / "target"
+            target.touch(mode=0o700)
+            plan = self._plan(root)
+            with patch("engineering_platform.installation_update_migration.operational_installation.package_identity", side_effect=OperationalInstallationError("absent")):
+                with self.assertRaisesRegex(InstallationUpdateMigrationError, "interpreter is unavailable"):
+                    migrate(plan, interpreter=target)
+            identity = {"interpreter": str(target), "version": "2.3.2", "metadata": "metadata", "package": "package"}
+            with patch("engineering_platform.installation_update_migration.operational_installation.package_identity", return_value=identity):
+                def failed(command, **_kwargs):
+                    return subprocess.CompletedProcess(command, 1, "", "migration error")
+                with self.assertRaisesRegex(InstallationUpdateMigrationError, "migration failed"):
+                    migrate(plan, interpreter=target, runner=failed)
+
+    def test_rejects_invalid_or_wrong_instance_migration_evidence(self):
+        with TemporaryDirectory() as temporary:
+            root, target = Path(temporary), Path(temporary) / "target"
+            target.touch(mode=0o700)
+            identity = {"interpreter": str(target), "version": "2.3.2", "metadata": "metadata", "package": "package"}
+            with patch("engineering_platform.installation_update_migration.operational_installation.package_identity", return_value=identity):
+                def malformed(command, **_kwargs):
+                    return subprocess.CompletedProcess(command, 0, "not json", "")
+                with self.assertRaisesRegex(InstallationUpdateMigrationError, "invalid evidence"):
+                    migrate(self._plan(root), interpreter=target, runner=malformed)
+                def wrong_instance(command, **_kwargs):
+                    return subprocess.CompletedProcess(command, 0, '{"instance_id":"other","integrity":"PASS","interpreter":"' + str(target) + '","schema_version":56}', "")
+                with self.assertRaisesRegex(InstallationUpdateMigrationError, "different instance"):
+                    migrate(self._plan(root), interpreter=target, runner=wrong_instance)
