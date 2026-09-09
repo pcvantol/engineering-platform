@@ -1,66 +1,54 @@
 name: EP Server production release
 
 on:
-  # A release is intentionally created, never inferred from an ordinary push.
-  # The context job fail-closes unless the new branch is exactly release-X.Y.Z.
-  create:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact already-merged origin/main commit to qualify and publish
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   release-context:
-    name: Prepare canonical release version
-    if: github.event.ref_type == 'branch' && startsWith(github.event.ref, 'release-')
+    name: Verify exact merged release source
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     outputs:
       version: ${{ steps.release.outputs.version }}
       candidate_sha: ${{ steps.release.outputs.candidate_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
-          ref: ${{ github.event.ref }}
+          ref: ${{ inputs.source_sha }}
           fetch-depth: 0
       - id: release
         name: Validate release branch and write canonical version
         env:
-          RELEASE_BRANCH: ${{ github.event.ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          if [[ "$RELEASE_BRANCH" =~ ^release-([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            VERSION="${RELEASE_BRANCH#release-}"
-          else
-            echo "Only release-X.Y.Z branches may run the production release workflow." >&2
-            exit 1
-          fi
           git fetch --no-tags origin main
-          git merge-base --is-ancestor origin/main HEAD || {
-            echo "A production release branch must be created from main." >&2
+          test "$SOURCE_SHA" = "$(git rev-parse HEAD)" || {
+            echo "Release checkout does not match requested source SHA." >&2
+            exit 1
+          }
+          test "$SOURCE_SHA" = "$(git rev-parse origin/main)" || {
+            echo "Release source must be the current protected main commit." >&2
             exit 1
           }
           test -z "$(git status --porcelain)" || {
-            echo "The release checkout is not clean before canonical versioning." >&2
+            echo "The release checkout is not clean." >&2
             exit 1
           }
-          python3 tools/qualification/advance_platform_build.py --source-root . --set-version "$VERSION"
-          changed="$(git diff --name-only)"
-          if [[ -n "$changed" ]]; then
-            while IFS= read -r path; do
-              case "$path" in
-                pyproject.toml|package.json|package-lock.json|src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json|src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json|src/engineering_platform/templates/workspace-config.json|src/engineering_platform/platform_version.py) ;;
-                *) echo "Version rewrite touched an unexpected path: $path" >&2; exit 1 ;;
-              esac
-            done <<< "$changed"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add $changed
-            git commit -m "release: align canonical EP version $VERSION"
-            git push origin "HEAD:$RELEASE_BRANCH"
-          fi
+          VERSION="$(python3 - <<'PY'
+          import tomllib
+          print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])
+          PY
+          )"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
   qualify-production-wheel:
     name: Qualify clean production wheel

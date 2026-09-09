@@ -115,13 +115,14 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertIn('platform_version_consistency.py --source-root .', workflow)
         self.assertIn("EP_VERSION_COMPONENT_DRIFT", smoke.read_text(encoding="utf-8"))
 
-    def test_production_release_is_branch_versioned_and_has_hard_publish_gates(self) -> None:
+    def test_production_release_is_main_sha_versioned_and_has_hard_publish_gates(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ep-server-production-release.yml").read_text(encoding="utf-8")
         qualifier = ROOT / "tools" / "qualification" / "production_wheel_qualification.py"
 
-        self.assertIn("create:", workflow)
-        self.assertIn("^release-([0-9]+)\\.([0-9]+)\\.([0-9]+)$", workflow)
-        self.assertIn("--set-version \"$VERSION\"", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("source_sha:", workflow)
+        self.assertIn("Release source must be the current protected main commit.", workflow)
+        self.assertNotIn("--set-version \"$VERSION\"", workflow)
         self.assertIn("Qualify clean production wheel", workflow)
         self.assertIn("pip-audit", workflow)
         self.assertIn("bandit", workflow)
