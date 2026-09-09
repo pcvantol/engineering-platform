@@ -216,6 +216,100 @@ class ProductInstallationReadbackTests(unittest.TestCase):
                     inventory=self._inventory(installation),
                 )
 
+    def test_invalid_readback_inputs_fail_closed(self) -> None:
+        """Incomplete EP-owned facts cannot be reinterpreted by a consumer."""
+        with TemporaryDirectory() as temporary:
+            _root, installation, registered, package, response = self._installation(temporary)
+            with self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "record"):
+                product_installation_readback.readback(
+                    installation,
+                    record=[registered],  # type: ignore[arg-type]
+                    package=package,
+                    health_response=response,
+                )
+            with self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "record state"):
+                product_installation_readback.readback(
+                    installation,
+                    record={**registered, "state": "FOREIGN"},
+                    package=package,
+                    health_response=response,
+                )
+            with self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "package identity"):
+                product_installation_readback.readback(
+                    installation,
+                    record=registered,
+                    package=None,
+                    health_response=response,
+                )
+            with self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "does not match"):
+                product_installation_readback.readback(
+                    installation,
+                    record=registered,
+                    package={**package, "version": "2.3.0"},
+                    health_response=response,
+                )
+            with self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "incomplete"):
+                product_installation_readback.readback(
+                    installation,
+                    record={**registered, "channel": ""},
+                    package=package,
+                    health_response=response,
+                )
+
+    def test_inventory_and_unavailable_readback_reject_foreign_assertions(self) -> None:
+        with TemporaryDirectory() as temporary:
+            _root, installation, registered, package, response = self._installation(temporary)
+            no_inventory = product_installation_readback.readback(
+                installation,
+                record=registered,
+                package=package,
+                health_response=response,
+            )
+            self.assertEqual((no_inventory["inventory_coverage"], no_inventory["conflict_state"]), ("PARTIAL", "UNKNOWN"))
+            with self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "inventory"):
+                product_installation_readback.readback(
+                    installation,
+                    record=registered,
+                    package=package,
+                    health_response=response,
+                    inventory="foreign inventory",  # type: ignore[arg-type]
+                )
+        with self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "reason"):
+            product_installation_readback.unavailable_readback(reason="PATH_RUNTIME")
+        with self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "selected runtime"):
+            product_installation_readback.unavailable_readback(
+                reason="OWNED_SERVICE_INTERPRETER_UNAVAILABLE",
+                inventory={"foreign": "inventory"},
+            )
+
+    def test_health_failures_and_malformed_qualification_remain_non_operational(self) -> None:
+        with TemporaryDirectory() as temporary:
+            _root, installation, registered, package, response = self._installation(temporary)
+            unhealthy = product_installation_readback.readback(
+                installation,
+                record=registered,
+                package=package,
+                health_response={**response, "healthy": False},
+            )
+            missing_live_identity = product_installation_readback.readback(
+                installation,
+                record=registered,
+                package=package,
+                health_response={**response, "runtime_identity": None},
+            )
+            with patch(
+                "engineering_platform.product_installation_readback.operational_installation.qualify_runtime_response",
+                return_value={},
+            ), self.assertRaisesRegex(product_installation_readback.ProductInstallationReadbackError, "qualification"):
+                product_installation_readback.readback(
+                    installation,
+                    record=registered,
+                    package=package,
+                    health_response=response,
+                )
+        self.assertEqual(unhealthy["evidence"]["health_failure"], "SERVER_UNHEALTHY")
+        self.assertEqual(missing_live_identity["evidence"]["health_failure"], "INVALID_HEALTH_IDENTITY")
+
     def test_assessment_requires_current_product_health_and_exact_source_identity(self) -> None:
         with TemporaryDirectory() as temporary:
             wheel = Path(temporary) / "candidate.whl"
@@ -264,6 +358,50 @@ class ProductInstallationReadbackTests(unittest.TestCase):
         self.assertEqual(different_source["state"], "INCOMPATIBLE")
         self.assertEqual(unavailable["state"], "UNKNOWN")
         self.assertEqual(unavailable["evidence"]["reason"], "selected operational runtime is not qualified")
+
+    def test_assessment_rejects_changed_or_missing_registered_identity(self) -> None:
+        with TemporaryDirectory() as temporary:
+            wheel = Path(temporary) / "candidate.whl"
+            wheel.write_bytes(b"candidate bytes")
+            digest = "sha256:" + hashlib.sha256(wheel.read_bytes()).hexdigest()
+            root, installation, registered, package, response = self._installation(temporary)
+            active = product_installation_readback.readback(
+                installation,
+                record=registered,
+                package=package,
+                health_response=response,
+            )
+            changed = product_installation_readback.assess_update(
+                root,
+                operation_id="update-0004",
+                artifact=wheel,
+                target_version="2.3.2",
+                target_digest=digest,
+                target_source_revision="c" * 40,
+                current_observation={**active, "installation_identity": "stale-instance"},
+            )
+            missing = product_installation_readback.assess_update(
+                root / "missing operational record",
+                operation_id="update-0005",
+                artifact=wheel,
+                target_version="2.3.2",
+                target_digest=digest,
+                target_source_revision="c" * 40,
+                current_observation=active,
+            )
+            wrong_digest = product_installation_readback.assess_update(
+                root,
+                operation_id="update-0006",
+                artifact=wheel,
+                target_version="2.3.2",
+                target_digest="sha256:" + "d" * 64,
+                target_source_revision="c" * 40,
+                current_observation=active,
+            )
+        self.assertEqual(changed["evidence"]["reason"], "registered installation changed before update assessment")
+        self.assertEqual(missing["installation_identity"], "instance-1")
+        self.assertEqual(wrong_digest["state"], "UNKNOWN")
+        self.assertEqual(wrong_digest["evidence"]["reason"], "target artifact does not match the requested digest")
 
     def test_forward_exact_candidate_is_only_an_assessment_not_an_execution(self) -> None:
         with TemporaryDirectory() as temporary:
