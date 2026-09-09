@@ -72,6 +72,30 @@ def record(data_root: Path, *, installation_id: str, version: str, channel: str,
     _write(path, value); return value
 
 
+def replace_for_update(data_root: Path, *, expected_version: str,
+                       expected_artifact_digest: str,
+                       replacement: Mapping[str, object]) -> dict[str, object]:
+    """Atomically replace one verified installation record under exact preconditions.
+
+    The installation-update session owns serialization. This boundary adds the
+    durable compare-and-swap check: a stale or different update cannot replace
+    a record it did not inventory. The installation identity is intentionally
+    stable across an in-place update.
+    """
+    root, path = Path(data_root).resolve(), Path(data_root).resolve() / FILENAME
+    existing = load(root)
+    if (existing["version"] != expected_version
+            or existing["artifact_digest"] != expected_artifact_digest):
+        raise OperationalInstallationRecordError("operational installation record changed before update activation")
+    candidate = _validate(dict(replacement))
+    if candidate["installation_id"] != existing["installation_id"]:
+        raise OperationalInstallationRecordError("operational installation identity cannot change during update")
+    if candidate == existing:
+        return existing
+    _write(path, candidate)
+    return candidate
+
+
 def load(data_root: Path) -> dict[str, object]:
     try: value = json.loads((Path(data_root).resolve() / FILENAME).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error: raise OperationalInstallationRecordError("operational installation record is unreadable") from error

@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from engineering_platform.operational_installation import OperationalInstallationError, inventory, package_identity, record_status, resolve, validate_health, validate_package_identity, validate_registered_package_identity
-from engineering_platform.operational_installation_record import record
+from engineering_platform.operational_installation_record import OperationalInstallationRecordError, load, record, replace_for_update
 
 
 class OperationalInstallationTests(unittest.TestCase):
@@ -59,6 +59,27 @@ class OperationalInstallationTests(unittest.TestCase):
             (root / "server.json").write_text(json.dumps({"version": 2, "product_version": "2.3.2"}))
             with self.assertRaisesRegex(OperationalInstallationError, "does not match"):
                 record_status(resolve(root, interpreter=interpreter))
+
+    def test_update_record_replacement_requires_exact_current_identity(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            original = record(root, installation_id="instance-1", version="2.3.1", channel="stable",
+                              artifact_digest="sha256:" + "a" * 64, source_revision="b" * 40,
+                              interpreter=interpreter, roles={"server": "com.engineeringplatform.server"},
+                              desired_state="ACTIVE", observed_state="ACTIVE",
+                              verification={"result": "PASS"}, cleanup={"result": "COMPLETE"})
+            replacement = {**original, "version": "2.3.2", "artifact_digest": "sha256:" + "c" * 64,
+                           "source_revision": "d" * 40, "verification": {"result": "PASS", "operation": "update-0001"}}
+            self.assertEqual(replace_for_update(root, expected_version="2.3.1",
+                                                 expected_artifact_digest="sha256:" + "a" * 64,
+                                                 replacement=replacement)["version"], "2.3.2")
+            self.assertEqual(load(root)["artifact_digest"], "sha256:" + "c" * 64)
+            with self.assertRaisesRegex(OperationalInstallationRecordError, "changed before"):
+                replace_for_update(root, expected_version="2.3.1", expected_artifact_digest="sha256:" + "a" * 64,
+                                   replacement=replacement)
+            with self.assertRaisesRegex(OperationalInstallationRecordError, "identity cannot change"):
+                replace_for_update(root, expected_version="2.3.2", expected_artifact_digest="sha256:" + "c" * 64,
+                                   replacement={**replacement, "installation_id": "other"})
 
     def test_rejects_malformed_facts_and_wrong_health_shapes(self) -> None:
         with TemporaryDirectory() as directory:
