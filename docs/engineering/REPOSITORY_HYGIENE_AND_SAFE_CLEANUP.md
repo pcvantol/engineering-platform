@@ -75,8 +75,13 @@ All applicable conditions must hold, not merely one:
 2. Ownership is verified from EP lifecycle/provider evidence or explicit bounded
    adoption. A branch prefix, age, author display string or Forge model assertion
    is not ownership. Standalone EP operation still uses its own approved policy.
-3. No active run, Action, PR, checkout user, lease or required recovery resource
-   claims the target. Incomplete coverage denies unattended mutation, not reads.
+3. No conflicting active run, Action, PR, checkout user, lease or required
+   recovery resource claims the target. Incomplete coverage denies unattended
+   mutation, not reads. The finalizer retains its own valid run/cleanup lease
+   while cleaning that run's proven-delivered resources; that coordinating lease
+   is not a conflicting owner. Do not release it early to pass this check or
+   treat unfinished implementation as completed cleanup work. A separate
+   maintenance operation cannot borrow this exception from another run.
 4. Default/main/release/protected refs and tags are excluded by this capability.
    Retention/legal holds and active release-source/installer references win over
    cleanup preferences. Changing these exclusions is separate governance.
@@ -145,9 +150,10 @@ Workspace UI is not required for approved CLI/API/producer operations.
 Tests must cover exact delivery versus post-merge commits, squash-equivalent
 history, active/unknown ownership, cross-project/forged actor, expired grant,
 retained/release refs, dirty/untracked/ignored state, runtime-data preservation,
-concurrent push/ref reuse, lease race, unsupported conditional delete, archive
-failure, symlink escape, duplicate/conflicting operation IDs, interrupted effect,
-restart/lost acknowledgement, partial cleanup and preserved delivery outcome.
+concurrent push/ref reuse, own-finalizer lease versus conflicting owner,
+unsupported conditional delete, archive failure, symlink escape,
+duplicate/conflicting operation IDs, interrupted effect, restart/lost
+acknowledgement, partial cleanup and preserved delivery outcome.
 Use isolated repositories/fixtures; no product branch deletion in ordinary CI.
 
 The [EP scoped roadmap](../development/PROJECT_HYGIENE_V1_ROADMAP.md) sequences
