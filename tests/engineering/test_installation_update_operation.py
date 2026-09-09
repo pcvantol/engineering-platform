@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from engineering_platform.installation_update_plan import InstallationUpdatePlan
-from engineering_platform.installation_update_operation import InstallationUpdateOperationError, create, transition
+from engineering_platform.installation_update_operation import InstallationUpdateOperationError, InstallationUpdateSession, create, transition
 
 
 def plan(root: Path) -> InstallationUpdatePlan:
@@ -28,3 +28,14 @@ class InstallationUpdateOperationTests(unittest.TestCase):
             different = InstallationUpdatePlan(**{**update.payload(), "target_version": "2.3.3"})
             with self.assertRaisesRegex(InstallationUpdateOperationError, "exact plan"):
                 create(different)
+
+    def test_session_serializes_concurrent_installers_and_reopens_the_same_journal(self):
+        with TemporaryDirectory() as temporary:
+            update = plan(Path(temporary))
+            with InstallationUpdateSession(update) as owner:
+                owner.advance("INVENTORIED", {"inventory": "PASS"})
+                with self.assertRaisesRegex(ValueError, "another operational"):
+                    with InstallationUpdateSession(update):
+                        pass
+            with InstallationUpdateSession(update) as resumed:
+                self.assertEqual(resumed.advance("QUIESCED", {"service": "STOPPED"})["state"], "QUIESCED")

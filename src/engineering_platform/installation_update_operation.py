@@ -14,6 +14,7 @@ import tempfile
 from typing import Mapping
 
 from .installation_update_plan import InstallationUpdatePlan
+from .operational_installation_lock import OperationalInstallationLock
 
 
 _STATES = ("PREPARED", "INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE")
@@ -95,3 +96,36 @@ def transition(plan: InstallationUpdatePlan, state: str, evidence: Mapping[str, 
     value["events"].append({"state": state, "evidence": dict(evidence)})
     _write(_path(plan), value)
     return value
+
+
+class InstallationUpdateSession:
+    """The one lock-owning boundary for a resumable update operation.
+
+    A process crash releases ``flock`` while the journal remains on disk; a
+    later session with the same plan can therefore resume but a concurrent
+    installer cannot obtain a second writer.
+    """
+    def __init__(self, plan: InstallationUpdatePlan) -> None:
+        self.plan = plan
+        self._lock = OperationalInstallationLock(Path(plan.data_root))
+        self._owned = False
+
+    def __enter__(self) -> "InstallationUpdateSession":
+        self._lock.acquire(self.plan.operation_id)
+        try:
+            create(self.plan)
+        except BaseException:
+            self._lock.release(self.plan.operation_id)
+            raise
+        self._owned = True
+        return self
+
+    def advance(self, state: str, evidence: Mapping[str, object]) -> dict[str, object]:
+        if not self._owned:
+            raise InstallationUpdateOperationError("installation update session does not own the lock")
+        return transition(self.plan, state, evidence)
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        if self._owned:
+            self._lock.release(self.plan.operation_id)
+            self._owned = False
