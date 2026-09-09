@@ -470,6 +470,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/health") as response:
             platform_health = json.loads(response.read().decode("utf-8"))
         self.assertEqual(platform_health["health"], "ok")
+        self.assertEqual(platform_health["product_version"], server._console_platform_version())
         self.assertEqual(
             set(platform_health["components"]),
             {component.id for component in server.PLATFORM_COMPONENTS},
