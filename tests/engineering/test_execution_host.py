@@ -2664,6 +2664,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 )
             self.assertTrue(blocked.terminal)
             self.assertEqual(blocked.next_action, "implementation_publication_assurance_required")
+            self.assertEqual(agent.prompts, [])
 
     def test_recovered_publication_result_is_reconciled_without_a_second_provider_turn(self) -> None:
         sha, branch, pr_number = "a" * 40, "codex/recovered-publication", 71
