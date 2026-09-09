@@ -4,10 +4,10 @@ Do not edit; update the local extension or canonical contracts.
 
 - schema_version: `1`
 - source_repo: `pcvantol/ai-development-contracts`
-- source_commit: `ec070e399ff4dbd92e760370002995fe4f4d52d6`
+- source_commit: `6ec3b443c3ab3bdf76c626c2046d3778db570eb0`
 - profile: `engineering-platform`
 - extension_identity: `ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION`
-- projection_digest: `34d04daa1668d5ee1288a22d77aa143fecf4e167cb7fdc443d4082cb3ed45d77`
+- projection_digest: `6f77e0a7cf5d641c753dbcfde867f530bf3aaeb7a9da77be3380943e43f4f0c1`
 - materializer_version: `1`
 
 # AI_BOOTSTRAP_CONTRACT
@@ -39,6 +39,19 @@ protected main directly.
 
 Run applicable repository validation before review and record exact results.
 Absent checks are reported as absent, never fabricated.
+
+For a governed release lifecycle, durable evidence binds one immutable operation
+identity to the owning component, selected version, policy revision, protected
+source revision and exact artifact digests. Qualification, publication,
+cleanup-pending recovery and release completion are distinct states. A resumed
+operation reuses that identity and exact bytes; a conflicting concurrent
+operation or an existing identity with different bytes fails closed.
+
+Record qualification, publication receipt and registry readback separately.
+Do not represent a normal build as a version change, a successful upload as
+release completion, or a local installation as publication. Product
+repositories retain their own release policy, artifact registry, installation
+authority and runtime semantics.
 
 # TDE_INTEGRATION_CONTRACT
 
