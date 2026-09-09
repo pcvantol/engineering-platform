@@ -133,9 +133,33 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertIn("registry-readback-and-published-evidence", workflow)
         self.assertIn("--no-cache-dir", workflow)
         self.assertIn("PyPI readback does not match the exact qualified distributions", workflow)
+        self.assertIn("retain-qualified-release-operation", workflow)
+        self.assertLess(workflow.index("  retain-qualified-release-operation:"), workflow.index("  publish-pypi:"))
+        self.assertLess(workflow.index("  publish-pypi:"), workflow.index("  registry-readback-and-published-evidence:"))
+        self.assertLess(workflow.index("  registry-readback-and-published-evidence:"), workflow.index("  record-release-complete:"))
+        self.assertIn("operation_id=ep-release-$VERSION-$SOURCE_SHA", workflow)
+        self.assertIn('gh release create "$TAG" "$QUALIFIED" --draft --target "$SOURCE_SHA"', workflow)
+        self.assertIn("Existing PyPI publication has no durable original EP release receipt", workflow)
+        self.assertIn('cmp "release-input/release-operation/operations/$OPERATION_ID.json"', workflow)
+        self.assertIn("Qualify the actual registry wheel outside the source checkout", workflow)
+        self.assertIn("observed_artifact_digests", workflow)
         self.assertIn("engineering-platform-release-published-$VERSION-$SOURCE_SHA.json", workflow)
         self.assertIn("record-release-complete", workflow)
-        self.assertIn("Promote PUBLISHED evidence to RELEASE_COMPLETE", workflow)
+        self.assertIn("Clean exact operation-local paths before RELEASE_COMPLETE", workflow)
+        self.assertIn("CLEANUP_PENDING", workflow)
+        self.assertIn("ep-pending-readback", workflow)
+        self.assertLess(
+            workflow.index("durable cleanup-pending receipt"),
+            workflow.index("store.complete("),
+        )
+        self.assertLess(
+            workflow.index("for target in published-readback published-input/dist"),
+            workflow.index("store.complete("),
+        )
+        self.assertLess(
+            workflow.index('gh release edit "$TAG" --draft=false'),
+            workflow.index("store.complete("),
+        )
         self.assertIn("group: engineering-platform-production-release", workflow)
         self.assertIn("RELEASE_COMPLETE", workflow)
         self.assertIn("engineering-platform-release-evidence", workflow)
