@@ -2,8 +2,8 @@
 
 ## Release and operational installation lifecycle V1 — active coordinated plan
 
-Repository evidence recorded on 2026-09-09 read `origin/main` as
-`2848c5289f26c31878f2a14d70fac99e1bc909ce` before this roadmap update. PyPI
+Repository evidence recorded on 2026-09-09 reads `origin/main` as
+`0a98d0ca2395bd3b6b50deffd3139206b75c16e5` at this roadmap update. PyPI
 holds immutable 2.3.1 wheel and sdist bytes; protected-main reconciliation
 moved the canonical source projections forward to 2.3.2 without rewriting that
 published identity. The observed Mac has one 2.3.1 server process/data root and
@@ -16,18 +16,42 @@ and repository-attachment schema 1.0 remain separate contracts.
 | --- | --- | --- | --- |
 | RL-1 | engineering-platform | Durable EP release-operation record, product-wide exclusive operation lock, exact wheel/sdist identities and separate `PUBLISHED`/`RELEASE_COMPLETE` states | SOURCE_FIXED through #153 `6919898`; the current parity increment also hardens owner-locked transitions, immutable policy identity, JSON recovery validation and `CLEANUP_PENDING` resume. No new release operation has been executed. |
 | RL-2 | engineering-platform | Protected-main release workflow, exact-main qualification, registry readback, immutable `PUBLISHED` evidence, separate `RELEASE_COMPLETE` closure, receipt and scoped cleanup | The current parity increment retains `QUALIFIED` in a draft GitHub Release before PyPI, rejects unproven existing publications, reads back both exact distributions and completes cleanup before terminalization. 2.3.2 remains source-prepared only; no PyPI publication or release closure is claimed. |
+| RL-3 | engineering-platform | Durable first-failure `CLEANUP_PENDING` evidence and controlled retry of release cleanup | SOURCE_FIXED: #165 `0a98d0c`. It canonicalizes and atomically hydrates a matching remote PENDING receipt, retains it on repeated cleanup failure, and detects dangling symlinks or post-delete residuals. No release operation has been dispatched. |
 | OI-1 | engineering-platform | Read-only operational-installation resolver/diagnostic | SOURCE_FIXED: #111, #114 `9ef29bb`, #116 `71779d5`, #118 `f29006c`, #131 `28293b0`, #132 `d7efd67`, #133 `98e70e9`, #135 `99cbd4f`, #157 `f28fc84`, #161 `3161a4e`. The selected venv launcher and the actual server response remain separate from PATH/source observations. Explicit-path inventory only; no installation is verified. |
 | OI-2 | engineering-platform | One EP-owned install/update/repair record and crash-resumable lifecycle | PARTIAL_SOURCE_FIXED: #113 `38b222a`, #121 `1bfe729`, #122 `a6f6c10`, #123 `2c4b081`, #127 `b77a638`, #128 `73c9729`, #129 `aadb3a5`, #130 `5073ee1`, #137 `a517ce3`, #144 `2848c52`, #158 `62eb6c4`. The executor serializes, journals and resumes explicit inventory/quiesce/backup/migrate/activate/verify actions; it atomically replaces only the exact registered record and performs operation-scoped cleanup. A product-specific runtime/service/migration adapter, a real update, and operational cleanup have not run. |
 | OI-3 | engineering-platform | Product-owned consumer readback and exact-candidate assessment | SOURCE_FIXED: #162 `25ffe34`, qualified by #163 `495e196`. `operational-readback` resolves only the EP service interpreter, verifies live response identity and retains bounded explicit inventory evidence; `operational-update-assess` requires that `ACTIVE` readback and exact wheel/version/digest/source-revision preconditions. It does not execute, publish, cut over, migrate or clean an operational installation. |
 | OI-4a | engineering-platform | EP-owned exact-wheel staging and non-operational candidate preparation | SOURCE_FIXED: #164. An existing exact update plan stages and re-hashes its wheel atomically beneath the operation root, then creates or resumes only an operation-scoped candidate venv and pip cache. It proves the candidate interpreter/package identity and fails closed on changed bytes, unsafe paths, markers, identities and locks. It does not alter services, data, migration, records, CLI selection, publication or a live installation. |
-| FP-1 | forge-platform | Reconcile universal composition with EP-owned installation provision | SOURCE_FIXED: #21 `6395be9`, #22 `e666664`, #23 `ed91e81`, #27 `f77e5ea`, #28 `dd4d336`, #29 `8aa1139`, #30 `124b8fac`, #31 `6377980`. Composition verifies producer artifact bytes, retains resilient coordination evidence and does not create a second EP engine. Product adapters and live product operations remain product-owned. |
-| F-1/W-1/AC-1 | forge, workspace, ai-development-contracts | Respectively consume release evidence, retain own version closure, and retain generic workflow/evidence rules | SOURCE_FIXED in Forge #62 `a84cf637` / #63 `8b8dd1af` / #65 `72e8dbb` / #67 `ce8accc`, Workspace #18 `28ca0bc` / #19 `8291ef1` / #22 `b8a16a4` / #24 `4e268224`, and AI-development-contracts #10 `6ec3b443`. AI-development-contracts remains generic and owns no product runtime authority. |
+| OI-4b | engineering-platform | Durable binding and reboot recovery of the exact staged candidate | CANDIDATE_SOURCE_FIX: `codex/ep-prepared-operation-binding-v1`. The schema-2 journal binds operation, staged wheel, candidate venv, launcher, cache and package identity; it refuses a source-wheel plan after binding and validates real-venv launcher symlinks, source disappearance, journal/marker/stage tampering and candidate escape. It still does not admit the candidate to execution. |
+| FP-1 | forge-platform | Reconcile universal composition with EP-owned installation provision and consume the shared release-evidence semantics | SOURCE_FIXED: #21 `6395be9`, #22 `e666664`, #23 `ed91e81`, #27 `f77e5ea`, #28 `dd4d336`, #29 `8aa1139`, #30 `124b8fac`, #31 `6377980`, #32 `54fb36f`, #33 `ed227a3`, #34 `d8fbe36`. Composition verifies producer artifact bytes, retains resilient coordination evidence and does not create a second EP engine. Product adapters and live product operations remain product-owned. |
+| F-1/W-1/AC-1 | forge, workspace, ai-development-contracts | Respectively consume release evidence, retain own version closure, and retain generic workflow/evidence rules | SOURCE_FIXED in Forge #62 `a84cf637` / #63 `8b8dd1af` / #65 `72e8dbb` / #67 `ce8accc` / #68 `847b552`, Workspace #18 `28ca0bc` / #19 `8291ef1` / #22 `b8a16a4` / #24 `4e268224` / #25 `bad3dd7`, and AI-development-contracts #10 `6ec3b443`. AI-development-contracts remains generic and owns no product runtime authority. |
 
 `SOURCE_FIXED` is established only for the rows stated above. No new product
 release is `RELEASE_COMPLETE`; no installation is `INSTALLATION_VERIFIED` or
 `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`; and no cleanup is
 `CLEANUP_COMPLETE`. A live publication, installation, cutover, service
 mutation or artifact deletion remains a separate authorization.
+
+### Current bounded order
+
+1. Merge and hosted-qualify EP RL-3, then retain the durable release-cleanup
+   repair as source evidence only.
+2. Merge EP OI-4b, then make OI-4c admit only its bound staged candidate to
+   pre-cleanup execution under the existing EP lock. OI-4c must bind current
+   record provenance as well as version/digest and must not re-read a staged
+   wheel during an already-verified cleanup-only recovery. A later activation
+   must explicitly retain one selected operational runtime or remove the
+   unused candidate; an operation-root candidate is not a second permanent
+   installation by default.
+3. Forge Platform consumes the EP-owned installation provision only after
+   that EP execution admission exists; it must not grow a second EP
+   migration, installation or runtime-selection engine.
+
+The related Forge Platform, Forge and Workspace workflow repairs already
+share the main-first, immutable-artifact, durable-PUBLISHED and resumable
+cleanup model in their own release authorities. Their artifacts, versions and
+receipts remain product-specific. A production publication or an actual Mac
+installation/update remains outside this source order until separately
+authorized.
 
 ## Repository observation and safe cleanup — documented target
 

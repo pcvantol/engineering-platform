@@ -13,10 +13,13 @@ from unittest.mock import patch
 import zipfile
 
 from engineering_platform import installation_update_preparation as update_preparation
+from engineering_platform.installation_update_operation import InstallationUpdateSession
 from engineering_platform.installation_update_plan import prepare
 from engineering_platform.installation_update_preparation import (
     InstallationUpdatePreparationError,
     prepare_candidate,
+    staged_execution_plan,
+    verify_prepared_candidate,
 )
 from engineering_platform.operational_installation_lock import OperationalInstallationLock
 from engineering_platform.operational_installation_record import load, record
@@ -192,6 +195,17 @@ class InstallationUpdatePreparationTests(unittest.TestCase):
             self.assertEqual(prepared.package["version"], "2.3.2")
             self.assertTrue(Path(prepared.package["package"]).is_relative_to(Path(prepared.candidate_venv)))
             self.assertTrue(Path(prepared.package["metadata"]).is_relative_to(Path(prepared.candidate_venv)))
+            # The normal venv ``bin/python`` launcher may be a symlink to the
+            # base interpreter.  Recovery must retain the venv launcher as
+            # identity rather than resolving it outside the operation root.
+            self.assertEqual(verify_prepared_candidate(plan, candidate=prepared), prepared)
+            wheel.unlink()
+            self.assertEqual(prepare_candidate(plan, venv_builder=Path(sys.executable)), prepared)
+            execution_plan = staged_execution_plan(plan, candidate=prepared)
+            with InstallationUpdateSession(execution_plan) as session:
+                session.bind_prepared_candidate(prepared, runner=subprocess.run)
+            with InstallationUpdateSession(execution_plan) as resumed:
+                self.assertEqual(resumed.recover_prepared_candidate(runner=subprocess.run), prepared)
 
     def test_rejects_changed_source_or_staged_wheel_bytes(self) -> None:
         with TemporaryDirectory() as temporary:
