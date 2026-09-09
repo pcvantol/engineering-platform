@@ -3,9 +3,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from engineering_platform.operational_installation import OperationalInstallationError, inventory, package_identity, record_status, resolve, validate_health, validate_package_identity, validate_registered_package_identity
+from engineering_platform.operational_installation import (
+    OperationalInstallationError,
+    inventory,
+    live_runtime_identity,
+    package_identity,
+    qualify_runtime_response,
+    record_status,
+    resolve,
+    validate_health,
+    validate_package_identity,
+    validate_registered_package_identity,
+)
 from engineering_platform.operational_installation_record import OperationalInstallationRecordError, load, record, replace_for_update
 
 
@@ -20,6 +33,31 @@ class OperationalInstallationTests(unittest.TestCase):
         interpreter.write_text("#!/bin/sh\n")
         interpreter.chmod(0o755)
         return root, interpreter
+
+    def _qualified_response(self, root: Path, interpreter: Path) -> tuple[object, dict[str, object], dict[str, str], dict[str, object]]:
+        installation = resolve(root, interpreter=interpreter)
+        record(root, installation_id="instance-1", version="2.3.1", channel="stable",
+               artifact_digest="sha256:" + "a" * 64, source_revision="b" * 40,
+               interpreter=interpreter, roles={"server": "com.engineeringplatform.server"},
+               desired_state="ACTIVE", observed_state="ACTIVE",
+               verification={"result": "PASS"}, cleanup={"result": "COMPLETE"})
+        registered = record_status(installation)
+        package_root = root / "venv" / "site-packages" / "engineering_platform"
+        metadata = root / "venv" / "site-packages" / "engineering_platform-2.3.1.dist-info"
+        package = {
+            "interpreter": str(interpreter.absolute()), "version": "2.3.1",
+            "metadata": str(metadata), "package": str(package_root),
+        }
+        response = {
+            "service": "engineering-platform-server", "instance_id": "instance-1", "healthy": True,
+            "product_version": "2.3.1",
+            "runtime_identity": {
+                "interpreter": str(interpreter.absolute()), "executable": str(interpreter.absolute()),
+                "package": str(package_root), "package_version": "2.3.1", "metadata": str(metadata),
+                "artifact": {"state": "OBSERVED", "digest": "sha256:" + "a" * 64},
+            },
+        }
+        return installation, registered, package, response
 
     def test_path_candidate_cannot_replace_service_selected_runtime_and_symlinks_normalize(self) -> None:
         with TemporaryDirectory() as directory:
@@ -56,6 +94,111 @@ class OperationalInstallationTests(unittest.TestCase):
             validate_health(installation, response)
             with self.assertRaisesRegex(OperationalInstallationError, "operational release"):
                 validate_health(installation, {**response, "product_version": "2.3.1"})
+
+    def test_runtime_qualification_keeps_source_wheel_installation_and_live_facts_separate(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation, registered, package, response = self._qualified_response(root, interpreter)
+            result = qualify_runtime_response(
+                installation, record=registered, package=package, response=response,
+                source_observation={"version": "unrelated-source-2.3.2"},
+                wheel_observation={"digest": "sha256:" + "d" * 64},
+            )
+            self.assertEqual(result["source"], {"state": "OBSERVED", "identity": {"version": "unrelated-source-2.3.2"}})
+            self.assertEqual(result["wheel"], {"state": "OBSERVED", "identity": {"digest": "sha256:" + "d" * 64}})
+            self.assertEqual(result["qualification"], "PASS")
+            self.assertEqual(result["installation"]["record"]["artifact_digest"], "sha256:" + "a" * 64)
+            self.assertEqual(result["live"]["artifact_verification"], {"state": "PASS", "digest": "sha256:" + "a" * 64})
+
+    def test_runtime_qualification_rejects_a_healthy_wrong_instance(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation, registered, package, response = self._qualified_response(root, interpreter)
+            with self.assertRaisesRegex(OperationalInstallationError, "does not identify the selected operational instance"):
+                qualify_runtime_response(
+                    installation, record=registered, package=package,
+                    response={**response, "instance_id": "another-instance"},
+                )
+
+    def test_runtime_qualification_rejects_a_wrong_live_package_version(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation, registered, package, response = self._qualified_response(root, interpreter)
+            live = dict(response["runtime_identity"])
+            live["package_version"] = "2.3.0"
+            with self.assertRaisesRegex(OperationalInstallationError, "package version differs"):
+                qualify_runtime_response(
+                    installation, record=registered, package=package,
+                    response={**response, "runtime_identity": live},
+                )
+
+    def test_runtime_qualification_rejects_a_wrong_live_product_version(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation, registered, package, response = self._qualified_response(root, interpreter)
+            with self.assertRaisesRegex(OperationalInstallationError, "selected operational release"):
+                qualify_runtime_response(
+                    installation, record=registered, package=package,
+                    response={**response, "product_version": "2.3.0"},
+                )
+
+    def test_runtime_qualification_rejects_each_wrong_live_runtime_path(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation, registered, package, response = self._qualified_response(root, interpreter)
+            wrong = root / "another EP Runtime" / "bin" / "python"
+            wrong.parent.mkdir(parents=True); wrong.write_text("#!/bin/sh\n"); wrong.chmod(0o755)
+            cases = (
+                ("interpreter", str(wrong), "interpreter differs"),
+                ("executable", str(wrong), "executable differs"),
+                ("package", str(root / "another-package"), "package differs"),
+                ("metadata", str(root / "another-metadata"), "metadata differs"),
+            )
+            for key, value, message in cases:
+                with self.subTest(key=key), self.assertRaisesRegex(OperationalInstallationError, message):
+                    live = dict(response["runtime_identity"])
+                    live[key] = value
+                    qualify_runtime_response(
+                        installation, record=registered, package=package,
+                        response={**response, "runtime_identity": live},
+                    )
+
+    def test_runtime_qualification_rejects_live_artifact_that_differs_from_the_record(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation, registered, package, response = self._qualified_response(root, interpreter)
+            live = dict(response["runtime_identity"])
+            live["artifact"] = {"state": "OBSERVED", "digest": "sha256:" + "c" * 64}
+            with self.assertRaisesRegex(OperationalInstallationError, "artifact digest differs"):
+                qualify_runtime_response(
+                    installation, record=registered, package=package,
+                    response={**response, "runtime_identity": live},
+                )
+
+    def test_live_runtime_identity_uses_process_metadata_and_optional_direct_wheel_digest(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            package = root / "venv" / "site-packages" / "engineering_platform"
+            metadata = root / "venv" / "site-packages" / "engineering_platform-2.3.1.dist-info"
+            metadata.mkdir(parents=True)
+            (metadata / "direct_url.json").write_text(json.dumps({
+                "archive_info": {"hashes": {"sha256": "a" * 64}},
+                "url": "file:///private/tmp/engineering-platform-2.3.1.whl",
+            }))
+            distribution = SimpleNamespace(_path=metadata, version="2.3.1")
+            with patch("engineering_platform.operational_installation.sys.executable", str(interpreter)), patch(
+                "engineering_platform.operational_installation.importlib_metadata.distribution",
+                return_value=distribution,
+            ):
+                identity = live_runtime_identity(package=package, product_version="2.3.1")
+            self.assertEqual(identity, {
+                "interpreter": str(interpreter.absolute()),
+                "executable": str(interpreter.absolute()),
+                "package": str(package.resolve()),
+                "package_version": "2.3.1",
+                "metadata": str(metadata.resolve()),
+                "artifact": {"state": "OBSERVED", "digest": "sha256:" + "a" * 64},
+            })
 
     def test_record_status_is_explicit_and_must_bind_the_selected_runtime(self) -> None:
         with TemporaryDirectory() as directory:

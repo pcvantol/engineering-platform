@@ -206,6 +206,33 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             validate_package_identity.assert_called_once_with(resolve.return_value, package_identity.return_value)
             validate_registered_package_identity.assert_called_once_with(record_status.return_value, package_identity.return_value)
 
+    def test_operational_qualify_reads_the_running_server_identity_without_initializing_it(self) -> None:
+        selected = Path(self.temporary.name) / "selected-python"
+        selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
+        configuration = server.ServerConfiguration(3, "127.0.0.1", 8765, "/opt/codex", "2.3.2")
+        response = {"service": "engineering-platform-server", "instance_id": "instance-1", "healthy": True}
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+            "engineering_platform.server.operational_installation.resolve"
+        ) as resolve, patch("engineering_platform.server.operational_installation.package_identity", return_value={"version": "2.3.2"}) as package_identity, patch(
+            "engineering_platform.server.operational_installation.record_status", return_value={"state": "REGISTERED"}
+        ) as record_status, patch("engineering_platform.server.ServerConfiguration.load", return_value=configuration) as load, patch(
+            "engineering_platform.server._health_response", return_value=response
+        ) as health_response, patch("engineering_platform.server.operational_installation.qualify_runtime_response", return_value={"live": {"instance_id": "instance-1"}}) as qualify, patch(
+            "engineering_platform.server.initialize"
+        ) as initialize:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(("operational-qualify", "--data-root", str(self.root))), 0)
+        resolve.assert_called_once_with(self.root, interpreter=selected)
+        package_identity.assert_called_once_with(selected)
+        record_status.assert_called_once_with(resolve.return_value)
+        load.assert_called_once_with(self.root)
+        health_response.assert_called_once_with({"host": "127.0.0.1", "port": 8765})
+        qualify.assert_called_once_with(
+            resolve.return_value, record=record_status.return_value,
+            package=package_identity.return_value, response=response,
+        )
+        initialize.assert_not_called()
+
     def test_operational_inventory_is_explicit_read_only_input(self) -> None:
         selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
         candidate = Path(self.temporary.name) / "old-python"; candidate.write_text("#!/bin/sh\n"); candidate.chmod(0o755)
@@ -486,6 +513,15 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             platform_health = json.loads(response.read().decode("utf-8"))
         self.assertEqual(platform_health["health"], "ok")
         self.assertEqual(platform_health["product_version"], server._console_platform_version())
+        runtime_identity = platform_health["runtime_identity"]
+        self.assertEqual(
+            set(runtime_identity),
+            {"interpreter", "executable", "package", "package_version", "metadata", "artifact"},
+        )
+        self.assertTrue(Path(runtime_identity["interpreter"]).is_absolute())
+        self.assertEqual(runtime_identity["executable"], runtime_identity["interpreter"])
+        self.assertTrue(Path(runtime_identity["package"]).is_absolute())
+        self.assertIn(runtime_identity["artifact"]["state"], {"OBSERVED", "UNAVAILABLE"})
         self.assertEqual(
             set(platform_health["components"]),
             {component.id for component in server.PLATFORM_COMPONENTS},
