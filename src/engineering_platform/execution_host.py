@@ -1709,7 +1709,7 @@ class EngineeringRunner:
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
                     )
                 try:
-                    return AgentResult(
+                    recovered_result = AgentResult(
                         terminal_state=str(payload["terminal_state"]), branch=payload.get("branch"),
                         pull_request=payload.get("pull_request"), terminal_condition=str(payload.get("terminal_condition") or "repository_reconciled"),
                         diagnostic=payload.get("diagnostic"), repository_path=payload.get("repository_path"),
@@ -1723,6 +1723,18 @@ class EngineeringRunner:
                         "Recovered provider result is invalid.", "Recovery result evidence cannot be consumed safely.",
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
                     ) from error
+                # EXECUTE_AGENT has an implementation dispatch and a later,
+                # distinct first-publication dispatch. A recovered pre-PR
+                # implementation result has no PR and must not be replayed
+                # as the later publication result merely because both share
+                # that lifecycle phase. Conversely a recovered publication
+                # result must carry the durable PR identity for the gate to
+                # verify by provider readback without a second create.
+                if not (
+                    state.next_action == "publish_first_implementation_pull_request"
+                    and recovered_result.pull_request is None
+                ):
+                    return recovered_result
             if isinstance(recovery, dict) and recovery.get("state") in {"EXHAUSTED", "PRECHECK_FAILED", "AMBIGUOUS"}:
                 raise CodexInvocationError(
                     "Provider interruption recovery cannot continue.", "Recovery budget is exhausted or recovery evidence is unsafe.",
