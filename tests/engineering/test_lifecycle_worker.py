@@ -48,6 +48,16 @@ class LifecycleWorkerTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(_Dispatcher.calls, expected)
 
+    def _wait_for_worker_state(self, worker: LifecycleWorker, expected: str,
+                               timeout_seconds: float = 1.0) -> None:
+        """Observe an asynchronous dispatch result without assuming scheduler timing."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if worker.diagnostics().state == expected:
+                return
+            time.sleep(0.01)
+        self.assertEqual(worker.diagnostics().state, expected)
+
     def test_idle_queue_is_healthy_and_writes_nothing(self) -> None:
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         self.assertFalse(worker.run_once())
@@ -149,7 +159,7 @@ class LifecycleWorkerTests(unittest.TestCase):
         _Dispatcher.fail = True
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         self.assertTrue(worker.run_once())
-        self.assertEqual(worker.diagnostics().state, WORKER_DEGRADED)
+        self._wait_for_worker_state(worker, WORKER_DEGRADED)
         worker.start(); worker.stop()
         self.assertEqual(worker.diagnostics().state, WORKER_STOPPED)
 
