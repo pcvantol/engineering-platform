@@ -4,9 +4,12 @@
 
 Repository evidence recorded on 2026-09-09 reads `origin/main` as
 `0a98d0ca2395bd3b6b50deffd3139206b75c16e5` at this roadmap update. PyPI
-holds immutable 2.3.1 wheel and sdist bytes; protected-main reconciliation
-moved the canonical source projections forward to 2.3.2 without rewriting that
-published identity. The observed Mac has one 2.3.1 server process/data root and
+holds immutable 2.3.1 wheel and sdist bytes; the historical protected-main
+reconciliation receipt records the earlier 2.3.2 source preparation without
+rewriting that published identity. The current bounded engineering candidate
+uses the EP product version helper to project 2.3.3; it is source-prepared
+only and has no publication or release-closure claim. The observed Mac has one
+2.3.1 server process/data root and
 a distinct 2.3.0 PlatformIO PATH candidate. This is explicit-path investigation
 evidence, not proof of Mac-wide uniqueness and not authorization to remove or
 cut over either installation. CENTRAL schema 56, engineering-storage schema 41
@@ -15,7 +18,7 @@ and repository-attachment schema 1.0 remain separate contracts.
 | Increment | Owning repository | Bounded result | Dependencies / acceptance |
 | --- | --- | --- | --- |
 | RL-1 | engineering-platform | Durable EP release-operation record, product-wide exclusive operation lock, exact wheel/sdist identities and separate `PUBLISHED`/`RELEASE_COMPLETE` states | SOURCE_FIXED through #153 `6919898`; the current parity increment also hardens owner-locked transitions, immutable policy identity, JSON recovery validation and `CLEANUP_PENDING` resume. No new release operation has been executed. |
-| RL-2 | engineering-platform | Protected-main release workflow, exact-main qualification, registry readback, immutable `PUBLISHED` evidence, separate `RELEASE_COMPLETE` closure, receipt and scoped cleanup | The current parity increment retains `QUALIFIED` in a draft GitHub Release before PyPI, rejects unproven existing publications, reads back both exact distributions and completes cleanup before terminalization. 2.3.2 remains source-prepared only; no PyPI publication or release closure is claimed. |
+| RL-2 | engineering-platform | Protected-main release workflow, exact-main qualification, registry readback, immutable `PUBLISHED` evidence, separate `RELEASE_COMPLETE` closure, receipt and scoped cleanup | The current parity increment retains `QUALIFIED` in a draft GitHub Release before PyPI, rejects unproven existing publications, reads back both exact distributions and completes cleanup before terminalization. The historical 2.3.2 receipt remains evidence for that earlier reconciliation; the current 2.3.3 engineering candidate is source-prepared only. No PyPI publication or release closure is claimed. |
 | RL-3 | engineering-platform | Durable first-failure `CLEANUP_PENDING` evidence and controlled retry of release cleanup | SOURCE_FIXED: #165 `0a98d0c`. It canonicalizes and atomically hydrates a matching remote PENDING receipt, retains it on repeated cleanup failure, and detects dangling symlinks or post-delete residuals. No release operation has been dispatched. |
 | OI-1 | engineering-platform | Read-only operational-installation resolver/diagnostic | SOURCE_FIXED: #111, #114 `9ef29bb`, #116 `71779d5`, #118 `f29006c`, #131 `28293b0`, #132 `d7efd67`, #133 `98e70e9`, #135 `99cbd4f`, #157 `f28fc84`, #161 `3161a4e`. The selected venv launcher and the actual server response remain separate from PATH/source observations. Explicit-path inventory only; no installation is verified. |
 | OI-2 | engineering-platform | One EP-owned install/update/repair record and crash-resumable lifecycle | PARTIAL_SOURCE_FIXED: #113 `38b222a`, #121 `1bfe729`, #122 `a6f6c10`, #123 `2c4b081`, #127 `b77a638`, #128 `73c9729`, #129 `aadb3a5`, #130 `5073ee1`, #137 `a517ce3`, #144 `2848c52`, #158 `62eb6c4`. The executor serializes, journals and resumes explicit inventory/quiesce/backup/migrate/activate/verify actions; it atomically replaces only the exact registered record and performs operation-scoped cleanup. A product-specific runtime/service/migration adapter, a real update, and operational cleanup have not run. |
