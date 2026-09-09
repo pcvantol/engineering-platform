@@ -45,6 +45,7 @@ from . import external_producer_binding
 from . import file_inbox
 from . import host_admin
 from . import installation_relocation
+from . import installation_update_plan
 from . import operational_installation
 from . import local_repository_binding
 from . import project_topology
@@ -3854,7 +3855,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "installation-update-plan", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -3871,6 +3872,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--binding-id")
     parser.add_argument("--reason")
     parser.add_argument("--capability", choices=("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"))
+    parser.add_argument("--operation-id")
+    parser.add_argument("--artifact", type=Path)
+    parser.add_argument("--target-version")
+    parser.add_argument("--target-digest")
+    parser.add_argument("--target-source-revision")
     return parser
 
 
@@ -3903,6 +3909,14 @@ def main(argv: list[str] | None = None) -> int:
                 "record": operational_installation.record_status(installation),
                 "package": package,
             }
+        elif args.command == "installation-update-plan":
+            if not all((args.operation_id, args.artifact, args.target_version, args.target_digest, args.target_source_revision)):
+                raise ServerConfigurationError("--operation-id, --artifact, --target-version, --target-digest and --target-source-revision are required")
+            result = installation_update_plan.prepare(
+                args.data_root, operation_id=args.operation_id, artifact=args.artifact,
+                target_version=args.target_version, target_digest=args.target_digest,
+                target_source_revision=args.target_source_revision,
+            ).payload()
         elif args.command == "service-install":
             initialize(args.data_root)
             result = {"result": "INSTALLED", **server_service.install(args.data_root)}
