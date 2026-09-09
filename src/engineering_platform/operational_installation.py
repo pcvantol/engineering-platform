@@ -23,7 +23,7 @@ class OperationalInstallation:
     interpreter: str
     data_root: str
     instance_id: str
-    configured_version: str
+    configured_version: str | None
     runtime_pid: int | None
     path_candidates: tuple[str, ...]
 
@@ -51,9 +51,14 @@ def resolve(data_root: Path, *, interpreter: str | Path,
     """Resolve only the EP-owned service interpreter and data-root identity."""
     root = normalized(data_root)
     config, identity = _object(root / "server.json", "server configuration"), _object(root / "runtime-identity.json", "identity")
-    version, instance_id = config.get("version"), identity.get("instance_id")
-    if not isinstance(version, str) or not isinstance(instance_id, str) or not instance_id:
-        raise OperationalInstallationError("operational configuration lacks version or instance identity")
+    # ``server.json.version`` is the server-configuration schema revision, not
+    # a package/product version.  Only an explicit product_version may bind a
+    # product claim; otherwise the selected interpreter metadata is authority.
+    version, instance_id = config.get("product_version"), identity.get("instance_id")
+    if version is not None and not isinstance(version, str):
+        raise OperationalInstallationError("operational product version is invalid")
+    if not isinstance(instance_id, str) or not instance_id:
+        raise OperationalInstallationError("operational configuration lacks instance identity")
     runtime_path = root / "runtime.json"
     runtime = _object(runtime_path, "runtime") if runtime_path.exists() else {}
     pid = runtime.get("pid")
@@ -86,7 +91,7 @@ def record_status(installation: OperationalInstallation) -> Mapping[str, object]
     except operational_installation_record.OperationalInstallationRecordError as error:
         raise OperationalInstallationError("operational installation record is unreadable") from error
     if (record.get("installation_id") != installation.instance_id
-            or record.get("version") != installation.configured_version
+            or (installation.configured_version is not None and record.get("version") != installation.configured_version)
             or normalized(str(record.get("interpreter", ""))) != normalized(installation.interpreter)):
         raise OperationalInstallationError("operational installation record does not match selected runtime")
     return {
@@ -136,7 +141,7 @@ def validate_package_identity(installation: OperationalInstallation, identity: M
         raise OperationalInstallationError("selected interpreter returned incomplete EP package identity")
     if normalized(identity["interpreter"]) != normalized(installation.interpreter):
         raise OperationalInstallationError("package identity belongs to a different interpreter")
-    if identity["version"] != installation.configured_version:
+    if installation.configured_version is not None and identity["version"] != installation.configured_version:
         raise OperationalInstallationError("package version does not match selected operational runtime")
 
 
