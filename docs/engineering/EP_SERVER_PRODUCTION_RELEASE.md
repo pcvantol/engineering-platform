@@ -11,31 +11,39 @@ It is not authority to publish, re-publish, or rewrite EP release bytes.
 
 ## Release-operation lifecycle V1
 
-The production qualification job persists one exact `QUALIFIED` release
-operation before registry side effects. It binds operation ID,
-`engineering-platform`/`server`, version, policy revision, exact post-merge
-source SHA, exact wheel and sdist SHA-256 identities and qualification. The
-publication/readback route then promotes a matching operation through:
+After both the production-wheel and dashboard qualifications succeed, the
+workflow persists one exact `QUALIFIED` release operation before registry side
+effects. It binds operation ID, `engineering-platform`/`server`, version,
+policy revision, exact post-merge source SHA, exact wheel and sdist SHA-256
+identities and the completed EP production qualification. The publication /
+readback route then promotes that matching operation through:
 
 ```text
 PREPARED -> QUALIFIED -> PUBLISHED -> CLEANUP_PENDING -> RELEASE_COMPLETE
                                   \-> RELEASE_COMPLETE
 ```
 
+`QUALIFIED` is first copied byte-for-byte to a draft GitHub Release before
+PyPI can be mutated. The draft is durable provenance rather than a public EP
+release. An already-existing PyPI version without that original matching
+receipt fails closed; it is never silently adopted. The publisher reloads both
+the local record and draft receipt before it can act.
+
 `PUBLISHED` is registry success only; it does not claim closure. The workflow
-stores that exact state as an immutable GitHub release asset after registry
-readback, and the terminal job reads it back byte-for-byte before it records a
-separate `RELEASE_COMPLETE` asset. Workflow concurrency excludes simultaneous
-publication. Publication performs registry readback and digest comparison
-before it records `PUBLISHED`.
+downloads and hashes both distributions from PyPI, qualifies the actual
+downloaded wheel outside the source checkout, and only then writes the
+immutable `PUBLISHED` receipt. The terminal job reads that receipt back
+byte-for-byte, removes its declared operation-local readback/artifact paths,
+records `CLEANUP_PENDING` if any of those removals fail, and only then makes
+the draft release visible and writes `RELEASE_COMPLETE`. Workflow concurrency
+excludes simultaneous publication. A lost answer or runner crash resumes from
+the original draft receipt and exact artifact identity; a retained
+`CLEANUP_PENDING` receipt is reloaded and identity-checked before cleanup can
+resume.
 
-The remaining release-recovery increment must add a cross-run durable operation
-lookup before a retry can adopt an existing registry version, source-provenance
-proof for that adoption, and a persisted `CLEANUP_PENDING` recovery route.
-Those states are not claimed complete merely because the state model exists.
-
-The initial implementation supplies this durable EP-owned state boundary only.
-It neither publishes, changes a version, nor selects/changes a local runtime.
+This source workflow does not itself publish, change a version, or
+select/change a local runtime merely by being merged. Executing it is a
+separate authorized release operation.
 
 The workflow verifies that the checkout is clean and is the requested current
 protected `main` commit. Version preparation has already been merged through
