@@ -53,6 +53,10 @@ class CentralDatabaseMaintenanceTests(unittest.TestCase):
                 ),
                 [{"at": "2026-09-02T10:00:00+00:00", "remaining_percent": 72.0}],
             )
+            self.assertEqual(
+                central_database.provider_capacity_history(data_root, provider="Codex CLI", now=late + timedelta(days=8)),
+                [],
+            )
 
     def test_maintenance_compacts_only_the_installation_owned_database_at_its_interval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

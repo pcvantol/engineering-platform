@@ -213,10 +213,12 @@ def record_provider_capacity(
             )
     except (OSError, sqlite3.DatabaseError):
         return []
-    return provider_capacity_history(data_root, provider=provider)
+    return provider_capacity_history(data_root, provider=provider, now=timestamp)
 
 
-def provider_capacity_history(data_root: Path, *, provider: str, hours: int = 168) -> list[dict[str, object]]:
+def provider_capacity_history(
+    data_root: Path, *, provider: str, hours: int = 168, now: datetime | None = None,
+) -> list[dict[str, object]]:
     """Read CENTRAL-only provider capacity evidence; it is never project data."""
     provider = provider.strip()[:120]
     if not provider or hours < 1:
@@ -228,7 +230,7 @@ def provider_capacity_history(data_root: Path, *, provider: str, hours: int = 16
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
         return []
     samples = payload.get("providers", {}).get(provider, {}) if isinstance(payload, dict) and isinstance(payload.get("providers"), dict) else {}
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = (now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(hours=hours)
     result: list[dict[str, object]] = []
     if not isinstance(samples, dict):
         return result
