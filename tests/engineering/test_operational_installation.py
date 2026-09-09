@@ -5,7 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from engineering_platform.operational_installation import OperationalInstallationError, package_identity, resolve, validate_health
+from engineering_platform.operational_installation import OperationalInstallationError, package_identity, record_status, resolve, validate_health
+from engineering_platform.operational_installation_record import record
 
 
 class OperationalInstallationTests(unittest.TestCase):
@@ -42,6 +43,22 @@ class OperationalInstallationTests(unittest.TestCase):
             (root / "runtime.json").write_text(json.dumps({"pid": 9, "instance_id": "wrong"}))
             with self.assertRaisesRegex(OperationalInstallationError, "different instance"):
                 resolve(root, interpreter=interpreter)
+
+    def test_record_status_is_explicit_and_must_bind_the_selected_runtime(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation = resolve(root, interpreter=interpreter)
+            self.assertEqual(record_status(installation)["state"], "UNREGISTERED")
+            record(root, installation_id="instance-1", version="2.3.1", channel="stable",
+                   artifact_digest="sha256:" + "a" * 64, source_revision="b" * 40,
+                   interpreter=interpreter, roles={"server": "com.engineeringplatform.server"},
+                   desired_state="ACTIVE", observed_state="ACTIVE",
+                   verification={"result": "PASS"}, cleanup={"result": "COMPLETE"})
+            status = record_status(installation)
+            self.assertEqual((status["state"], status["artifact_digest"]), ("REGISTERED", "sha256:" + "a" * 64))
+            (root / "server.json").write_text(json.dumps({"version": "2.3.2"}))
+            with self.assertRaisesRegex(OperationalInstallationError, "does not match"):
+                record_status(resolve(root, interpreter=interpreter))
 
     def test_rejects_malformed_facts_and_wrong_health_shapes(self) -> None:
         with TemporaryDirectory() as directory:
