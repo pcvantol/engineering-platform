@@ -2617,13 +2617,43 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent = SequencedFakeAgent([AgentResult("COMPLETE", "main", 71, commit_sha=sha)])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
         state = TransactionState("publication-gate", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
-                                 branch="main", owner_authorized=True, assurance_profile=profile, assurance_reviews=reviews)
+                                 branch="main", owner_authorized=True, last_verified_sha=sha,
+                                 validation_evidence=({"command": "canonical suite", "result": "passed"},),
+                                 local_validation_audit=({"outcome": "validated"},),
+                                 assurance_profile=profile, assurance_reviews=reviews)
         published, result = runner._publish_first_implementation_pull_request(
             state, AgentResult("COMPLETE", "main", commit_sha=sha)
         )
         self.assertFalse(published.terminal)
         self.assertEqual(result.pull_request, 71)
         self.assertIn("First implementation pull-request publication gate", agent.prompts[0])
+
+    def test_first_publication_rejects_missing_or_stale_local_validation_despite_reviews(self) -> None:
+        sha = "a" * 40
+        profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+        reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
+                         "profile_digest": profile["digest"], "findings": []}
+                        for role in ("quality", "security"))
+        for state in (
+            TransactionState("missing-validation", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
+                             branch="main", owner_authorized=True, last_verified_sha=sha,
+                             assurance_profile=profile, assurance_reviews=reviews),
+            TransactionState("stale-validation", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
+                             branch="main", owner_authorized=True, last_verified_sha="d" * 40,
+                             validation_evidence=({"command": "canonical suite", "result": "passed"},),
+                             local_validation_audit=({"outcome": "validated"},),
+                             assurance_profile=profile, assurance_reviews=reviews),
+        ):
+            with self.subTest(run_id=state.run_id):
+                agent = FakeAgent(AgentResult("COMPLETE", "main", 71, commit_sha=sha))
+                runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+                blocked, _ = runner._publish_first_implementation_pull_request(
+                    state, AgentResult("COMPLETE", "main", commit_sha=sha)
+                )
+                self.assertTrue(blocked.terminal)
+                self.assertEqual(blocked.next_action, "implementation_publication_assurance_required")
+                self.assertEqual(agent.prompts, [])
 
     def test_managed_host_orders_first_pr_after_validation_and_both_reviews(self) -> None:
         """Exercise the real transitions; the adapter observes PR creation only at publication."""
@@ -2638,6 +2668,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 else:
                     events.append("IMPLEMENTATION")
                 result = super().invoke(root, prompt)
+                if events[-1] == "IMPLEMENTATION":
+                    self.repository.evidence = RepositoryEvidence(
+                        "pcvantol/djconnect", result.branch or "main", "a" * 40, True, True,
+                    )
                 if result.pull_request:
                     events.append("PR_CREATE")
                 return result
@@ -2647,13 +2681,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 return super().review(root, selection, objective, evidence)
 
         agent = OrderedAgent([
-            AgentResult("COMPLETE", "main", commit_sha="a" * 40),
-            AgentResult("COMPLETE", "main", commit_sha="a" * 40,
+            AgentResult("COMPLETE", "codex/ordered-publication", commit_sha="a" * 40),
+            AgentResult("COMPLETE", "codex/ordered-publication", commit_sha="a" * 40,
                         validation_evidence=({"command": "canonical suite", "result": "passed"},)),
-            AgentResult("COMPLETE", "main", 71, commit_sha="a" * 40),
+            AgentResult("COMPLETE", "codex/ordered-publication", 71, commit_sha="a" * 40),
         ])
-        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch="main", base_branch="main")])
-        state = EngineeringRunner(self.root, self.store, FakeRepository(), github, agent, lambda _: None).run(
+        repository = FakeRepository()
+        agent.repository = repository
+        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch="codex/ordered-publication", base_branch="main")])
+        state = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None).run(
             self.prompt, run_id="ordered-first-publication", owner_authorized=True,
         )
         lifecycle_events = [event for event in events if event != "DOCUMENTATION_REVIEW_PASS"]
@@ -4908,7 +4944,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
             (TransactionState("repair", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/repair", owner_authorized=True),
              "Pre-publication repair hand-off boundary", "No pull request exists yet; do not require, create, or invent one"),
             (TransactionState("publication", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="codex/implementation", owner_authorized=True,
-                              next_action="publish_first_implementation_pull_request", assurance_profile=profile, assurance_reviews=reviews),
+                              next_action="publish_first_implementation_pull_request", last_verified_sha=sha,
+                              validation_evidence=({"command": "canonical suite", "result": "passed"},),
+                              local_validation_audit=({"outcome": "validated"},),
+                              assurance_profile=profile, assurance_reviews=reviews),
              "First implementation publication hand-off boundary", "Create exactly one draft implementation pull request"),
             (TransactionState("existing-repair", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/repair", pull_request=701, owner_authorized=True),
              "Existing implementation-PR repair hand-off boundary", "Do not create a replacement or second pull request"),

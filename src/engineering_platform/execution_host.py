@@ -228,6 +228,25 @@ def _has_current_assurance_evidence(state: TransactionState) -> bool:
     )
 
 
+def _has_current_local_validation_evidence(state: TransactionState) -> bool:
+    """Require a passing local measurement bound to the assured candidate."""
+    profile = state.assurance_profile
+    if not isinstance(profile, dict):
+        return False
+    candidate = profile.get("candidate_sha")
+    if not isinstance(candidate, str) or state.last_verified_sha != candidate:
+        return False
+    if not state.local_validation_audit or state.local_validation_audit[-1].get("outcome") != "validated":
+        return False
+    if not state.validation_evidence:
+        return False
+    summaries = " ".join(
+        str(item.get("result", "")).casefold()
+        for item in state.validation_evidence if isinstance(item, dict)
+    )
+    return not any(token in summaries for token in ("fail", "failed", "timeout", "timed out", "error", "unavailable"))
+
+
 def _managed_prompt_phase(state: TransactionState | None) -> str:
     """Select one mutually exclusive provider hand-off from trusted state.
 
@@ -258,6 +277,7 @@ def _managed_prompt_phase(state: TransactionState | None) -> str:
         and state.next_action == "publish_first_implementation_pull_request"
         and state.owner_authorized
         and state.pull_request is None
+        and _has_current_local_validation_evidence(state)
         and _has_current_assurance_evidence(state)
     ):
         return "FIRST_PUBLICATION"
@@ -1296,9 +1316,10 @@ class EngineeringRunner:
             return state
         if not (evidence.clean and evidence.branch == expected_branch and evidence.head_sha == result.commit_sha):
             return state
-        return self._append_verified_commit_evidence(
+        recorded = self._append_verified_commit_evidence(
             state, phase=phase, commit_sha=result.commit_sha, description=description,
         )
+        return replace(recorded, last_verified_sha=result.commit_sha)
 
     @staticmethod
     def _validation_kind(command: str) -> str | None:
@@ -2031,6 +2052,11 @@ Local repository validation gate — read-only measurement:
         """Require the two mandatory reviews for this exact profile/candidate."""
         return _has_current_assurance_evidence(state)
 
+    @staticmethod
+    def _current_local_validation_passes(state: TransactionState) -> bool:
+        """Require current passing local validation before first publication."""
+        return _has_current_local_validation_evidence(state)
+
     def _publish_first_implementation_pull_request(
         self, state: TransactionState, implementation: AgentResult,
     ) -> tuple[TransactionState, AgentResult]:
@@ -2043,6 +2069,8 @@ Local repository validation gate — read-only measurement:
         """
         if state.execution_mode == "GENESIS" or state.pull_request or implementation.pull_request:
             return state, implementation
+        if not self._current_local_validation_passes(state):
+            return self._save_terminal(state, "BLOCKED", "implementation_publication_assurance_required", "First implementation PR publication requires current passing local validation for the reviewed candidate."), implementation
         if not self._current_assurance_passes(state):
             return self._save_terminal(state, "BLOCKED", "implementation_publication_assurance_required", "First implementation PR publication requires current passing quality and security assurance."), implementation
         try:

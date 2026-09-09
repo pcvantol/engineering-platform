@@ -223,16 +223,21 @@ documentation tier.
 For a Managed implementation, the Execution Host first creates and pushes the
 bounded branch without creating a pull request. The visible **Local repository
 validation** step discovers and runs the target repository's canonical required
-local validation. It may make scoped production-code and test corrections on
-that same branch and retries at most three times. Each attempt records its safe
-problem, corrective action, result and commit evidence. Only a passing attempt
-may create the draft implementation pull request. Remote GitHub check repair
-remains a separate, later bounded gate.
+local validation as a read-only measurement. It cannot modify files, index,
+commits, branches, remotes, pull requests, or other remote state; it neither
+requires nor creates a PR. A failing measurement does not authorize a local
+repair itself. The host may spend the one existing run-wide repair budget on a
+bounded repair of the same candidate, then returns that candidate through
+local validation and both independent Quality and Security reviews. Only after
+current validation and both reviews bind to the same clean candidate/profile
+does the separate host-owned first-publication gate create the draft
+implementation PR. Remote GitHub check repair remains a separate, later
+bounded gate and preserves an already-known PR lineage.
 
 Both bounded gates preserve the same immutable per-attempt shape: iteration,
 observation time, observed problem, proposed action, safe agent summary,
 commit evidence and outcome. Local validation uses `validated`,
-`validation_failed` or `agent_failed`; PR repair uses
+`validation_failed` or `agent_failed`; repair uses
 `submitted_for_recheck`, `agent_failed` or `agent_timed_out`. The latter is a
 host-owned deadline outcome, not an invitation to start another repair: the
 run is blocked with its evidence intact and requires a new explicit recovery
