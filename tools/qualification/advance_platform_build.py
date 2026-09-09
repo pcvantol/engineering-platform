@@ -125,7 +125,10 @@ def _prepared_writes(root: Path, current: str, target: str) -> dict[Path, str]:
         paths["package-lock.json"]: _json_projection(
             paths["package-lock.json"], current, target, ("version",), ("packages", "", "version"),
         ),
-        paths["src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json"]: _json_projection(paths["src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json"], current, target, ("platform_version",)),
+        paths["src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json"]: _json_projection(
+            paths["src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json"], current, target,
+            ("platform_version",), ("runner_version",), ("dashboard_version",), ("watcher_version",),
+        ),
         paths["src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json"]: _json_projection(paths["src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json"], current, target, ("platform", "version")),
         paths["src/engineering_platform/templates/workspace-config.json"]: _json_projection(paths["src/engineering_platform/templates/workspace-config.json"], current, target, ("platform", "version")),
         paths["src/engineering_platform/platform_version.py"]: _python_projection(paths["src/engineering_platform/platform_version.py"], current, target),
