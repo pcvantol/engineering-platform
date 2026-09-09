@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from engineering_platform.operational_installation import OperationalInstallationError, resolve, validate_health
+from engineering_platform.operational_installation import OperationalInstallationError, package_identity, resolve, validate_health
 
 
 class OperationalInstallationTests(unittest.TestCase):
@@ -42,3 +42,33 @@ class OperationalInstallationTests(unittest.TestCase):
             (root / "runtime.json").write_text(json.dumps({"pid": 9, "instance_id": "wrong"}))
             with self.assertRaisesRegex(OperationalInstallationError, "different instance"):
                 resolve(root, interpreter=interpreter)
+
+    def test_rejects_malformed_facts_and_wrong_health_shapes(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            (root / "server.json").write_text("[]")
+            with self.assertRaisesRegex(OperationalInstallationError, "invalid"):
+                resolve(root, interpreter=interpreter)
+            (root / "server.json").write_text(json.dumps({"version": "2.3.1"}))
+            (root / "runtime.json").write_text(json.dumps({"pid": "bad"}))
+            with self.assertRaisesRegex(OperationalInstallationError, "PID"):
+                resolve(root, interpreter=interpreter)
+            (root / "runtime.json").unlink()
+            installation = resolve(root, interpreter=interpreter)
+            with self.assertRaisesRegex(OperationalInstallationError, "does not identify"):
+                validate_health(installation, {"service": "other", "instance_id": "instance-1", "healthy": True})
+            with self.assertRaisesRegex(OperationalInstallationError, "not healthy"):
+                validate_health(installation, {"service": "engineering-platform-server", "instance_id": "instance-1", "healthy": False})
+            interpreter.unlink()
+            with self.assertRaisesRegex(OperationalInstallationError, "interpreter"):
+                resolve(root, interpreter=interpreter)
+
+    def test_selected_interpreter_package_identity_is_fail_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            _, interpreter = self._root(directory)
+            process = __import__("subprocess")
+            good = process.CompletedProcess((), 0, json.dumps({"interpreter": str(interpreter), "version": "2.3.1", "metadata": "/metadata", "package": "/package"}), "")
+            self.assertEqual(package_identity(interpreter, runner=lambda *_a, **_k: good)["version"], "2.3.1")
+            for result, marker in ((process.CompletedProcess((), 1, "", ""), "does not provide"), (process.CompletedProcess((), 0, "[]", ""), "incomplete"), (process.CompletedProcess((), 0, "{}", ""), "incomplete")):
+                with self.subTest(marker=marker), self.assertRaisesRegex(OperationalInstallationError, marker):
+                    package_identity(interpreter, runner=lambda *_a, **_k: result)

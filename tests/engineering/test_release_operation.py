@@ -58,3 +58,19 @@ class ReleaseOperationTests(unittest.TestCase):
             prepared.transition("PUBLISHED", evidence={"receipt": "not qualified"})
         with self.assertRaisesRegex(ReleaseOperationError, "exact wheel and sdist"):
             ReleaseOperation.create(operation_id="release-0003", product="engineering-platform", component="server", version="2.3.1", policy_revision="v1", source_revision="a" * 40, artifacts={"wheel": "sha256:" + "b" * 64})
+
+    def test_recovery_guards_and_artifact_hashing_cover_tampering(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = ReleaseOperationStore(Path(temporary))
+            prepared = store.save(operation())
+            with self.assertRaisesRegex(ReleaseOperationError, "immutable"):
+                store.save(prepared.transition("QUALIFIED", evidence={"pass": True}))
+            with self.assertRaisesRegex(ReleaseOperationError, "changed before"):
+                store.replace(operation("release-0002"), prepared)
+            store._path("release-0001").write_text("{}")
+            with self.assertRaisesRegex(ReleaseOperationError, "unknown or missing"):
+                store.load("release-0001")
+            artifact = Path(temporary) / "artifact.whl"; artifact.write_bytes(b"exact bytes")
+            self.assertTrue(store.artifact_digest(artifact).startswith("sha256:"))
+            with self.assertRaisesRegex(ReleaseOperationError, "unavailable"):
+                store.artifact_digest(Path(temporary) / "missing")
