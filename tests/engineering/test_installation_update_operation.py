@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from engineering_platform.installation_update_plan import InstallationUpdatePlan
-from engineering_platform.installation_update_operation import InstallationUpdateOperationError, InstallationUpdateSession, create, transition
+from engineering_platform.installation_update_operation import InstallationUpdateOperationError, InstallationUpdateSession, create, status, transition
 
 
 def plan(root: Path) -> InstallationUpdatePlan:
@@ -62,3 +62,11 @@ class InstallationUpdateOperationTests(unittest.TestCase):
                     session.cleanup()
                 self.assertEqual(create(update)["state"], "CLEANUP_PENDING")
                 self.assertTrue(outside.exists())
+
+    def test_status_exposes_identity_and_pending_cleanup_without_mutation(self):
+        with TemporaryDirectory() as temporary:
+            update = plan(Path(temporary)); create(update)
+            for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING"):
+                transition(update, state, {})
+            observed = status(Path(temporary), "update-0001")
+            self.assertEqual((observed["state"], observed["target_version"], observed["target_digest"]), ("CLEANUP_PENDING", "2.3.2", "sha256:" + "b" * 64))

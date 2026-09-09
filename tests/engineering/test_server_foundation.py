@@ -205,6 +205,14 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(server.main(("installation-update-plan", "--data-root", str(self.root))), 2)
 
+    def test_installation_update_status_is_read_only_and_requires_exact_operation(self) -> None:
+        with patch("engineering_platform.server.installation_update_operation.status", return_value={"state": "CLEANUP_PENDING"}) as status:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(("installation-update-status", "--data-root", str(self.root), "--operation-id", "update-0001")), 0)
+            status.assert_called_once_with(self.root, "update-0001")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main(("installation-update-status", "--data-root", str(self.root))), 2)
+
     def test_queue_operator_capability_grant_and_revoke_are_durable(self) -> None:
         server.initialize(self.root)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:

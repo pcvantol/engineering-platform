@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import tempfile
 from typing import Mapping
+import re
 
 from .installation_update_plan import InstallationUpdatePlan
 from .operational_installation_lock import OperationalInstallationLock
@@ -21,6 +22,7 @@ from .operational_installation_lock import OperationalInstallationLock
 _STATES = ("PREPARED", "INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE")
 _NEXT = {state: _STATES[index + 1:index + 2] for index, state in enumerate(_STATES)}
 _NEXT["VERIFIED"] = ("CLEANUP_PENDING", "COMPLETE")
+_OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 
 
 class InstallationUpdateOperationError(ValueError):
@@ -78,6 +80,28 @@ def create(plan: InstallationUpdatePlan) -> dict[str, object]:
                                 "state": "PREPARED", "events": [{"state": "PREPARED", "evidence": {}}]}
     _write(path, value)
     return value
+
+
+def status(data_root: Path, operation_id: str) -> dict[str, object]:
+    """Return an identity-bearing, read-only view of a persisted operation."""
+    if _OPERATION.fullmatch(operation_id) is None:
+        raise InstallationUpdateOperationError("installation update operation ID is invalid")
+    root = Path(data_root).expanduser().resolve()
+    path = root / "operations" / operation_id / "operation.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallationUpdateOperationError("installation update operation is unreadable") from error
+    if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("operation_id") != operation_id:
+        raise InstallationUpdateOperationError("installation update operation is invalid")
+    plan = value.get("plan")
+    if not isinstance(plan, dict) or value.get("state") not in _STATES or not isinstance(value.get("events"), list):
+        raise InstallationUpdateOperationError("installation update operation is invalid")
+    return {"operation_id": operation_id, "state": value["state"], "plan_digest": value.get("plan_digest"),
+            "installation_id": plan.get("installation_id"), "current_version": plan.get("current_version"),
+            "target_version": plan.get("target_version"), "target_digest": plan.get("target_digest"),
+            "target_source_revision": plan.get("target_source_revision"), "cleanup_targets": plan.get("cleanup_targets"),
+            "events": value["events"]}
 
 
 def transition(plan: InstallationUpdatePlan, state: str, evidence: Mapping[str, object]) -> dict[str, object]:
