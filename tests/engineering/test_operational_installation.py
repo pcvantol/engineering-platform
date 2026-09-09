@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from engineering_platform.operational_installation import OperationalInstallationError, package_identity, record_status, resolve, validate_health, validate_package_identity
+from engineering_platform.operational_installation import OperationalInstallationError, inventory, package_identity, record_status, resolve, validate_health, validate_package_identity
 from engineering_platform.operational_installation_record import record
 
 
@@ -101,3 +101,18 @@ class OperationalInstallationTests(unittest.TestCase):
             other = Path(directory) / "other-python"; other.write_text("#!/bin/sh\n"); other.chmod(0o755)
             with self.assertRaisesRegex(OperationalInstallationError, "different interpreter"):
                 validate_package_identity(installation, {**identity, "interpreter": str(other)})
+
+    def test_inventory_exposes_old_path_package_and_conflicting_service_without_selecting_it(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            old = Path(directory) / "old EP venv" / "bin" / "python"; old.parent.mkdir(parents=True); old.write_text("#!/bin/sh\n"); old.chmod(0o755)
+            installation = resolve(root, interpreter=interpreter)
+            process = __import__("subprocess")
+            def runner(args, **_kwargs):
+                selected = str(Path(args[0]).resolve())
+                version = "2.3.1" if selected == str(interpreter.resolve()) else "2.3.0"
+                return process.CompletedProcess(args, 0, json.dumps({"interpreter": selected, "version": version, "metadata": "/metadata", "package": "/package"}), "")
+            observed = inventory(installation, candidates=(old,), service_references={"com.example.legacy": old}, runner=runner)
+            self.assertEqual(observed["coverage"], "EXPLICIT_PATHS_ONLY")
+            self.assertFalse(observed["single_operational_installation"])
+            self.assertEqual(observed["conflicting_service_references"][0]["identity"]["version"], "2.3.0")
