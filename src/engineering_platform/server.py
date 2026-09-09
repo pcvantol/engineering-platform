@@ -45,7 +45,7 @@ from . import external_producer_binding
 from . import file_inbox
 from . import host_admin
 from . import installation_relocation
-from . import installation_update_plan
+from . import installation_update_plan, installation_update_operation
 from . import operational_installation
 from . import local_repository_binding
 from . import project_topology
@@ -3855,7 +3855,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "installation-update-plan", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -3917,6 +3917,10 @@ def main(argv: list[str] | None = None) -> int:
                 target_version=args.target_version, target_digest=args.target_digest,
                 target_source_revision=args.target_source_revision,
             ).payload()
+        elif args.command == "installation-update-status":
+            if not args.operation_id:
+                raise ServerConfigurationError("--operation-id is required for installation update status")
+            result = installation_update_operation.status(args.data_root, args.operation_id)
         elif args.command == "service-install":
             initialize(args.data_root)
             result = {"result": "INSTALLED", **server_service.install(args.data_root)}
