@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 from typing import Callable, Iterable, Mapping
 
+from . import operational_installation_record
+
 
 class OperationalInstallationError(ValueError):
     """An operational installation cannot be identified safely."""
@@ -65,6 +67,39 @@ def resolve(data_root: Path, *, interpreter: str | Path,
         raise OperationalInstallationError("selected operational interpreter is unavailable")
     candidates = tuple(str(normalized(candidate)) for candidate in path_candidates)
     return OperationalInstallation(str(selected), str(root), instance_id, version, pid, candidates)
+
+
+def record_status(installation: OperationalInstallation) -> Mapping[str, object]:
+    """Return the EP-owned record state, rejecting a conflicting record.
+
+    A missing record is reported explicitly so an incidental PATH package can
+    never be treated as the registered operational installation.  This helper
+    is deliberately read-only: registration remains an installation-lifecycle
+    responsibility.
+    """
+    root = Path(installation.data_root)
+    path = root / operational_installation_record.FILENAME
+    if not path.exists():
+        return {"state": "UNREGISTERED", "path": str(path)}
+    try:
+        record = operational_installation_record.load(root)
+    except operational_installation_record.OperationalInstallationRecordError as error:
+        raise OperationalInstallationError("operational installation record is unreadable") from error
+    if (record.get("installation_id") != installation.instance_id
+            or record.get("version") != installation.configured_version
+            or normalized(str(record.get("interpreter", ""))) != normalized(installation.interpreter)):
+        raise OperationalInstallationError("operational installation record does not match selected runtime")
+    return {
+        "state": "REGISTERED",
+        "path": str(path),
+        "installation_id": record["installation_id"],
+        "version": record["version"],
+        "channel": record["channel"],
+        "artifact_digest": record["artifact_digest"],
+        "source_revision": record["source_revision"],
+        "desired_state": record["desired_state"],
+        "observed_state": record["observed_state"],
+    }
 
 
 def validate_health(installation: OperationalInstallation, response: Mapping[str, object]) -> None:
