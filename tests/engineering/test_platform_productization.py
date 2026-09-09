@@ -129,6 +129,11 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertIn("pypa/gh-action-pypi-publish", workflow)
         self.assertIn("id-token: write", workflow)
         self.assertNotIn("secrets.PYPI_API_TOKEN", workflow)
+        self.assertIn("registry-readback-and-release-evidence", workflow)
+        self.assertIn("--no-cache-dir", workflow)
+        self.assertIn("PyPI readback does not match the exact qualified distributions", workflow)
+        self.assertIn("RELEASE_COMPLETE", workflow)
+        self.assertIn("engineering-platform-release-evidence", workflow)
         self.assertTrue(qualifier.is_file())
 
     def test_packaging_allowlists_runtime_assets_instead_of_repository_files(self) -> None:
