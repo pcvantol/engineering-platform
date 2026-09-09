@@ -190,6 +190,15 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             record_status.assert_called_once_with(resolve.return_value)
             validate_package_identity.assert_called_once_with(resolve.return_value, package_identity.return_value)
 
+    def test_operational_inventory_is_explicit_read_only_input(self) -> None:
+        selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
+        candidate = Path(self.temporary.name) / "old-python"; candidate.write_text("#!/bin/sh\n"); candidate.chmod(0o755)
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch("engineering_platform.server.operational_installation.resolve") as resolve, patch("engineering_platform.server.operational_installation.inventory", return_value={"coverage": "EXPLICIT_PATHS_ONLY"}) as inventory:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(("operational-inventory", "--data-root", str(self.root), "--candidate-interpreter", str(candidate), "--service-reference", f"legacy={candidate}")), 0)
+            resolve.assert_called_once_with(self.root, interpreter=selected, path_candidates=[candidate])
+            inventory.assert_called_once_with(resolve.return_value, service_references={"legacy": candidate}, candidates=[candidate])
+
     def test_installation_update_plan_is_explicit_and_read_only(self) -> None:
         artifact = Path(self.temporary.name) / "exact.whl"; artifact.write_bytes(b"wheel")
         with patch("engineering_platform.server.installation_update_plan.prepare") as prepare:

@@ -3855,7 +3855,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-inventory", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -3877,6 +3877,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-version")
     parser.add_argument("--target-digest")
     parser.add_argument("--target-source-revision")
+    parser.add_argument("--candidate-interpreter", action="append", type=Path, default=[])
+    parser.add_argument("--service-reference", action="append", default=[])
     return parser
 
 
@@ -3909,6 +3911,19 @@ def main(argv: list[str] | None = None) -> int:
                 "record": operational_installation.record_status(installation),
                 "package": package,
             }
+        elif args.command == "operational-inventory":
+            references: dict[str, Path] = {}
+            for raw in args.service_reference:
+                label, separator, path = raw.partition("=")
+                if not separator or not label or not path or label in references:
+                    raise ServerConfigurationError("--service-reference must be a unique label=absolute-interpreter path")
+                candidate = Path(path)
+                if not candidate.is_absolute():
+                    raise ServerConfigurationError("--service-reference interpreter path must be absolute")
+                references[label] = candidate
+            selected = server_service.configured_interpreter(args.data_root) or Path(sys.executable)
+            installation = operational_installation.resolve(args.data_root, interpreter=selected, path_candidates=args.candidate_interpreter)
+            result = operational_installation.inventory(installation, service_references=references, candidates=args.candidate_interpreter)
         elif args.command == "installation-update-plan":
             if not all((args.operation_id, args.artifact, args.target_version, args.target_digest, args.target_source_revision)):
                 raise ServerConfigurationError("--operation-id, --artifact, --target-version, --target-digest and --target-source-revision are required")
