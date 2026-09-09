@@ -190,6 +190,21 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             record_status.assert_called_once_with(resolve.return_value)
             validate_package_identity.assert_called_once_with(resolve.return_value, package_identity.return_value)
 
+    def test_installation_update_plan_is_explicit_and_read_only(self) -> None:
+        artifact = Path(self.temporary.name) / "exact.whl"; artifact.write_bytes(b"wheel")
+        with patch("engineering_platform.server.installation_update_plan.prepare") as prepare:
+            prepare.return_value.payload.return_value = {"operation_id": "update-0001"}
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(("installation-update-plan", "--data-root", str(self.root),
+                                              "--operation-id", "update-0001", "--artifact", str(artifact),
+                                              "--target-version", "2.3.2", "--target-digest", "sha256:" + "a" * 64,
+                                              "--target-source-revision", "b" * 40)), 0)
+            prepare.assert_called_once_with(self.root, operation_id="update-0001", artifact=artifact,
+                                            target_version="2.3.2", target_digest="sha256:" + "a" * 64,
+                                            target_source_revision="b" * 40)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main(("installation-update-plan", "--data-root", str(self.root))), 2)
+
     def test_queue_operator_capability_grant_and_revoke_are_durable(self) -> None:
         server.initialize(self.root)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
