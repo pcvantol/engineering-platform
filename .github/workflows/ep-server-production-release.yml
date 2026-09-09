@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: engineering-platform-production-release
+  cancel-in-progress: false
+
 jobs:
   release-context:
     name: Verify exact merged release source
@@ -188,13 +192,13 @@ jobs:
         with:
           packages-dir: pypi-dist
 
-  registry-readback-and-release-evidence:
-    name: Verify PyPI readback and retain release evidence
+  registry-readback-and-published-evidence:
+    name: Verify PyPI readback and retain PUBLISHED evidence
     needs: [release-context, publish-pypi]
     if: needs.publish-pypi.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
@@ -228,8 +232,9 @@ jobs:
               __import__("json").dumps({"registry": "pypi", "artifacts": readback}, sort_keys=True) + "\n",
               encoding="utf-8")
           PY
-      - name: Persist immutable publication receipt and release completion
+      - name: Persist immutable PyPI readback as PUBLISHED evidence
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-context.outputs.version }}
           SOURCE_SHA: ${{ needs.release-context.outputs.candidate_sha }}
         run: |
@@ -256,21 +261,109 @@ jobs:
               prepared = store.load(operation.operation_id) or store.save(operation)
               qualified = prepared.transition("QUALIFIED", evidence={"exact_main_sha": source, "artifact_digests": operation.artifacts})
               published = qualified.transition("PUBLISHED", evidence={"registry": "pypi", "readback": digests})
-              completed = published.transition("RELEASE_COMPLETE", evidence={"temporary_paths": ["registry-readback"], "result": "COMPLETE"})
               store.replace(prepared, qualified)
               store.replace(qualified, published)
               store.record_publication(published)
-              store.replace(published, completed)
-              store.record_publication(completed)
           finally:
               store.release(operation.operation_id)
           PY
+          TAG="engineering-platform-v$VERSION"
+          RECEIPT="engineering-platform-release-published-$VERSION-$SOURCE_SHA.json"
+          OPERATION="release-${VERSION}-${SOURCE_SHA:0:12}"
+          cp "release-evidence/operations/$OPERATION.json" "$RECEIPT"
+          if gh release view "$TAG" --json targetCommitish >/dev/null 2>&1; then
+            test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_SHA"
+            mkdir existing-release
+            if gh release download "$TAG" --pattern "$RECEIPT" --dir existing-release; then
+              cmp "$RECEIPT" "existing-release/$RECEIPT"
+            else
+              gh release upload "$TAG" "$RECEIPT"
+            fi
+          else
+            gh release create "$TAG" "$RECEIPT" --target "$SOURCE_SHA" --title "Engineering Platform $VERSION" --generate-notes
+          fi
           rm -rf registry-readback
           test ! -e registry-readback
+          rm -rf existing-release
+          test ! -e existing-release
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: engineering-platform-release-evidence-${{ needs.release-context.outputs.version }}
+          name: engineering-platform-published-evidence-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.candidate_sha }}
           path: |
             registry-readback-digests.json
+            engineering-platform-release-published-*.json
             release-evidence/
+          if-no-files-found: error
+
+  record-release-complete:
+    name: Promote PUBLISHED evidence to RELEASE_COMPLETE
+    needs: [release-context, registry-readback-and-published-evidence]
+    if: needs.registry-readback-and-published-evidence.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.candidate_sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: engineering-platform-published-evidence-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.candidate_sha }}
+          path: published-evidence
+      - name: Validate immutable PUBLISHED evidence and record RELEASE_COMPLETE
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.release-context.outputs.version }}
+          SOURCE_SHA: ${{ needs.release-context.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          TAG="engineering-platform-v$VERSION"
+          PUBLISHED_RECEIPT="engineering-platform-release-published-$VERSION-$SOURCE_SHA.json"
+          RECEIPT="engineering-platform-release-complete-$VERSION-$SOURCE_SHA.json"
+          OPERATION="release-${VERSION}-${SOURCE_SHA:0:12}"
+          mkdir durable-evidence
+          gh release download "$TAG" --pattern "$PUBLISHED_RECEIPT" --dir durable-evidence
+          cmp "published-evidence/$PUBLISHED_RECEIPT" "durable-evidence/$PUBLISHED_RECEIPT"
+          PYTHONPATH=src python3 - "$OPERATION" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          from engineering_platform.release_operation import ReleaseOperationError, ReleaseOperationStore
+
+          operation_id = sys.argv[1]
+          store = ReleaseOperationStore(Path("published-evidence/release-evidence"))
+          store.acquire(operation_id)
+          try:
+              published = store.load(operation_id)
+              if published is None or published.state != "PUBLISHED":
+                  raise ReleaseOperationError("durable release evidence is not PUBLISHED")
+              completed = published.transition(
+                  "RELEASE_COMPLETE",
+                  evidence={"temporary_paths": ["registry-readback"], "result": "COMPLETE"},
+              )
+              store.replace(published, completed)
+              store.record_publication(completed)
+          finally:
+              store.release(operation_id)
+          Path(sys.argv[1] + ".json").write_text(
+              (Path("published-evidence/release-evidence/operations") / (operation_id + ".json")).read_text(),
+              encoding="utf-8",
+          )
+          PY
+          mv "$OPERATION.json" "$RECEIPT"
+          if gh release download "$TAG" --pattern "$RECEIPT" --dir durable-evidence; then
+            cmp "$RECEIPT" "durable-evidence/$RECEIPT"
+          else
+            gh release upload "$TAG" "$RECEIPT"
+          fi
+          rm -rf durable-evidence
+          test ! -e durable-evidence
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engineering-platform-release-evidence-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.candidate_sha }}
+          path: |
+            published-evidence/
+            engineering-platform-release-complete-*.json
           if-no-files-found: error
