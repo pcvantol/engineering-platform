@@ -43,6 +43,7 @@ DEPENDABOT_BINDING_TIMEOUT_SECONDS = 30
 # retain a finite, named qualification limit instead of making product code or
 # lifecycle semantics depend on runner timing.
 DEPENDABOT_DISPATCH_TIMEOUT_SECONDS = 60
+INSTALLED_SERVER_COMMAND_TIMEOUT_SECONDS = 20
 
 # The crash-recovery canaries deliberately terminate the installed Server.
 # A hosted SQLite runner can briefly retain the just-released store while the
@@ -57,7 +58,18 @@ BOOTSTRAP_TOPOLOGY_RETRY_DELAY_SECONDS = 0.25
 
 def command(binary: Path, *args: str, environment: dict[str, str] | None = None) -> dict[str, object]:
     for attempt in range(1, BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS + 1):
-        completed = subprocess.run([str(binary), *args], check=False, text=True, capture_output=True, env=environment)  # nosec B603
+        try:
+            completed = subprocess.run(
+                [str(binary), *args], check=False, text=True, capture_output=True,
+                env=environment, timeout=INSTALLED_SERVER_COMMAND_TIMEOUT_SECONDS,
+            )  # nosec B603
+        except subprocess.TimeoutExpired:
+            detail = f"installed Server command timed out after {INSTALLED_SERVER_COMMAND_TIMEOUT_SECONDS} seconds"
+            retryable = args[:1] == ("bootstrap-topology",)
+            if retryable and attempt < BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS:
+                time.sleep(BOOTSTRAP_TOPOLOGY_RETRY_DELAY_SECONDS * attempt)
+                continue
+            raise RuntimeError(f"installed Server command failed ({' '.join(args)}): {detail}") from None
         if not completed.returncode:
             return json.loads(completed.stdout)
         detail = (completed.stderr or completed.stdout).strip().replace("\n", " ")[:1024]
