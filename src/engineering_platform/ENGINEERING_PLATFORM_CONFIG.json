@@ -3,7 +3,7 @@
   "platform": {
     "id": "engineering-platform",
     "name": "Engineering Platform",
-    "version": "2.3.0",
+    "version": "2.3.2",
     "generation": 2,
     "documentation_namespace": "engineering-platform",
     "capability_registry_version": 1
@@ -11,8 +11,15 @@
   "workspace": {
     "id": "engineering-platform",
     "name": "Engineering Platform",
-    "repository": {"provider": "github", "owner": "pcvantol", "name": "engineering-platform", "default_branch": "main"},
-    "branding": {"dashboard_title": "EP Operations"},
+    "repository": {
+      "provider": "github",
+      "owner": "pcvantol",
+      "name": "engineering-platform",
+      "default_branch": "main"
+    },
+    "branding": {
+      "dashboard_title": "EP Operations"
+    },
     "workspace_authorization": {
       "allowed_roots": [],
       "allowed_repositories": [],
