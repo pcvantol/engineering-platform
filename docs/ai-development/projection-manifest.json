@@ -12,9 +12,9 @@
   "extension_identity": "ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION",
   "materializer_version": "1",
   "profile": "engineering-platform",
-  "projection_digest": "34d04daa1668d5ee1288a22d77aa143fecf4e167cb7fdc443d4082cb3ed45d77",
-  "projection_file_digest": "c91b01a24e530edf98f2bfa3a86d7f5865de82722f738cec7a34ed5f67cc9058",
+  "projection_digest": "6f77e0a7cf5d641c753dbcfde867f530bf3aaeb7a9da77be3380943e43f4f0c1",
+  "projection_file_digest": "0a5f4f4398405b9272cc3f961397f91d9b40ac2d9e1bbaf55bc13cb7db5eb95a",
   "schema_version": "1",
-  "source_commit": "ec070e399ff4dbd92e760370002995fe4f4d52d6",
+  "source_commit": "6ec3b443c3ab3bdf76c626c2046d3778db570eb0",
   "source_repo": "pcvantol/ai-development-contracts"
 }

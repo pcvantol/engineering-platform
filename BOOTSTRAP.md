@@ -34,6 +34,6 @@ Validate the projection offline with:
 ```sh
 python3 docs/ai-development/validate_projection.py \
   --profile engineering-platform \
-  --source-commit ec070e399ff4dbd92e760370002995fe4f4d52d6 \
+  --source-commit 6ec3b443c3ab3bdf76c626c2046d3778db570eb0 \
   --extension-identity ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION
 ```
