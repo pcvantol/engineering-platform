@@ -6,12 +6,18 @@ stored by the EP-owned service record, normalized to its real filesystem path.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from importlib import metadata as importlib_metadata
 import json
 from pathlib import Path
+import re
 import subprocess
+import sys
 from typing import Callable, Iterable, Mapping
 
 from . import operational_installation_record
+
+
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class OperationalInstallationError(ValueError):
@@ -174,6 +180,190 @@ def validate_registered_package_identity(record: Mapping[str, object], identity:
         raise OperationalInstallationError("registered operational installation lacks package version")
     if identity.get("version") != version:
         raise OperationalInstallationError("registered installation version does not match selected package")
+
+
+def _direct_artifact_identity(metadata_path: Path) -> dict[str, object]:
+    """Read optional PEP 610 wheel provenance without inventing a digest.
+
+    An installed wheel is not reversible into its original wheel bytes.  Pip
+    can, however, retain the exact archive hash in ``direct_url.json`` for a
+    direct wheel installation.  Treat every other install form as explicitly
+    unavailable rather than copying the registered digest into a live claim.
+    """
+    try:
+        value = json.loads((metadata_path / "direct_url.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"state": "UNAVAILABLE"}
+    archive = value.get("archive_info") if isinstance(value, dict) else None
+    if not isinstance(archive, dict):
+        return {"state": "UNAVAILABLE"}
+    digest = archive.get("hash")
+    if isinstance(digest, str) and digest.startswith("sha256="):
+        digest = "sha256:" + digest.removeprefix("sha256=")
+    if not isinstance(digest, str):
+        hashes = archive.get("hashes")
+        candidate = hashes.get("sha256") if isinstance(hashes, dict) else None
+        digest = "sha256:" + candidate if isinstance(candidate, str) else None
+    if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
+        return {"state": "UNAVAILABLE"}
+    return {"state": "OBSERVED", "digest": digest}
+
+
+def live_runtime_identity(*, package: str | Path, product_version: str) -> dict[str, object]:
+    """Describe the actual process that generated a server health response.
+
+    This is intentionally an in-process observation.  It never looks at
+    ``PATH`` or an arbitrary checkout.  Installed distribution metadata and
+    its optional wheel provenance remain separate from product-version data
+    embedded in the running package.
+    """
+    if not isinstance(product_version, str) or not product_version:
+        raise OperationalInstallationError("live operational product version is invalid")
+    identity: dict[str, object] = {
+        "interpreter": str(launcher(sys.executable)),
+        "executable": str(launcher(sys.executable)),
+        "package": str(normalized(package)),
+        "package_version": None,
+        "metadata": None,
+        "artifact": {"state": "UNAVAILABLE"},
+    }
+    try:
+        distribution = importlib_metadata.distribution("engineering-platform")
+        metadata_path = normalized(Path(distribution._path))
+    except (importlib_metadata.PackageNotFoundError, OSError, ValueError):
+        # Distribution metadata is supplemental to the process facts above.
+        # A malformed or unreadable dist-info directory must not make the
+        # generic health endpoint claim an invented artifact identity.
+        return identity
+    identity["package_version"] = distribution.version
+    identity["metadata"] = str(metadata_path)
+    identity["artifact"] = _direct_artifact_identity(metadata_path)
+    return identity
+
+
+def _observed_namespace(value: Mapping[str, object] | None, namespace: str) -> dict[str, object]:
+    """Keep source, wheel, installation and live observations disjoint."""
+    if value is None:
+        return {"state": "UNOBSERVED"}
+    if not isinstance(value, Mapping):
+        raise OperationalInstallationError(f"{namespace} observation is invalid")
+    return {"state": "OBSERVED", "identity": dict(value)}
+
+
+def _required_string(value: Mapping[str, object], key: str, label: str) -> str:
+    candidate = value.get(key)
+    if not isinstance(candidate, str) or not candidate:
+        raise OperationalInstallationError(f"{label} is incomplete")
+    return candidate
+
+
+def qualify_runtime_response(
+    installation: OperationalInstallation,
+    *,
+    record: Mapping[str, object],
+    package: Mapping[str, str],
+    response: Mapping[str, object],
+    source_observation: Mapping[str, object] | None = None,
+    wheel_observation: Mapping[str, object] | None = None,
+) -> Mapping[str, object]:
+    """Fail closed unless the real health response names the selected release.
+
+    ``source_observation`` and ``wheel_observation`` are intentionally
+    optional and never used as a substitute for installed or live facts.  A
+    caller can present all four namespaces in one diagnostic without allowing
+    an installation observation to overwrite a source or wheel observation.
+    """
+    if record.get("state") != "REGISTERED":
+        raise OperationalInstallationError("operational installation is not registered")
+    record_version = _required_string(record, "version", "registered operational installation")
+    record_digest = _required_string(record, "artifact_digest", "registered operational installation")
+    if _DIGEST.fullmatch(record_digest) is None:
+        raise OperationalInstallationError("registered operational artifact digest is invalid")
+    record_instance = _required_string(record, "installation_id", "registered operational installation")
+    if record_instance != installation.instance_id:
+        raise OperationalInstallationError("registered operational installation does not match selected instance")
+
+    package_value = dict(package)
+    validate_package_identity(installation, package_value)
+    validate_registered_package_identity(record, package_value)
+    package_interpreter = _required_string(package_value, "interpreter", "selected package identity")
+    package_path = _required_string(package_value, "package", "selected package identity")
+    metadata_path = _required_string(package_value, "metadata", "selected package identity")
+    package_version = _required_string(package_value, "version", "selected package identity")
+    if package_version != record_version:
+        raise OperationalInstallationError("registered installation version does not match selected package")
+
+    validate_health(installation, response)
+    if response.get("product_version") != record_version:
+        raise OperationalInstallationError("health response does not identify the registered operational release")
+    live = response.get("runtime_identity")
+    if not isinstance(live, Mapping):
+        raise OperationalInstallationError("health response lacks live runtime identity")
+    live_interpreter = _required_string(live, "interpreter", "health response runtime identity")
+    live_executable = _required_string(live, "executable", "health response runtime identity")
+    live_package = _required_string(live, "package", "health response runtime identity")
+    live_version = _required_string(live, "package_version", "health response runtime identity")
+    live_metadata = _required_string(live, "metadata", "health response runtime identity")
+    if launcher(live_interpreter) != launcher(installation.interpreter):
+        raise OperationalInstallationError("health response interpreter differs from selected operational runtime")
+    if launcher(live_executable) != launcher(package_interpreter):
+        raise OperationalInstallationError("health response executable differs from selected package")
+    if normalized(live_package) != normalized(package_path):
+        raise OperationalInstallationError("health response package differs from selected package")
+    if normalized(live_metadata) != normalized(metadata_path):
+        raise OperationalInstallationError("health response metadata differs from selected package")
+    if live_version != package_version or live_version != record_version:
+        raise OperationalInstallationError("health response package version differs from selected release")
+
+    artifact = live.get("artifact")
+    if not isinstance(artifact, Mapping):
+        raise OperationalInstallationError("health response artifact identity is invalid")
+    artifact_state = artifact.get("state")
+    if artifact_state == "OBSERVED" and set(artifact) == {"state", "digest"}:
+        live_digest = _required_string(artifact, "digest", "health response artifact identity")
+        if _DIGEST.fullmatch(live_digest) is None:
+            raise OperationalInstallationError("health response artifact digest is invalid")
+        if live_digest != record_digest:
+            raise OperationalInstallationError("health response artifact digest differs from registered installation")
+        artifact_observation: Mapping[str, object] = {"state": "PASS", "digest": live_digest}
+    elif artifact_state == "UNAVAILABLE" and set(artifact) == {"state"}:
+        artifact_observation = {"state": "UNAVAILABLE"}
+    else:
+        raise OperationalInstallationError("health response artifact identity is invalid")
+
+    return {
+        "qualification": "PASS",
+        "source": _observed_namespace(source_observation, "source"),
+        "wheel": _observed_namespace(wheel_observation, "wheel"),
+        "installation": {
+            "record": {
+                "installation_id": record_instance,
+                "version": record_version,
+                "artifact_digest": record_digest,
+                "source_revision": _required_string(record, "source_revision", "registered operational installation"),
+            },
+            "package": {
+                "interpreter": package_interpreter,
+                "package": package_path,
+                "metadata": metadata_path,
+                "version": package_version,
+            },
+        },
+        "live": {
+            "service": _required_string(response, "service", "health response"),
+            "instance_id": _required_string(response, "instance_id", "health response"),
+            "product_version": _required_string(response, "product_version", "health response"),
+            "runtime_identity": {
+                "interpreter": live_interpreter,
+                "executable": live_executable,
+                "package": live_package,
+                "package_version": live_version,
+                "metadata": live_metadata,
+                "artifact": dict(artifact),
+            },
+            "artifact_verification": dict(artifact_observation),
+        },
+    }
 
 
 def inventory(installation: OperationalInstallation, *, service_references: Mapping[str, str | Path],
