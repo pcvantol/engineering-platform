@@ -3,28 +3,29 @@
 ## Release and operational installation lifecycle V1 — active coordinated plan
 
 Repository evidence on 2026-09-09 establishes that `origin/main` is
-`b3cd4b2`, while the remote `release-2.3.1` candidate is `3c934ee` and PyPI
-already holds immutable 2.3.1 wheel and sdist bytes. Main consistently
-projects 2.3.0, so the published version must be reconciled by a protected
-main PR without changing the published identity. The observed Mac has one
-2.3.1 server process/data root but a distinct 2.3.0 PlatformIO PATH candidate;
-this is an investigation fact, not an authorization to remove or cut over
-either installation. CENTRAL schema 56, engineering-storage schema 41 and
-repository-attachment schema 1.0 remain separate contracts.
+`a517ce3`. PyPI holds immutable 2.3.1 wheel and sdist bytes; protected-main
+reconciliation moved the canonical source projections forward to 2.3.2 without
+rewriting that published identity. The observed Mac has one 2.3.1 server
+process/data root and a distinct 2.3.0 PlatformIO PATH candidate. This is
+explicit-path investigation evidence, not proof of Mac-wide uniqueness and not
+authorization to remove or cut over either installation. CENTRAL schema 56,
+engineering-storage schema 41 and repository-attachment schema 1.0 remain
+separate contracts.
 
 | Increment | Owning repository | Bounded result | Dependencies / acceptance |
 | --- | --- | --- | --- |
-| RL-1 | engineering-platform | Durable EP release-operation record, exclusive operation lock, exact wheel/sdist identities and separate `PUBLISHED`/`RELEASE_COMPLETE` states | SOURCE_FIXED: PR #111 / `6e83295`; release execution remains pending. |
-| RL-2 | engineering-platform | Protected-main release workflow, exact-main qualification, registry readback, receipt and scoped cleanup | PARTIAL_SOURCE_FIXED: PR #112 / `34e808f` removes branch mutation; registry readback/receipt/cleanup remain pending. |
-| OI-1 | engineering-platform | Read-only operational-installation resolver/diagnostic | SOURCE_FIXED: PR #111; health identity enforcement: PR #114 / `9ef29bb`. No installation verified. |
-| OI-2 | engineering-platform | One EP-owned install/update/repair record and crash-resumable lifecycle | PARTIAL_SOURCE_FIXED: PR #113 / `38b222a` adds durable record; resolver integration, migration, update and cleanup remain pending. |
-| FP-1 | forge-platform | Reconcile universal composition with EP-owned installation provision | Requires fresh remote baseline; no duplicate EP migration/installation engine. |
-| F-1/W-1/AC-1 | forge, workspace, ai-development-contracts | Respectively consume release evidence, retain own version closure, and retain generic workflow/evidence rules | After EP contracts are published; no product runtime authority transfers. |
+| RL-1 | engineering-platform | Durable EP release-operation record, exclusive operation lock, exact wheel/sdist identities and separate `PUBLISHED`/`RELEASE_COMPLETE` states | SOURCE_FIXED: #111 `6e83295`, #117 `05f3fa6`, #124 `1375cbe`. No new release operation has been executed. |
+| RL-2 | engineering-platform | Protected-main release workflow, exact-main qualification, registry readback, receipt and scoped cleanup | SOURCE_FIXED: #112 `34e808f`, #117 `05f3fa6`, #124 `1375cbe`, #125 `fe7c32e`. 2.3.2 is source-prepared only; no new PyPI publication or release closure is claimed. |
+| OI-1 | engineering-platform | Read-only operational-installation resolver/diagnostic | SOURCE_FIXED: #111, #114 `9ef29bb`, #116 `71779d5`, #118 `f29006c`, #131 `28293b0`, #132 `d7efd67`, #133 `98e70e9`, #135 `99cbd4f`. Explicit-path inventory only; no installation is verified. |
+| OI-2 | engineering-platform | One EP-owned install/update/repair record and crash-resumable lifecycle | PARTIAL_SOURCE_FIXED: #113 `38b222a`, #121 `1bfe729`, #122 `a6f6c10`, #123 `2c4b081`, #127 `b77a638`, #128 `73c9729`, #129 `aadb3a5`, #130 `5073ee1`, #137 `a517ce3`. Durable plan/journal/lock/cleanup foundations exist; a real update, migration and cleanup have not run. |
+| FP-1 | forge-platform | Reconcile universal composition with EP-owned installation provision | SOURCE_FIXED: #21 `6395be9`, #22 `e666664`, #23 `ed91e81`; composition verifies producer artifact bytes and does not create a second EP engine. |
+| F-1/W-1/AC-1 | forge, workspace, ai-development-contracts | Respectively consume release evidence, retain own version closure, and retain generic workflow/evidence rules | SOURCE_FIXED in Forge #62 `a84cf637` / #63 `8b8dd1af` and Workspace #18 `28ca0bc` / #19 `8291ef1`; AI-development-contracts remains generic and owns no product runtime authority. |
 
-No release or installation increment is complete. RL-2, OI-2 and later
-cross-repository work remain intentionally incomplete. No live
-publication, installation, cutover, service mutation or artifact deletion is
-authorized by RL-1.
+`SOURCE_FIXED` is established only for the rows stated above. No new product
+release is `RELEASE_COMPLETE`; no installation is `INSTALLATION_VERIFIED` or
+`SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`; and no cleanup is
+`CLEANUP_COMPLETE`. A live publication, installation, cutover, service
+mutation or artifact deletion remains a separate authorization.
 
 ## Repository observation and safe cleanup — documented target
 
