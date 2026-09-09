@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 from typing import Mapping
 
@@ -98,6 +99,38 @@ def transition(plan: InstallationUpdatePlan, state: str, evidence: Mapping[str, 
     return value
 
 
+def cleanup(plan: InstallationUpdatePlan) -> dict[str, object]:
+    """Remove only exact operation-owned temporary paths after verification.
+
+    The operation journal, backup evidence, data root, caches outside the
+    operation and every development environment are deliberately excluded.
+    Symlinks fail closed instead of being followed or removed as a shortcut.
+    """
+    value = _load(plan)
+    if value["state"] not in {"VERIFIED", "CLEANUP_PENDING"}:
+        raise InstallationUpdateOperationError("installation update cleanup requires verified runtime")
+    operation_root = _path(plan).parent.resolve()
+    expected = tuple(operation_root / name for name in ("build", "download", "pip-cache"))
+    targets = tuple(Path(item) for item in plan.cleanup_targets)
+    if targets != expected:
+        raise InstallationUpdateOperationError("installation update cleanup targets are not operation-owned")
+    failed: list[str] = []
+    for target in targets:
+        try:
+            if target.is_symlink() or any(parent.is_symlink() for parent in target.parents if parent != operation_root.parent):
+                raise InstallationUpdateOperationError("operation cleanup refuses a symlinked path")
+            if target.exists():
+                shutil.rmtree(target)
+        except (OSError, InstallationUpdateOperationError):
+            failed.append(str(target))
+    if failed:
+        evidence = {"failed_targets": failed}
+        if value["state"] == "VERIFIED":
+            transition(plan, "CLEANUP_PENDING", evidence)
+        raise InstallationUpdateOperationError("installation update cleanup is pending")
+    return transition(plan, "COMPLETE", {"removed_targets": [str(path) for path in targets]})
+
+
 class InstallationUpdateSession:
     """The one lock-owning boundary for a resumable update operation.
 
@@ -124,6 +157,11 @@ class InstallationUpdateSession:
         if not self._owned:
             raise InstallationUpdateOperationError("installation update session does not own the lock")
         return transition(self.plan, state, evidence)
+
+    def cleanup(self) -> dict[str, object]:
+        if not self._owned:
+            raise InstallationUpdateOperationError("installation update session does not own the lock")
+        return cleanup(self.plan)
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         if self._owned:

@@ -7,8 +7,10 @@ from engineering_platform.installation_update_operation import InstallationUpdat
 
 
 def plan(root: Path) -> InstallationUpdatePlan:
+    root = root.resolve()
+    cleanup = tuple(str(root / "operations" / "update-0001" / name) for name in ("build", "download", "pip-cache"))
     return InstallationUpdatePlan("update-0001", "installation-1", str(root), "2.3.1", "sha256:" + "a" * 64,
-        "2.3.2", "sha256:" + "b" * 64, "c" * 40, str(root / "exact.whl"), (), ("INSTALLATION_LOCK",))
+        "2.3.2", "sha256:" + "b" * 64, "c" * 40, str(root / "exact.whl"), cleanup, ("INSTALLATION_LOCK",))
 
 
 class InstallationUpdateOperationTests(unittest.TestCase):
@@ -39,3 +41,24 @@ class InstallationUpdateOperationTests(unittest.TestCase):
                         pass
             with InstallationUpdateSession(update) as resumed:
                 self.assertEqual(resumed.advance("QUIESCED", {"service": "STOPPED"})["state"], "QUIESCED")
+
+    def test_cleanup_is_operation_scoped_and_symlink_failure_is_visible(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data root with spaces"; update = plan(root)
+            with InstallationUpdateSession(update) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED"):
+                    session.advance(state, {})
+                for target in update.cleanup_targets:
+                    path = Path(target); path.mkdir(parents=True); (path / "temporary").write_text("x")
+                self.assertEqual(session.cleanup()["state"], "COMPLETE")
+                self.assertTrue(all(not Path(target).exists() for target in update.cleanup_targets))
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"; update = plan(root); outside = Path(temporary) / "outside"; outside.mkdir()
+            with InstallationUpdateSession(update) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED"):
+                    session.advance(state, {})
+                target = Path(update.cleanup_targets[0]); target.parent.mkdir(parents=True, exist_ok=True); target.symlink_to(outside, target_is_directory=True)
+                with self.assertRaisesRegex(InstallationUpdateOperationError, "pending"):
+                    session.cleanup()
+                self.assertEqual(create(update)["state"], "CLEANUP_PENDING")
+                self.assertTrue(outside.exists())
