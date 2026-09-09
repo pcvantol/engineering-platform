@@ -244,7 +244,12 @@ def _has_current_local_validation_evidence(state: TransactionState) -> bool:
         str(item.get("result", "")).casefold()
         for item in state.validation_evidence if isinstance(item, dict)
     )
-    return not any(token in summaries for token in ("fail", "failed", "timeout", "timed out", "error", "unavailable"))
+    return (
+        any(token in summaries for token in ("pass", "passed", "succeed", "succeeded"))
+        and not any(token in summaries for token in (
+            "fail", "failed", "timeout", "timed out", "error", "unavailable", "skipped", "not applicable",
+        ))
+    )
 
 
 def _managed_prompt_phase(state: TransactionState | None) -> str:
@@ -2105,6 +2110,16 @@ First implementation pull-request publication gate:
         if not published.pull_request: failures.append("missing_pull_request")
         if published.branch != before.branch: failures.append("branch_mismatch")
         if published.commit_sha != before.head_sha: failures.append("candidate_sha_mismatch")
+        try:
+            pull_request = self.github.pull_request(published.pull_request) if published.pull_request else None
+        except RunnerError:
+            pull_request = None
+        if pull_request is None: failures.append("pull_request_unavailable")
+        elif pull_request.state != "OPEN": failures.append("pull_request_not_open")
+        elif not pull_request.is_draft: failures.append("pull_request_not_draft")
+        elif pull_request.head_branch != before.branch: failures.append("pull_request_branch_mismatch")
+        elif pull_request.base_branch != "main": failures.append("pull_request_base_mismatch")
+        elif pull_request.head_sha != before.head_sha: failures.append("pull_request_candidate_mismatch")
         if after is None: failures.append("candidate_unavailable_after_publication")
         elif not after.clean: failures.append("candidate_dirty_after_publication")
         elif after.branch != before.branch: failures.append("branch_changed_after_publication")

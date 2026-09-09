@@ -1759,7 +1759,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "untrusted",
         )
         agent.last_execution_seconds = 2.0
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([
+            PullRequestEvidence(71, "OPEN", True, True, is_draft=True, head_branch="main", base_branch="main", head_sha=sha),
+        ]), agent, lambda _: None)
         state = TransactionState("provider-context", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
         self.store.save(state)
         with patch("engineering_platform.execution_host.persist_provider_invocation", return_value="provider-1") as persist:
@@ -2608,24 +2610,34 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_first_implementation_publication_is_a_separate_post_assurance_dispatch(self) -> None:
         """The product gate, not provider wording, owns first PR creation."""
         sha = "a" * 40
+        branch, pr_number = "codex/publication-gate", 71
         profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
                    "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
         reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
                          "profile_digest": profile["digest"], "invocation_id": f"{role}-1",
                          "findings": [], "contract_version": "1.0", "started_at": "now", "completed_at": "now"}
                         for role in ("quality", "security"))
-        agent = SequencedFakeAgent([AgentResult("COMPLETE", "main", 71, commit_sha=sha)])
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        repository = FakeRepository(clean=True, branch=branch, contains=False)
+        github = FakeGitHub([PullRequestEvidence(
+            pr_number, "OPEN", False, False, is_draft=True,
+            head_branch=branch, base_branch="main", head_sha=sha,
+        )])
+        agent = SequencedFakeAgent([AgentResult("COMPLETE", branch, pr_number, commit_sha=sha)])
+        runner = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None)
         state = TransactionState("publication-gate", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
-                                 branch="main", owner_authorized=True, last_verified_sha=sha,
+                                 branch=branch, owner_authorized=True, last_verified_sha=sha,
                                  validation_evidence=({"command": "canonical suite", "result": "passed"},),
                                  local_validation_audit=({"outcome": "validated"},),
                                  assurance_profile=profile, assurance_reviews=reviews)
-        published, result = runner._publish_first_implementation_pull_request(
-            state, AgentResult("COMPLETE", "main", commit_sha=sha)
-        )
+        with patch.object(github, "pull_request", wraps=github.pull_request) as readback:
+            published, result = runner._publish_first_implementation_pull_request(
+                state, AgentResult("COMPLETE", branch, commit_sha=sha)
+            )
+        readback.assert_called_with(pr_number)
         self.assertFalse(published.terminal)
-        self.assertEqual(result.pull_request, 71)
+        self.assertEqual(result.pull_request, pr_number)
+        self.assertEqual(github.ready_calls, [])
+        self.assertEqual(github.merge_calls, [])
         self.assertIn("First implementation pull-request publication gate", agent.prompts[0])
 
     def test_first_publication_rejects_missing_or_stale_local_validation_despite_reviews(self) -> None:
@@ -2688,7 +2700,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ])
         repository = FakeRepository()
         agent.repository = repository
-        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch="codex/ordered-publication", base_branch="main")])
+        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, is_draft=True, head_branch="codex/ordered-publication", base_branch="main", head_sha="a" * 40)])
         state = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None).run(
             self.prompt, run_id="ordered-first-publication", owner_authorized=True,
         )
