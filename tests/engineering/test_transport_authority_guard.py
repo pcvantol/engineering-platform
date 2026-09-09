@@ -153,6 +153,21 @@ class TransportAuthorityGuardTest(unittest.TestCase):
                 module.command(Path("server"), "issue-consumer-credential")
         invoked.assert_called_once()
 
+    def test_installed_server_command_timeout_is_bounded_and_not_replayed_for_credentials(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        specification = importlib.util.spec_from_file_location(
+            "p_transport_installed_ingress_matrix_timeout",
+            root / "tools" / "qualification" / "p_transport_installed_ingress_matrix.py",
+        )
+        self.assertIsNotNone(specification)
+        module = importlib.util.module_from_spec(specification)  # type: ignore[arg-type]
+        specification.loader.exec_module(module)  # type: ignore[union-attr]
+        timeout = subprocess.TimeoutExpired(("server",), module.INSTALLED_SERVER_COMMAND_TIMEOUT_SECONDS)
+        with patch.object(module.subprocess, "run", side_effect=timeout) as invoked:
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                module.command(Path("server"), "issue-consumer-credential")
+        invoked.assert_called_once()
+
     def test_browser_fixture_uses_the_server_boundary_and_no_local_finder_route(self) -> None:
         """Dashboard browser evidence must not revive the retired direct listener."""
         root = Path(__file__).resolve().parents[2]
