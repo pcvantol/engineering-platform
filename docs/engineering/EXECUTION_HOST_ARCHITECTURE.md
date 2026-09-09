@@ -40,6 +40,26 @@ hosted checks and finalization; a new SHA, phase, resume or PR does not reset
 it. The Console projects the same stored review identities and repair rounds
 for live and historical runs.
 
+For a new Managed implementation, the first draft implementation PR is a
+separate, post-assurance dispatch: bounded implementation -> local validation
+-> independent Quality and Security reviews for the same candidate/profile ->
+host publication gate -> draft PR. `EXECUTE_AGENT` is used for both the
+implementation and that publication dispatch, so prompt authority is selected
+from trusted transaction kind, phase, next action, checkpointed PR lineage and
+current assurance evidence together. An action string or objective text alone
+never grants PR creation. Pre-publication repair normally has no PR and returns
+to validation and both reviews; repair of a known PR preserves its exact
+lineage. A recovered implementation result is not a publication result.
+
+The host rejects an early provider-reported PR with
+`implementation_pr_before_assurance`, and verifies candidate/branch identity
+before and after publication. This is host sequencing and result detection, not
+a universal technical proof that an arbitrary provider could not use every
+possible external HTTP or absolute-path route to create a remote PR. The local
+validation provider is read-only sandboxed; existing product boundaries do not
+claim a general remote-write broker or network proxy for all implementation
+provider routes.
+
 The immutable profile lists repository, remote, upstream, clean-worktree,
 branch, workspace authorization, host and capability qualification, providers,
 datastore, active-lease and Producer Contract requirements. Facts are observed

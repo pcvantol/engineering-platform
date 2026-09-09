@@ -2625,6 +2625,45 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(result.pull_request, 71)
         self.assertIn("First implementation pull-request publication gate", agent.prompts[0])
 
+    def test_managed_host_orders_first_pr_after_validation_and_both_reviews(self) -> None:
+        """Exercise the real transitions; the adapter observes PR creation only at publication."""
+        events: list[str] = []
+
+        class OrderedAgent(SequencedFakeAgent):
+            def invoke(self, root: Path, prompt: str) -> AgentResult:
+                if "First implementation publication hand-off boundary" in prompt:
+                    events.append("PUBLICATION_DISPATCH")
+                elif "Local repository validation hand-off boundary" in prompt:
+                    events.append("LOCAL_VALIDATION_PASS")
+                else:
+                    events.append("IMPLEMENTATION")
+                result = super().invoke(root, prompt)
+                if result.pull_request:
+                    events.append("PR_CREATE")
+                return result
+
+            def review(self, root: Path, selection: object, objective: str, evidence: object = None) -> ReviewerResult:
+                events.append(f"{getattr(selection, 'reviewer').upper()}_REVIEW_PASS")
+                return super().review(root, selection, objective, evidence)
+
+        agent = OrderedAgent([
+            AgentResult("COMPLETE", "main", commit_sha="a" * 40),
+            AgentResult("COMPLETE", "main", commit_sha="a" * 40,
+                        validation_evidence=({"command": "canonical suite", "result": "passed"},)),
+            AgentResult("COMPLETE", "main", 71, commit_sha="a" * 40),
+        ])
+        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch="main", base_branch="main")])
+        state = EngineeringRunner(self.root, self.store, FakeRepository(), github, agent, lambda _: None).run(
+            self.prompt, run_id="ordered-first-publication", owner_authorized=True,
+        )
+        lifecycle_events = [event for event in events if event != "DOCUMENTATION_REVIEW_PASS"]
+        self.assertEqual(lifecycle_events, [
+            "IMPLEMENTATION", "LOCAL_VALIDATION_PASS", "QUALITY_REVIEW_PASS",
+            "SECURITY_REVIEW_PASS", "PUBLICATION_DISPATCH", "PR_CREATE",
+        ])
+        self.assertEqual(state.pull_request, 71)
+        self.assertEqual(lifecycle_events[:4].count("PR_CREATE"), 0)
+
     def test_malformed_mandatory_review_is_unresolved_not_an_empty_pass(self) -> None:
         class MalformedReviewer(FakeAgent):
             def review(self, _: Path, selection: object, __: str, evidence: object = None) -> ReviewerResult:
@@ -4848,8 +4887,50 @@ class LocalAgentRunnerTest(unittest.TestCase):
             transaction_kind="FINALIZATION", owner_authorized=True, repair_iterations=1,
         )
         prompt = assemble_prompt(self.prompt, state, managed_target=self.root)
-        self.assertIn("preserve the exact checkpointed pull-request number", prompt)
-        self.assertIn("at most three bounded repairs", prompt)
+        self.assertIn("PR hand-off boundary", prompt)
+        self.assertIn("preserving any checkpointed pull-request number", prompt)
+
+    def test_managed_prompt_handoffs_are_phase_consistent_and_publication_is_explicit(self) -> None:
+        """The full composer, not an isolated suffix, selects one PR contract."""
+        sha = "a" * 40
+        profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+        reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
+                         "profile_digest": profile["digest"], "findings": []}
+                        for role in ("quality", "security"))
+        cases = (
+            (TransactionState("initial", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", owner_authorized=True),
+             "Implementation hand-off boundary", "Do not create a draft or normal implementation pull request"),
+            (TransactionState("validation", "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION", owner_authorized=True),
+             "Local repository validation hand-off boundary", "A pull request is neither required nor permitted"),
+            (TransactionState("review", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT", owner_authorized=True),
+             "Mandatory assurance hand-off boundary", "Do not edit, commit, push, create a pull request"),
+            (TransactionState("repair", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/repair", owner_authorized=True),
+             "Pre-publication repair hand-off boundary", "No pull request exists yet; do not require, create, or invent one"),
+            (TransactionState("publication", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="codex/implementation", owner_authorized=True,
+                              next_action="publish_first_implementation_pull_request", assurance_profile=profile, assurance_reviews=reviews),
+             "First implementation publication hand-off boundary", "Create exactly one draft implementation pull request"),
+            (TransactionState("existing-repair", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/repair", pull_request=701, owner_authorized=True),
+             "Existing implementation-PR repair hand-off boundary", "Do not create a replacement or second pull request"),
+        )
+        for state, heading, expected in cases:
+            with self.subTest(run_id=state.run_id):
+                prompt = assemble_prompt(self.prompt, state, managed_target=self.root)
+                self.assertIn(heading, prompt)
+                self.assertIn(expected, prompt)
+        publication_prompt = assemble_prompt(self.prompt, cases[4][0], managed_target=self.root)
+        self.assertNotIn("Do not create a draft or normal implementation pull request", publication_prompt)
+
+    def test_publication_action_without_host_assurance_fails_closed_in_full_prompt(self) -> None:
+        state = TransactionState(
+            "untrusted-publication", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch="codex/implementation", owner_authorized=True,
+            next_action="publish_first_implementation_pull_request",
+        )
+        prompt = assemble_prompt(self.prompt, state, managed_target=self.root)
+        self.assertIn("Implementation hand-off boundary", prompt)
+        self.assertIn("Do not create a draft or normal implementation pull request", prompt)
+        self.assertNotIn("Create exactly one draft implementation pull request", prompt)
 
     def test_primary_investigation_ledger_reuses_only_current_facts(self) -> None:
         ledger = InvocationInvestigationLedger().record(

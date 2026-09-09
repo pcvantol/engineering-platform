@@ -202,6 +202,123 @@ _redacted_cli_tail = executor_redacted_cli_tail
 _format_cli_failure = executor_format_cli_failure
 
 
+def _has_current_assurance_evidence(state: TransactionState) -> bool:
+    """Return whether trusted state binds both mandatory reviews to one candidate.
+
+    This deliberately derives authority from checkpointed host evidence, not
+    from a provider-supplied action name, objective text, or PR number.
+    """
+    profile = state.assurance_profile
+    if not isinstance(profile, dict):
+        return False
+    candidate, digest = profile.get("candidate_sha"), profile.get("digest")
+    if not isinstance(candidate, str) or not isinstance(digest, str):
+        return False
+    current = [
+        review for review in state.assurance_reviews
+        if review.get("candidate_sha") == candidate and review.get("profile_digest") == digest
+    ]
+    return all(
+        any(review.get("reviewer") == role and review.get("status") == "PASS" for review in current)
+        for role in ("quality", "security")
+    ) and not any(
+        finding.get("blocking") and finding.get("disposition") == "OPEN"
+        for review in current for finding in review.get("findings", [])
+        if isinstance(finding, dict)
+    )
+
+
+def _managed_prompt_phase(state: TransactionState | None) -> str:
+    """Select one mutually exclusive provider hand-off from trusted state.
+
+    ``EXECUTE_AGENT`` is shared by implementation and the later publication
+    dispatch.  The latter is privileged only when its complete host evidence
+    is present; an action string alone is intentionally fail-closed.
+    """
+    if state is None:
+        return "UNSPECIFIED"
+    if state.execution_mode == "GENESIS":
+        return "GENESIS"
+    if state.transaction_kind == "RECONCILIATION":
+        return "RECONCILIATION"
+    if state.action_intent == "VALIDATION_ONLY":
+        return "VALIDATION_ONLY"
+    if state.transaction_kind == "FINALIZATION":
+        return "FINALIZATION"
+    if state.phase == "LOCAL_REPOSITORY_VALIDATION":
+        return "LOCAL_VALIDATION"
+    if state.phase == "QUALITY_CONTROL_AGENT":
+        return "ASSURANCE_REVIEW"
+    if state.phase == "REPAIR_AGENT":
+        return "EXISTING_PR_REPAIR" if state.pull_request else "PREPUBLICATION_REPAIR"
+    if (
+        state.execution_mode == "MANAGED"
+        and state.transaction_kind == "IMPLEMENTATION"
+        and state.phase == "EXECUTE_AGENT"
+        and state.next_action == "publish_first_implementation_pull_request"
+        and state.owner_authorized
+        and state.pull_request is None
+        and _has_current_assurance_evidence(state)
+    ):
+        return "FIRST_PUBLICATION"
+    if state.execution_mode == "MANAGED" and state.transaction_kind == "IMPLEMENTATION":
+        return "INITIAL_IMPLEMENTATION"
+    return "UNSPECIFIED"
+
+
+def _managed_phase_instructions(state: TransactionState | None) -> str:
+    """Return the single phase-consistent mutation and result contract."""
+    phase = _managed_prompt_phase(state)
+    contracts = {
+        "INITIAL_IMPLEMENTATION": """
+Implementation hand-off boundary (host-owned and non-negotiable):
+- Edit only the admitted checkout, branch and objective scope. The existing execution contract may create, commit and push that bounded branch.
+- Do not create a draft or normal implementation pull request and do not mark a pull request ready for review.
+- Return the bounded branch, actual commit/evidence, and `pull_request: null`. The host next performs local validation and independent quality and security reviews; only its later post-assurance publication gate may create the first PR.
+""",
+        "LOCAL_VALIDATION": """
+Local repository validation hand-off boundary (read-only measurement):
+- Inspect only the selected candidate. Do not modify code, index, commits, branches, remotes, pull requests, or other remote state.
+- A pull request is neither required nor permitted for successful validation. Return only applicable validation evidence and result; the host decides any repair or publication.
+""",
+        "ASSURANCE_REVIEW": """
+Mandatory assurance hand-off boundary (read-only):
+- Review the host-pinned candidate and applicable profile using the real reviewer result contract. Do not edit, commit, push, create a pull request, or run a mutating quality-control hand-off.
+- Do not reuse a conclusion from another candidate, profile, run, or reviewer invocation.
+""",
+        "PREPUBLICATION_REPAIR": """
+Pre-publication repair hand-off boundary:
+- Repair the same bounded candidate and branch within the host-owned shared repair budget. No pull request exists yet; do not require, create, or invent one.
+- Return the branch and current candidate evidence with `pull_request: null`. The host will revalidate and re-review before considering publication.
+""",
+        "EXISTING_PR_REPAIR": """
+Existing implementation-PR repair hand-off boundary:
+- Preserve exactly the checkpointed branch and pull-request identity. Do not create a replacement or second pull request.
+- A changed candidate must return to host-owned validation and both independent reviews before renewed delivery eligibility.
+""",
+        "FIRST_PUBLICATION": """
+First implementation publication hand-off boundary:
+- The host has already established current validation plus independent quality and security assurance for this exact candidate.
+- Do not edit files, index, commits, branch, tests, configuration, or evidence. Create exactly one draft implementation pull request for the existing branch and unchanged current SHA, then return that branch, PR identity, and SHA.
+- Do not merge, release, deploy, tag, change repository settings, or start a new QA or repair loop.
+""",
+        "FINALIZATION": """
+PR hand-off boundary (host-owned and non-negotiable):
+- Create or repair only the bounded finalization pull request, preserving any checkpointed pull-request number and branch. Never create a replacement pull request.
+- Return the required JSON object immediately after that hand-off. Do not
+  poll or wait for GitHub checks, review, merge, reconciliation, or other external terminal evidence.
+""",
+        "VALIDATION_ONLY": """
+Validation-only boundary:
+- Perform only the requested read-only validation. Do not invent or create a branch, commit, pull request, or remote mutation.
+""",
+    }
+    return contracts.get(phase, """
+Fail-closed Managed hand-off boundary:
+- State does not establish authority for a pull-request operation. Do not create, replace, ready, merge, or otherwise mutate a pull request.
+""")
+
+
 def assemble_prompt(
     prompt_path: Path,
     state: TransactionState | None,
@@ -231,8 +348,7 @@ authority, lifecycle, retry, validation, provider, Forge, queue, or delivery sem
 `COMPLETE`, `repository_reconciled`, and the pushed main commit SHA only after verifying a clean
 workspace and that `main` contains that exact commit."""
         if state and state.transaction_kind == "RECONCILIATION"
-        else
-        """The runner holds explicit owner authorization for this exact bounded transaction. You may create, commit and push one bounded branch and draft pull request, or repair that same pull request. The runner may mark that pull request ready for review, but only the human operator may merge it. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective."""
+        else """The runner's owner authorization is bounded by the current host phase; it does not by itself authorize every pull-request operation. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective."""
         if state and state.owner_authorized
         else "Do not create a merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective."
     )
@@ -299,30 +415,11 @@ facts and must never cross the primary/reviewer boundary.
 
 Ledger bootstrap:
 """ + json.dumps(investigation_ledger.to_prompt_dict(), sort_keys=True) + "\n"
-    pr_handoff = "" if not state or state.execution_mode == "GENESIS" else """
-PR hand-off boundary (host-owned and non-negotiable):
-- Your work ends when the bounded branch and its pull request have been
-  created or repaired, pushed, and locally validated.
-- If this is a repair, preserve the exact checkpointed pull-request number
-  and branch. Never create a replacement pull request.
-- Return the required JSON object immediately after that hand-off. Do not
-  poll or wait for GitHub checks, review, merge, Finalization, reconciliation,
-  or any other external terminal evidence. The Execution Host alone records
-  the pull request, polls checks, and schedules at most three bounded repairs.
-- Write pull-request Markdown with real line breaks. Never serialize a line
-  break as the literal characters `\\n`.
-"""
-    local_gate = "" if not state or not (
-        state.execution_mode == "MANAGED" and state.transaction_kind == "IMPLEMENTATION" and state.phase == "EXECUTE_AGENT"
-    ) else """
-Local validation hand-off boundary:
-- Create, commit and push the bounded implementation branch, but do not create a pull request yet.
-- Return that branch with `pull_request: null` after relevant focused validation. The host owns the next local repository validation gate and only that gate may create the implementation PR after the canonical suite passes.
-"""
+    phase_handoff = "" if not state or state.execution_mode == "GENESIS" else _managed_phase_instructions(state)
     return f"""You are executing one bounded Engineering Platform transaction.
 Provider role: {provider_role.value}. Context projection: {projection.budget_version}; source items: {projection.source_item_count}; omitted lower-priority items: {projection.omitted_low_priority_count}.{context_scope_instruction}
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{local_gate}{pr_handoff}
+{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{phase_handoff}
 Supplied bounded objective follows:\n\n{projection.text}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence, quality_evidence and validation_disposition. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. validation_disposition is product_failure unless the required suite failed for an environmental instability that you demonstrated with bounded evidence, such as an isolated rerun of the same failing check passing without a code change. It never makes a failed suite pass. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
@@ -1062,6 +1159,20 @@ class EngineeringRunner:
         )
         if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
             return reviewed
+        # A repair before the first PR follows exactly the same host-owned
+        # publication gate as the original implementation.  It must not fall
+        # through to delivery with a fictitious PR, nor grant repair itself
+        # publication authority.
+        if (
+            reviewed.execution_mode == "MANAGED"
+            and reviewed.transaction_kind == "IMPLEMENTATION"
+            and reviewed.owner_authorized
+            and reviewed.pull_request is None
+            and reviewed_result.pull_request is None
+        ):
+            reviewed, reviewed_result = self._publish_first_implementation_pull_request(reviewed, reviewed_result)
+            if reviewed.terminal:
+                return reviewed
         try:
             evidence = self.repository.inspect(self.root)
         except RunnerError:
@@ -1918,24 +2029,7 @@ Local repository validation gate — read-only measurement:
     @staticmethod
     def _current_assurance_passes(state: TransactionState) -> bool:
         """Require the two mandatory reviews for this exact profile/candidate."""
-        profile = state.assurance_profile
-        if not isinstance(profile, dict):
-            return False
-        candidate, digest = profile.get("candidate_sha"), profile.get("digest")
-        if not isinstance(candidate, str) or not isinstance(digest, str):
-            return False
-        current = [
-            review for review in state.assurance_reviews
-            if review.get("candidate_sha") == candidate and review.get("profile_digest") == digest
-        ]
-        return all(
-            any(review.get("reviewer") == role and review.get("status") == "PASS" for review in current)
-            for role in ("quality", "security")
-        ) and not any(
-            finding.get("blocking") and finding.get("disposition") == "OPEN"
-            for review in current for finding in review.get("findings", [])
-            if isinstance(finding, dict)
-        )
+        return _has_current_assurance_evidence(state)
 
     def _publish_first_implementation_pull_request(
         self, state: TransactionState, implementation: AgentResult,
