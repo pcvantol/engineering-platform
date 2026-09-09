@@ -142,6 +142,12 @@ class TransportAuthorityGuardTest(unittest.TestCase):
             self.assertEqual(module.command(Path("server"), "bootstrap-topology"), {"result": "REGISTERED"})
         self.assertEqual(invoked.call_count, 2)
         slept.assert_called_once_with(module.BOOTSTRAP_TOPOLOGY_RETRY_DELAY_SECONDS)
+        with patch.object(module.subprocess, "run", return_value=unavailable) as invoked, \
+             patch.object(module.time, "sleep") as slept:
+            with self.assertRaisesRegex(RuntimeError, "bootstrap-topology"):
+                module.command(Path("server"), "bootstrap-topology")
+        self.assertEqual(invoked.call_count, module.BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS)
+        self.assertEqual(slept.call_count, module.BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS - 1)
         with patch.object(module.subprocess, "run", return_value=unavailable) as invoked:
             with self.assertRaisesRegex(RuntimeError, "issue-consumer-credential"):
                 module.command(Path("server"), "issue-consumer-credential")

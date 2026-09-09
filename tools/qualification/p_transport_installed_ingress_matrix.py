@@ -49,7 +49,9 @@ DEPENDABOT_DISPATCH_TIMEOUT_SECONDS = 60
 # next, idempotent topology bootstrap starts.  Retry only that bootstrap: an
 # issuance or other mutating administrative command must never be replayed
 # merely because its response was unavailable.
-BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS = 4
+# The accumulated linear backoff is seven seconds. That remains bounded while
+# covering hosted SQLite's post-crash journal recovery window.
+BOOTSTRAP_TOPOLOGY_RETRY_ATTEMPTS = 8
 BOOTSTRAP_TOPOLOGY_RETRY_DELAY_SECONDS = 0.25
 
 
