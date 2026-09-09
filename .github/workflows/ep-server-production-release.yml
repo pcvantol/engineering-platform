@@ -165,3 +165,90 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1, verified 2026-07-16
         with:
           packages-dir: pypi-dist
+
+  registry-readback-and-release-evidence:
+    name: Verify PyPI readback and retain release evidence
+    needs: [release-context, publish-pypi]
+    if: needs.publish-pypi.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.candidate_sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: engineering-platform-production-${{ needs.release-context.outputs.version }}
+          path: qualified-dist
+      - name: Read back exact immutable distributions from PyPI
+        env:
+          VERSION: ${{ needs.release-context.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir registry-readback
+          python3 -m pip download --disable-pip-version-check --no-cache-dir --no-deps --only-binary=:all: --index-url https://pypi.org/simple --dest registry-readback "engineering-platform==$VERSION"
+          python3 -m pip download --disable-pip-version-check --no-cache-dir --no-deps --no-binary=:all: --index-url https://pypi.org/simple --dest registry-readback "engineering-platform==$VERSION"
+          PYTHONPATH=src python3 - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          qualified = {path.name: sha256(path.read_bytes()).hexdigest()
+                       for path in Path("qualified-dist").glob("engineering_platform-*")
+                       if path.suffix in {".whl", ".gz"}}
+          readback = {path.name: sha256(path.read_bytes()).hexdigest()
+                      for path in Path("registry-readback").iterdir() if path.is_file()}
+          if len(qualified) != 2 or set(readback) != set(qualified) or readback != qualified:
+              raise SystemExit("PyPI readback does not match the exact qualified distributions")
+          Path("registry-readback-digests.json").write_text(
+              __import__("json").dumps({"registry": "pypi", "artifacts": readback}, sort_keys=True) + "\n",
+              encoding="utf-8")
+          PY
+      - name: Persist immutable publication receipt and release completion
+        env:
+          VERSION: ${{ needs.release-context.outputs.version }}
+          SOURCE_SHA: ${{ needs.release-context.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from engineering_platform.release_operation import ReleaseOperation, ReleaseOperationStore
+
+          digests = json.loads(Path("registry-readback-digests.json").read_text(encoding="utf-8"))["artifacts"]
+          wheel = next(value for name, value in digests.items() if name.endswith(".whl"))
+          sdist = next(value for name, value in digests.items() if name.endswith(".tar.gz"))
+          source = os.environ["SOURCE_SHA"]
+          operation = ReleaseOperation.create(
+              operation_id=f"release-{os.environ['VERSION']}-{source[:12]}",
+              product="engineering-platform", component="server", version=os.environ["VERSION"],
+              policy_revision="ep-server-production-release-v1", source_revision=source,
+              artifacts={"wheel": f"sha256:{wheel}", "sdist": f"sha256:{sdist}"},
+          )
+          store = ReleaseOperationStore(Path("release-evidence"))
+          store.acquire(operation.operation_id)
+          try:
+              prepared = store.load(operation.operation_id) or store.save(operation)
+              qualified = prepared.transition("QUALIFIED", evidence={"exact_main_sha": source, "artifact_digests": operation.artifacts})
+              published = qualified.transition("PUBLISHED", evidence={"registry": "pypi", "readback": digests})
+              completed = published.transition("RELEASE_COMPLETE", evidence={"temporary_paths": ["registry-readback"], "result": "COMPLETE"})
+              store.replace(prepared, qualified)
+              store.replace(qualified, published)
+              store.record_publication(published)
+              store.replace(published, completed)
+              store.record_publication(completed)
+          finally:
+              store.release(operation.operation_id)
+          PY
+          rm -rf registry-readback
+          test ! -e registry-readback
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engineering-platform-release-evidence-${{ needs.release-context.outputs.version }}
+          path: |
+            registry-readback-digests.json
+            release-evidence/
+          if-no-files-found: error
