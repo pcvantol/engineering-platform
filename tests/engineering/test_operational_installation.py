@@ -29,8 +29,8 @@ class OperationalInstallationTests(unittest.TestCase):
             candidate = Path(directory) / "old-path-python"
             candidate.write_text("#!/bin/sh\n"); candidate.chmod(0o755)
             installation = resolve(root, interpreter=alias, path_candidates=(candidate,))
-            self.assertEqual(installation.interpreter, str(interpreter.resolve()))
-            self.assertEqual(installation.path_candidates, (str(candidate.resolve()),))
+            self.assertEqual(installation.interpreter, str(alias.absolute()))
+            self.assertEqual(installation.path_candidates, (str(candidate.absolute()),))
             self.assertEqual(installation.data_root, str(root.resolve()))
 
     def test_runtime_and_health_must_belong_to_the_selected_instance(self) -> None:
@@ -168,3 +168,36 @@ class OperationalInstallationTests(unittest.TestCase):
             self.assertEqual(observed["coverage"], "EXPLICIT_PATHS_ONLY")
             self.assertFalse(observed["single_operational_installation"])
             self.assertEqual(observed["conflicting_service_references"][0]["identity"]["version"], "2.3.0")
+
+    def test_distinct_venv_launchers_are_not_collapsed_to_their_shared_base_python(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, _ = self._root(directory)
+            base = Path(directory) / "base-python"; base.write_text("#!/bin/sh\n"); base.chmod(0o755)
+            selected = Path(directory) / "selected venv" / "bin" / "python"
+            conflicting = Path(directory) / "old venv" / "bin" / "python"
+            selected.parent.mkdir(parents=True); conflicting.parent.mkdir(parents=True)
+            selected.symlink_to(base); conflicting.symlink_to(base)
+            installation = resolve(root, interpreter=selected)
+            process = __import__("subprocess")
+
+            def runner(args, **_kwargs):
+                invoked = str(Path(args[0]).absolute())
+                version = "2.3.1" if invoked == str(selected.absolute()) else "2.3.0"
+                return process.CompletedProcess(args, 0, json.dumps({"interpreter": invoked, "version": version, "metadata": "/metadata", "package": "/package"}), "")
+
+            observed = inventory(installation, candidates=(conflicting,),
+                                 service_references={"legacy": conflicting}, runner=runner)
+            self.assertEqual(observed["selected_interpreter"], str(selected.absolute()))
+            self.assertEqual(observed["conflicting_service_references"][0]["interpreter"], str(conflicting.absolute()))
+
+    def test_explicit_inventory_never_claims_the_macos_wide_invariant(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            installation = resolve(root, interpreter=interpreter)
+            process = __import__("subprocess")
+            identity = {"interpreter": str(interpreter.absolute()), "version": "2.3.1", "metadata": "/metadata", "package": "/package"}
+            observed = inventory(installation, candidates=(), service_references={},
+                                 runner=lambda args, **_kwargs: process.CompletedProcess(args, 0, json.dumps(identity), ""))
+            self.assertEqual(observed["scope"], {"required": "MACOS_MACHINE", "observed": "CURRENT_OS_USER_EXPLICIT_REFERENCES_ONLY", "status": "INCOMPLETE"})
+            self.assertFalse(observed["single_operational_installation"])
+            self.assertEqual(observed["single_operational_installation_status"], "UNVERIFIED_SCOPE")

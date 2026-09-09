@@ -55,7 +55,7 @@ def migrate(plan: InstallationUpdatePlan, *, interpreter: str | Path,
             or not isinstance(evidence["schema_version"], int) or evidence["schema_version"] < 1
             or evidence["integrity"] != "PASS"):
         raise InstallationUpdateMigrationError("target CENTRAL migration evidence is invalid")
-    if operational_installation.normalized(evidence["interpreter"]) != operational_installation.normalized(target):
+    if operational_installation.launcher(evidence["interpreter"]) != operational_installation.launcher(target):
         raise InstallationUpdateMigrationError("target CENTRAL migration used a different interpreter")
     if evidence["instance_id"] != plan.installation_id:
         raise InstallationUpdateMigrationError("target CENTRAL migration used a different instance")
