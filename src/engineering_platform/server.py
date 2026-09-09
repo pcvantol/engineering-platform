@@ -1810,6 +1810,7 @@ def status(data_root: Path) -> dict[str, object]:
         "health": "ok" if healthy else "degraded",
         "unhealthy_components": unhealthy_components,
         "instance_id": identity.instance_id,
+        "product_version": _console_platform_version(),
         "store": "ready",
         "schema_version": SERVER_STORE_SCHEMA_VERSION,
         "operational_state": "empty-valid",
@@ -3845,7 +3846,7 @@ def health(data_root: Path) -> dict[str, object]:
             payload = json.loads(response.read())
         operational_installation.validate_health(
             operational_installation.OperationalInstallation(
-                "", str(data_root.resolve()), str(result["instance_id"]), "", None, (),
+                "", str(data_root.resolve()), str(result["instance_id"]), None, None, (),
             ), payload,
         )
         return {**result, "healthy": True, "ready": True}

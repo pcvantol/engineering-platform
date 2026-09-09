@@ -113,6 +113,9 @@ def validate_health(installation: OperationalInstallation, response: Mapping[str
         raise OperationalInstallationError("health response does not identify the selected operational instance")
     if response.get("healthy") is not True:
         raise OperationalInstallationError("selected operational instance is not healthy")
+    if (installation.configured_version is not None
+            and response.get("product_version") != installation.configured_version):
+        raise OperationalInstallationError("health response does not identify the selected operational release")
 
 
 def package_identity(interpreter: str | Path, *, runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> Mapping[str, str]:

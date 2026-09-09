@@ -37,12 +37,25 @@ class OperationalInstallationTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root, interpreter = self._root(directory)
             installation = resolve(root, interpreter=interpreter)
-            validate_health(installation, {"service": "engineering-platform-server", "instance_id": "instance-1", "healthy": True})
+            response = {"service": "engineering-platform-server", "instance_id": "instance-1", "healthy": True,
+                        "product_version": installation.configured_version}
+            validate_health(installation, response)
             with self.assertRaisesRegex(OperationalInstallationError, "does not identify"):
-                validate_health(installation, {"service": "engineering-platform-server", "instance_id": "wrong", "healthy": True})
+                validate_health(installation, {**response, "instance_id": "wrong"})
             (root / "runtime.json").write_text(json.dumps({"pid": 9, "instance_id": "wrong"}))
             with self.assertRaisesRegex(OperationalInstallationError, "different instance"):
                 resolve(root, interpreter=interpreter)
+
+    def test_health_must_bind_a_configured_product_release(self) -> None:
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            (root / "server.json").write_text(json.dumps({"version": 2, "product_version": "2.3.2"}))
+            installation = resolve(root, interpreter=interpreter)
+            response = {"service": "engineering-platform-server", "instance_id": "instance-1", "healthy": True,
+                        "product_version": "2.3.2"}
+            validate_health(installation, response)
+            with self.assertRaisesRegex(OperationalInstallationError, "operational release"):
+                validate_health(installation, {**response, "product_version": "2.3.1"})
 
     def test_record_status_is_explicit_and_must_bind_the_selected_runtime(self) -> None:
         with TemporaryDirectory() as directory:
