@@ -179,8 +179,14 @@ class LocalQualificationGitHub:
     def pull_request(self, number: int) -> PullRequestEvidence:
         self.calls += 1
         sha = subprocess.run(("git", "-C", str(self.root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
-        if self.calls == 1:
-            return PullRequestEvidence(number, "OPEN", True, True, head_branch="qualification-managed", base_branch="main")
+        # The first readback binds publication to the reviewed draft. The
+        # host reads it again before readying it to reject historical merged
+        # evidence; only the subsequent normal poll models the fixture merge.
+        if self.calls <= 2:
+            return PullRequestEvidence(
+                number, "OPEN", True, True, is_draft=True,
+                head_branch="qualification-managed", base_branch="main", head_sha=sha,
+            )
         return PullRequestEvidence(number, "MERGED", True, True, merge_commit=sha, head_branch="qualification-managed", base_branch="main")
 
     def pull_request_for_head_branch(self, _branch: str): return None

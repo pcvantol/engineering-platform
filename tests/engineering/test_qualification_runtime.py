@@ -112,9 +112,16 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
     def test_local_github_adapter_models_open_then_merged_evidence(self) -> None:
         adapter = LocalQualificationGitHub(self.root)
         opened = adapter.pull_request(7)
+        pre_ready = adapter.pull_request(7)
         merged = adapter.pull_request(7)
 
         self.assertEqual((opened.state, opened.head_branch), ("OPEN", "qualification-managed"))
+        self.assertTrue(opened.is_draft)
+        self.assertEqual(opened.head_sha, subprocess.run(
+            ("git", "-C", str(self.root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True,
+        ).stdout.strip())
+        self.assertEqual(pre_ready.state, "OPEN")
+        self.assertTrue(pre_ready.is_draft)
         self.assertEqual((merged.state, merged.head_branch), ("MERGED", "qualification-managed"))
         self.assertTrue(merged.merge_commit)
         self.assertIsNone(adapter.pull_request_for_head_branch("ignored"))
