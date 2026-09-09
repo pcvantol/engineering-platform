@@ -3841,9 +3841,14 @@ def health(data_root: Path) -> dict[str, object]:
     try:
         # Server configuration permits loopback host only.
         with urlopen(f"http://{bind['host']}:{bind['port']}/health", timeout=1) as response:  # nosec B310
-            response.read()
+            payload = json.loads(response.read())
+        operational_installation.validate_health(
+            operational_installation.OperationalInstallation(
+                "", str(data_root.resolve()), str(result["instance_id"]), "", None, (),
+            ), payload,
+        )
         return {**result, "healthy": True, "ready": True}
-    except (URLError, OSError):
+    except (URLError, OSError, ValueError, operational_installation.OperationalInstallationError):
         return {**result, "healthy": False, "ready": False}
 
 

@@ -47,6 +47,17 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
 
+    def test_health_rejects_a_reachable_wrong_instance(self) -> None:
+        server.initialize(self.root)
+        report = server.status(self.root)
+        report = {**report, "running": True, "bind": {"host": "127.0.0.1", "port": 1}}
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self): return b'{"service":"engineering-platform-server","instance_id":"wrong","healthy":true}'
+        with patch("engineering_platform.server.status", return_value=report), patch("engineering_platform.server.urlopen", return_value=Response()):
+            self.assertEqual(server.health(self.root)["healthy"], False)
+
     def test_queue_disposition_http_helpers_reject_ambiguous_json_and_foreign_origins(self) -> None:
         """The queue mutation boundary treats origin and JSON ambiguity safely."""
         self.assertTrue(server._same_origin({"Host": "localhost:8765"}))
