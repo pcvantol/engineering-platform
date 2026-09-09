@@ -32,7 +32,7 @@ documents remain normative where they define a more specific rule:
 | NFR-OPS-001 | Host readiness is phase-aware and token-free. Missing CLI/auth never admits work or consumes credits. Installer and repair actions are explicit, single-flight and verified before success is shown. | Host/preflight/provider-readiness tests and installer verification evidence. |
 | NFR-PERF-001 | Console layout remains responsive without semantic loss on supported narrow viewports. Wide evidence remains locally scrollable rather than forcing page-wide horizontal scrolling; browser suites use isolated roots/workers. | Responsive Playwright regressions and targeted performance evidence when changed. |
 | NFR-QUAL-001 | EP's required CI checks pass: unit, browser where applicable, localization, packaging/migration/recovery and security gates. Every shipped Python module maintains at least **80.20% branch coverage** and the aggregate remains at least 80.00%. The Server Console boundary is additionally qualified through its route, browser, localization and installed-ingress integration gates; it has no fabricated carry-over threshold from the retired direct Dashboard module. | `engineering-platform-validation` coverage contract and required GitHub checks. |
-| NFR-PKG-001 | A published standalone EP wheel is built only from a clean `release-X.Y.Z` checkout in explicit production release mode. Its installed contents and runtime dependencies are allowlisted; tests, fixtures, traces, coverage, local data, caches, source metadata, debug tooling/assets and development-only dependencies are absent. Debug-only endpoints/defaults/instrumentation are disabled or excluded. | Fresh-environment wheel install/smoke test, artifact manifest allowlist, dependency audit, debug-profile assertion, SBOM and checksum/provenance evidence. |
+| NFR-PKG-001 | A published standalone EP wheel is built only from a clean, exact protected-`main` release commit in explicit production release mode. Its installed contents and runtime dependencies are allowlisted; tests, fixtures, traces, coverage, local data, caches, source metadata, debug tooling/assets and development-only dependencies are absent. Debug-only endpoints/defaults/instrumentation are disabled or excluded. | Fresh-environment wheel install/smoke test, artifact manifest allowlist, dependency audit, debug-profile assertion, SBOM and checksum/provenance evidence. |
 | NFR-TDE-001 | TDE is currently observation evidence, not a release blocker. Its executed capabilities, assessment decision and repository qualification are retained as artifacts. A future blocking TDE gate must name each enforced metric, threshold, version and fail-closed rule in this document before activation. | `tde-observe` artifact review; a future required TDE workflow and threshold tests. |
 | NFR-INSTALL-001 | The standalone EP installer permits one installation per macOS user. Existing data is explicitly reused, backed up before replacement, or removed only after a second destructive confirmation. `engineering-platform-host --verify` is read-only and reports token-free, actionable repair state. | Clean-machine, upgrade, backup/restore, uninstall and singleton-lock qualification. |
 
@@ -47,8 +47,8 @@ migration release gates: they become blocking with the first standalone wheel
 also a blocking standalone-wheel release gate from `2.0.0`; it cannot be
 waived by a source-tree test result or a successful development build.
 
-The branch-created `release-X.Y.Z` workflow is the production implementation
-of `NFR-PKG-001`; its exact release procedure and evidence are described in
+The protected-`main` production-release workflow is the implementation of
+`NFR-PKG-001`; its exact release procedure and evidence are described in
 [EP Server production release](EP_SERVER_PRODUCTION_RELEASE.md).
 
 ## Change checklist
