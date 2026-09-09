@@ -38,6 +38,7 @@ from . import central_database
 from . import central_data_transfer
 from . import console_route_ownership
 from . import console_presentation
+from . import development_profile
 from . import server_console_services
 from . import dashboard_translation
 from . import dependabot_producer
@@ -624,16 +625,21 @@ class AgentRegistrationIntake(Protocol):
     def accept(self, request: AgentRegistrationRequest) -> None: ...
 
 
-def default_data_root() -> Path:
-    override = os.environ.get(SERVER_ENVIRONMENT_DATA_ROOT)
-    if override:
-        return Path(override).expanduser().resolve()
+def platform_default_data_root() -> Path:
+    """Return the canonical operational root without honoring process overrides."""
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "Engineering Platform Server"
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         return (Path(base) if base else Path.home() / "AppData" / "Local") / "Engineering Platform Server"
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "engineering-platform-server"
+
+
+def default_data_root() -> Path:
+    override = os.environ.get(SERVER_ENVIRONMENT_DATA_ROOT)
+    if override:
+        return Path(override).expanduser().resolve()
+    return platform_default_data_root()
 
 
 def _utcnow() -> str:
@@ -1768,6 +1774,10 @@ def _audit_platform_data_action(
 def status(data_root: Path) -> dict[str, object]:
     identity = initialize(data_root)
     config = ServerConfiguration.load(data_root)
+    try:
+        runtime_profile = development_profile.describe(data_root)
+    except development_profile.DevelopmentProfileError as error:
+        raise ServerConfigurationError("EP Server development profile is invalid.") from error
     runtime = _runtime(data_root)
     running = bool(runtime and _alive(runtime.get("pid")))
     components = _transport_components(data_root, server_running=running)
@@ -1826,6 +1836,7 @@ def status(data_root: Path) -> dict[str, object]:
         "store": "ready",
         "schema_version": SERVER_STORE_SCHEMA_VERSION,
         "operational_state": "empty-valid",
+        "runtime_profile": runtime_profile,
         "running": running,
         "managed_codex_runtime": managed_codex_runtime.inspect(data_root),
         "lifecycle_worker": {
@@ -3672,7 +3683,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
-def serve(data_root: Path) -> int:
+def serve(data_root: Path, *, development: development_profile.DevelopmentProfile | None = None) -> int:
     relocation = installation_relocation.apply_pending(data_root)
     if relocation is not None:
         data_root = Path(relocation["value"])
@@ -3791,11 +3802,14 @@ def serve(data_root: Path) -> int:
         (data_root / SERVER_RUNTIME_FILENAME).unlink(missing_ok=True)
         restart_after_shutdown = server.restart_after_shutdown  # type: ignore[attr-defined]
     if restart_after_shutdown:
-        os.execv(sys.executable, [sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(data_root)])
+        arguments = [sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(data_root)]
+        if development is not None:
+            arguments.extend(development.server_arguments())
+        os.execv(sys.executable, arguments)
     return 0
 
 
-def start(data_root: Path) -> dict[str, object]:
+def start(data_root: Path, *, development: development_profile.DevelopmentProfile | None = None) -> dict[str, object]:
     current = status(data_root)
     if current["running"]:
         return current
@@ -3819,7 +3833,10 @@ def start(data_root: Path) -> dict[str, object]:
     # explicit test-only bridge is never inherited by an installed process.
     if "unittest" in sys.argv[0] or "pytest" in sys.modules:
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
-    child = subprocess.Popen([sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(runtime_root)], cwd=str(runtime_root), env=environment, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603
+    arguments = [sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(runtime_root)]
+    if development is not None:
+        arguments.extend(development.server_arguments())
+    child = subprocess.Popen(arguments, cwd=str(runtime_root), env=environment, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603
     _CHILDREN[child.pid] = child
     for _ in range(40):
         time.sleep(0.05)
@@ -3871,6 +3888,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
     parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-inventory", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
+    parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
+    parser.add_argument("--development-venv", type=Path)
+    parser.add_argument("--development-credential-reference")
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
     parser.add_argument("--agent-id")
@@ -3896,9 +3916,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _development_profile_for(args: argparse.Namespace) -> development_profile.DevelopmentProfile | None:
+    """Resolve the explicit development boundary before any command side effect."""
+    development_profile.require_explicit_runtime(args.data_root, args.runtime_profile)
+    if args.runtime_profile != "development":
+        return None
+    development_profile.reject_operational_command(
+        args.command,
+        service_labels={
+            "service-install": server_service.LABEL,
+            "service-uninstall": server_service.LABEL,
+            "relay-install": server_relay._definition_label(),
+            "relay-uninstall": server_relay._definition_label(),
+        },
+    )
+    operational_root = platform_default_data_root()
+    selected = server_service.configured_interpreter(operational_root)
+    inputs = {
+        "data_root": args.data_root,
+        "bind_port": args.bind_port,
+        "development_venv": args.development_venv,
+        "credential_reference": args.development_credential_reference,
+        "interpreter": Path(sys.executable),
+        "operational_data_roots": (operational_root,),
+        "operational_interpreters": () if selected is None else (selected,),
+        "environment": os.environ,
+    }
+    if args.command == "init":
+        return development_profile.establish(**inputs)
+    return development_profile.require(**inputs)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        development = _development_profile_for(args)
         if args.command == "init":
             result = {"instance_id": initialize(args.data_root, bind_host=args.bind_host, bind_port=args.bind_port).instance_id, "initialized": True}
         elif args.command == "start":
@@ -3909,8 +3961,9 @@ def main(argv: list[str] | None = None) -> int:
                     configuration.version, args.bind_host, args.bind_port,
                     configuration.managed_codex_cli_prefix, configuration.product_version,
                 )))
-            result = start(args.data_root)
-        elif args.command == "serve": return serve(args.data_root)
+            result = start(args.data_root) if development is None else start(args.data_root, development=development)
+        elif args.command == "serve":
+            return serve(args.data_root) if development is None else serve(args.data_root, development=development)
         elif args.command == "stop": result = stop(args.data_root)
         elif args.command == "status": result = status(args.data_root)
         elif args.command == "health": result = health(args.data_root)
@@ -4098,7 +4151,7 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.command == "agent-status": result = agent_trust.registration_status(connection, args.agent_id)
                 elif args.command == "agent-revoke": result = {"agent_id": args.agent_id, "revoked": agent_trust.revoke(connection, args.agent_id)}
                 else: result = {"agent_id": args.agent_id, "reset": agent_trust.reset(connection, args.agent_id)}
-    except (OSError, RuntimeError, PermissionError, ServerConfigurationError, local_repository_binding.LocalRepositoryBindingError, external_producer_binding.ProducerBindingError) as error:
+    except (OSError, RuntimeError, PermissionError, ServerConfigurationError, development_profile.DevelopmentProfileError, local_repository_binding.LocalRepositoryBindingError, external_producer_binding.ProducerBindingError) as error:
         print(json.dumps({"error": str(error), "ready": False}, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))

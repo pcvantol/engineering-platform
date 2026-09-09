@@ -13,6 +13,45 @@ installed artifact's site-packages. The Console uses only the CENTRAL's
 secret-free topology projection; browser selection is presentation state and
 is never request authority.
 
+## Explicit development profile
+
+A source-development Server is an explicit `development` runtime profile, not
+an alternate operational installation. It must name a separate data root, a
+non-operational loopback port, the exact interpreter inside its own venv, and
+a development-scoped credential *reference* (never a credential value):
+
+```text
+engineering-platform-server init \
+  --runtime-profile development \
+  --data-root /absolute/development-root \
+  --bind-port 8876 \
+  --development-venv /absolute/development-venv \
+  --development-credential-reference development:keychain/example
+```
+
+The profile records a private, token-free `development-profile.json` beneath
+that root, plus contained development log and cache directories. `status` and
+the health projection visibly report its development identity without exposing
+the credential reference. A root with that marker cannot be launched later as
+the default operational profile.
+
+The profile rejects a selected canonical operational data root (including
+normalized symlink aliases), a registered operational installation or its
+interpreter, the operational default port, inherited operational credential or
+data environment, and the Server/relay production service-label commands. An
+unrelated inherited `EP_SERVER_DATA_ROOT` cannot select a development process:
+the explicit `--data-root` is used and is propagated to its child. It also
+rejects consumer-credential issuance and Agent credential reset/pairing from a
+development runtime. The Server child and restart command carry the same
+explicit profile arguments, so a process restart cannot silently revert to the
+operational mode.
+
+This is a local EP Server development boundary only. It neither installs a
+LaunchAgent nor creates a second installer, and it is not proof of a
+Mac-wide single operational installation. Forge Platform remains the owner of
+cross-product composition; EP retains the operational Server installation
+contract.
+
 ## Project-scoped Operations Console
 
 The integrated Console has one CENTRAL-selected project at a time. Its selector
