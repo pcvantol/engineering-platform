@@ -68,6 +68,35 @@ receipts remain product-specific. A production publication or an actual Mac
 installation/update remains outside this source order until separately
 authorized.
 
+## Managed post-assurance publication closure — paused candidate qualification
+
+`EP_MANAGED_POST_ASSURANCE_PUBLICATION_CLOSURE_V1` remains a bounded EP-owned
+repair, separate from the release and operational-installation lanes above.
+Its historical candidate is `7c347f887ddd01b15f70234a324c2de2fd9844a2`; the
+source lineage retains its patch-equivalent contract update and the local
+repair branch `codex/ep-managed-post-assurance-publication-closure-v1` had
+last committed candidate `56c3b912cda7d0a9fc911c5b3a298083e44b3fa9` at this
+pause checkpoint. The branch must be made stable and its exact final SHA must
+be explicitly re-authorized before any execution resumes.
+
+The source candidate contains the typed Managed-adoption route, current
+validation binding, separate Quality/Security assurance, and fail-closed
+publication readback handling. That is source evidence only: no isolated
+candidate-wheel qualification run, durable owner-authority record, current
+validation PASS, independent Quality/Security PASS, remote repair branch, or
+draft implementation PR is claimed here. The observed primary EP runtime is
+2.3.1 and is not the execution route for this repair; it must not be changed
+by this work.
+
+The next permitted continuation is one separately authorized, isolated
+candidate-wheel qualification after the final SHA is frozen. It must use the
+product-owned DEVELOPMENT route and a separate data root, execute one Managed
+adopted-candidate run with zero corrective rounds, and stop immediately after
+one GitHub-readback-verified draft PR. It must not merge, release, install,
+change the primary runtime/CENTRAL, or activate a later roadmap increment.
+This pause record is documentary context, not lifecycle authority or
+qualification evidence.
+
 ## Subagent orchestration and efficiency — retained audit and planned lane
 
 `EP_SUBAGENT_ORCHESTRATION_AND_EFFICIENCY_V1` records the

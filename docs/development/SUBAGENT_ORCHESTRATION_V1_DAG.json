@@ -22,7 +22,18 @@
       "depends_on": [],
       "owning_work": "EP_MANAGED_POST_ASSURANCE_PUBLICATION_CLOSURE_V1",
       "requirement": "Read back qualification of the existing post-assurance publication contract for the exact source/artifact before SA-PUB activation; this documentary graph does not implement or close that work.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "SOURCE_PAUSE_CHECKPOINT",
+          "observed_at": "2026-09-10",
+          "status": "NOT_QUALIFIED",
+          "historical_candidate": "7c347f887ddd01b15f70234a324c2de2fd9844a2",
+          "branch": "codex/ep-managed-post-assurance-publication-closure-v1",
+          "last_committed_candidate": "56c3b912cda7d0a9fc911c5b3a298083e44b3fa9",
+          "summary": "The local source continuation is paused pending a stable, explicitly re-authorized final SHA and one isolated candidate-wheel Managed qualification. No owner-authority record, current validation/Quality/Security PASS, remote repair branch, draft PR, source delivery, or installed-runtime qualification is evidenced by this record.",
+          "continuation_boundary": "Use only the separately authorized isolated DEVELOPMENT route; preserve the primary runtime/CENTRAL and stop after one GitHub-readback-verified draft PR."
+        }
+      ]
     }
   ],
   "nodes": [
