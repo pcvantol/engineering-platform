@@ -234,6 +234,20 @@ does the separate host-owned first-publication gate create the draft
 implementation PR. Remote GitHub check repair remains a separate, later
 bounded gate and preserves an already-known PR lineage.
 
+For publication eligibility, a textual validation summary is reporting only.
+The canonical decision requires an exit-code-zero terminal receipt for every
+control in the persisted profile at the current run-wide repair ordinal. The
+assurance profile binds the digest of that selected profile and its immutable
+control launchers. Missing, failed, unavailable, skipped, stale or differently
+profiled evidence blocks before publication and cannot be replaced by passing
+Quality/Security records.
+
+If the host restarts at the first-publication checkpoint, it does not
+synchronize back to `main` or rerun implementation. It verifies the clean
+checkpointed branch and candidate, then performs exact GitHub readback before
+any create attempt. One matching open draft is resumed; a mismatch blocks and
+does not trigger a second PR.
+
 Both bounded gates preserve the same immutable per-attempt shape: iteration,
 observation time, observed problem, proposed action, safe agent summary,
 commit evidence and outcome. Local validation uses `validated`,

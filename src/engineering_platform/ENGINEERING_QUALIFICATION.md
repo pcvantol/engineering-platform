@@ -8,7 +8,7 @@ registry and writes local, git-ignored reports under `.engineering/qualification
 | --- | --- | --- | --- | --- |
 | Repository Initialization | Clean and dirty checkout | Reconcile or `BLOCKED` with diagnostics | local qualification report | Registered |
 | Checkpoint Resume | Interrupted transaction | Resume without duplicate PR | local qualification report | Registered |
-| Implementation Lifecycle, Validation Loop, Repair Loop | bounded PR and failing validation | repair remains bounded and lifecycle continues | local qualification report | Registered |
+| Implementation Lifecycle, Validation Loop, Repair Loop | adopted or newly implemented candidate, terminal validation controls, interrupted first publication and failing validation | every required current control and both independent reviews precede one exact draft PR; restart reconciles by branch/base/SHA without duplicate creation; repair remains bounded | local qualification report | Registered |
 | Owner Authorization, Ready For Review, Automatic Merge | authorized green PR | only runner-controlled progression | local qualification report | Registered |
 | Repository Reconciliation, Finalization, Repository Cleanup | merged and squash-merged transaction | evidence-driven reconciliation and `WORKSPACE_READY` | local qualification report | Registered |
 | Engineering Memory, Progress Reporting, Engineering Reports | repeated transaction | bounded advisory memory and explainable output | local qualification report | Registered |

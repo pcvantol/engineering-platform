@@ -424,14 +424,25 @@ class ClientContractTest(unittest.TestCase):
                 def __init__(self) -> None:
                     super().__init__(AgentResult("COMPLETE"))
                     self.pr_create_calls = 0
+                    self.command_callback: object | None = None
+
+                def set_command_callback(self, callback: object) -> None:
+                    self.command_callback = callback
 
                 def invoke(self, root: Path, prompt_text: str) -> AgentResult:
                     self.roots.append(root)
                     self.prompts.append(prompt_text)
                     if "Local repository validation gate" in prompt_text:
+                        if callable(self.command_callback):
+                            for ordinal, command in enumerate(
+                                ("git diff --check", "python -m unittest discover"), start=1,
+                            ):
+                                command_id = f"restart-validation-{ordinal}"
+                                self.command_callback("started", command_id, command)
+                                self.command_callback("completed", command_id, command, 0)
                         return AgentResult(
                             "COMPLETE", branch, commit_sha=commit,
-                            validation_evidence=({"command": "canonical suite", "result": "passed"},),
+                            validation_evidence=({"command": "python -m unittest discover", "result": "passed"},),
                         )
                     if "First implementation pull-request publication gate" in prompt_text:
                         self.pr_create_calls += 1
@@ -1666,6 +1677,34 @@ class LocalAgentRunnerTest(unittest.TestCase):
             else:
                 os.environ[key] = value
 
+    def _record_passing_validation_profile(
+        self, run_id: str, *, currentness: int = 0,
+    ) -> str:
+        """Persist real terminal receipts for one compact required profile."""
+        started_at = "2026-08-29T00:00:00+00:00"
+        completed_at = "2026-08-29T00:00:01+00:00"
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="FULL",
+            validation_profile_version=execution_host.VALIDATION_PROFILE_VERSION,
+            required_validation_controls=("repository_suite",),
+            recorded_at=started_at,
+        )
+        record_validation_command_invocation(
+            self.root, run_id=run_id, validation_id="repository_suite",
+            command_id=f"{run_id}-repository-suite", category="repository",
+            control_identity="python3 -m unittest discover", required_for_profile=True,
+            started_at=started_at, currentness=currentness,
+        )
+        record_validation_command_terminal(
+            self.root, run_id=run_id, command_id=f"{run_id}-repository-suite",
+            completed_at=completed_at, exit_code=0,
+        )
+        context = load_validation_context(self.root, run_id)
+        assert context is not None
+        digest = execution_host._validation_profile_digest(context)
+        assert digest is not None
+        return digest
+
     def test_new_run_initializes_and_records_canonical_prompt(self) -> None:
         quality_evidence = ({"activity": "TEST_COVERAGE", "result": "Added focused regression coverage."},)
         agent = FakeAgent(AgentResult("COMPLETE", quality_evidence=quality_evidence))
@@ -2616,8 +2655,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         """The product gate, not provider wording, owns first PR creation."""
         sha = "a" * 40
         branch, pr_number = "codex/publication-gate", 71
+        validation_profile_digest = self._record_passing_validation_profile("publication-gate")
         profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
-                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+                   "validation_profile_digest": validation_profile_digest}
         reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
                          "profile_digest": profile["digest"], "invocation_id": f"{role}-1",
                          "findings": [], "contract_version": "1.0", "started_at": "now", "completed_at": "now"}
@@ -2672,10 +2713,74 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.assertEqual(blocked.next_action, "implementation_publication_assurance_required")
             self.assertEqual(agent.prompts, [])
 
+    def test_first_publication_requires_current_terminal_receipts_not_pass_prose(self) -> None:
+        sha = "a" * 40
+        for run_id, exit_code, currentness, repair_iterations in (
+            ("prose-only-validation", None, None, 0),
+            ("failed-terminal-validation", 1, 0, 0),
+            ("stale-terminal-validation", 0, 0, 1),
+        ):
+            with self.subTest(run_id=run_id):
+                record_validation_profile(
+                    self.root, run_id=run_id, selected_validation_tier="FULL",
+                    validation_profile_version=execution_host.VALIDATION_PROFILE_VERSION,
+                    required_validation_controls=("repository_suite",),
+                    recorded_at="2026-08-29T00:00:00+00:00",
+                )
+                if currentness is not None:
+                    record_validation_command_invocation(
+                        self.root, run_id=run_id, validation_id="repository_suite",
+                        command_id=f"{run_id}-command", category="repository",
+                        control_identity="python3 -m unittest discover", required_for_profile=True,
+                        started_at="2026-08-29T00:00:00+00:00", currentness=currentness,
+                    )
+                    record_validation_command_terminal(
+                        self.root, run_id=run_id, command_id=f"{run_id}-command",
+                        completed_at="2026-08-29T00:00:01+00:00", exit_code=exit_code,
+                    )
+                context = load_validation_context(self.root, run_id)
+                assert context is not None
+                validation_profile_digest = execution_host._validation_profile_digest(context)
+                assert validation_profile_digest is not None
+                profile = {
+                    "version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+                    "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+                    "validation_profile_digest": validation_profile_digest,
+                }
+                reviews = tuple({
+                    "reviewer": role, "status": "PASS", "candidate_sha": sha,
+                    "profile_digest": profile["digest"], "findings": [],
+                } for role in ("quality", "security"))
+                state = TransactionState(
+                    run_id, "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
+                    branch="codex/implementation", owner_authorized=True,
+                    last_verified_sha=sha, repair_iterations=repair_iterations,
+                    validation_evidence=({"command": "canonical suite", "result": "passed"},),
+                    local_validation_audit=({"outcome": "validated"},),
+                    assurance_profile=profile, assurance_reviews=reviews,
+                )
+                agent = FakeAgent(AgentResult(
+                    "COMPLETE", "codex/implementation", 71, commit_sha=sha,
+                ))
+                blocked, _ = EngineeringRunner(
+                    self.root, self.store,
+                    FakeRepository(branch="codex/implementation"), FakeGitHub([]), agent,
+                    lambda _: None,
+                )._publish_first_implementation_pull_request(
+                    state, AgentResult("COMPLETE", "codex/implementation", commit_sha=sha),
+                )
+                self.assertTrue(blocked.terminal)
+                self.assertEqual(
+                    blocked.next_action, "implementation_publication_assurance_required",
+                )
+                self.assertEqual(agent.prompts, [])
+
     def test_recovered_publication_result_is_reconciled_without_a_second_provider_turn(self) -> None:
         sha, branch, pr_number = "a" * 40, "codex/recovered-publication", 71
+        validation_profile_digest = self._record_passing_validation_profile("recovered-publication")
         profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
-                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+                   "validation_profile_digest": validation_profile_digest}
         reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
                          "profile_digest": profile["digest"], "findings": []}
                         for role in ("quality", "security"))
@@ -2705,6 +2810,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         events: list[str] = []
 
         class OrderedAgent(SequencedFakeAgent):
+            command_callback: object | None = None
+
+            def set_command_callback(self, callback: object) -> None:
+                self.command_callback = callback
+
             def invoke(self, root: Path, prompt: str) -> AgentResult:
                 if "First implementation publication hand-off boundary" in prompt:
                     events.append("PUBLICATION_DISPATCH")
@@ -2717,6 +2827,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
                     self.repository.evidence = RepositoryEvidence(
                         "pcvantol/djconnect", result.branch or "main", "a" * 40, True, True,
                     )
+                elif events[-1] == "LOCAL_VALIDATION_PASS" and callable(self.command_callback):
+                    for ordinal, command in enumerate(("git diff --check", "python -m unittest discover"), start=1):
+                        command_id = f"ordered-validation-{ordinal}"
+                        self.command_callback("started", command_id, command)
+                        self.command_callback("completed", command_id, command, 0)
                 if result.pull_request:
                     events.append("PR_CREATE")
                 return result
@@ -2738,12 +2853,176 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.prompt, run_id="ordered-first-publication", owner_authorized=True,
         )
         lifecycle_events = [event for event in events if event != "DOCUMENTATION_REVIEW_PASS"]
+        self.assertFalse(
+            state.terminal,
+            f"{state.diagnostic}; {load_validation_context(self.root, state.run_id)}; {state.assurance_profile}",
+        )
         self.assertEqual(lifecycle_events, [
             "IMPLEMENTATION", "LOCAL_VALIDATION_PASS", "QUALITY_REVIEW_PASS",
             "SECURITY_REVIEW_PASS", "PUBLICATION_DISPATCH", "PR_CREATE",
         ])
         self.assertEqual(state.pull_request, 71)
         self.assertEqual(lifecycle_events[:4].count("PR_CREATE"), 0)
+
+    def test_adopted_candidate_runs_real_host_gates_without_reimplementation(self) -> None:
+        sha, branch = "a" * 40, "codex/adopted-publication"
+        events: list[str] = []
+
+        class AdoptionAgent(SequencedFakeAgent):
+            command_callback: object | None = None
+
+            def set_command_callback(self, callback: object) -> None:
+                self.command_callback = callback
+
+            def invoke(self, root: Path, prompt: str) -> AgentResult:
+                if "Local repository validation hand-off boundary" in prompt:
+                    events.append("LOCAL_VALIDATION_PASS")
+                elif "First implementation publication hand-off boundary" in prompt:
+                    events.append("PUBLICATION_DISPATCH")
+                else:
+                    events.append("UNEXPECTED_IMPLEMENTATION")
+                result = super().invoke(root, prompt)
+                if events[-1] == "LOCAL_VALIDATION_PASS" and callable(self.command_callback):
+                    for ordinal, command in enumerate(("git diff --check", "python -m unittest discover"), start=1):
+                        command_id = f"adoption-validation-{ordinal}"
+                        self.command_callback("started", command_id, command)
+                        self.command_callback("completed", command_id, command, 0)
+                if result.pull_request:
+                    events.append("PR_CREATE")
+                return result
+
+            def review(self, root: Path, selection: object, objective: str, evidence: object = None) -> ReviewerResult:
+                events.append(f"{getattr(selection, 'reviewer').upper()}_REVIEW_PASS")
+                return super().review(root, selection, objective, evidence)
+
+        agent = AdoptionAgent([
+            AgentResult(
+                "COMPLETE", branch, commit_sha=sha,
+                validation_evidence=({"command": "python -m unittest discover", "result": "passed"},),
+            ),
+            AgentResult("COMPLETE", branch, 71, commit_sha=sha),
+        ])
+        repository = FakeRepository(branch=branch)
+        github = FakeGitHub([PullRequestEvidence(
+            71, "OPEN", True, True, is_draft=True,
+            head_branch=branch, base_branch="main", head_sha=sha,
+        )])
+        state = EngineeringRunner(
+            self.root, self.store, repository, github, agent, lambda _: None,
+        ).run_adopted_candidate(
+            self.prompt, run_id="adopted-publication", resume=False,
+            branch=branch, candidate_sha=sha,
+        )
+        lifecycle_events = [event for event in events if event != "DOCUMENTATION_REVIEW_PASS"]
+        self.assertEqual(lifecycle_events, [
+            "LOCAL_VALIDATION_PASS", "QUALITY_REVIEW_PASS", "SECURITY_REVIEW_PASS",
+            "PUBLICATION_DISPATCH", "PR_CREATE",
+        ])
+        self.assertNotIn("UNEXPECTED_IMPLEMENTATION", events)
+        self.assertEqual(state.pull_request, 71)
+        self.assertEqual(repository.synchronize_calls, [])
+
+    def test_publication_checkpoint_resume_reconciles_exact_pr_without_replaying_provider(self) -> None:
+        run_id, sha, branch = "publication-checkpoint-resume", "a" * 40, "codex/publication-resume"
+        validation_profile_digest = self._record_passing_validation_profile(run_id)
+        profile = {
+            "version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+            "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+            "validation_profile_digest": validation_profile_digest,
+        }
+        reviews = tuple({
+            "reviewer": role, "status": "PASS", "candidate_sha": sha,
+            "profile_digest": profile["digest"], "invocation_id": f"{role}-resume",
+            "findings": [], "contract_version": "1.0",
+            "started_at": "now", "completed_at": "now",
+        } for role in ("quality", "security"))
+        self.store.save(TransactionState(
+            run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch=branch, owner_authorized=True,
+            next_action="publish_first_implementation_pull_request",
+            last_verified_sha=sha,
+            validation_evidence=({"command": "python -m unittest discover", "result": "passed"},),
+            local_validation_iterations=1,
+            local_validation_audit=({
+                "iteration": "1", "observed_at": "2026-08-29T00:00:01+00:00",
+                "failed_checks": "No failed controls.", "proposed_action": "FULL profile.",
+                "agent_summary": "Required controls passed.", "commit_sha": sha,
+                "outcome": "validated",
+            },),
+            assurance_profile=profile, assurance_reviews=reviews,
+        ))
+        pull_request = PullRequestEvidence(
+            71, "OPEN", True, True, is_draft=True,
+            head_branch=branch, base_branch="main", head_sha=sha,
+        )
+        github = FakeGitHub([pull_request], branch_response=pull_request)
+        repository = FakeRepository(branch=branch)
+        agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+        state = EngineeringRunner(
+            self.root, self.store, repository, github, agent, lambda _: None,
+        ).run(self.prompt, run_id=run_id, resume=True)
+        self.assertEqual(state.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(state.pull_request, 71)
+        self.assertEqual(agent.prompts, [])
+        self.assertEqual(repository.synchronize_calls, [])
+        self.assertEqual(github.branch_calls, [branch])
+
+    def test_publication_interruption_never_enters_generic_provider_retry(self) -> None:
+        state = TransactionState(
+            "publication-interruption", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch="codex/publication-interruption", owner_authorized=True,
+            next_action="publish_first_implementation_pull_request",
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE")), lambda _: None,
+        )
+        recovery = {
+            "state": "RECOVERY_AVAILABLE", "lifecycle_phase": "EXECUTE_AGENT",
+            "triggering_invocation_id": "publication-attempt-1",
+        }
+        with patch.object(runner, "_recovery_state", return_value=recovery), patch.object(
+            runner, "_invoke_provider_attempt_with_timing",
+        ) as dispatched:
+            with self.assertRaises(CodexInvocationError) as raised:
+                runner._invoke_agent_with_timing(state, "publication prompt")
+        self.assertTrue(raised.exception.provider_turn_interrupted)
+        self.assertEqual(raised.exception.terminal_condition, "provider_turn_interrupted")
+        dispatched.assert_not_called()
+
+    def test_publication_readback_mismatch_blocks_before_create_dispatch(self) -> None:
+        run_id, sha, branch = "publication-readback-mismatch", "a" * 40, "codex/publication-mismatch"
+        validation_profile_digest = self._record_passing_validation_profile(run_id)
+        profile = {
+            "version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+            "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+            "validation_profile_digest": validation_profile_digest,
+        }
+        reviews = tuple({
+            "reviewer": role, "status": "PASS", "candidate_sha": sha,
+            "profile_digest": profile["digest"], "findings": [],
+        } for role in ("quality", "security"))
+        state = TransactionState(
+            run_id, "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
+            branch=branch, owner_authorized=True, last_verified_sha=sha,
+            validation_evidence=({"command": "python -m unittest discover", "result": "passed"},),
+            local_validation_audit=({"outcome": "validated"},),
+            assurance_profile=profile, assurance_reviews=reviews,
+        )
+        mismatching = PullRequestEvidence(
+            71, "OPEN", True, True, is_draft=True,
+            head_branch=branch, base_branch="main", head_sha="d" * 40,
+        )
+        agent = FakeAgent(AgentResult("COMPLETE", branch, 72, commit_sha=sha))
+        blocked, _ = EngineeringRunner(
+            self.root, self.store, FakeRepository(branch=branch),
+            FakeGitHub([], branch_response=mismatching), agent, lambda _: None,
+        )._publish_first_implementation_pull_request(
+            state, AgentResult("COMPLETE", branch, commit_sha=sha),
+        )
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "implementation_publication_evidence_invalid")
+        self.assertEqual(agent.prompts, [])
 
     def test_malformed_mandatory_review_is_unresolved_not_an_empty_pass(self) -> None:
         class MalformedReviewer(FakeAgent):
@@ -2760,10 +3039,25 @@ class LocalAgentRunnerTest(unittest.TestCase):
         """One repair consumes one durable round and cannot bypass assurance."""
         sha = "a" * 40
         branch = "codex/repair-rereview"
-        agent = SequencedFakeAgent([
+        class RepairValidationAgent(SequencedFakeAgent):
+            command_callback: object | None = None
+
+            def set_command_callback(self, callback: object) -> None:
+                self.command_callback = callback
+
+            def invoke(self, root: Path, prompt: str) -> AgentResult:
+                result = super().invoke(root, prompt)
+                if "Local repository validation hand-off boundary" in prompt and callable(self.command_callback):
+                    for ordinal, command in enumerate(("git diff --check", "python -m unittest discover"), start=1):
+                        command_id = f"repair-validation-{ordinal}"
+                        self.command_callback("started", command_id, command)
+                        self.command_callback("completed", command_id, command, 0)
+                return result
+
+        agent = RepairValidationAgent([
             AgentResult("COMPLETE", branch, commit_sha=sha),
             AgentResult("COMPLETE", branch, commit_sha=sha,
-                        validation_evidence=({"command": "canonical suite", "result": "passed"},)),
+                        validation_evidence=({"command": "python -m unittest discover", "result": "passed"},)),
         ])
         github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch=branch, base_branch="main")])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), github, agent, lambda _: None)
@@ -4974,8 +5268,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_managed_prompt_handoffs_are_phase_consistent_and_publication_is_explicit(self) -> None:
         """The full composer, not an isolated suffix, selects one PR contract."""
         sha = "a" * 40
+        validation_profile_digest = self._record_passing_validation_profile("publication")
         profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
-                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+                   "validation_profile_digest": validation_profile_digest}
         reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
                          "profile_digest": profile["digest"], "findings": []}
                         for role in ("quality", "security"))
@@ -4999,10 +5295,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         for state, heading, expected in cases:
             with self.subTest(run_id=state.run_id):
-                prompt = assemble_prompt(self.prompt, state, managed_target=self.root)
+                validation_context = (
+                    load_validation_context(self.root, state.run_id)
+                    if state.run_id == "publication" else None
+                )
+                prompt = assemble_prompt(
+                    self.prompt, state, managed_target=self.root,
+                    validation_context=validation_context,
+                )
                 self.assertIn(heading, prompt)
                 self.assertIn(expected, prompt)
-        publication_prompt = assemble_prompt(self.prompt, cases[4][0], managed_target=self.root)
+        publication_prompt = assemble_prompt(
+            self.prompt, cases[4][0], managed_target=self.root,
+            validation_context=load_validation_context(self.root, "publication"),
+        )
         self.assertNotIn("Do not create a draft or normal implementation pull request", publication_prompt)
 
     def test_publication_action_without_host_assurance_fails_closed_in_full_prompt(self) -> None:
