@@ -35,8 +35,9 @@ _CANDIDATE_FIELDS = frozenset({
 _PACKAGE_IDENTITY_FIELDS = frozenset({"interpreter", "version", "metadata", "package"})
 _ADMISSION_FIELDS = frozenset({"schema_version", "operation_id", "plan_digest", "installation_id",
                                "registered_installation", "prepared_candidate"})
-_ADMISSION_RECORD_FIELDS = frozenset({"installation_id", "version", "artifact_digest", "source_revision",
-                                      "interpreter", "roles", "record_digest"})
+_ADMISSION_RECORD_V1_FIELDS = frozenset({"installation_id", "version", "artifact_digest", "source_revision",
+                                         "interpreter", "roles", "record_digest"})
+_ADMISSION_RECORD_V2_FIELDS = _ADMISSION_RECORD_V1_FIELDS | frozenset({"record"})
 
 
 class InstallationUpdateOperationError(ValueError):
@@ -92,26 +93,53 @@ def _admission_binding(value: object) -> dict[str, object] | None:
     """Validate the typed OI-4c evidence before treating its digest as useful."""
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != _ADMISSION_FIELDS or value.get("schema_version") != 1:
+    schema_value = value.get("schema_version") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != _ADMISSION_FIELDS
+            or type(schema_value) is not int or schema_value not in {1, 2}):
         raise InstallationUpdateOperationError("execution admission binding is invalid")
     if not all(isinstance(value.get(field), str) and value[field]
                for field in ("operation_id", "plan_digest", "installation_id")):
         raise InstallationUpdateOperationError("execution admission binding is invalid")
     registered = value.get("registered_installation")
-    if (not isinstance(registered, dict) or set(registered) != _ADMISSION_RECORD_FIELDS
+    schema = schema_value
+    assert type(schema) is int  # narrowed by the closed schema check above
+    fields = _ADMISSION_RECORD_V1_FIELDS if schema == 1 else _ADMISSION_RECORD_V2_FIELDS
+    if (not isinstance(registered, dict) or set(registered) != fields
             or not all(isinstance(registered.get(field), str) and registered[field]
-                       for field in _ADMISSION_RECORD_FIELDS - {"roles"})
+                       for field in _ADMISSION_RECORD_V1_FIELDS - {"roles"})
             or not isinstance(registered.get("roles"), dict)):
         raise InstallationUpdateOperationError("execution admission binding is invalid")
+    if not all(isinstance(key, str) and isinstance(item, str) and item
+               for key, item in registered["roles"].items()):
+        raise InstallationUpdateOperationError("execution admission binding is invalid")
+    if schema == 2:
+        try:
+            full_record = operational_installation_record.validate_record(registered["record"])
+        except operational_installation_record.OperationalInstallationRecordError as error:
+            raise InstallationUpdateOperationError("execution admission binding is invalid") from error
+        digest = "sha256:" + hashlib.sha256(_canonical(full_record)).hexdigest()
+        if (
+            registered["record_digest"] != digest
+            or registered["installation_id"] != full_record["installation_id"]
+            or registered["version"] != full_record["version"]
+            or registered["artifact_digest"] != full_record["artifact_digest"]
+            or registered["source_revision"] != full_record["source_revision"]
+            or registered["interpreter"] != full_record["interpreter"]
+            or registered["roles"] != full_record["roles"]
+        ):
+            raise InstallationUpdateOperationError("execution admission binding is invalid")
     candidate = _binding(value.get("prepared_candidate"))
     if candidate is None:
         raise InstallationUpdateOperationError("execution admission binding is invalid")
     return {
-        "schema_version": 1,
+        "schema_version": schema,
         "operation_id": str(value["operation_id"]),
         "plan_digest": str(value["plan_digest"]),
         "installation_id": str(value["installation_id"]),
-        "registered_installation": dict(registered),
+        "registered_installation": {
+            **{field: registered[field] for field in _ADMISSION_RECORD_V1_FIELDS},
+            **({"record": dict(full_record)} if schema == 2 else {}),
+        },
         "prepared_candidate": candidate,
     }
 
@@ -120,9 +148,9 @@ def _provenance_binding(value: object) -> dict[str, object] | None:
     """Canonical pre-admission record proof captured with the OI-4b binding."""
     if value is None:
         return None
-    if (not isinstance(value, dict) or set(value) != _ADMISSION_RECORD_FIELDS
+    if (not isinstance(value, dict) or set(value) != _ADMISSION_RECORD_V1_FIELDS
             or not all(isinstance(value.get(field), str) and value[field]
-                       for field in _ADMISSION_RECORD_FIELDS - {"roles"})
+                       for field in _ADMISSION_RECORD_V1_FIELDS - {"roles"})
             or not isinstance(value.get("roles"), dict)):
         raise InstallationUpdateOperationError("prepared record provenance is invalid")
     return dict(value)
@@ -159,6 +187,8 @@ def _normalize(value: object, *, expected: dict[str, object] | None = None,
     if not isinstance(value, dict):
         raise InstallationUpdateOperationError("installation update operation is invalid")
     schema = value.get("schema_version")
+    if type(schema) is not int:
+        raise InstallationUpdateOperationError("installation update operation is invalid")
     if schema == 1 and set(value) == _V1_FIELDS:
         normalized: dict[str, object] = {
             **value,
@@ -369,8 +399,30 @@ def bind_execution_admission(plan: InstallationUpdatePlan, admission: Mapping[st
         raise InstallationUpdateOperationError("execution admission does not bind the exact prepared operation")
     existing = value.get("execution_admission")
     if existing is not None:
-        if existing != candidate:
+        if existing == candidate:
+            return value
+        # Schema v1 bound only a provenance projection.  While (and only
+        # while) the operation is still PREPARED, an exact v2 extension may
+        # replace it so the executor never begins a mutating run that cannot
+        # prove the record-CAS crash window.  This is an evidence migration,
+        # not a new admission or a record/service action.
+        legacy = _admission_binding(existing)
+        if (
+            legacy is None
+            or legacy["schema_version"] != 1
+            or candidate["schema_version"] != 2
+            or legacy["operation_id"] != candidate["operation_id"]
+            or legacy["plan_digest"] != candidate["plan_digest"]
+            or legacy["installation_id"] != candidate["installation_id"]
+            or legacy["prepared_candidate"] != candidate["prepared_candidate"]
+            or legacy["registered_installation"]
+            != {field: candidate["registered_installation"][field]
+                for field in _ADMISSION_RECORD_V1_FIELDS}
+        ):
             raise InstallationUpdateOperationError("execution admission conflicts with existing evidence")
+        value["execution_admission"] = candidate
+        value["execution_admission_digest"] = "sha256:" + hashlib.sha256(_canonical(candidate)).hexdigest()
+        _write(_path(plan), value)
         return value
     value["schema_version"] = 4
     value["execution_admission"] = candidate

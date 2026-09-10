@@ -6,9 +6,13 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from engineering_platform.installation_update_activation import InstallationUpdateActivationError, activate
+from engineering_platform.installation_update_activation import (
+    InstallationUpdateActivationError,
+    activate,
+    replacement_record,
+)
 from engineering_platform.installation_update_plan import prepare
-from engineering_platform.operational_installation_record import record
+from engineering_platform.operational_installation_record import load, record, replace_for_update
 
 
 class InstallationUpdateActivationTests(unittest.TestCase):
@@ -38,3 +42,34 @@ class InstallationUpdateActivationTests(unittest.TestCase):
             with patch("engineering_platform.installation_update_activation.operational_installation.package_identity", return_value={"interpreter": str(target), "version": "2.3.3", "metadata": "x", "package": "x"}), self.assertRaisesRegex(InstallationUpdateActivationError, "target EP version"):
                 activate(plan, interpreter=target)
 
+    def test_retries_only_the_exact_record_cas_replacement_after_a_reboot(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = self._plan(root)
+            target = root / "new" / "bin" / "python"
+            target.parent.mkdir(parents=True); target.write_text("#!\n")
+            original = load(root)
+            expected = replacement_record(plan, current=original, interpreter=target)
+            replace_for_update(
+                root,
+                expected_version=plan.current_version,
+                expected_artifact_digest=plan.current_digest,
+                replacement=expected,
+            )
+
+            with patch(
+                "engineering_platform.installation_update_activation.operational_installation.package_identity",
+                return_value={"interpreter": str(target), "version": plan.target_version, "metadata": "x", "package": "x"},
+            ), patch(
+                "engineering_platform.installation_update_activation.server_service.replace_runtime",
+                return_value={"state": "unchanged"},
+            ) as replace:
+                observed = activate(
+                    plan,
+                    interpreter=target,
+                    pre_activation_record=original,
+                )
+
+            self.assertEqual(observed, expected)
+            self.assertEqual(replace.call_args.kwargs["expected_interpreter"], target)
+            self.assertEqual(replace.call_args.kwargs["interpreter"], target)
