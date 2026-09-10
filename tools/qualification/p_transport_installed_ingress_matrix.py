@@ -250,7 +250,15 @@ def main(argv: list[str] | None = None) -> int:
         # Build the candidate exactly as an installer would.  The qualification
         # runner must not assume that its own interpreter happens to carry the
         # project build backend; build isolation is part of the wheel contract.
-        subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)], check=True, capture_output=True, text=True)  # nosec B603
+        subprocess.run(
+            [
+                sys.executable,
+                str(args.source_root.resolve() / "tools" / "qualification" / "build_platform_wheel.py"),
+                "--source-root", str(args.source_root.resolve()),
+                "--wheel-directory", str(wheelhouse),
+            ],
+            check=True, capture_output=True, text=True,
+        )  # nosec B603
         wheels = tuple(wheelhouse.glob("engineering_platform-*.whl"))
         if len(wheels) != 1:
             raise RuntimeError("CANDIDATE_WHEEL_UNAVAILABLE")

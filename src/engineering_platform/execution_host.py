@@ -202,6 +202,198 @@ _redacted_cli_tail = executor_redacted_cli_tail
 _format_cli_failure = executor_format_cli_failure
 
 
+def _has_current_assurance_evidence(state: TransactionState) -> bool:
+    """Return whether trusted state binds both mandatory reviews to one candidate.
+
+    This deliberately derives authority from checkpointed host evidence, not
+    from a provider-supplied action name, objective text, or PR number.
+    """
+    profile = state.assurance_profile
+    if not isinstance(profile, dict):
+        return False
+    candidate, digest = profile.get("candidate_sha"), profile.get("digest")
+    if not isinstance(candidate, str) or not isinstance(digest, str):
+        return False
+    current = [
+        review for review in state.assurance_reviews
+        if review.get("candidate_sha") == candidate and review.get("profile_digest") == digest
+    ]
+    return all(
+        any(review.get("reviewer") == role and review.get("status") == "PASS" for review in current)
+        for role in ("quality", "security")
+    ) and not any(
+        finding.get("blocking") and finding.get("disposition") == "OPEN"
+        for review in current for finding in review.get("findings", [])
+        if isinstance(finding, dict)
+    )
+
+
+def _validation_profile_digest(validation_context: dict[str, object] | None) -> str | None:
+    """Return the immutable identity of the selected validation profile."""
+    if not isinstance(validation_context, dict):
+        return None
+    identity = {
+        "selected_validation_tier": validation_context.get("selected_validation_tier"),
+        "validation_profile_version": validation_context.get("validation_profile_version"),
+        "profile_reference": validation_context.get("profile_reference"),
+        "profile_selection_source": validation_context.get("profile_selection_source"),
+        "required_validation_controls": validation_context.get("required_validation_controls"),
+        "control_bindings": validation_context.get("control_bindings"),
+    }
+    if (
+        not isinstance(identity["selected_validation_tier"], str)
+        or not isinstance(identity["validation_profile_version"], str)
+        or not isinstance(identity["profile_reference"], str)
+        or not isinstance(identity["profile_selection_source"], str)
+        or not isinstance(identity["required_validation_controls"], tuple)
+        or not identity["required_validation_controls"]
+        or not isinstance(identity["control_bindings"], tuple)
+    ):
+        return None
+    return "sha256:" + hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _has_current_local_validation_evidence(
+    state: TransactionState, validation_context: dict[str, object] | None,
+) -> bool:
+    """Require terminal PASS receipts for every current, required control."""
+    profile = state.assurance_profile
+    if not isinstance(profile, dict):
+        return False
+    candidate = profile.get("candidate_sha")
+    if not isinstance(candidate, str) or state.last_verified_sha != candidate:
+        return False
+    if not state.local_validation_audit or state.local_validation_audit[-1].get("outcome") != "validated":
+        return False
+    profile_digest = _validation_profile_digest(validation_context)
+    if profile_digest is None or profile.get("validation_profile_digest") != profile_digest:
+        return False
+    return _required_validation_controls_pass(state, validation_context)
+
+
+def _required_validation_controls_pass(
+    state: TransactionState, validation_context: dict[str, object] | None,
+) -> bool:
+    """Require current successful command terminals for the persisted profile."""
+    required = validation_context.get("required_validation_controls") if validation_context else None
+    controls = validation_context.get("controls") if validation_context else None
+    if not isinstance(required, tuple) or not required or not isinstance(controls, dict):
+        return False
+    for validation_id in required:
+        control = controls.get(validation_id)
+        if not isinstance(control, dict) or (
+            control.get("required_for_profile") is not True
+            or control.get("execution_status") != "EXECUTED"
+            or control.get("result") != "PASS"
+            or control.get("currentness") != state.repair_iterations
+            or control.get("exit_code") != 0
+            or not isinstance(control.get("started_at"), str)
+            or not isinstance(control.get("ended_at"), str)
+        ):
+            return False
+    return True
+
+
+def _managed_prompt_phase(
+    state: TransactionState | None,
+    validation_context: dict[str, object] | None = None,
+) -> str:
+    """Select one mutually exclusive provider hand-off from trusted state.
+
+    ``EXECUTE_AGENT`` is shared by implementation and the later publication
+    dispatch.  The latter is privileged only when its complete host evidence
+    is present; an action string alone is intentionally fail-closed.
+    """
+    if state is None:
+        return "UNSPECIFIED"
+    if state.execution_mode == "GENESIS":
+        return "GENESIS"
+    if state.transaction_kind == "RECONCILIATION":
+        return "RECONCILIATION"
+    if state.action_intent == "VALIDATION_ONLY":
+        return "VALIDATION_ONLY"
+    if state.transaction_kind == "FINALIZATION":
+        return "FINALIZATION"
+    if state.phase == "LOCAL_REPOSITORY_VALIDATION":
+        return "LOCAL_VALIDATION"
+    if state.phase == "QUALITY_CONTROL_AGENT":
+        return "ASSURANCE_REVIEW"
+    if state.phase == "REPAIR_AGENT":
+        return "EXISTING_PR_REPAIR" if state.pull_request else "PREPUBLICATION_REPAIR"
+    if (
+        state.execution_mode == "MANAGED"
+        and state.transaction_kind == "IMPLEMENTATION"
+        and state.phase == "EXECUTE_AGENT"
+        and state.next_action == "publish_first_implementation_pull_request"
+        and state.owner_authorized
+        and state.pull_request is None
+        and _has_current_local_validation_evidence(state, validation_context)
+        and _has_current_assurance_evidence(state)
+    ):
+        return "FIRST_PUBLICATION"
+    if state.execution_mode == "MANAGED" and state.transaction_kind == "IMPLEMENTATION":
+        return "INITIAL_IMPLEMENTATION"
+    return "UNSPECIFIED"
+
+
+def _managed_phase_instructions(
+    state: TransactionState | None,
+    validation_context: dict[str, object] | None = None,
+) -> str:
+    """Return the single phase-consistent mutation and result contract."""
+    phase = _managed_prompt_phase(state, validation_context)
+    contracts = {
+        "INITIAL_IMPLEMENTATION": """
+Implementation hand-off boundary (host-owned and non-negotiable):
+- Edit only the admitted checkout, branch and objective scope. The existing execution contract may create, commit and push that bounded branch.
+- Do not create a draft or normal implementation pull request and do not mark a pull request ready for review.
+- Return the bounded branch, actual commit/evidence, and `pull_request: null`. The host next performs local validation and independent quality and security reviews; only its later post-assurance publication gate may create the first PR.
+""",
+        "LOCAL_VALIDATION": """
+Local repository validation hand-off boundary (read-only measurement):
+- Inspect only the selected candidate. Do not modify code, index, commits, branches, remotes, pull requests, or other remote state.
+- A pull request is neither required nor permitted for successful validation. Return only applicable validation evidence and result; the host decides any repair or publication.
+""",
+        "ASSURANCE_REVIEW": """
+Mandatory assurance hand-off boundary (read-only):
+- Review the host-pinned candidate and applicable profile using the real reviewer result contract. Do not edit, commit, push, create a pull request, or run a mutating quality-control hand-off.
+- Do not reuse a conclusion from another candidate, profile, run, or reviewer invocation.
+""",
+        "PREPUBLICATION_REPAIR": """
+Pre-publication repair hand-off boundary:
+- Repair the same bounded candidate and branch within the host-owned shared repair budget. No pull request exists yet; do not require, create, or invent one.
+- Return the branch and current candidate evidence with `pull_request: null`. The host will revalidate and re-review before considering publication.
+""",
+        "EXISTING_PR_REPAIR": """
+Existing implementation-PR repair hand-off boundary:
+- Preserve exactly the checkpointed branch and pull-request identity. Do not create a replacement or second pull request.
+- A changed candidate must return to host-owned validation and both independent reviews before renewed delivery eligibility.
+""",
+        "FIRST_PUBLICATION": """
+First implementation publication hand-off boundary:
+- The host has already established current validation plus independent quality and security assurance for this exact candidate.
+- Do not edit files, index, commits, branch, tests, configuration, or evidence. Create exactly one draft implementation pull request for the existing branch and unchanged current SHA, then return that branch, PR identity, and SHA.
+- Do not merge, release, deploy, tag, change repository settings, or start a new QA or repair loop.
+""",
+        "FINALIZATION": """
+PR hand-off boundary (host-owned and non-negotiable):
+- Create or repair only the bounded finalization pull request, preserving any checkpointed pull-request number and branch. Never create a replacement pull request.
+- Return the required JSON object immediately after that hand-off. Do not
+  poll or wait for GitHub checks, review, merge, reconciliation, or other external terminal evidence.
+""",
+        "VALIDATION_ONLY": """
+Validation-only boundary:
+- Perform only the requested read-only validation. Do not invent or create a branch, commit, pull request, or remote mutation.
+""",
+    }
+    return contracts.get(phase, """
+Fail-closed Managed hand-off boundary:
+- State does not establish authority for a pull-request operation. Do not create, replace, ready, merge, or otherwise mutate a pull request.
+""")
+
+
 def assemble_prompt(
     prompt_path: Path,
     state: TransactionState | None,
@@ -209,6 +401,7 @@ def assemble_prompt(
     managed_target: Path | None = None,
     reviewer_evidence: ReviewerEvidence | None = None,
     role: ProviderRole | None = None,
+    validation_context: dict[str, object] | None = None,
 ) -> str:
     objective = prompt_path.read_text(encoding="utf-8")
     provider_role = role or role_for_phase(state.phase if state else "EXECUTE_AGENT")
@@ -231,8 +424,7 @@ authority, lifecycle, retry, validation, provider, Forge, queue, or delivery sem
 `COMPLETE`, `repository_reconciled`, and the pushed main commit SHA only after verifying a clean
 workspace and that `main` contains that exact commit."""
         if state and state.transaction_kind == "RECONCILIATION"
-        else
-        """The runner holds explicit owner authorization for this exact bounded transaction. You may create, commit and push one bounded branch and draft pull request, or repair that same pull request. The runner may mark that pull request ready for review, but only the human operator may merge it. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective."""
+        else """The runner's owner authorization is bounded by the current host phase; it does not by itself authorize every pull-request operation. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective."""
         if state and state.owner_authorized
         else "Do not create a merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective."
     )
@@ -299,30 +491,14 @@ facts and must never cross the primary/reviewer boundary.
 
 Ledger bootstrap:
 """ + json.dumps(investigation_ledger.to_prompt_dict(), sort_keys=True) + "\n"
-    pr_handoff = "" if not state or state.execution_mode == "GENESIS" else """
-PR hand-off boundary (host-owned and non-negotiable):
-- Your work ends when the bounded branch and its pull request have been
-  created or repaired, pushed, and locally validated.
-- If this is a repair, preserve the exact checkpointed pull-request number
-  and branch. Never create a replacement pull request.
-- Return the required JSON object immediately after that hand-off. Do not
-  poll or wait for GitHub checks, review, merge, Finalization, reconciliation,
-  or any other external terminal evidence. The Execution Host alone records
-  the pull request, polls checks, and schedules at most three bounded repairs.
-- Write pull-request Markdown with real line breaks. Never serialize a line
-  break as the literal characters `\\n`.
-"""
-    local_gate = "" if not state or not (
-        state.execution_mode == "MANAGED" and state.transaction_kind == "IMPLEMENTATION" and state.phase == "EXECUTE_AGENT"
-    ) else """
-Local validation hand-off boundary:
-- Create, commit and push the bounded implementation branch, but do not create a pull request yet.
-- Return that branch with `pull_request: null` after relevant focused validation. The host owns the next local repository validation gate and only that gate may create the implementation PR after the canonical suite passes.
-"""
+    phase_handoff = (
+        "" if not state or state.execution_mode == "GENESIS"
+        else _managed_phase_instructions(state, validation_context)
+    )
     return f"""You are executing one bounded Engineering Platform transaction.
 Provider role: {provider_role.value}. Context projection: {projection.budget_version}; source items: {projection.source_item_count}; omitted lower-priority items: {projection.omitted_low_priority_count}.{context_scope_instruction}
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{local_gate}{pr_handoff}
+{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{phase_handoff}
 Supplied bounded objective follows:\n\n{projection.text}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence, quality_evidence and validation_disposition. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. validation_disposition is product_failure unless the required suite failed for an environmental instability that you demonstrated with bounded evidence, such as an isolated rerun of the same failing check passing without a code change. It never makes a failed suite pass. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
@@ -739,13 +915,7 @@ class EngineeringRunner:
                     required=True, currentness=state.repair_iterations,
                     central_database=self.store.central_database,
                 )
-                validation_id = (
-                    "git_diff_check" if kind == "format_or_diff" else
-                    "documentation_contract" if kind == "documentation_contract" else
-                    self._validation_id(command, kind) if kind == "browser_e2e" else
-                    "repository_suite" if kind == "tests" and tier == "FULL" else
-                    "engineering_python" if kind == "tests" else f"validation_{kind}"
-                )
+                validation_id = self._validation_id_for_profile(command, kind, tier)
                 record_validation_control_result(
                     self.root, run_id=state.run_id, validation_id=validation_id, category="agent",
                     control_identity=command[:160], required_for_profile=validation_id in required_controls, execution_status="EXECUTED",
@@ -1037,6 +1207,11 @@ class EngineeringRunner:
             return self._save_terminal(repair, result.terminal_state, "external_action_required", result.diagnostic)
         if result.pull_request not in {None, repair.pull_request}:
             return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the bounded pull request.")
+        # A repair result may not silently move its work to another branch and
+        # then have the host overwrite that identity below.  The checkpointed
+        # branch is the PR lineage boundary, including before publication.
+        if result.branch != repair.branch:
+            return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the checkpointed branch.")
         repaired_result = replace(
             result,
             branch=result.branch or repair.branch,
@@ -1062,6 +1237,20 @@ class EngineeringRunner:
         )
         if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
             return reviewed
+        # A repair before the first PR follows exactly the same host-owned
+        # publication gate as the original implementation.  It must not fall
+        # through to delivery with a fictitious PR, nor grant repair itself
+        # publication authority.
+        if (
+            reviewed.execution_mode == "MANAGED"
+            and reviewed.transaction_kind == "IMPLEMENTATION"
+            and reviewed.owner_authorized
+            and reviewed.pull_request is None
+            and reviewed_result.pull_request is None
+        ):
+            reviewed, reviewed_result = self._publish_first_implementation_pull_request(reviewed, reviewed_result)
+            if reviewed.terminal:
+                return reviewed
         try:
             evidence = self.repository.inspect(self.root)
         except RunnerError:
@@ -1185,9 +1374,10 @@ class EngineeringRunner:
             return state
         if not (evidence.clean and evidence.branch == expected_branch and evidence.head_sha == result.commit_sha):
             return state
-        return self._append_verified_commit_evidence(
+        recorded = self._append_verified_commit_evidence(
             state, phase=phase, commit_sha=result.commit_sha, description=description,
         )
+        return replace(recorded, last_verified_sha=result.commit_sha)
 
     @staticmethod
     def _validation_kind(command: str) -> str | None:
@@ -1216,6 +1406,23 @@ class EngineeringRunner:
         """Reserve dashboard_browser for the canonical dashboard suite only."""
         if kind == "browser_e2e" and is_canonical_dashboard_command(command):
             return "dashboard_browser"
+        return f"validation_{kind}"
+
+    @classmethod
+    def _validation_id_for_profile(
+        cls, command: str, kind: str, tier: object,
+    ) -> str:
+        """Map an observed command to the owning persisted control identity."""
+        if not isinstance(tier, str):
+            return cls._validation_id(command, kind)
+        if kind == "format_or_diff":
+            return "git_diff_check"
+        if kind == "documentation_contract":
+            return "documentation_contract"
+        if kind == "tests":
+            return "repository_suite" if tier == "FULL" else "engineering_python"
+        if kind == "browser_e2e":
+            return cls._validation_id(command, kind)
         return f"validation_{kind}"
 
     def _invoke_provider_attempt_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
@@ -1270,9 +1477,13 @@ class EngineeringRunner:
             if event == "started":
                 kind = self._validation_kind(command)
                 if kind is not None:
-                    validation_id = self._validation_id(command, kind)
+                    validation_id = self._validation_id_for_profile(command, kind, None)
                     try:
                         profile = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
+                        validation_id = self._validation_id_for_profile(
+                            command, kind,
+                            profile.get("selected_validation_tier") if profile else None,
+                        )
                         required = validation_id in set(profile["required_validation_controls"]) if profile else False
                         started_at = datetime.now(timezone.utc).isoformat()
                         record_validation_command_invocation(
@@ -1501,6 +1712,17 @@ class EngineeringRunner:
         while True:
             recovery = self._recovery_state(state.run_id)
             if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_AVAILABLE":
+                if state.next_action == "publish_first_implementation_pull_request":
+                    # Publication is externally observable.  Unlike an
+                    # implementation/repair turn it must never automatically
+                    # launch attempt two: the publication gate performs exact
+                    # branch/base/SHA readback before any later create action.
+                    raise CodexInvocationError(
+                        "First-publication acknowledgement is unresolved.",
+                        "Publication recovery requires exact GitHub readback before another dispatch.",
+                        next_action="NONE", terminal_condition="provider_turn_interrupted",
+                        interruption_reason="publication_acknowledgement_unresolved",
+                    )
                 precheck = self._provider_recovery_preflight(state)
                 if precheck is not None:
                     mark_precheck_failed(
@@ -1546,11 +1768,10 @@ class EngineeringRunner:
                 isinstance(recovery, dict)
                 and recovery.get("state") == "RECOVERED"
                 and recovery.get("lifecycle_phase") == state.phase
-                # EXECUTE_AGENT contains two distinct product dispatches:
-                # implementation and the later immutable PR publication.
-                # A recovered implementation result (necessarily no PR for
-                # a new run) must never be replayed as publication evidence.
-                and state.next_action != "publish_first_implementation_pull_request"
+                # EXECUTE_AGENT contains two distinct product dispatches.
+                # The recovered result remains phase-bound; the publication
+                # gate below verifies an immutable draft PR by readback
+                # before it can be accepted.
             ):
                 replacement_id = recovery.get("replacement_invocation_id")
                 if (
@@ -1573,7 +1794,7 @@ class EngineeringRunner:
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
                     )
                 try:
-                    return AgentResult(
+                    recovered_result = AgentResult(
                         terminal_state=str(payload["terminal_state"]), branch=payload.get("branch"),
                         pull_request=payload.get("pull_request"), terminal_condition=str(payload.get("terminal_condition") or "repository_reconciled"),
                         diagnostic=payload.get("diagnostic"), repository_path=payload.get("repository_path"),
@@ -1587,6 +1808,18 @@ class EngineeringRunner:
                         "Recovered provider result is invalid.", "Recovery result evidence cannot be consumed safely.",
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
                     ) from error
+                # EXECUTE_AGENT has an implementation dispatch and a later,
+                # distinct first-publication dispatch. A recovered pre-PR
+                # implementation result has no PR and must not be replayed
+                # as the later publication result merely because both share
+                # that lifecycle phase. Conversely a recovered publication
+                # result must carry the durable PR identity for the gate to
+                # verify by provider readback without a second create.
+                if not (
+                    state.next_action == "publish_first_implementation_pull_request"
+                    and recovered_result.pull_request is None
+                ):
+                    return recovered_result
             if isinstance(recovery, dict) and recovery.get("state") in {"EXHAUSTED", "PRECHECK_FAILED", "AMBIGUOUS"}:
                 raise CodexInvocationError(
                     "Provider interruption recovery cannot continue.", "Recovery budget is exhausted or recovery evidence is unsafe.",
@@ -1733,6 +1966,7 @@ Local repository validation gate — read-only measurement:
                     description="local_repository_validation_commit_verified",
                 )
                 self._persist_agent_usage(validation.run_id)
+                validation_context = self._validation_context(validation)
             except ProviderReadinessBlocked as blocked:
                 return blocked.state, implementation
             except CodexInvocationError as error:
@@ -1755,12 +1989,33 @@ Local repository validation gate — read-only measurement:
                     validation, "BLOCKED", "implementation_pr_before_assurance",
                     "Read-only local validation returned a pull request before mandatory assurance.",
                 ), implementation
-            if result.terminal_state == "COMPLETE" and result.validation_evidence and not self._has_failed_validation_evidence(result):
+            if (
+                result.terminal_state == "COMPLETE"
+                and result.validation_evidence
+                and not self._has_failed_validation_evidence(result)
+                and _required_validation_controls_pass(validation, validation_context)
+            ):
                 validation = self._record_local_validation_audit(validation, result=result, outcome="validated", profile=profile)
                 return validation, replace(
                     result, branch=branch, pull_request=None,
                     validation_evidence=implementation.validation_evidence + result.validation_evidence,
                 )
+            if result.terminal_state == "COMPLETE" and not self._has_failed_validation_evidence(result):
+                controls = validation_context.get("controls", {}) if validation_context else {}
+                required = validation_context.get("required_validation_controls", ()) if validation_context else ()
+                if not any(
+                    isinstance(controls.get(control), dict)
+                    and controls[control].get("currentness") == validation.repair_iterations
+                    and controls[control].get("result") == "FAIL"
+                    for control in required
+                ):
+                    validation = self._record_local_validation_audit(
+                        validation, result=result, outcome="agent_failed", profile=profile,
+                    )
+                    return self._save_terminal(
+                        validation, "BLOCKED", "required_validation_unresolved",
+                        "Local validation did not produce current successful terminal evidence for every required control.",
+                    ), implementation
             validation = self._record_local_validation_audit(validation, result=result, outcome="validation_failed", profile=profile)
             if self._is_environmental_validation_instability(result):
                 return self._save_terminal(
@@ -1798,15 +2053,32 @@ Local repository validation gate — read-only measurement:
         profile_version = f"validation-profile@{VALIDATION_PROFILE_VERSION}"
         criteria = Path(quality.prompt_path).read_text(encoding="utf-8")
         criteria_digest = "sha256:" + hashlib.sha256(criteria.encode("utf-8")).hexdigest()
+        try:
+            validation_context = load_validation_context(
+                self.root, quality.run_id, central_database=self.store.central_database,
+            )
+        except EngineeringStorageError:
+            validation_context = None
+        validation_profile_digest = _validation_profile_digest(validation_context)
         # Candidate identity and policy identity are intentionally independent:
         # a source revision must not silently select or weaken its own policy.
         profile_digest = "sha256:" + hashlib.sha256(
-            json.dumps({"baseline": profile_version, "criteria_digest": criteria_digest}, sort_keys=True).encode("utf-8")
+            json.dumps({
+                "baseline": profile_version,
+                "criteria_digest": criteria_digest,
+                "validation_profile_digest": validation_profile_digest,
+            }, sort_keys=True).encode("utf-8")
         ).hexdigest()
-        quality = replace(quality, assurance_profile={
+        assurance_profile = {
             "version": profile_version, "digest": profile_digest, "candidate_sha": candidate.head_sha,
             "criteria_digest": criteria_digest,
-        })
+        }
+        # Genesis has no host-owned local validation profile.  Preserve the
+        # valid legacy assurance shape instead of persisting an explicit null,
+        # which cannot survive the durable checkpoint schema round-trip.
+        if validation_profile_digest is not None:
+            assurance_profile["validation_profile_digest"] = validation_profile_digest
+        quality = replace(quality, assurance_profile=assurance_profile)
         self.store.save(quality)
         write_live_status(self.root, quality, quality.next_action)
         evidence = ReviewerEvidence.from_repository(quality.run_id, quality.execution_mode, candidate)
@@ -1918,24 +2190,19 @@ Local repository validation gate — read-only measurement:
     @staticmethod
     def _current_assurance_passes(state: TransactionState) -> bool:
         """Require the two mandatory reviews for this exact profile/candidate."""
-        profile = state.assurance_profile
-        if not isinstance(profile, dict):
-            return False
-        candidate, digest = profile.get("candidate_sha"), profile.get("digest")
-        if not isinstance(candidate, str) or not isinstance(digest, str):
-            return False
-        current = [
-            review for review in state.assurance_reviews
-            if review.get("candidate_sha") == candidate and review.get("profile_digest") == digest
-        ]
-        return all(
-            any(review.get("reviewer") == role and review.get("status") == "PASS" for review in current)
-            for role in ("quality", "security")
-        ) and not any(
-            finding.get("blocking") and finding.get("disposition") == "OPEN"
-            for review in current for finding in review.get("findings", [])
-            if isinstance(finding, dict)
-        )
+        return _has_current_assurance_evidence(state)
+
+    def _validation_context(self, state: TransactionState) -> dict[str, object] | None:
+        try:
+            return load_validation_context(
+                self.root, state.run_id, central_database=self.store.central_database,
+            )
+        except EngineeringStorageError:
+            return None
+
+    def _current_local_validation_passes(self, state: TransactionState) -> bool:
+        """Require current passing local validation before first publication."""
+        return _has_current_local_validation_evidence(state, self._validation_context(state))
 
     def _publish_first_implementation_pull_request(
         self, state: TransactionState, implementation: AgentResult,
@@ -1947,8 +2214,16 @@ Local repository validation gate — read-only measurement:
         the already reviewed candidate; the host pins its SHA before and after
         the PR hand-off.
         """
-        if state.execution_mode == "GENESIS" or state.pull_request or implementation.pull_request:
+        recovered_publication = (
+            state.next_action == "publish_first_implementation_pull_request"
+            and implementation.pull_request is not None
+        )
+        if state.execution_mode == "GENESIS" or state.pull_request or (
+            implementation.pull_request and not recovered_publication
+        ):
             return state, implementation
+        if not self._current_local_validation_passes(state):
+            return self._save_terminal(state, "BLOCKED", "implementation_publication_assurance_required", "First implementation PR publication requires current passing local validation for the reviewed candidate."), implementation
         if not self._current_assurance_passes(state):
             return self._save_terminal(state, "BLOCKED", "implementation_publication_assurance_required", "First implementation PR publication requires current passing quality and security assurance."), implementation
         try:
@@ -1960,20 +2235,81 @@ Local repository validation gate — read-only measurement:
             return self._save_terminal(state, "BLOCKED", "implementation_publication_candidate_changed", "The reviewed candidate changed before first PR publication."), implementation
         publication = replace(state, phase="EXECUTE_AGENT", next_action="publish_first_implementation_pull_request")
         self.store.save(publication)
-        prompt = assemble_prompt(Path(publication.prompt_path), publication, managed_target=self.root) + """
+        prompt = assemble_prompt(
+            Path(publication.prompt_path), publication, managed_target=self.root,
+            validation_context=self._validation_context(publication),
+        ) + """
 
 First implementation pull-request publication gate:
 - The Execution Host has already recorded passing local validation plus independent quality and security assurance for the exact current candidate.
 - Do not edit files, index, commits, branch, tests, configuration, or evidence. Do not merge, release, or change repository settings.
 - Create exactly one draft implementation pull request for the existing bounded branch and current HEAD. Return that existing branch, the GitHub pull-request number and the unchanged current commit SHA.
 """
-        try:
-            published = self._invoke_agent_with_timing(publication, prompt)
-            publication = self._record_agent_execution_time(publication)
-        except (CodexInvocationError, ProviderReadinessBlocked) as error:
-            if isinstance(error, ProviderReadinessBlocked):
-                return error.state, implementation
-            return self._terminalize_provider_invocation_error(publication, error), implementation
+        if recovered_publication:
+            # A lost acknowledgement is reconciled from its durable provider
+            # result. Never issue a second PR-create turn for that run.
+            published = implementation
+        else:
+            # A process can stop after GitHub accepted the create but before
+            # the provider result became durable.  Reconcile the exact pinned
+            # identity before every create dispatch; never adopt by branch
+            # name alone and never replay while a mismatching PR is visible.
+            try:
+                existing = self.github.pull_request_for_head_branch(before.branch)
+            except RunnerError:
+                return self._save_terminal(
+                    publication, "BLOCKED", "implementation_publication_evidence_invalid",
+                    "Pre-create pull-request readback was unavailable or ambiguous; first publication was not dispatched.",
+                ), implementation
+            if existing is not None:
+                if not (
+                    existing.state == "OPEN"
+                    and existing.is_draft
+                    and existing.head_branch == before.branch
+                    and existing.base_branch == "main"
+                    and existing.head_sha == before.head_sha
+                ):
+                    return self._save_terminal(
+                        publication, "BLOCKED", "implementation_publication_evidence_invalid",
+                        "Existing pull-request readback does not match the reviewed publication candidate.",
+                    ), implementation
+                published = AgentResult(
+                    "COMPLETE", branch=before.branch,
+                    pull_request=existing.number, commit_sha=before.head_sha,
+                )
+            else:
+                try:
+                    published = self._invoke_agent_with_timing(publication, prompt)
+                    publication = self._record_agent_execution_time(publication)
+                except (CodexInvocationError, ProviderReadinessBlocked) as error:
+                    if isinstance(error, ProviderReadinessBlocked):
+                        return error.state, implementation
+                    # The provider may have created the draft PR and lost only
+                    # its acknowledgement. Before terminalizing (and before any
+                    # future provider retry), reconcile exactly one readback for
+                    # this already-pinned branch, base, and candidate SHA. A
+                    # branch match alone is deliberately never enough.
+                    try:
+                        recovered = self.github.pull_request_for_head_branch(before.branch)
+                    except RunnerError:
+                        return self._save_terminal(
+                            publication, "BLOCKED", "implementation_publication_evidence_invalid",
+                            "Pull-request acknowledgement readback was unavailable or ambiguous; publication must be reconciled before any retry.",
+                        ), implementation
+                    if (
+                        recovered is not None
+                        and recovered.state == "OPEN"
+                        and recovered.is_draft
+                        and recovered.head_branch == before.branch
+                        and recovered.base_branch == "main"
+                        and recovered.head_sha == before.head_sha
+                    ):
+                        published = AgentResult(
+                            "COMPLETE", branch=before.branch,
+                            pull_request=recovered.number, commit_sha=before.head_sha,
+                        )
+                    else:
+                        return self._terminalize_provider_invocation_error(publication, error), implementation
         try:
             after = self.repository.inspect(self.root)
         except RunnerError:
@@ -1983,6 +2319,16 @@ First implementation pull-request publication gate:
         if not published.pull_request: failures.append("missing_pull_request")
         if published.branch != before.branch: failures.append("branch_mismatch")
         if published.commit_sha != before.head_sha: failures.append("candidate_sha_mismatch")
+        try:
+            pull_request = self.github.pull_request(published.pull_request) if published.pull_request else None
+        except RunnerError:
+            pull_request = None
+        if pull_request is None: failures.append("pull_request_unavailable")
+        elif pull_request.state != "OPEN": failures.append("pull_request_not_open")
+        elif not pull_request.is_draft: failures.append("pull_request_not_draft")
+        elif pull_request.head_branch != before.branch: failures.append("pull_request_branch_mismatch")
+        elif pull_request.base_branch != "main": failures.append("pull_request_base_mismatch")
+        elif pull_request.head_sha != before.head_sha: failures.append("pull_request_candidate_mismatch")
         if after is None: failures.append("candidate_unavailable_after_publication")
         elif not after.clean: failures.append("candidate_dirty_after_publication")
         elif after.branch != before.branch: failures.append("branch_changed_after_publication")
@@ -2104,6 +2450,18 @@ First implementation pull-request publication gate:
     ) -> TransactionState:
         """Route a validated durable result to its existing phase handler."""
         if lifecycle_phase == "EXECUTE_AGENT":
+            if (
+                state.next_action == "publish_first_implementation_pull_request"
+                and result.pull_request is not None
+            ):
+                # A durable publication acknowledgement is not a fresh
+                # implementation result. Reconcile its exact draft identity
+                # through the existing publication gate; never re-run local
+                # validation/reviews or create another PR.
+                published, publication_result = self._publish_first_implementation_pull_request(state, result)
+                if published.terminal:
+                    return published
+                return self._continue_after_quality_control(published, publication_result, evidence)
             return self._advance_after_primary_agent_result(state, result, evidence)
         if lifecycle_phase == "QUALITY_CONTROL_AGENT":
             # The assurance phase has no mutating provider invocation to
@@ -2123,6 +2481,7 @@ First implementation pull-request publication gate:
         resume: bool = False,
         owner_authorized: bool = False,
         transaction_kind: str = "IMPLEMENTATION",
+        candidate_adoption: tuple[str, str] | None = None,
     ) -> TransactionState:
         # Private helpers remain directly testable, while every public runner
         # invocation enforces the admission boundary before provider dispatch.
@@ -2225,10 +2584,42 @@ First implementation pull-request publication gate:
                 execution_mode=context.execution_mode,
                 action_intent=context.action_intent,
             )
+        if candidate_adoption is not None:
+            branch, candidate_sha = candidate_adoption
+            if not (
+                context.execution_mode == "MANAGED"
+                and transaction_kind == "IMPLEMENTATION"
+                and owner_authorized
+                and re.fullmatch(r"codex/[A-Za-z0-9._/-]{1,120}", branch)
+                and re.fullmatch(r"[0-9a-f]{40}", candidate_sha)
+            ):
+                raise RunnerError("candidate adoption is not authorised for this transaction")
+            # The typed submission pins the initial adoption candidate.  A
+            # resumed run may already have a newer, host-verified repair
+            # candidate; never overwrite that durable lineage with the input
+            # SHA on resume.
+            if state.branch not in {None, branch}:
+                return self._save_terminal(
+                    state, "BLOCKED", "candidate_adoption_identity_invalid",
+                    "Candidate adoption branch conflicts with the durable run branch.",
+                )
+            state = replace(
+                state,
+                branch=branch,
+                last_verified_sha=state.last_verified_sha or candidate_sha,
+            )
         context = replace(context, run_id=state.run_id)
         passive_pr_wait = state.pull_request is not None and state.phase in {
             "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"
         }
+        publication_resume = (
+            resume
+            and state.execution_mode == "MANAGED"
+            and state.transaction_kind == "IMPLEMENTATION"
+            and state.phase == "EXECUTE_AGENT"
+            and state.next_action == "publish_first_implementation_pull_request"
+            and state.pull_request is None
+        )
         state = self._provider_readiness_gate(
             state,
             require_codex=not passive_pr_wait,
@@ -2236,6 +2627,17 @@ First implementation pull-request publication gate:
         )
         if state.next_action == "provider_auth_repair_required":
             return state
+        # A provider-readiness repair restores the checkpointed action only
+        # inside the gate above. Recompute this route from that trusted state
+        # so an auth recovery cannot fall through to main synchronization.
+        publication_resume = (
+            resume
+            and state.execution_mode == "MANAGED"
+            and state.transaction_kind == "IMPLEMENTATION"
+            and state.phase == "EXECUTE_AGENT"
+            and state.next_action == "publish_first_implementation_pull_request"
+            and state.pull_request is None
+        )
         self.transaction = ExecutionTransaction(
             state=state,
             target_repository=context.target_repository or self.root,
@@ -2386,7 +2788,11 @@ First implementation pull-request publication gate:
         # Synchronization is a host-owned admission step.  Do it while this
         # run owns the lease so agents never race each other for index.lock,
         # and so the bounded retry policy in the repository client is used.
-        if context.execution_mode == "MANAGED":
+        if (
+            context.execution_mode == "MANAGED"
+            and candidate_adoption is None
+            and not publication_resume
+        ):
             try:
                 self.repository.synchronize_main(self.root)
                 evidence = self.repository.inspect(self.root)
@@ -2397,6 +2803,31 @@ First implementation pull-request publication gate:
                     "repository_synchronization",
                     f"Repository synchronization failed: {redact_diagnostic(str(error))}",
                 )
+        elif candidate_adoption is not None:
+            branch, candidate_sha = candidate_adoption
+            expected_sha = state.last_verified_sha or candidate_sha
+            evidence = self.repository.inspect(self.root)
+            if not (evidence.clean and evidence.branch == branch and evidence.head_sha == expected_sha):
+                return self._save_terminal(
+                    state, "BLOCKED", "candidate_adoption_identity_invalid",
+                    "Candidate adoption requires the exact clean checkpointed branch and SHA.",
+                )
+        elif publication_resume:
+            evidence = self.repository.inspect(self.root)
+            if not (
+                evidence.clean
+                and evidence.branch == state.branch
+                and evidence.head_sha == state.last_verified_sha
+            ):
+                return self._save_terminal(
+                    state, "BLOCKED", "implementation_publication_candidate_changed",
+                    "Publication resume requires the exact clean checkpointed branch and candidate SHA.",
+                )
+        if (
+            context.execution_mode == "MANAGED"
+            and candidate_adoption is None
+            and not publication_resume
+        ):
             # The watcher checked the target before claim. Re-check the exact
             # checkout after the host-owned synchronization while the run lease
             # is held: an operator/worktree race must never reach reviewers,
@@ -2421,6 +2852,18 @@ First implementation pull-request publication gate:
             state = self._bind_validation_only_profile(state, producer_context)
             if state.terminal:
                 return state
+        if publication_resume:
+            resumed = AgentResult(
+                "COMPLETE", branch=state.branch, commit_sha=state.last_verified_sha,
+            )
+            published, published_result = self._publish_first_implementation_pull_request(
+                state, resumed,
+            )
+            if published.terminal:
+                return published
+            return self._continue_after_quality_control(
+                published, published_result, self.repository.inspect(self.root),
+            )
         if context.execution_mode == "MANAGED":
             self._managed_action(state, "IMPLEMENTATION" if state.action_intent == "MUTATING_DELIVERY" else "VALIDATION_ONLY")
         self._provider_dispatch_telemetry = {
@@ -2518,6 +2961,18 @@ First implementation pull-request publication gate:
             if not required or not all(result == "PASS" for result in results):
                 return self._save_terminal(state, "BLOCKED", "required_validation_unresolved", "Required validation controls do not have authoritative PASS evidence.")
             return self._poll(state, AgentResult("COMPLETE"))
+        if candidate_adoption is not None:
+            adopted = AgentResult("COMPLETE", branch=state.branch, commit_sha=state.last_verified_sha)
+            validated, validation_result = self._run_local_repository_validation(state, adopted)
+            if validated.terminal:
+                return validated
+            reviewed, reviewed_result = self._run_quality_assurance(validated, validation_result)
+            if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
+                return reviewed
+            published, published_result = self._publish_first_implementation_pull_request(reviewed, reviewed_result)
+            if published.terminal:
+                return published
+            return self._continue_after_quality_control(published, published_result, self.repository.inspect(self.root))
         try:
             if hasattr(self.agent, "set_activity_callback"):
                 self.agent.set_activity_callback(
@@ -2592,6 +3047,14 @@ First implementation pull-request publication gate:
             self.console_detail = error.console_detail
             return self._terminalize_provider_invocation_error(state, error)
         return self._advance_after_primary_agent_result(state, result, evidence)
+
+    def run_adopted_candidate(self, prompt_path: Path, *, run_id: str, resume: bool,
+                              branch: str, candidate_sha: str) -> TransactionState:
+        """Run one host-owned assurance/publication chain for an existing candidate."""
+        return self.run(
+            prompt_path, run_id=run_id, resume=resume, owner_authorized=True,
+            transaction_kind="IMPLEMENTATION", candidate_adoption=(branch, candidate_sha),
+        )
 
     def _active_genesis_transaction(self, target: Path, run_id: str) -> str | None:
         """Return another active Genesis run that owns the same local workspace."""

@@ -40,6 +40,41 @@ hosted checks and finalization; a new SHA, phase, resume or PR does not reset
 it. The Console projects the same stored review identities and repair rounds
 for live and historical runs.
 
+For a new Managed implementation, the first draft implementation PR is a
+separate, post-assurance dispatch: bounded implementation -> local validation
+-> independent Quality and Security reviews for the same candidate/profile ->
+host publication gate -> draft PR. `EXECUTE_AGENT` is used for both the
+implementation and that publication dispatch, so prompt authority is selected
+from trusted transaction kind, phase, next action, checkpointed PR lineage and
+current assurance evidence together. An action string or objective text alone
+never grants PR creation. Pre-publication repair normally has no PR and returns
+to validation and both reviews; repair of a known PR preserves its exact
+lineage. A recovered implementation result is not a publication result.
+
+The local-validation decision is not inferred from provider prose. The host
+loads the persisted validation profile and requires a successful terminal
+command receipt for every required control at the current repair ordinal. The
+selected tier, version, registry reference, required-control set and launcher
+bindings form a digest that is embedded in the assurance profile. A missing
+receipt, non-zero exit, unavailable/skipped result, older repair ordinal or
+different profile therefore cannot authorize publication.
+
+The host rejects an early provider-reported PR with
+`implementation_pr_before_assurance`, and verifies candidate/branch identity
+before and after publication. This is host sequencing and result detection, not
+a universal technical proof that an arbitrary provider could not use every
+possible external HTTP or absolute-path route to create a remote PR. The local
+validation provider is read-only sandboxed; existing product boundaries do not
+claim a general remote-write broker or network proxy for all implementation
+provider routes.
+
+Before a first-publication provider turn, including after restart, the host
+reads GitHub for the checkpointed branch. It accepts only one open draft whose
+base and exact head SHA match the reviewed candidate. A mismatching result
+blocks; an exact match is reconciled without replaying PR creation. An
+interrupted publication turn likewise cannot enter the generic provider retry
+loop before that exact readback.
+
 The immutable profile lists repository, remote, upstream, clean-worktree,
 branch, workspace authorization, host and capability qualification, providers,
 datastore, active-lease and Producer Contract requirements. Facts are observed

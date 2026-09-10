@@ -77,10 +77,12 @@ The Execution Host acquires the exclusive run lease, performs admission and
 synchronizes the repository before it invokes the implementation agent. A
 managed, owner-authorized transaction then runs in the Codex CLI's
 `danger-full-access` sandbox profile so that the already-authorized bounded
-transaction can create its branch, stage its own scoped changes, commit and
-open its draft pull request. This is not an unrestricted lifecycle authority:
-the supplied transaction scope, branch and pull-request rules still apply. The
-runner may mark a pull request ready for review, but its merge remains
+transaction can create its branch, stage its own scoped changes and commit.
+The first draft pull request is a separate host-owned publication dispatch,
+permitted only after current read-only local validation and independent Quality
+and Security assurance for that exact candidate. This is not an unrestricted
+lifecycle authority: the supplied transaction scope, branch and pull-request
+rules still apply. The runner may mark a pull request ready for review, but its merge remains
 operator-owned. A green, open pull request is persisted as
 `WAIT_FOR_OPERATOR_MERGE`; it is not a failed execution and it must keep its
 Inbox position until the operator merges it or explicitly aborts the hand-off.

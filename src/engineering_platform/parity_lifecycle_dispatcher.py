@@ -122,6 +122,9 @@ class Runner(Protocol):
     def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False,
             owner_authorized: bool = False, transaction_kind: str = "IMPLEMENTATION") -> TransactionState: ...
 
+    def run_adopted_candidate(self, prompt_path: Path, *, run_id: str, resume: bool,
+                              branch: str, candidate_sha: str) -> TransactionState: ...
+
 
 RunnerFactory = Callable[[Path], Runner]
 
@@ -356,7 +359,11 @@ class ParityLifecycleDispatcher:
             fresh_submission=True, retry_parent_run_id=None, resume_parent_run_id=None, recorded_at=now,
         )
         host = execute_host_preflight(repository_root, run_id=run_id)
-        workspace = execute_workspace_preflight(repository_root, candidate.prompt, run_id=run_id)
+        adoption = candidate.candidate_adoption()
+        workspace = execute_workspace_preflight(
+            repository_root, candidate.prompt, run_id=run_id,
+            managed_candidate_branch=adoption[0] if adoption else None,
+        )
         capability = execute_capability_preflight(repository_root, candidate.prompt, run_id=run_id)
         decision, _ = _record_provider_free_admission(
             repository_root, run_id=run_id, submission_id=candidate.submission_id,
@@ -507,10 +514,20 @@ class ParityLifecycleDispatcher:
                 if not duplicate or not prompt.is_file():
                     self._persist_historical_input(repository_root, candidate, run_id, prompt)
                 runner = self.runner_factory(repository_root)
-                state = runner.run(
-                    prompt, run_id=run_id, resume=duplicate,
-                    owner_authorized=candidate.execution_mode == "MANAGED",
-                )
+                adoption = candidate.candidate_adoption()
+                if adoption is None:
+                    state = runner.run(
+                        prompt, run_id=run_id, resume=duplicate,
+                        owner_authorized=candidate.execution_mode == "MANAGED",
+                    )
+                else:
+                    method = getattr(runner, "run_adopted_candidate", None)
+                    if not callable(method):
+                        raise ParityLifecycleDispatchError("CANDIDATE_ADOPTION_RUNTIME_UNAVAILABLE")
+                    state = method(
+                        prompt, run_id=run_id, resume=duplicate,
+                        branch=adoption[0], candidate_sha=adoption[1],
+                    )
                 # Report/history indexing is execution evidence too.  Keep it
                 # inside the explicit CENTRAL context; a terminal projection
                 # must never reopen the repository-local database.

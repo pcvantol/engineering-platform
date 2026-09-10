@@ -80,7 +80,15 @@ def create_repository(path: Path, *, origin: Path | None = None) -> None:
     git(path, "config", "user.email", "qualification@example.invalid")
     git(path, "config", "user.name", "Installed qualification")
     (path / "BOOTSTRAP.md").write_text("# Installed qualification\n", encoding="utf-8")
-    git(path, "add", "BOOTSTRAP.md")
+    (path / "test_installed_platform.py").write_text(
+        "import unittest\n\n"
+        "import engineering_platform\n\n\n"
+        "class InstalledPlatformTest(unittest.TestCase):\n"
+        "    def test_package_is_importable(self):\n"
+        "        self.assertIsNotNone(engineering_platform.__file__)\n",
+        encoding="utf-8",
+    )
+    git(path, "add", "BOOTSTRAP.md", "test_installed_platform.py")
     git(path, "commit", "-qm", "initial qualification repository")
     if origin is not None:
         subprocess.run(("git", "init", "-q", "--bare", str(origin)), check=True)  # nosec B603
@@ -299,7 +307,15 @@ def main(argv: list[str] | None = None) -> int:
         root, wheelhouse, venv, data = Path(temporary), Path(temporary) / "wheelhouse", Path(temporary) / "venv", Path(temporary) / "central"
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         wheelhouse.mkdir()
-        subprocess.run((sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)), check=True, capture_output=True, text=True)  # nosec B603
+        subprocess.run(
+            (
+                sys.executable,
+                str(args.source_root.resolve() / "tools" / "qualification" / "build_platform_wheel.py"),
+                "--source-root", str(args.source_root.resolve()),
+                "--wheel-directory", str(wheelhouse),
+            ),
+            check=True, capture_output=True, text=True,
+        )  # nosec B603
         subprocess.run((sys.executable, "-m", "venv", str(venv)), check=True)  # nosec B603
         wheels = tuple(wheelhouse.glob("engineering_platform-*.whl"))
         if len(wheels) != 1:

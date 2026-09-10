@@ -62,6 +62,19 @@ class _FailingRunner:
         return TransactionState(run_id or "inbox-missing", "fixture", str(prompt_path), "FAILED", terminal=True)
 
 
+class _AdoptionRunner:
+    calls: list[tuple[Path, str, bool, str, str]] = []
+
+    def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False,
+            owner_authorized: bool = False, transaction_kind: str = "IMPLEMENTATION") -> TransactionState:
+        raise AssertionError("Typed candidate adoption must not dispatch ordinary implementation")
+
+    def run_adopted_candidate(self, prompt_path: Path, *, run_id: str, resume: bool,
+                              branch: str, candidate_sha: str) -> TransactionState:
+        self.calls.append((prompt_path, run_id, resume, branch, candidate_sha))
+        return TransactionState(run_id, "fixture", str(prompt_path), "COMPLETE", terminal=True)
+
+
 class _CheckpointingRunner:
     """A deterministic preserved-runner seam for CENTRAL storage qualification."""
 
@@ -98,6 +111,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
                 connection.execute("INSERT INTO ep_repository_registrations VALUES(?,?,?,?,?,?,?)", (project, project, project, "authority", "{}", now, now))
                 local_repository_binding.bind_local_repository(connection, project_id=project, repository_id=project, local_root=root, data_root=self.data)
         _Runner.calls = []
+        _AdoptionRunner.calls = []
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -119,11 +133,53 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         )
         self.assertEqual(json.loads(completed.stdout), False)
 
-    def _submission(self, project: str, prompt: str = "Validate only.") -> str:
+    def _submission(self, project: str, prompt: str = "Validate only.", constraints: dict[str, object] | None = None) -> str:
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(
-                project, project, "canary", "HUMAN", "1", prompt, "HTTP",
+                project, project, "canary", "HUMAN", "1", prompt, "HTTP", constraints=constraints,
             )).submission_id
+
+    def test_candidate_adoption_is_typed_and_requires_explicit_authority(self) -> None:
+        submission = self._submission(
+            "alpha", "Execution Mode: Managed\n",
+            {"managed_candidate_adoption": {
+                "branch": "codex/adopt-existing-candidate",
+                "candidate_sha": "a" * 40,
+                "owner_authorized": True,
+            }},
+        )
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            context = parity_lifecycle_dispatcher.project_context(
+                connection, data_root=self.data, project_id="alpha", repository_id="alpha",
+            )
+            candidate = parity_lifecycle_dispatcher.historical_candidate(
+                connection, context=context, submission_id=submission,
+            )
+        self.assertEqual(candidate.candidate_adoption(), ("codex/adopt-existing-candidate", "a" * 40))
+
+    def test_dispatcher_sends_typed_candidate_to_the_host_adoption_entrypoint(self) -> None:
+        branch, candidate_sha = "codex/adopt-existing-candidate", "a" * 40
+        submission = self._submission(
+            "alpha", "Execution Mode: Managed\n",
+            {"managed_candidate_adoption": {
+                "branch": branch, "candidate_sha": candidate_sha,
+                "owner_authorized": True,
+            }},
+        )
+        dispatcher = ParityLifecycleDispatcher(
+            self.data, runner_factory=lambda root: _AdoptionRunner(),
+        )
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            receipt = dispatcher.dispatch(submission)
+        self.assertEqual(receipt.state, "COMPLETE")
+        self.assertEqual(len(_AdoptionRunner.calls), 1)
+        prompt_path, run_id, resume, dispatched_branch, dispatched_sha = _AdoptionRunner.calls[0]
+        self.assertEqual(run_id, receipt.run_id)
+        self.assertFalse(resume)
+        self.assertEqual((dispatched_branch, dispatched_sha), (branch, candidate_sha))
+        self.assertTrue(prompt_path.is_file())
 
     def test_claims_one_submission_once_and_preserves_central_run_linkage(self) -> None:
         submission = self._submission("alpha")
