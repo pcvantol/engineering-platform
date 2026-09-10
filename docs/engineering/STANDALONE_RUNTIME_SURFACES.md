@@ -106,6 +106,43 @@ protection. The new source contract neither starts a LaunchDaemon nor removes
 that legacy agent by itself; both actions require a qualified, authorized EP
 installation operation with backup/migration/health/cleanup evidence.
 
+## System installation topology and final runtime slots
+
+`system_installation_topology` is the pure planning boundary for the later
+root-authorized EP provisioner. Given one explicit system product root and a
+non-root service account, it derives disjoint `data`, `runtimes`, `operations`,
+`recovery` and `locks` locations. Its one machine lock location is derived from
+that product root, rather than from a legacy per-user or per-data-root update
+location. It creates none of those paths and does not assert that a supplied
+root is owned, writable, approved, or the sole accepted machine root for a
+live installation. Only the later privileged controller may acquire that lock
+after establishing those machine-scope facts.
+
+An exact release identity contains a version, wheel digest and source revision.
+Its final runtime slot is keyed by the SHA-256 digest, not by a mutable version
+label: `runtimes/slots/sha256-<digest>/venv/bin/python`. The fixed
+LaunchDaemon must eventually name that exact absolute launcher; no `current`
+symlink, PATH lookup or moved venv can become service authority. The source
+planner preserves the venv launcher spelling while normalizing parent path
+aliases such as `/tmp` and `/private/tmp`.
+
+The planner distinguishes a final target slot from an operation staging area.
+Only `operations/<operation-id>/build`, `download` and `pip-cache` are
+ephemeral cleanup candidates. The data root, all runtime slots, the exact
+target slot and `recovery/<operation-id>` are protected; recovery material
+requires an explicit later recovery disposition. An existing
+`operations/<operation-id>/candidate-venv` is therefore never an eligible
+selected runtime. A future mutator must build the target venv directly in its
+final slot, under the machine lock, rather than moving an operation-scoped venv
+after activation preparation.
+
+This is source-only topology and transition evidence. It does not acquire the
+lock, write a record or plist, create an account or venv, copy an artifact,
+backup/migrate/restore CENTRAL, stop a legacy service, launch a daemon, or
+claim `INSTALLATION_VERIFIED`, rollback, cleanup completion or Mac-wide
+uniqueness. Privileged filesystem mutation remains a subsequent
+descriptor-anchored provisioner increment.
+
 ## Operational update recovery boundary
 
 The EP-owned update plan, lock, journal and executor are source-level

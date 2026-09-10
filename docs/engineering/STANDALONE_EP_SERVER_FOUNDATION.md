@@ -64,6 +64,12 @@ provides durable coverage evidence. No source-only contract changes the
 current Mac, removes a LaunchAgent, creates an account, migrates CENTRAL or
 claims a single operational installation.
 
+Before that mutator exists, the EP-owned `system_installation_topology` source
+contract derives one explicit system product tree, machine-lock location,
+digest-pinned final runtime slot and protected recovery boundary. It creates no
+path and does not select a runtime: an operation-scoped candidate remains
+non-operational and cannot become the final slot by being moved later.
+
 The existing Execution Host remains unchanged and retains its current execution
 authority. The server does not read a source checkout, `.engineering`, or any
 DJConnect state at runtime.
