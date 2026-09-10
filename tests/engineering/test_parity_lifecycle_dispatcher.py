@@ -119,11 +119,29 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         )
         self.assertEqual(json.loads(completed.stdout), False)
 
-    def _submission(self, project: str, prompt: str = "Validate only.") -> str:
+    def _submission(self, project: str, prompt: str = "Validate only.", constraints: dict[str, object] | None = None) -> str:
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(
-                project, project, "canary", "HUMAN", "1", prompt, "HTTP",
+                project, project, "canary", "HUMAN", "1", prompt, "HTTP", constraints=constraints,
             )).submission_id
+
+    def test_candidate_adoption_is_typed_and_requires_explicit_authority(self) -> None:
+        submission = self._submission(
+            "alpha", "Execution Mode: Managed\n",
+            {"managed_candidate_adoption": {
+                "branch": "codex/adopt-existing-candidate",
+                "candidate_sha": "a" * 40,
+                "owner_authorized": True,
+            }},
+        )
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            context = parity_lifecycle_dispatcher.project_context(
+                connection, data_root=self.data, project_id="alpha", repository_id="alpha",
+            )
+            candidate = parity_lifecycle_dispatcher.historical_candidate(
+                connection, context=context, submission_id=submission,
+            )
+        self.assertEqual(candidate.candidate_adoption(), ("codex/adopt-existing-candidate", "a" * 40))
 
     def test_claims_one_submission_once_and_preserves_central_run_linkage(self) -> None:
         submission = self._submission("alpha")

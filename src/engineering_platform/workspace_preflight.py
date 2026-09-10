@@ -151,7 +151,8 @@ def _persist(root: Path, result: WorkspacePreflightResult, run_id: str | None) -
             Path(temporary).unlink(missing_ok=True)
 
 
-def execute(root: Path, prompt: str, *, run_id: str | None = None) -> WorkspacePreflightResult:
+def execute(root: Path, prompt: str, *, run_id: str | None = None,
+            managed_candidate_branch: str | None = None) -> WorkspacePreflightResult:
     """Run Level 2 workspace checks without mutating the selected repository."""
     started = monotonic()
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -230,7 +231,7 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> WorkspaceP
         if mode == "GENESIS":
             checks.append(_check("genesis_local_repository", branch != "detached", "Genesis target is a local repository." if branch != "detached" else "Genesis target has no active local branch.", "Select a local repository with an active branch."))
         else:
-            expected = configuration.workspace.default_branch if configuration else "main"
+            expected = managed_candidate_branch or (configuration.workspace.default_branch if configuration else "main")
             checks.append(_check("managed_expected_branch", branch == expected, "Managed target is on the expected branch." if branch == expected else f"Managed target is not on the expected branch {expected}.", f"Switch the repository to {expected} before submitting work."))
             remote = _git(target, "remote", "get-url", "origin")
             remote_valid = remote.returncode == 0 and bool(remote.stdout.strip())

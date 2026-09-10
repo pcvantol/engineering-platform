@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Literal
 
@@ -49,6 +50,31 @@ class HistoricalCandidate:
     engineering_action_id: str | None
     constraints: dict[str, object]
     execution_mode: ExecutionMode
+
+    def candidate_adoption(self) -> tuple[str, str] | None:
+        """Return the one explicitly authorised existing-candidate binding.
+
+        This is deliberately a typed, exact constraint rather than an
+        instruction parsed from the free prompt.  A submission may not turn
+        ordinary Managed work into adoption by merely mentioning a branch.
+        """
+        value = self.constraints.get("managed_candidate_adoption")
+        if value is None:
+            return None
+        if not isinstance(value, dict) or set(value) != {"branch", "candidate_sha", "owner_authorized"}:
+            raise ParityContextError("CANDIDATE_ADOPTION_INVALID")
+        branch, sha, authorized = value.get("branch"), value.get("candidate_sha"), value.get("owner_authorized")
+        if (
+            not isinstance(branch, str)
+            or not re.fullmatch(r"codex/[A-Za-z0-9._/-]{1,120}", branch)
+            or not isinstance(sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", sha)
+            or authorized is not True
+        ):
+            raise ParityContextError("CANDIDATE_ADOPTION_INVALID")
+        if self.execution_mode != "MANAGED":
+            raise ParityContextError("CANDIDATE_ADOPTION_MODE_INVALID")
+        return branch, sha
 
     def producer_envelope(self) -> str:
         """Return the existing validated Producer Submission Envelope shape."""

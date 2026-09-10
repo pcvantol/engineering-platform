@@ -2316,6 +2316,7 @@ First implementation pull-request publication gate:
         resume: bool = False,
         owner_authorized: bool = False,
         transaction_kind: str = "IMPLEMENTATION",
+        candidate_adoption: tuple[str, str] | None = None,
     ) -> TransactionState:
         # Private helpers remain directly testable, while every public runner
         # invocation enforces the admission boundary before provider dispatch.
@@ -2418,6 +2419,17 @@ First implementation pull-request publication gate:
                 execution_mode=context.execution_mode,
                 action_intent=context.action_intent,
             )
+        if candidate_adoption is not None:
+            branch, candidate_sha = candidate_adoption
+            if not (
+                context.execution_mode == "MANAGED"
+                and transaction_kind == "IMPLEMENTATION"
+                and owner_authorized
+                and re.fullmatch(r"codex/[A-Za-z0-9._/-]{1,120}", branch)
+                and re.fullmatch(r"[0-9a-f]{40}", candidate_sha)
+            ):
+                raise RunnerError("candidate adoption is not authorised for this transaction")
+            state = replace(state, branch=branch, last_verified_sha=candidate_sha)
         context = replace(context, run_id=state.run_id)
         passive_pr_wait = state.pull_request is not None and state.phase in {
             "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"
@@ -2579,7 +2591,7 @@ First implementation pull-request publication gate:
         # Synchronization is a host-owned admission step.  Do it while this
         # run owns the lease so agents never race each other for index.lock,
         # and so the bounded retry policy in the repository client is used.
-        if context.execution_mode == "MANAGED":
+        if context.execution_mode == "MANAGED" and candidate_adoption is None:
             try:
                 self.repository.synchronize_main(self.root)
                 evidence = self.repository.inspect(self.root)
@@ -2590,6 +2602,15 @@ First implementation pull-request publication gate:
                     "repository_synchronization",
                     f"Repository synchronization failed: {redact_diagnostic(str(error))}",
                 )
+        elif candidate_adoption is not None:
+            branch, candidate_sha = candidate_adoption
+            evidence = self.repository.inspect(self.root)
+            if not (evidence.clean and evidence.branch == branch and evidence.head_sha == candidate_sha):
+                return self._save_terminal(
+                    state, "BLOCKED", "candidate_adoption_identity_invalid",
+                    "Candidate adoption requires the exact clean checkpointed branch and SHA.",
+                )
+        if context.execution_mode == "MANAGED" and candidate_adoption is None:
             # The watcher checked the target before claim. Re-check the exact
             # checkout after the host-owned synchronization while the run lease
             # is held: an operator/worktree race must never reach reviewers,
@@ -2711,6 +2732,18 @@ First implementation pull-request publication gate:
             if not required or not all(result == "PASS" for result in results):
                 return self._save_terminal(state, "BLOCKED", "required_validation_unresolved", "Required validation controls do not have authoritative PASS evidence.")
             return self._poll(state, AgentResult("COMPLETE"))
+        if candidate_adoption is not None:
+            adopted = AgentResult("COMPLETE", branch=state.branch, commit_sha=state.last_verified_sha)
+            validated, validation_result = self._run_local_repository_validation(state, adopted)
+            if validated.terminal:
+                return validated
+            reviewed, reviewed_result = self._run_quality_assurance(validated, validation_result)
+            if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
+                return reviewed
+            published, published_result = self._publish_first_implementation_pull_request(reviewed, reviewed_result)
+            if published.terminal:
+                return published
+            return self._continue_after_quality_control(published, published_result, self.repository.inspect(self.root))
         try:
             if hasattr(self.agent, "set_activity_callback"):
                 self.agent.set_activity_callback(
@@ -2785,6 +2818,14 @@ First implementation pull-request publication gate:
             self.console_detail = error.console_detail
             return self._terminalize_provider_invocation_error(state, error)
         return self._advance_after_primary_agent_result(state, result, evidence)
+
+    def run_adopted_candidate(self, prompt_path: Path, *, run_id: str, resume: bool,
+                              branch: str, candidate_sha: str) -> TransactionState:
+        """Run one host-owned assurance/publication chain for an existing candidate."""
+        return self.run(
+            prompt_path, run_id=run_id, resume=resume, owner_authorized=True,
+            transaction_kind="IMPLEMENTATION", candidate_adoption=(branch, candidate_sha),
+        )
 
     def _active_genesis_transaction(self, target: Path, run_id: str) -> str | None:
         """Return another active Genesis run that owns the same local workspace."""
