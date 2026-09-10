@@ -11,7 +11,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
-from . import installation_update_plan, operational_installation, operational_installation_record
+from . import (
+    installation_update_plan,
+    operational_installation,
+    operational_installation_record,
+    system_server_service,
+)
 
 
 COMPONENT = "engineering-platform-server"
@@ -21,6 +26,22 @@ _PARTIAL_SCOPE = {
     "observed": "CURRENT_OS_USER_EXPLICIT_REFERENCES_ONLY",
     "status": "INCOMPLETE",
 }
+_SYSTEM_INVENTORY_COVERAGE = "SYSTEM_SHARED_AND_DECLARED_USER_SERVICE_SURFACES"
+_SYSTEM_SCOPE_OBSERVED = "SYSTEM_LAUNCHDAEMONS_SHARED_AND_DECLARED_USER_LAUNCHAGENTS"
+_SYSTEM_SCOPE_LIMITATIONS = frozenset({
+    "ACCOUNT_HOME_DISCOVERY_NOT_AUTHORITY",
+    "UNPRIVILEGED_CALLER",
+    "INACCESSIBLE_SERVICE_SURFACES",
+})
+_SYSTEM_ENTRY_STATUSES = frozenset({
+    "SELECTED_SYSTEM_SERVICE",
+    "CONFLICTING_SYSTEM_SERVICE",
+    "CONFLICTING_USER_SERVICE",
+    "INVALID_OWNED_SERVICE_REFERENCE",
+    "INACCESSIBLE_OR_RACED_OWNED_SERVICE_REFERENCE",
+    "INACCESSIBLE_OR_RACED_SERVICE_SURFACE",
+})
+_SYSTEM_LOCATION_STATES = frozenset({"INSPECTED", "ABSENT", "INACCESSIBLE", "RACED"})
 
 
 class ProductInstallationReadbackError(ValueError):
@@ -50,21 +71,175 @@ def _artifact(record: Mapping[str, object]) -> dict[str, str]:
     }
 
 
+def _system_inventory_coverage(
+    installation: operational_installation.OperationalInstallation | None,
+    inventory: Mapping[str, object],
+) -> tuple[str, str, Mapping[str, object], Mapping[str, object]]:
+    """Validate EP-issued system-service evidence without upgrading coverage.
+
+    This bounded inventory is canonical resolver evidence, but it is still
+    incomplete for the Mac: caller-declared homes are not account-discovery
+    authority.  Its parser is deliberately strict so a coordinator cannot
+    turn an arbitrary mapping or an empty scan into a uniqueness assertion.
+    """
+    expected_keys = {
+        "selected_interpreter",
+        "selected_data_root",
+        "coverage",
+        "scope",
+        "inspected_locations",
+        "inaccessible_locations",
+        "entries",
+        "conflicting_service_references",
+        "single_operational_installation",
+        "single_operational_installation_status",
+    }
+    if set(inventory) != expected_keys or inventory.get("coverage") != _SYSTEM_INVENTORY_COVERAGE:
+        raise ProductInstallationReadbackError("operational inventory is invalid")
+    scope = inventory.get("scope")
+    if not isinstance(scope, Mapping) or set(scope) != {"required", "observed", "status", "limitations"}:
+        raise ProductInstallationReadbackError("operational inventory is invalid")
+    limitations = scope.get("limitations")
+    if (
+        scope.get("required") != "MACOS_MACHINE"
+        or scope.get("observed") != _SYSTEM_SCOPE_OBSERVED
+        or scope.get("status") != "INCOMPLETE"
+        or not isinstance(limitations, list)
+        or not all(isinstance(value, str) for value in limitations)
+        or len(set(limitations)) != len(limitations)
+        or "ACCOUNT_HOME_DISCOVERY_NOT_AUTHORITY" not in limitations
+        or not set(limitations).issubset(_SYSTEM_SCOPE_LIMITATIONS)
+    ):
+        raise ProductInstallationReadbackError("operational inventory is invalid")
+
+    selected_interpreter = inventory.get("selected_interpreter")
+    selected_data_root = inventory.get("selected_data_root")
+    selected_pair = (
+        isinstance(selected_interpreter, str) and bool(selected_interpreter)
+        and isinstance(selected_data_root, str) and bool(selected_data_root)
+    )
+    if not selected_pair and (selected_interpreter is not None or selected_data_root is not None):
+        raise ProductInstallationReadbackError("operational inventory is invalid")
+    if installation is not None and (
+        not selected_pair
+        or selected_interpreter != str(operational_installation.launcher(installation.interpreter))
+        or selected_data_root != installation.data_root
+    ):
+        raise ProductInstallationReadbackError("operational inventory does not bind the selected runtime")
+
+    def mappings(value: object) -> list[dict[str, str]]:
+        if not isinstance(value, list):
+            raise ProductInstallationReadbackError("operational inventory is invalid")
+        normalized: list[dict[str, str]] = []
+        for item in value:
+            if not isinstance(item, Mapping) or not all(isinstance(key, str) and isinstance(item[key], str) for key in item):
+                raise ProductInstallationReadbackError("operational inventory is invalid")
+            normalized.append(dict(item))
+        return normalized
+
+    entries = mappings(inventory.get("entries"))
+    for entry in entries:
+        status = entry.get("status")
+        if status not in _SYSTEM_ENTRY_STATUSES or not entry.get("domain"):
+            raise ProductInstallationReadbackError("operational inventory is invalid")
+        if not entry.get("plist") and not entry.get("path"):
+            raise ProductInstallationReadbackError("operational inventory is invalid")
+    selected_entries = [entry for entry in entries if entry["status"] == "SELECTED_SYSTEM_SERVICE"]
+    if selected_pair:
+        # A selected pair is usable only when the observer has also retained
+        # the complete canonical descriptor entry that selected it.  This
+        # prevents a raced or forged summary pair from becoming an official
+        # runtime solely because its launcher and data-root strings look
+        # plausible.
+        try:
+            expected_plist = str(system_server_service.default_paths(selected_data_root).plist_path)
+        except system_server_service.SystemServerServiceError as error:
+            raise ProductInstallationReadbackError("operational inventory is invalid") from error
+        expected_selected_keys = {
+            "label",
+            "domain",
+            "plist",
+            "interpreter",
+            "data_root",
+            "service_account",
+            "status",
+        }
+        if (
+            len(selected_entries) != 1
+            or set(selected_entries[0]) != expected_selected_keys
+            or selected_entries[0].get("label") != system_server_service.LABEL
+            or selected_entries[0].get("domain") != "SYSTEM"
+            or selected_entries[0].get("plist") != expected_plist
+            or selected_entries[0].get("interpreter") != selected_interpreter
+            or selected_entries[0].get("data_root") != selected_data_root
+            or not selected_entries[0].get("service_account")
+        ):
+            raise ProductInstallationReadbackError("operational inventory does not bind the selected system service")
+    elif selected_entries:
+        raise ProductInstallationReadbackError("operational inventory selects a system service without a runtime")
+    conflicts = mappings(inventory.get("conflicting_service_references"))
+    if conflicts != [entry for entry in entries if entry["status"] != "SELECTED_SYSTEM_SERVICE"]:
+        raise ProductInstallationReadbackError("operational inventory is invalid")
+    if (
+        inventory.get("single_operational_installation") is not False
+        or inventory.get("single_operational_installation_status")
+        != ("CONFLICTS_DETECTED" if conflicts else "UNVERIFIED_SCOPE")
+    ):
+        raise ProductInstallationReadbackError("operational inventory is invalid")
+
+    inspected = mappings(inventory.get("inspected_locations"))
+    for location in inspected:
+        if set(location) != {"path", "domain", "state"} or location["state"] not in _SYSTEM_LOCATION_STATES:
+            raise ProductInstallationReadbackError("operational inventory is invalid")
+    inaccessible = mappings(inventory.get("inaccessible_locations"))
+    expected_inaccessible = [
+        {"path": location["path"], "domain": location["domain"], "reason": "UNAVAILABLE_OR_SYMLINK_OR_RACE"}
+        for location in inspected
+        if location["state"] in {"INACCESSIBLE", "RACED"}
+    ]
+    if inaccessible != expected_inaccessible:
+        raise ProductInstallationReadbackError("operational inventory is invalid")
+    return "PARTIAL", "CONFLICTING" if conflicts else "UNKNOWN", dict(scope), {
+        "state": "SYSTEM_SERVICE_SURFACES",
+        "selected_interpreter": selected_interpreter,
+        "selected_data_root": selected_data_root,
+        "entries": entries,
+        "conflicting_service_references": conflicts,
+        "inspected_locations": inspected,
+        "inaccessible_locations": inaccessible,
+    }
+
+
+def validate_system_service_inventory(inventory: Mapping[str, object]) -> None:
+    """Fail closed unless an EP system-service observer has the full V1 shape.
+
+    The resolver, diagnose and qualification boundaries all use this before
+    selecting an operational interpreter.  Keeping it alongside the readback
+    decoder ensures a malformed observer cannot be rejected by readback yet
+    still promoted by another official command surface.
+    """
+    _system_inventory_coverage(None, inventory)
+
+
 def _coverage(
-    installation: operational_installation.OperationalInstallation,
+    installation: operational_installation.OperationalInstallation | None,
     inventory: Mapping[str, object] | None,
 ) -> tuple[str, str, Mapping[str, object], Mapping[str, object]]:
-    """Translate only the current EP-issued explicit inventory shape.
+    """Translate only current EP-issued inventory shapes.
 
-    ``inventory`` is an in-process product observation, not a coordinator
-    assertion.  Today's scanner is deliberately bounded to explicit current
-    user references, so this adapter must never translate arbitrary mapping
-    values into a machine-wide no-conflict conclusion.
+    Legacy explicit inventory needs an official selected runtime.  The newer
+    system-service inventory may be retained with an unavailable resolver, so
+    a resulting ``UNKNOWN`` stays diagnosable without a PATH, ``sys.executable``
+    or legacy-LaunchAgent fallback.
     """
     if inventory is None:
         return "PARTIAL", "UNKNOWN", _PARTIAL_SCOPE, {"state": "NOT_REQUESTED"}
     if not isinstance(inventory, Mapping):
         raise ProductInstallationReadbackError("operational inventory is invalid")
+    if inventory.get("coverage") == _SYSTEM_INVENTORY_COVERAGE:
+        return _system_inventory_coverage(installation, inventory)
+    if installation is None:
+        raise ProductInstallationReadbackError("operational inventory requires a selected runtime")
     scope, entries = inventory.get("scope"), inventory.get("entries")
     conflicts = inventory.get("conflicting_service_references")
     if (
@@ -77,9 +252,6 @@ def _coverage(
         or inventory.get("single_operational_installation") is not False
     ):
         raise ProductInstallationReadbackError("operational inventory is invalid")
-    # The current product scanner never establishes complete Mac-wide
-    # coverage.  Its no-conflict result is therefore still ``UNKNOWN`` rather
-    # than a claim that a coordinator can upgrade to ``NONE``.
     conflict_state = "CONFLICTING" if conflicts else "UNKNOWN"
     evidence = {
         "state": "EXPLICIT_PATHS_ONLY",
@@ -99,12 +271,21 @@ def unavailable_readback(
     In particular, callers must not substitute their own interpreter or a
     PATH result when the EP-owned service record is absent or invalid.
     """
-    if reason not in {"OWNED_SERVICE_INTERPRETER_UNAVAILABLE"}:
+    if reason not in {
+        "OWNED_SERVICE_INTERPRETER_UNAVAILABLE",
+        "SYSTEM_SERVICE_UNAVAILABLE",
+        "SYSTEM_SERVICE_INVENTORY_MISMATCH",
+    }:
         raise ProductInstallationReadbackError("operational readback reason is invalid")
-    if inventory is not None:
-        # Without an EP-selected interpreter there is no safe identity to
-        # bind an explicit inventory to.
-        raise ProductInstallationReadbackError("operational inventory requires a selected runtime")
+    if inventory is None:
+        # Preserve the OI-3 response for the historical no-observation case.
+        # A system observer changes this to bounded ``PARTIAL`` evidence only
+        # when EP actually supplied that observer's result.
+        coverage, conflict_state, scope, inventory_evidence = (
+            "UNKNOWN", "UNKNOWN", _PARTIAL_SCOPE, {"state": "NOT_REQUESTED"},
+        )
+    else:
+        coverage, conflict_state, scope, inventory_evidence = _coverage(None, inventory)
     return {
         "contract_version": CONTRACT_VERSION,
         "component": COMPONENT,
@@ -116,13 +297,13 @@ def unavailable_readback(
         "selected_instance_identity": None,
         "artifact": None,
         "health_state": "UNKNOWN",
-        "inventory_coverage": "UNKNOWN",
-        "conflict_state": "UNKNOWN",
-        "inventory_scope": _PARTIAL_SCOPE,
+        "inventory_coverage": coverage,
+        "conflict_state": conflict_state,
+        "inventory_scope": scope,
         "single_operational_installation_verified": False,
         "evidence": {
             "reason": reason,
-            "inventory": {"state": "NOT_REQUESTED"},
+            "inventory": inventory_evidence,
         },
     }
 

@@ -3953,7 +3953,15 @@ def _development_profile_for(args: argparse.Namespace) -> development_profile.De
         },
     )
     operational_root = platform_default_data_root()
-    selected = server_service.configured_interpreter(operational_root)
+    # A development profile must not use the legacy per-user LaunchAgent as
+    # authority for what counts as the operational interpreter.  The future
+    # system-domain descriptor is the only official resolver; a malformed or
+    # absent descriptor cannot be replaced by PATH or the legacy service.
+    try:
+        operational_service = system_server_service.configured_service(operational_root)
+    except system_server_service.SystemServerServiceError:
+        operational_service = None
+    selected = None if operational_service is None else operational_service.interpreter
     inputs = {
         "data_root": args.data_root,
         "bind_port": args.bind_port,
@@ -3983,29 +3991,83 @@ def _operational_inventory_inputs(args: argparse.Namespace) -> dict[str, Path]:
     return references
 
 
+def _system_operational_service(
+    args: argparse.Namespace,
+) -> tuple[system_server_service.SystemServerService | None, Mapping[str, object], str | None]:
+    """Resolve only the canonical system-domain Server service.
+
+    The inventory is retained even when the canonical descriptor is absent or
+    malformed, so an ``UNKNOWN`` result contains product-owned evidence rather
+    than selecting a legacy LaunchAgent, ``sys.executable`` or a PATH wheel.
+    A separately read descriptor must agree with the observer's selected
+    launcher and data root before it can become an official runtime.
+    """
+    inventory = system_server_service.machine_scope_inventory(
+        args.data_root,
+        user_homes=args.declared_user_home,
+    )
+    if not isinstance(inventory, Mapping):  # defensive against a future observer regression
+        raise ServerConfigurationError("EP Server system-service inventory is invalid")
+    try:
+        # Readback, diagnosis and qualification must have identical evidence
+        # admission: a partial observer map cannot select a real descriptor
+        # for one command while readback correctly rejects it for another.
+        product_installation_readback.validate_system_service_inventory(inventory)
+    except product_installation_readback.ProductInstallationReadbackError:
+        return None, inventory, "SYSTEM_SERVICE_INVENTORY_MISMATCH"
+    try:
+        configured = system_server_service.configured_service(args.data_root)
+    except system_server_service.SystemServerServiceError:
+        return None, inventory, "SYSTEM_SERVICE_UNAVAILABLE"
+    if configured is None:
+        return None, inventory, "SYSTEM_SERVICE_UNAVAILABLE"
+    # The observer snapshot must bind the exact descriptor read below.  A
+    # matching interpreter/data-root pair alone is insufficient: a concurrent
+    # replacement can change the service account or canonical plist while
+    # retaining both strings.  Do not promote a second read unless the
+    # inventory has one complete selected system entry for that same daemon.
+    expected_selected_entry = {
+        "label": configured.label,
+        "domain": "SYSTEM",
+        "plist": str(system_server_service.default_paths(configured.data_root).plist_path),
+        "interpreter": str(configured.interpreter),
+        "data_root": str(configured.data_root),
+        "service_account": configured.service_account,
+        "status": "SELECTED_SYSTEM_SERVICE",
+    }
+    entries = inventory.get("entries")
+    selected_entries = (
+        [entry for entry in entries if isinstance(entry, Mapping) and entry.get("status") == "SELECTED_SYSTEM_SERVICE"]
+        if isinstance(entries, list) else []
+    )
+    if (
+        inventory.get("selected_interpreter") != str(configured.interpreter)
+        or inventory.get("selected_data_root") != str(configured.data_root)
+        or selected_entries != [expected_selected_entry]
+    ):
+        return None, inventory, "SYSTEM_SERVICE_INVENTORY_MISMATCH"
+    return configured, inventory, None
+
+
 def _operational_product_readback(args: argparse.Namespace) -> dict[str, object]:
     """Produce EP-owned install evidence without a caller-runtime fallback.
 
     This is the narrow boundary for a composition consumer.  In contrast with
-    historical local diagnostics, an absent owned LaunchAgent cannot fall back
+    historical local diagnostics, an absent owned system service cannot fall back
     to ``sys.executable``: that would let an incidental shell/PATH package
     become the supposedly selected operational runtime.
     """
-    selected = server_service.configured_interpreter(args.data_root)
-    if selected is None:
+    configured, inventory, unavailable_reason = _system_operational_service(args)
+    if configured is None:
         return product_installation_readback.unavailable_readback(
-            reason="OWNED_SERVICE_INTERPRETER_UNAVAILABLE",
+            reason=unavailable_reason or "SYSTEM_SERVICE_UNAVAILABLE",
+            inventory=inventory,
         )
-    references = _operational_inventory_inputs(args)
+    selected = configured.interpreter
     installation = operational_installation.resolve(
         args.data_root,
         interpreter=selected,
         path_candidates=args.candidate_interpreter,
-    )
-    inventory = operational_installation.inventory(
-        installation,
-        service_references=references,
-        candidates=args.candidate_interpreter,
     )
     record = operational_installation.record_status(installation)
     if record.get("state") == "UNREGISTERED":
@@ -4054,30 +4116,45 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "status": result = status(args.data_root)
         elif args.command == "health": result = health(args.data_root)
         elif args.command == "operational-diagnose":
-            selected = server_service.configured_interpreter(args.data_root) or Path(sys.executable)
-            installation = operational_installation.resolve(args.data_root, interpreter=selected)
-            package = operational_installation.package_identity(selected)
-            operational_installation.validate_package_identity(installation, package)
-            record = operational_installation.record_status(installation)
-            operational_installation.validate_registered_package_identity(record, package)
-            result = {
-                "installation": installation.payload(),
-                "record": record,
-                "package": package,
-            }
+            configured, inventory, unavailable_reason = _system_operational_service(args)
+            if configured is None:
+                result = product_installation_readback.unavailable_readback(
+                    reason=unavailable_reason or "SYSTEM_SERVICE_UNAVAILABLE",
+                    inventory=inventory,
+                )
+            else:
+                selected = configured.interpreter
+                installation = operational_installation.resolve(args.data_root, interpreter=selected)
+                package = operational_installation.package_identity(selected)
+                operational_installation.validate_package_identity(installation, package)
+                record = operational_installation.record_status(installation)
+                operational_installation.validate_registered_package_identity(record, package)
+                result = {
+                    "installation": installation.payload(),
+                    "record": record,
+                    "package": package,
+                    "system_service_inventory": inventory,
+                }
         elif args.command == "operational-qualify":
             # Unlike the static diagnose command, this reads the response of
             # the running Server and fails closed if it is another instance,
             # package, executable, release or observed artifact.
-            selected = server_service.configured_interpreter(args.data_root) or Path(sys.executable)
-            installation = operational_installation.resolve(args.data_root, interpreter=selected)
-            package = operational_installation.package_identity(selected)
-            record = operational_installation.record_status(installation)
-            configuration = ServerConfiguration.load(args.data_root)
-            response = _health_response({"host": configuration.bind_host, "port": configuration.bind_port})
-            result = operational_installation.qualify_runtime_response(
-                installation, record=record, package=package, response=response,
-            )
+            configured, inventory, unavailable_reason = _system_operational_service(args)
+            if configured is None:
+                result = product_installation_readback.unavailable_readback(
+                    reason=unavailable_reason or "SYSTEM_SERVICE_UNAVAILABLE",
+                    inventory=inventory,
+                )
+            else:
+                selected = configured.interpreter
+                installation = operational_installation.resolve(args.data_root, interpreter=selected)
+                package = operational_installation.package_identity(selected)
+                record = operational_installation.record_status(installation)
+                configuration = ServerConfiguration.load(args.data_root)
+                response = _health_response({"host": configuration.bind_host, "port": configuration.bind_port})
+                result = operational_installation.qualify_runtime_response(
+                    installation, record=record, package=package, response=response,
+                )
         elif args.command == "operational-readback":
             result = _operational_product_readback(args)
         elif args.command == "operational-update-assess":
@@ -4095,9 +4172,40 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "operational-inventory":
             references = _operational_inventory_inputs(args)
-            selected = server_service.configured_interpreter(args.data_root) or Path(sys.executable)
-            installation = operational_installation.resolve(args.data_root, interpreter=selected, path_candidates=args.candidate_interpreter)
-            result = operational_installation.inventory(installation, service_references=references, candidates=args.candidate_interpreter)
+            configured, system_inventory, unavailable_reason = _system_operational_service(args)
+            if configured is None:
+                result = {
+                    "state": "UNKNOWN",
+                    "reason": unavailable_reason or "SYSTEM_SERVICE_UNAVAILABLE",
+                    "system_service_inventory": system_inventory,
+                    "explicit_candidate_inventory": None,
+                    "single_operational_installation_verified": False,
+                }
+            else:
+                installation = operational_installation.resolve(
+                    args.data_root,
+                    interpreter=configured.interpreter,
+                    path_candidates=args.candidate_interpreter,
+                )
+                result = {
+                    "state": "OBSERVED",
+                    "resolver": {
+                        "kind": "SYSTEM_LAUNCHDAEMON",
+                        "label": configured.label,
+                        "service_account": configured.service_account,
+                        "interpreter": str(configured.interpreter),
+                        "data_root": str(configured.data_root),
+                    },
+                    "system_service_inventory": system_inventory,
+                    # Explicit inputs are diagnostic evidence only; they can
+                    # never select the official runtime or upgrade its scope.
+                    "explicit_candidate_inventory": operational_installation.inventory(
+                        installation,
+                        service_references=references,
+                        candidates=args.candidate_interpreter,
+                    ),
+                    "single_operational_installation_verified": False,
+                }
         elif args.command == "system-service-inventory":
             # This is a read-only, product-owned evidence surface.  It does
             # not enumerate accounts itself, launch a daemon, or promote a

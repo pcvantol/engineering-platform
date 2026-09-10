@@ -127,13 +127,28 @@ class DevelopmentProfileTests(unittest.TestCase):
     def test_development_runtime_rejects_a_known_operational_interpreter(self) -> None:
         operational = self.base / "operational root"
         with patch("engineering_platform.server.platform_default_data_root", return_value=operational), patch(
-            "engineering_platform.server.server_service.configured_interpreter", return_value=self.interpreter,
+            "engineering_platform.server.system_server_service.configured_service",
+            return_value=server.system_server_service.SystemServerService(
+                operational.resolve(), self.interpreter, "ep-server",
+            ),
         ):
             result, payload = self._main(self._arguments("init"))
 
         self.assertEqual(result, 2)
         self.assertIn("operational interpreter", str(payload["error"]))
         self.assertFalse((self.root / development_profile.FILENAME).exists())
+
+    def test_development_runtime_does_not_treat_a_legacy_launchagent_as_operational_authority(self) -> None:
+        operational = self.base / "operational root"
+        with patch("engineering_platform.server.platform_default_data_root", return_value=operational), patch(
+            "engineering_platform.server.system_server_service.configured_service", return_value=None,
+        ), patch(
+            "engineering_platform.server.server_service.configured_interpreter", return_value=self.interpreter,
+        ) as legacy:
+            result, payload = self._main(self._arguments("init"))
+
+        self.assertEqual(result, 0, payload)
+        legacy.assert_not_called()
 
     def test_development_child_arguments_preserve_the_explicit_profile(self) -> None:
         self._initialize_profile()

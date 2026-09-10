@@ -37,6 +37,45 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         finally:
             self.temporary.cleanup()
 
+    def _system_inventory(self, selected: Path | None = None) -> dict[str, object]:
+        entries: list[dict[str, str]] = []
+        if selected is not None:
+            entries.append({
+                "label": server.system_server_service.LABEL,
+                "domain": "SYSTEM",
+                "plist": str(server.system_server_service.default_paths(self.root).plist_path),
+                "interpreter": str(selected),
+                "data_root": str(self.root.resolve()),
+                "service_account": "ep-server",
+                "status": "SELECTED_SYSTEM_SERVICE",
+            })
+        return {
+            "selected_interpreter": None if selected is None else str(selected),
+            "selected_data_root": None if selected is None else str(self.root.resolve()),
+            "coverage": "SYSTEM_SHARED_AND_DECLARED_USER_SERVICE_SURFACES",
+            "scope": {
+                "required": "MACOS_MACHINE",
+                "observed": "SYSTEM_LAUNCHDAEMONS_SHARED_AND_DECLARED_USER_LAUNCHAGENTS",
+                "status": "INCOMPLETE",
+                "limitations": ["ACCOUNT_HOME_DISCOVERY_NOT_AUTHORITY"],
+            },
+            "inspected_locations": [],
+            "inaccessible_locations": [],
+            "entries": entries,
+            "conflicting_service_references": [],
+            "single_operational_installation": False,
+            "single_operational_installation_status": "UNVERIFIED_SCOPE",
+        }
+
+    def _resolved_system_service(self, selected: Path) -> tuple[object, dict[str, object], None]:
+        return (
+            server.system_server_service.SystemServerService(
+                self.root.resolve(), selected, "ep-server",
+            ),
+            self._system_inventory(selected),
+            None,
+        )
+
     def test_empty_installation_bootstraps_a_clean_valid_store(self) -> None:
         identity = server.initialize(self.root)
         report = server.status(self.root)
@@ -195,7 +234,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def test_operational_diagnose_uses_owned_service_interpreter(self) -> None:
         selected = Path(self.temporary.name) / "selected-python"
         selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
-        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+        with patch("engineering_platform.server._system_operational_service", return_value=self._resolved_system_service(selected)), patch(
             "engineering_platform.server.operational_installation.resolve"
         ) as resolve, patch("engineering_platform.server.operational_installation.record_status", return_value={"state": "REGISTERED"}) as record_status, patch("engineering_platform.server.operational_installation.package_identity", return_value={"version": "2.3.1"}) as package_identity, patch("engineering_platform.server.operational_installation.validate_package_identity") as validate_package_identity, patch("engineering_platform.server.operational_installation.validate_registered_package_identity") as validate_registered_package_identity:
             resolve.return_value.payload.return_value = {"interpreter": str(selected)}
@@ -211,7 +250,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
         configuration = server.ServerConfiguration(3, "127.0.0.1", 8765, "/opt/codex", "2.3.2")
         response = {"service": "engineering-platform-server", "instance_id": "instance-1", "healthy": True}
-        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+        with patch("engineering_platform.server._system_operational_service", return_value=self._resolved_system_service(selected)), patch(
             "engineering_platform.server.operational_installation.resolve"
         ) as resolve, patch("engineering_platform.server.operational_installation.package_identity", return_value={"version": "2.3.2"}) as package_identity, patch(
             "engineering_platform.server.operational_installation.record_status", return_value={"state": "REGISTERED"}
@@ -236,7 +275,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def test_operational_inventory_is_explicit_read_only_input(self) -> None:
         selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
         candidate = Path(self.temporary.name) / "old-python"; candidate.write_text("#!/bin/sh\n"); candidate.chmod(0o755)
-        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch("engineering_platform.server.operational_installation.resolve") as resolve, patch("engineering_platform.server.operational_installation.inventory", return_value={"coverage": "EXPLICIT_PATHS_ONLY"}) as inventory:
+        with patch("engineering_platform.server._system_operational_service", return_value=self._resolved_system_service(selected)), patch("engineering_platform.server.operational_installation.resolve") as resolve, patch("engineering_platform.server.operational_installation.inventory", return_value={"coverage": "EXPLICIT_PATHS_ONLY"}) as inventory:
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(server.main(("operational-inventory", "--data-root", str(self.root), "--candidate-interpreter", str(candidate), "--service-reference", f"legacy={candidate}")), 0)
             resolve.assert_called_once_with(self.root, interpreter=selected, path_candidates=[candidate])
@@ -271,7 +310,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         })
 
     def test_operational_readback_never_falls_back_to_the_calling_path_runtime(self) -> None:
-        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=None), patch(
+        inventory = self._system_inventory()
+        with patch(
+            "engineering_platform.server._system_operational_service",
+            return_value=(None, inventory, "SYSTEM_SERVICE_UNAVAILABLE"),
+        ), patch("engineering_platform.server.server_service.configured_interpreter") as legacy_interpreter, patch(
             "engineering_platform.server.operational_installation.resolve"
         ) as resolve, patch("engineering_platform.server.operational_installation.package_identity") as package_identity:
             output = io.StringIO()
@@ -279,23 +322,105 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 self.assertEqual(server.main(("operational-readback", "--data-root", str(self.root))), 0)
         observation = json.loads(output.getvalue())
         self.assertEqual((observation["state"], observation["health_state"]), ("UNKNOWN", "UNKNOWN"))
-        self.assertEqual(observation["evidence"]["reason"], "OWNED_SERVICE_INTERPRETER_UNAVAILABLE")
+        self.assertEqual(observation["evidence"]["reason"], "SYSTEM_SERVICE_UNAVAILABLE")
         self.assertIsNone(observation["selected_runtime_identity"])
+        self.assertEqual(observation["evidence"]["inventory"]["state"], "SYSTEM_SERVICE_SURFACES")
+        legacy_interpreter.assert_not_called()
         resolve.assert_not_called()
         package_identity.assert_not_called()
 
-    def test_operational_readback_binds_explicit_inventory_to_the_owned_resolver(self) -> None:
+    def test_canonical_system_resolver_rejects_a_descriptor_inventory_mismatch(self) -> None:
+        selected = Path(self.temporary.name) / "selected-python"
+        selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
+        configured = server.system_server_service.SystemServerService(
+            self.root.resolve(), selected, "ep-server",
+        )
+        inventory = self._system_inventory(selected)
+        inventory["selected_data_root"] = str((self.root.parent / "other-root").resolve())
+        args = server.build_parser().parse_args(("operational-readback", "--data-root", str(self.root)))
+        with patch(
+            "engineering_platform.server.system_server_service.machine_scope_inventory",
+            return_value=inventory,
+        ), patch(
+            "engineering_platform.server.system_server_service.configured_service",
+            return_value=configured,
+        ), patch("engineering_platform.server.server_service.configured_interpreter") as legacy:
+            observed, observed_inventory, reason = server._system_operational_service(args)
+
+        self.assertIsNone(observed)
+        self.assertIs(observed_inventory, inventory)
+        self.assertEqual(reason, "SYSTEM_SERVICE_INVENTORY_MISMATCH")
+        legacy.assert_not_called()
+
+    def test_canonical_system_resolver_rejects_an_account_only_descriptor_inventory_mismatch(self) -> None:
+        selected = Path(self.temporary.name) / "selected-python"
+        selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
+        configured = server.system_server_service.SystemServerService(
+            self.root.resolve(), selected, "replacement-account",
+        )
+        inventory = self._system_inventory(selected)
+        args = server.build_parser().parse_args(("operational-readback", "--data-root", str(self.root)))
+        with patch(
+            "engineering_platform.server.system_server_service.machine_scope_inventory",
+            return_value=inventory,
+        ), patch(
+            "engineering_platform.server.system_server_service.configured_service",
+            return_value=configured,
+        ):
+            observed, observed_inventory, reason = server._system_operational_service(args)
+
+        self.assertIsNone(observed)
+        self.assertIs(observed_inventory, inventory)
+        self.assertEqual(reason, "SYSTEM_SERVICE_INVENTORY_MISMATCH")
+
+    def test_canonical_system_resolver_rejects_an_incomplete_observer_even_with_a_matching_entry(self) -> None:
+        selected = Path(self.temporary.name) / "selected-python"
+        selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
+        configured = server.system_server_service.SystemServerService(
+            self.root.resolve(), selected, "ep-server",
+        )
+        inventory = self._system_inventory(selected)
+        del inventory["scope"]
+        args = server.build_parser().parse_args(("operational-readback", "--data-root", str(self.root)))
+        with patch(
+            "engineering_platform.server.system_server_service.machine_scope_inventory",
+            return_value=inventory,
+        ), patch(
+            "engineering_platform.server.system_server_service.configured_service",
+            return_value=configured,
+        ):
+            observed, observed_inventory, reason = server._system_operational_service(args)
+
+        self.assertIsNone(observed)
+        self.assertIs(observed_inventory, inventory)
+        self.assertEqual(reason, "SYSTEM_SERVICE_INVENTORY_MISMATCH")
+
+    def test_operational_diagnostics_and_inventory_do_not_fall_back_when_system_service_is_unavailable(self) -> None:
+        inventory = self._system_inventory()
+        for command in ("operational-diagnose", "operational-qualify", "operational-inventory"):
+            with self.subTest(command=command), patch(
+                "engineering_platform.server._system_operational_service",
+                return_value=(None, inventory, "SYSTEM_SERVICE_UNAVAILABLE"),
+            ), patch("engineering_platform.server.server_service.configured_interpreter") as legacy_interpreter, patch(
+                "engineering_platform.server.operational_installation.resolve"
+            ) as resolve, patch("engineering_platform.server.operational_installation.package_identity") as package_identity:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(server.main((command, "--data-root", str(self.root))), 0)
+            observation = json.loads(output.getvalue())
+            self.assertEqual(observation["state"], "UNKNOWN")
+            legacy_interpreter.assert_not_called()
+            resolve.assert_not_called()
+            package_identity.assert_not_called()
+
+    def test_operational_readback_binds_system_inventory_to_the_owned_resolver(self) -> None:
         selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!/bin/sh\n"); selected.chmod(0o755)
         candidate = Path(self.temporary.name) / "old-python"; candidate.write_text("#!/bin/sh\n"); candidate.chmod(0o755)
         observation = {"state": "ABSENT", "component": "engineering-platform-server"}
-        inventory_result = {
-            "selected_interpreter": str(selected), "coverage": "EXPLICIT_PATHS_ONLY",
-            "scope": {"required": "MACOS_MACHINE", "observed": "CURRENT_OS_USER_EXPLICIT_REFERENCES_ONLY", "status": "INCOMPLETE"},
-            "entries": [], "conflicting_service_references": [], "single_operational_installation": False,
-        }
-        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+        inventory_result = self._system_inventory(selected)
+        with patch("engineering_platform.server._system_operational_service", return_value=self._resolved_system_service(selected)), patch(
             "engineering_platform.server.operational_installation.resolve"
-        ) as resolve, patch("engineering_platform.server.operational_installation.inventory", return_value=inventory_result) as inventory, patch(
+        ) as resolve, patch(
             "engineering_platform.server.operational_installation.record_status", return_value={"state": "UNREGISTERED"}
         ) as record_status, patch(
             "engineering_platform.server.product_installation_readback.readback", return_value=observation
@@ -307,11 +432,6 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                     "--service-reference", f"legacy={candidate}",
                 )), 0)
         resolve.assert_called_once_with(self.root, interpreter=selected, path_candidates=[candidate])
-        inventory.assert_called_once_with(
-            resolve.return_value,
-            service_references={"legacy": candidate},
-            candidates=[candidate],
-        )
         record_status.assert_called_once_with(resolve.return_value)
         readback.assert_called_once_with(
             resolve.return_value,

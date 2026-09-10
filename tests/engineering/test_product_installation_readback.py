@@ -90,6 +90,50 @@ class ProductInstallationReadbackTests(unittest.TestCase):
             "single_operational_installation_status": "UNVERIFIED_SCOPE",
         }
 
+    @staticmethod
+    def _system_inventory(
+        installation: object | None,
+        *,
+        conflicts: list[dict[str, str]] | None = None,
+    ) -> dict[str, object]:
+        selected = None
+        root = None
+        entries: list[dict[str, str]] = []
+        if installation is not None:
+            selected = str(launcher(getattr(installation, "interpreter")))
+            root = str(getattr(installation, "data_root"))
+            entries.append({
+                "label": "com.engineeringplatform.server",
+                "domain": "SYSTEM",
+                "plist": "/Library/LaunchDaemons/com.engineeringplatform.server.plist",
+                "interpreter": selected,
+                "data_root": root,
+                "service_account": "ep-server",
+                "status": "SELECTED_SYSTEM_SERVICE",
+            })
+        conflicting = conflicts or []
+        entries.extend(conflicting)
+        return {
+            "selected_interpreter": selected,
+            "selected_data_root": root,
+            "coverage": "SYSTEM_SHARED_AND_DECLARED_USER_SERVICE_SURFACES",
+            "scope": {
+                "required": "MACOS_MACHINE",
+                "observed": "SYSTEM_LAUNCHDAEMONS_SHARED_AND_DECLARED_USER_LAUNCHAGENTS",
+                "status": "INCOMPLETE",
+                "limitations": ["ACCOUNT_HOME_DISCOVERY_NOT_AUTHORITY"],
+            },
+            "inspected_locations": [
+                {"path": "/Library/LaunchDaemons", "domain": "SYSTEM", "state": "INSPECTED"},
+                {"path": "/Library/LaunchAgents", "domain": "SHARED_USER", "state": "INSPECTED"},
+            ],
+            "inaccessible_locations": [],
+            "entries": entries,
+            "conflicting_service_references": conflicting,
+            "single_operational_installation": False,
+            "single_operational_installation_status": "CONFLICTS_DETECTED" if conflicting else "UNVERIFIED_SCOPE",
+        }
+
     def test_active_readback_binds_actual_runtime_and_retains_partial_scope(self) -> None:
         with TemporaryDirectory() as temporary:
             _root, installation, registered, package, response = self._installation(temporary)
@@ -112,6 +156,66 @@ class ProductInstallationReadbackTests(unittest.TestCase):
         })
         self.assertEqual((observation["inventory_coverage"], observation["conflict_state"]), ("PARTIAL", "UNKNOWN"))
         self.assertFalse(observation["single_operational_installation_verified"])
+
+    def test_system_service_inventory_binds_the_same_runtime_but_remains_partial(self) -> None:
+        with TemporaryDirectory() as temporary:
+            _root, installation, registered, package, response = self._installation(temporary)
+            observation = product_installation_readback.readback(
+                installation,
+                record=registered,
+                package=package,
+                health_response=response,
+                inventory=self._system_inventory(installation),
+            )
+        self.assertEqual((observation["state"], observation["inventory_coverage"]), ("ACTIVE", "PARTIAL"))
+        self.assertEqual(observation["inventory_scope"]["observed"], "SYSTEM_LAUNCHDAEMONS_SHARED_AND_DECLARED_USER_LAUNCHAGENTS")
+        self.assertEqual(observation["evidence"]["inventory"]["state"], "SYSTEM_SERVICE_SURFACES")
+        self.assertFalse(observation["single_operational_installation_verified"])
+
+    def test_system_service_conflict_is_visible_without_a_machine_wide_claim(self) -> None:
+        with TemporaryDirectory() as temporary:
+            _root, installation, registered, package, response = self._installation(temporary)
+            conflict = {
+                "label": "com.engineeringplatform.server.legacy",
+                "domain": "USER",
+                "plist": "/Users/example/Library/LaunchAgents/com.engineeringplatform.server.legacy.plist",
+                "interpreter": "/old EP/bin/python",
+                "data_root": "/old EP data",
+                "status": "CONFLICTING_USER_SERVICE",
+            }
+            observation = product_installation_readback.readback(
+                installation,
+                record=registered,
+                package=package,
+                health_response=response,
+                inventory=self._system_inventory(installation, conflicts=[conflict]),
+            )
+        self.assertEqual(observation["conflict_state"], "CONFLICTING")
+        self.assertEqual(observation["evidence"]["inventory"]["conflicting_service_references"], [conflict])
+        self.assertFalse(observation["single_operational_installation_verified"])
+
+    def test_unavailable_system_service_retains_observation_without_a_runtime_fallback(self) -> None:
+        observation = product_installation_readback.unavailable_readback(
+            reason="SYSTEM_SERVICE_UNAVAILABLE",
+            inventory=self._system_inventory(None),
+        )
+        self.assertEqual((observation["state"], observation["inventory_coverage"]), ("UNKNOWN", "PARTIAL"))
+        self.assertIsNone(observation["selected_runtime_identity"])
+        self.assertEqual(observation["evidence"]["inventory"]["state"], "SYSTEM_SERVICE_SURFACES")
+
+    def test_system_inventory_rejects_a_selected_pair_without_the_canonical_entry(self) -> None:
+        with TemporaryDirectory() as temporary:
+            _root, installation, _registered, _package, _response = self._installation(temporary)
+            inventory = self._system_inventory(installation)
+            inventory["entries"] = []
+            with self.assertRaisesRegex(
+                product_installation_readback.ProductInstallationReadbackError,
+                "does not bind the selected system service",
+            ):
+                product_installation_readback.unavailable_readback(
+                    reason="SYSTEM_SERVICE_UNAVAILABLE",
+                    inventory=inventory,
+                )
 
     def test_wrong_healthy_instance_and_unavailable_health_are_not_active(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -164,6 +268,7 @@ class ProductInstallationReadbackTests(unittest.TestCase):
             reason="OWNED_SERVICE_INTERPRETER_UNAVAILABLE",
         )
         self.assertEqual((observation["state"], observation["health_state"]), ("UNKNOWN", "UNKNOWN"))
+        self.assertEqual(observation["inventory_coverage"], "UNKNOWN")
         self.assertIsNone(observation["installation_identity"])
         self.assertIsNone(observation["selected_runtime_identity"])
 
