@@ -305,23 +305,75 @@ class SystemInstallationTopologyTests(unittest.TestCase):
                 current_interpreter=self.base / "old-runtime" / "python",
             )
         target = topology_module.runtime_slot(topology, self.release)
-        with self.assertRaisesRegex(
-            topology_module.SystemInstallationTopologyError, "already selected"
-        ):
-            topology_module.plan_update(
-                topology,
-                operation_id="update-0001",
-                release=self.release,
-                current_interpreter=target.interpreter,
-            )
+        for launcher_name in ("python", "python3", "python3.12"):
+            with (
+                self.subTest(launcher_name=launcher_name),
+                self.assertRaisesRegex(
+                    topology_module.SystemInstallationTopologyError,
+                    "eligible operational runtime|already selected",
+                ),
+            ):
+                topology_module.plan_update(
+                    topology,
+                    operation_id="update-0001",
+                    release=self.release,
+                    current_interpreter=target.venv / "bin" / launcher_name,
+                )
 
     def test_refuses_an_invalid_operation_id_before_any_path_can_be_used(self) -> None:
-        with self.assertRaisesRegex(
-            topology_module.SystemInstallationTopologyError, "operation ID"
+        for operation_id in ("short", "Update-0001"):
+            with (
+                self.subTest(operation_id=operation_id),
+                self.assertRaisesRegex(
+                    topology_module.SystemInstallationTopologyError, "operation ID"
+                ),
+            ):
+                topology_module.plan_install(
+                    self._topology(), operation_id=operation_id, release=self.release
+                )
+
+    def test_refuses_unclassified_system_tree_paths_as_current_runtime(self) -> None:
+        topology = self._topology()
+        for current_interpreter in (
+            topology.machine_lock.parent / "surprise" / "venv" / "bin" / "python",
+            topology.system_root / "logs" / "venv" / "bin" / "python",
+            topology.runtime_root / "legacy" / "venv" / "bin" / "python",
+            topology.runtime_root
+            / "slots"
+            / ("sha256-" + "c" * 64)
+            / "venv"
+            / "bin"
+            / "python3",
         ):
-            topology_module.plan_install(
-                self._topology(), operation_id="short", release=self.release
-            )
+            with (
+                self.subTest(current_interpreter=current_interpreter),
+                self.assertRaisesRegex(
+                    topology_module.SystemInstallationTopologyError,
+                    "eligible operational runtime",
+                ),
+            ):
+                topology_module.plan_update(
+                    topology,
+                    operation_id="update-0001",
+                    release=self.release,
+                    current_interpreter=current_interpreter,
+                )
+
+        existing_slot = topology_module.runtime_slot(
+            topology,
+            topology_module.ReleaseIdentity(
+                version="2.3.2",
+                artifact_digest="sha256:" + "c" * 64,
+                source_revision="d" * 40,
+            ),
+        )
+        transition = topology_module.plan_update(
+            topology,
+            operation_id="update-0001",
+            release=self.release,
+            current_interpreter=existing_slot.interpreter,
+        )
+        self.assertEqual(transition.current_interpreter, existing_slot.interpreter)
 
     def test_transition_payload_round_trips_only_when_all_boundary_facts_match(
         self,
@@ -386,6 +438,18 @@ class SystemInstallationTopologyTests(unittest.TestCase):
         ):
             topology_module.transition_from_payload(invalid_install)
 
+        for non_integer_schema_version in (True, 1.0):
+            with (
+                self.subTest(non_integer_schema_version=non_integer_schema_version),
+                self.assertRaisesRegex(
+                    topology_module.SystemInstallationTopologyError,
+                    "provisioning transition",
+                ),
+            ):
+                invalid_schema_version = deepcopy(transition.payload())
+                invalid_schema_version["schema_version"] = non_integer_schema_version
+                topology_module.transition_from_payload(invalid_schema_version)
+
     def test_topology_payload_is_closed_and_canonical(self) -> None:
         topology = self._topology()
         self.assertEqual(
@@ -423,6 +487,23 @@ class SystemInstallationTopologyTests(unittest.TestCase):
             topology_module.SystemInstallationTopologyError, "provisioning transition"
         ):
             replace(transition, mode=[])  # type: ignore[arg-type]
+
+        slot = topology_module.runtime_slot(topology, self.release)
+        with self.assertRaisesRegex(
+            topology_module.SystemInstallationTopologyError, "runtime slot"
+        ):
+            topology_module.RuntimeSlot(
+                topology=topology,
+                release=self.release,
+                slot_id="forged-slot",
+                root=self.base / "foreign-slot",
+                venv=self.base / "foreign-slot" / "venv",
+                interpreter=self.base / "foreign-slot" / "venv" / "bin" / "python",
+            )
+        with self.assertRaisesRegex(
+            topology_module.SystemInstallationTopologyError, "runtime slot"
+        ):
+            replace(slot, root=self.base / "foreign-slot")
 
 
 if __name__ == "__main__":

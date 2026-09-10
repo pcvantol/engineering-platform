@@ -25,8 +25,12 @@ from . import system_server_service
 COMPONENT = "engineering-platform-server"
 SCHEMA_VERSION = 1
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
+# Operation directories must be portable to the usual case-insensitive macOS
+# volume.  Mixed-case identifiers could otherwise name the same recovery or
+# staging directory while remaining lexically distinct in durable evidence.
+_OPERATION = re.compile(r"^[a-z0-9][a-z0-9._-]{7,127}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
+_SLOT_ID = re.compile(r"^sha256-[0-9a-f]{64}$")
 _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 _ACCOUNT = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _PYTHON = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
@@ -262,11 +266,42 @@ def system_installation_topology(
 class RuntimeSlot:
     """A final, immutable destination for exactly one artifact digest."""
 
+    topology: SystemInstallationTopology
     release: ReleaseIdentity
     slot_id: str
     root: Path
     venv: Path
     interpreter: Path
+
+    def __post_init__(self) -> None:
+        """Reject a detached or forged slot before it can carry evidence.
+
+        ``RuntimeSlot`` is public because it appears in the durable transition
+        evidence.  It must therefore be closed on its own, rather than relying
+        on a later ``ProvisioningTransition`` to notice a foreign root.
+        """
+        if not isinstance(self.topology, SystemInstallationTopology) or not isinstance(
+            self.release, ReleaseIdentity
+        ):
+            raise SystemInstallationTopologyError("runtime slot is invalid")
+        expected_slot_id = "sha256-" + self.release.artifact_digest.removeprefix(
+            "sha256:"
+        )
+        expected_root = self.topology.runtime_root / "slots" / expected_slot_id
+        expected_venv = expected_root / "venv"
+        expected_interpreter = expected_venv / "bin" / "python"
+        if (
+            self.slot_id != expected_slot_id
+            or self.root != expected_root
+            or self.venv != expected_venv
+            or self.interpreter != expected_interpreter
+            or not _inside(self.topology.runtime_root, self.root)
+            or _inside(self.topology.operations_root, self.root)
+            or _inside(self.topology.recovery_root, self.root)
+            or _launcher(self.interpreter, label="EP target interpreter")
+            != self.interpreter
+        ):
+            raise SystemInstallationTopologyError("runtime slot is invalid")
 
     def payload(self) -> dict[str, object]:
         return {
@@ -290,15 +325,7 @@ def runtime_slot(
     root = topology.runtime_root / "slots" / slot_id
     venv = root / "venv"
     interpreter = venv / "bin" / "python"
-    if (
-        not _inside(topology.runtime_root, root)
-        or not _inside(root, venv)
-        or _launcher(interpreter, label="EP target interpreter") != interpreter
-        or _inside(topology.operations_root, root)
-        or _inside(topology.recovery_root, root)
-    ):
-        raise SystemInstallationTopologyError("runtime slot is invalid")
-    return RuntimeSlot(release, slot_id, root, venv, interpreter)
+    return RuntimeSlot(topology, release, slot_id, root, venv, interpreter)
 
 
 @dataclass(frozen=True)
@@ -341,9 +368,8 @@ class ProvisioningTransition:
             raise SystemInstallationTopologyError("provisioning transition is invalid")
         if self.current_interpreter is not None:
             current = _current_runtime(self.topology, self.current_interpreter)
-            if (
-                current != self.current_interpreter
-                or current == self.target.interpreter
+            if current != self.current_interpreter or _inside(
+                self.target.root, current
             ):
                 raise SystemInstallationTopologyError(
                     "provisioning transition is invalid"
@@ -418,6 +444,26 @@ def _current_runtime(topology: SystemInstallationTopology, value: str | Path) ->
         raise SystemInstallationTopologyError(
             "current EP runtime is not an eligible operational runtime"
         )
+    if _inside(topology.system_root, current):
+        # A legacy runtime may legitimately live outside this new system tree.
+        # Within it, however, only an already-finalized, canonical slot may be
+        # current evidence.  Do not let a lock, logs, or an unclassified
+        # product subtree masquerade as a selected interpreter.
+        try:
+            relative = current.relative_to(topology.runtime_root)
+        except ValueError:
+            raise SystemInstallationTopologyError(
+                "current EP runtime is not an eligible operational runtime"
+            ) from None
+        if (
+            len(relative.parts) != 5
+            or relative.parts[0] != "slots"
+            or _SLOT_ID.fullmatch(relative.parts[1]) is None
+            or relative.parts[2:] != ("venv", "bin", "python")
+        ):
+            raise SystemInstallationTopologyError(
+                "current EP runtime is not an eligible operational runtime"
+            )
     return current
 
 
@@ -447,7 +493,7 @@ def _transition(
         else _current_runtime(topology, current_interpreter)
     )
     target = runtime_slot(topology, release)
-    if current is not None and current == target.interpreter:
+    if current is not None and _inside(target.root, current):
         raise SystemInstallationTopologyError("target EP runtime is already selected")
     operation, staging, recovery = _operation_paths(topology, operation_id)
     protected = (topology.data_root, topology.runtime_root, target.root, recovery)
@@ -514,7 +560,11 @@ def transition_from_payload(value: object) -> ProvisioningTransition:
         ),
         label="provisioning transition",
     )
-    if payload["schema_version"] != SCHEMA_VERSION or payload["component"] != COMPONENT:
+    if (
+        type(payload["schema_version"]) is not int
+        or payload["schema_version"] != SCHEMA_VERSION
+        or payload["component"] != COMPONENT
+    ):
         raise SystemInstallationTopologyError("provisioning transition is invalid")
     topology = SystemInstallationTopology.from_payload(payload["topology"])
     target_payload = _require_mapping(
