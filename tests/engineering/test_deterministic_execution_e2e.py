@@ -9,6 +9,9 @@ import subprocess
 import tempfile
 import unittest
 
+from engineering_platform.execution_models import AgentResult
+from engineering_platform.qualification_runtime import DeterministicQualificationAgent
+
 
 def _qualification_module() -> object:
     path = Path(__file__).parents[2] / "tools" / "qualification" / "p_deterministic_execution_e2e.py"
@@ -56,6 +59,46 @@ class DeterministicExecutionE2ETests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "QUALIFICATION_SERVER_CONFIGURATION_INVALID"):
             self.module.configure_deterministic_runtime(self.data, self.root)
+
+    def test_deterministic_validation_executes_and_reports_full_profile_controls(self) -> None:
+        subprocess.run(("git", "init", "-q", "-b", "main", str(self.root)), check=True)
+        subprocess.run(("git", "-C", str(self.root), "config", "user.email", "qualification@example.invalid"), check=True)
+        subprocess.run(("git", "-C", str(self.root), "config", "user.name", "Qualification"), check=True)
+        (self.root / "README.md").write_text("# Qualification\n", encoding="utf-8")
+        (self.root / "test_qualification.py").write_text(
+            "import unittest\n\n"
+            "class QualificationTest(unittest.TestCase):\n"
+            "    def test_fixture(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        subprocess.run(("git", "-C", str(self.root), "add", "README.md", "test_qualification.py"), check=True)
+        subprocess.run(("git", "-C", str(self.root), "commit", "-qm", "initial"), check=True)
+        agent = DeterministicQualificationAgent()
+        events: list[tuple[object, ...]] = []
+        agent.set_command_callback(lambda *event: events.append(event))
+
+        result = agent.validate(self.root, "host-owned local validation")
+
+        self.assertIsInstance(result, AgentResult)
+        self.assertEqual(result.terminal_state, "COMPLETE")
+        self.assertEqual(result.validation_evidence, (
+            {"command": "git diff --check", "result": "passed"},
+            {"command": "python3 -m unittest discover", "result": "passed"},
+        ))
+        self.assertEqual(events, [
+            ("started", "deterministic-validation-1", "git diff --check"),
+            ("completed", "deterministic-validation-1", "git diff --check", 0),
+            ("started", "deterministic-validation-2", "python3 -m unittest discover"),
+            ("completed", "deterministic-validation-2", "python3 -m unittest discover", 0),
+        ])
+        self.assertEqual(
+            subprocess.run(
+                ("git", "-C", str(self.root), "status", "--porcelain"),
+                check=True, text=True, capture_output=True,
+            ).stdout,
+            "",
+        )
 
 
 if __name__ == "__main__":

@@ -80,7 +80,15 @@ def create_repository(path: Path, *, origin: Path | None = None) -> None:
     git(path, "config", "user.email", "qualification@example.invalid")
     git(path, "config", "user.name", "Installed qualification")
     (path / "BOOTSTRAP.md").write_text("# Installed qualification\n", encoding="utf-8")
-    git(path, "add", "BOOTSTRAP.md")
+    (path / "test_installed_platform.py").write_text(
+        "import unittest\n\n"
+        "import engineering_platform\n\n\n"
+        "class InstalledPlatformTest(unittest.TestCase):\n"
+        "    def test_package_is_importable(self):\n"
+        "        self.assertIsNotNone(engineering_platform.__file__)\n",
+        encoding="utf-8",
+    )
+    git(path, "add", "BOOTSTRAP.md", "test_installed_platform.py")
     git(path, "commit", "-qm", "initial qualification repository")
     if origin is not None:
         subprocess.run(("git", "init", "-q", "--bare", str(origin)), check=True)  # nosec B603

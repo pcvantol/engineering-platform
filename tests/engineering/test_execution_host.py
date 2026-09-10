@@ -3674,6 +3674,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIsNone(state.pull_request)
         self.assertEqual([review["reviewer"] for review in state.assurance_reviews], ["quality", "security"])
         self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
+        self.assertNotIn("validation_profile_digest", state.assurance_profile)
+        self.assertEqual(TransactionState.from_dict(state.to_dict()), state)
 
     def test_genesis_selects_its_target_before_managed_cleanliness_checks(self) -> None:
         target = self.root.parent / f"genesis-clean-{self.root.name}"

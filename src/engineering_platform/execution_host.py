@@ -2069,11 +2069,16 @@ Local repository validation gate — read-only measurement:
                 "validation_profile_digest": validation_profile_digest,
             }, sort_keys=True).encode("utf-8")
         ).hexdigest()
-        quality = replace(quality, assurance_profile={
+        assurance_profile = {
             "version": profile_version, "digest": profile_digest, "candidate_sha": candidate.head_sha,
             "criteria_digest": criteria_digest,
-            "validation_profile_digest": validation_profile_digest,
-        })
+        }
+        # Genesis has no host-owned local validation profile.  Preserve the
+        # valid legacy assurance shape instead of persisting an explicit null,
+        # which cannot survive the durable checkpoint schema round-trip.
+        if validation_profile_digest is not None:
+            assurance_profile["validation_profile_digest"] = validation_profile_digest
+        quality = replace(quality, assurance_profile=assurance_profile)
         self.store.save(quality)
         write_live_status(self.root, quality, quality.next_action)
         evidence = ReviewerEvidence.from_repository(quality.run_id, quality.execution_mode, candidate)
