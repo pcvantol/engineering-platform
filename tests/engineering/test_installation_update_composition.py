@@ -18,14 +18,23 @@ from engineering_platform.installation_update_composition import (
     compose,
     execute,
 )
-from engineering_platform.installation_update_operation import InstallationUpdateSession, status
+from engineering_platform.installation_update_operation import (
+    InstallationUpdateOperationError,
+    InstallationUpdateSession,
+    status,
+)
 from engineering_platform.installation_update_plan import prepare
 from engineering_platform.installation_update_preparation import prepare_candidate, staged_execution_plan
 from engineering_platform.operational_installation_lock import (
     OperationalInstallationLock,
     OperationalInstallationLockError,
 )
-from engineering_platform.operational_installation_record import load, record, replace_for_update
+from engineering_platform.operational_installation_record import (
+    OperationalInstallationRecordError,
+    load,
+    record,
+    replace_for_update,
+)
 
 
 class CandidateRunner:
@@ -459,3 +468,80 @@ class InstallationUpdateCompositionTests(unittest.TestCase):
                 with self.assertRaisesRegex(InstallationUpdateCompositionError, "execution admission"):
                     composed.quiesce(plan)
             self.assertEqual(calls, [])
+
+    def test_inventory_fails_closed_when_registration_becomes_unavailable_or_changes(self) -> None:
+        for failure in ("unavailable", "changed"):
+            with self.subTest(failure=failure), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                plan, candidate, admission, runner = self._admitted(root)
+                actions = InstallationUpdateOperationalActions(lambda _plan: {"result": "PASS"},
+                                                               lambda _plan: {"result": "PASS"},
+                                                               lambda _plan: {"result": "PASS"})
+                composed = compose(plan, admission=admission, actions=actions, migration_runner=runner)
+                result: object = OperationalInstallationRecordError("unreadable")
+                expected = "registered operational installation is unavailable"
+                if failure == "changed":
+                    result = {**load(root), "installation_id": "replacement-installation"}
+                    expected = "changed before update"
+                with patch("engineering_platform.installation_update_composition.installation_update_admission.admitted_candidate",
+                           return_value=candidate), patch(
+                    "engineering_platform.installation_update_composition.operational_installation_record.load",
+                    side_effect=result if isinstance(result, Exception) else None,
+                    return_value=None if isinstance(result, Exception) else result,
+                ):
+                    with self.assertRaisesRegex(InstallationUpdateCompositionError, expected):
+                        composed.inventory(plan)
+
+    def test_recovery_requires_available_well_formed_target_inventory(self) -> None:
+        for failure in ("operation", "missing", "invalid", "changed"):
+            with self.subTest(failure=failure), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                plan, _candidate, admission, runner = self._admitted(root)
+                actions = InstallationUpdateOperationalActions(lambda _plan: {"result": "PASS"},
+                                                               lambda _plan: {"result": "PASS"},
+                                                               lambda _plan: {"result": "PASS"})
+                composed = compose(plan, admission=admission, actions=actions, migration_runner=runner)
+                if failure == "operation":
+                    with patch("engineering_platform.installation_update_composition.status",
+                               side_effect=InstallationUpdateOperationError("unreadable")):
+                        with self.assertRaisesRegex(InstallationUpdateCompositionError, "operation is unavailable"):
+                            composed.migrate(plan)
+                    continue
+                evidence: dict[str, object] = {"result": "PASS"}
+                expected = "lacks target inventory evidence"
+                if failure == "invalid":
+                    evidence["target_package"] = {"interpreter": 1}
+                    expected = "inventory evidence is invalid"
+                elif failure == "changed":
+                    evidence["target_package"] = {"interpreter": str(root / "different runtime/bin/python")}
+                    expected = "interpreter changed during recovery"
+                with InstallationUpdateSession(plan) as session:
+                    if failure != "missing":
+                        session.advance("INVENTORIED", evidence)
+                    with self.assertRaisesRegex(InstallationUpdateCompositionError, expected):
+                        composed.migrate(plan)
+
+    def test_verification_requires_the_activated_registration_and_exact_launcher(self) -> None:
+        for failure in ("unavailable", "different"):
+            with self.subTest(failure=failure), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                plan, candidate, admission, runner = self._admitted(root)
+                actions = InstallationUpdateOperationalActions(lambda _plan: {"result": "PASS"},
+                                                               lambda _plan: {"result": "PASS"},
+                                                               lambda _plan: {"result": "PASS"})
+                composed = compose(plan, admission=admission, actions=actions, migration_runner=runner)
+                with InstallationUpdateSession(plan) as session:
+                    session.advance("INVENTORIED", composed.inventory(plan))
+                    if failure == "unavailable":
+                        with patch("engineering_platform.installation_update_composition.installation_update_admission.admitted_candidate",
+                                   return_value=candidate), patch(
+                            "engineering_platform.installation_update_composition.operational_installation_record.load",
+                            side_effect=OperationalInstallationRecordError("unreadable"),
+                        ):
+                            with self.assertRaisesRegex(InstallationUpdateCompositionError,
+                                                        "activated operational installation is unavailable"):
+                                composed.verify(plan)
+                    else:
+                        with self.assertRaisesRegex(InstallationUpdateCompositionError,
+                                                    "interpreter differs from the planned target"):
+                            composed.verify(plan)

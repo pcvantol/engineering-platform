@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from engineering_platform.installation_update_admission import (
     ExecutionAdmission,
@@ -13,12 +14,22 @@ from engineering_platform.installation_update_admission import (
     admit,
     admitted_candidate,
 )
-from engineering_platform.installation_update_activation import replacement_record
-from engineering_platform.installation_update_operation import InstallationUpdateSession, status
+from engineering_platform.installation_update_activation import InstallationUpdateActivationError, replacement_record
+from engineering_platform.installation_update_operation import (
+    InstallationUpdateOperationError,
+    InstallationUpdateSession,
+    status,
+)
 from engineering_platform.installation_update_plan import prepare
 from engineering_platform.installation_update_preparation import prepare_candidate, staged_execution_plan
 from engineering_platform.operational_installation_lock import OperationalInstallationLock
-from engineering_platform.operational_installation_record import FILENAME, load, record, replace_for_update
+from engineering_platform.operational_installation_record import (
+    FILENAME,
+    OperationalInstallationRecordError,
+    load,
+    record,
+    replace_for_update,
+)
 
 
 class CandidateRunner:
@@ -265,3 +276,46 @@ class InstallationUpdateAdmissionTests(unittest.TestCase):
             journal.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaises(InstallationUpdateAdmissionError):
                 admit(plan, runner=runner)
+
+    def test_rejects_unreadable_registration_at_admission_and_resume(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, _candidate, runner, _wheel = self._prepared(Path(temporary))
+            with patch("engineering_platform.installation_update_admission.operational_installation_record.load",
+                       side_effect=OperationalInstallationRecordError("unreadable")):
+                with self.assertRaisesRegex(InstallationUpdateAdmissionError, "registered operational installation is unavailable"):
+                    admit(plan, runner=runner)
+            admission = admit(plan, runner=runner)
+            with patch("engineering_platform.installation_update_admission.operational_installation_record.load",
+                       side_effect=OperationalInstallationRecordError("unreadable")):
+                with self.assertRaisesRegex(InstallationUpdateAdmissionError, "registered operational installation is unavailable"):
+                    admitted_candidate(plan, admission, runner=runner)
+
+    def test_rejects_invalid_candidate_object_and_unknown_recovery_state(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, _candidate, runner, _wheel = self._prepared(Path(temporary))
+            admission = admit(plan, runner=runner)
+            with patch("engineering_platform.installation_update_admission.recover_prepared_candidate",
+                       return_value=object()):
+                with self.assertRaisesRegex(InstallationUpdateAdmissionError, "prepared candidate identity is invalid"):
+                    admitted_candidate(plan, admission, runner=runner)
+            observed = status(root, plan.operation_id)
+            with patch("engineering_platform.installation_update_admission.status",
+                       return_value={**observed, "state": "UNKNOWN"}):
+                with self.assertRaisesRegex(InstallationUpdateAdmissionError, "operation is invalid"):
+                    admitted_candidate(plan, admission, runner=runner)
+
+    def test_rejects_missing_provenance_and_invalid_target_derivation_on_resume(self) -> None:
+        with TemporaryDirectory() as temporary:
+            _root, plan, _candidate, runner, _wheel = self._prepared(Path(temporary))
+            admission = admit(plan, runner=runner)
+            with patch("engineering_platform.installation_update_admission.prepared_record_provenance",
+                       side_effect=InstallationUpdateOperationError("unavailable")):
+                with self.assertRaisesRegex(InstallationUpdateAdmissionError, "operation is invalid"):
+                    admitted_candidate(plan, admission, runner=runner)
+            with InstallationUpdateSession(plan) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED"):
+                    session.advance(state, {"result": "PASS", "step": state})
+            with patch("engineering_platform.installation_update_admission.installation_update_activation.replacement_record",
+                       side_effect=InstallationUpdateActivationError("invalid")):
+                with self.assertRaisesRegex(InstallationUpdateAdmissionError, "target record is invalid"):
+                    admitted_candidate(plan, admission, runner=runner)
