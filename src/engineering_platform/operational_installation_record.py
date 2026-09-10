@@ -21,7 +21,9 @@ class OperationalInstallationRecordError(ValueError): pass
 
 
 def _validate(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != _FIELDS or value.get("schema_version") != 1:
+    if (not isinstance(value, dict) or set(value) != _FIELDS
+            or type(value.get("schema_version")) is not int
+            or value.get("schema_version") != 1):
         raise OperationalInstallationRecordError("operational installation record is invalid")
     required = ("installation_id", "version", "channel", "artifact_digest", "source_revision",
                 "interpreter", "desired_state", "observed_state")
@@ -38,6 +40,20 @@ def _validate(value: object) -> dict[str, object]:
                                       for key, item in value["roles"].items()):
         raise OperationalInstallationRecordError("operational installation record is invalid")
     return value
+
+
+def validate_record(value: Mapping[str, object]) -> dict[str, object]:
+    """Validate one closed record payload without reading or writing it.
+
+    Update admission retains an exact, canonical copy of the pre-activation
+    record so a reboot between the record compare-and-swap and the operation
+    journal transition can be recovered safely.  That evidence needs the
+    same closed-schema validation as an on-disk record, but must not require
+    a live filesystem lookup or mutate the record.
+    """
+    if not isinstance(value, Mapping):
+        raise OperationalInstallationRecordError("operational installation record is invalid")
+    return _validate(dict(value))
 
 
 def _write(path: Path, value: Mapping[str, object]) -> None:
@@ -85,15 +101,20 @@ def replace_for_update(data_root: Path, *, expected_version: str,
     stable across an in-place update.
     """
     root, path = Path(data_root).resolve(), Path(data_root).resolve() / FILENAME
+    candidate = validate_record(replacement)
     existing = load(root)
+    if candidate["installation_id"] != existing["installation_id"]:
+        raise OperationalInstallationRecordError("operational installation identity cannot change during update")
+    # A process may crash after this file has been atomically replaced but
+    # before the session can journal ``ACTIVATED``.  The exact replacement is
+    # therefore safe to acknowledge idempotently even though its former
+    # version/digest no longer satisfy the pre-activation CAS predicate.  No
+    # other stale request reaches the write below.
+    if candidate == existing:
+        return existing
     if (existing["version"] != expected_version
             or existing["artifact_digest"] != expected_artifact_digest):
         raise OperationalInstallationRecordError("operational installation record changed before update activation")
-    candidate = _validate(dict(replacement))
-    if candidate["installation_id"] != existing["installation_id"]:
-        raise OperationalInstallationRecordError("operational installation identity cannot change during update")
-    if candidate == existing:
-        return existing
     _write(path, candidate)
     return candidate
 

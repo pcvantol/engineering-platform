@@ -8,14 +8,17 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from engineering_platform.installation_update_admission import (
+    ExecutionAdmission,
     InstallationUpdateAdmissionError,
     admit,
+    admitted_candidate,
 )
+from engineering_platform.installation_update_activation import replacement_record
 from engineering_platform.installation_update_operation import InstallationUpdateSession, status
 from engineering_platform.installation_update_plan import prepare
 from engineering_platform.installation_update_preparation import prepare_candidate, staged_execution_plan
 from engineering_platform.operational_installation_lock import OperationalInstallationLock
-from engineering_platform.operational_installation_record import FILENAME, record
+from engineering_platform.operational_installation_record import FILENAME, load, record, replace_for_update
 
 
 class CandidateRunner:
@@ -87,6 +90,83 @@ class InstallationUpdateAdmissionTests(unittest.TestCase):
             self.assertEqual(journal["state"], "PREPARED")
             self.assertEqual(journal["execution_admission"], first.payload())
             self.assertEqual(Path(plan.artifact), Path(candidate.staged_artifact))
+
+    def test_v1_preactivation_admission_recovers_then_upgrades_to_complete_v2_evidence(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, candidate, runner, _wheel = self._prepared(Path(temporary))
+            first = admit(plan, runner=runner)
+            journal = root / "operations" / plan.operation_id / "operation.json"
+            payload = json.loads(journal.read_text(encoding="utf-8"))
+            legacy_payload = json.loads(json.dumps(first.payload()))
+            legacy_payload["schema_version"] = 1
+            legacy_payload["registered_installation"].pop("record")
+            payload["execution_admission"] = legacy_payload
+            payload["execution_admission_digest"] = "sha256:" + hashlib.sha256(
+                json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            journal.write_text(json.dumps(payload), encoding="utf-8")
+            legacy = ExecutionAdmission(
+                schema_version=1,
+                operation_id=first.operation_id,
+                plan_digest=first.plan_digest,
+                installation_id=first.installation_id,
+                registered_installation=legacy_payload["registered_installation"],
+                prepared_candidate=first.prepared_candidate,
+            )
+
+            self.assertEqual(admitted_candidate(plan, legacy, runner=runner), candidate)
+            upgraded = admit(plan, runner=runner)
+            self.assertEqual(upgraded.schema_version, 2)
+            self.assertEqual(status(root, plan.operation_id)["execution_admission"], upgraded.payload())
+
+    def test_v1_target_record_at_migrated_fails_closed(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, candidate, runner, _wheel = self._prepared(Path(temporary))
+            admission = admit(plan, runner=runner)
+            journal = root / "operations" / plan.operation_id / "operation.json"
+            payload = json.loads(journal.read_text(encoding="utf-8"))
+            legacy_payload = json.loads(json.dumps(admission.payload()))
+            legacy_payload["schema_version"] = 1
+            legacy_payload["registered_installation"].pop("record")
+            payload["execution_admission"] = legacy_payload
+            payload["execution_admission_digest"] = "sha256:" + hashlib.sha256(
+                json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            journal.write_text(json.dumps(payload), encoding="utf-8")
+            legacy = ExecutionAdmission(
+                schema_version=1,
+                operation_id=admission.operation_id,
+                plan_digest=admission.plan_digest,
+                installation_id=admission.installation_id,
+                registered_installation=legacy_payload["registered_installation"],
+                prepared_candidate=admission.prepared_candidate,
+            )
+            with InstallationUpdateSession(plan) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED"):
+                    session.advance(state, {"result": "PASS", "step": state})
+            original = load(root)
+            replace_for_update(
+                root,
+                expected_version=plan.current_version,
+                expected_artifact_digest=plan.current_digest,
+                replacement=replacement_record(plan, current=original, interpreter=candidate.interpreter),
+            )
+            with self.assertRaisesRegex(InstallationUpdateAdmissionError, "changed before execution admission"):
+                admitted_candidate(plan, legacy, runner=runner)
+
+    def test_rejects_boolean_execution_admission_schema_version(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, _candidate, runner, _wheel = self._prepared(Path(temporary))
+            admission = admit(plan, runner=runner)
+            journal = root / "operations" / plan.operation_id / "operation.json"
+            payload = json.loads(journal.read_text(encoding="utf-8"))
+            payload["execution_admission"]["schema_version"] = True
+            payload["execution_admission_digest"] = "sha256:" + hashlib.sha256(
+                json.dumps(payload["execution_admission"], sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            journal.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(InstallationUpdateAdmissionError, "operation is invalid"):
+                admitted_candidate(plan, admission, runner=runner)
 
     def test_rejects_concurrent_session_before_candidate_or_service_selection(self) -> None:
         with TemporaryDirectory() as temporary:

@@ -125,6 +125,30 @@ authorized recovery operation; an older wheel is never silently treated as a
 rollback. The source contracts do not run an update, construct a runtime,
 stop a service, or delete a machine artifact by themselves.
 
+The EP-specific update composition accepts a typed, durable OI-4c execution
+admission rather than a caller-supplied interpreter. It reopens the exact
+operation-owned staged candidate and its immutable journal binding before
+composition, before quiesce/backup, and at every target-runtime transition.
+Its v2 admission binds the complete closed pre-activation record, not merely
+its version/digest projection. A crash after the record compare-and-swap but
+before the `ACTIVATED` journal transition may resume only if the live record
+is field-for-field the deterministic target replacement: it preserves channel,
+roles and desired state and changes only exact target identity plus the
+defined `ACTIVATING`/pending lifecycle facts. That retry rechecks the exact
+candidate and service launcher, replays only the exact record CAS, and then
+journals `ACTIVATED`; every mixed or substituted target record fails closed.
+A legacy v1 admission can be extended to v2 only while `PREPARED` under the
+existing lock. It never reaches a mutating executor, preventing a legacy
+operation from activating a runtime that its evidence cannot recover.
+
+Before activation the current record must still equal the admitted provenance;
+after activation it must equal the exact admitted replacement record. A
+forged, stale, path-substituted, or tampered candidate therefore fails before
+the next service action. This is source-level enforcement only: the current
+activation primitive is still not the future system-domain provisioner, and it
+does not make an operation-root candidate a permanent runtime slot or prove
+cleanup, rollback, service cutover, or machine-wide uniqueness.
+
 `operational-update-assess` is a read-only precondition for a composition
 consumer. It first obtains the product-owned `ACTIVE`/`HEALTHY` readback, then
 re-hashes the exact named wheel against the candidate version, digest and

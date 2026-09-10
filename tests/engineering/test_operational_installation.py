@@ -233,9 +233,18 @@ class OperationalInstallationTests(unittest.TestCase):
             self.assertEqual(replace_for_update(root, expected_version="2.3.2",
                                                  expected_artifact_digest="sha256:" + "c" * 64,
                                                  replacement=replacement), replacement)
+            # A reboot can happen after the atomic record replacement and
+            # before the update journal records ACTIVATED.  Replaying the
+            # *exact* replacement is a no-op even with the former CAS facts.
+            self.assertEqual(
+                replace_for_update(root, expected_version="2.3.1",
+                                   expected_artifact_digest="sha256:" + "a" * 64,
+                                   replacement=replacement),
+                replacement,
+            )
             with self.assertRaisesRegex(OperationalInstallationRecordError, "changed before"):
                 replace_for_update(root, expected_version="2.3.1", expected_artifact_digest="sha256:" + "a" * 64,
-                                   replacement=replacement)
+                                   replacement={**replacement, "verification": {"result": "PENDING"}})
             with self.assertRaisesRegex(OperationalInstallationRecordError, "identity cannot change"):
                 replace_for_update(root, expected_version="2.3.2", expected_artifact_digest="sha256:" + "c" * 64,
                                    replacement={**replacement, "installation_id": "other"})
