@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "increment": "FOUR_REPO_CONSOLIDATION_PARKING_2026_09_10",
+  "documentary_only": true,
+  "execution_authorized": false,
+  "observed_date": "2026-09-10",
+  "base_main": "d329852b06f71a10e13b91dd1d1f87982ef6b90d",
+  "local_inventory": "USER_REPORTED_REPAIR_ONLY_FULL_INVENTORY_MISSING",
+  "protected_parked_pr": {"number":175,"head":"9ac3bd24e6842b4a1f2da356791261c9524f4893","disposition":"DRAFT_PARKED_NOT_QUALIFIED","first_create_after_assurance_proven":false},
+  "external_nodes": [],
+  "nodes": [
+    {"id":"E-LOCAL","disposition":"OPEN_EVIDENCE_GAP","depends_on":[],"acceptance":"Complete actual local worktree/ref/file/lease inventory; no automatic cleanup"},
+    {"id":"E-TEST-RESIDUAL","disposition":"PARKED","depends_on":[],"acceptance":"Compare 4026ad1 post-merge tests with actual current implementation and tests"},
+    {"id":"E-VERSION-RESIDUAL","disposition":"PARKED","depends_on":[],"acceptance":"Reconcile prepared/applied receipt; no stale projection merge or new version allocation"},
+    {"id":"E-PR-STRATEGY","disposition":"PARKED_DECISION_REQUIRED","depends_on":[],"acceptance":"Keep 175 unchanged now; later explicit proof strategy that cannot rewrite early publication"},
+    {"id":"E-RUNTIME","disposition":"PARKED_CAPABILITY_UNVERIFIED","depends_on":[],"acceptance":"Existing supported isolated exact-wheel route with real admission/authority; no primary update or new infrastructure implicitly authorized"},
+    {"id":"E-QUALIFY","disposition":"PARKED","depends_on":["E-RUNTIME","E-PR-STRATEGY"],"acceptance":"Frozen candidate/profile, actual scoped authority, durable validation and independent Q/S; original budget retained"},
+    {"id":"E-PUBLICATION-PROOF","disposition":"PARKED","depends_on":["E-QUALIFY"],"acceptance":"Correct host gate/readback/recovery evidence under chosen strategy; 175 not proof of first-create ordering"},
+    {"id":"E-MERGE","disposition":"PARKED_SEPARATE_AUTHORITY","depends_on":["E-PUBLICATION-PROOF"],"acceptance":"Explicit level-B selection, exact-head qualification, protected merge and main ancestry; no merge now"},
+    {"id":"E-PRODUCER","disposition":"PARKED","depends_on":["E-MERGE"],"acceptance":"Separate actual artifact/installed capability qualification before Forge consumer claims; not the full installer programme"},
+    {"id":"E-LATER","disposition":"PARKED","depends_on":[],"acceptance":"Existing RL/OI/HY/POL/SA/Agent graphs retained; no new blanket first-canary prerequisite"}
+  ]
+}
