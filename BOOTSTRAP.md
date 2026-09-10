@@ -2,6 +2,17 @@
 
 **Status:** Canonical standalone repository onboarding
 
+## Current pickup checkpoint — consolidation and parking, 10 September 2026
+
+Read the [owning consolidation roadmap](docs/development/CONSOLIDATION_PARKING_2026_09_10.md)
+and [documentary DAG](docs/development/CONSOLIDATION_PARKING_2026_09_10_DAG.json).
+Product work is PARKED. Keep #175 draft and its head untouched; no merge,
+close/recreate, new review/run, installer or primary-runtime update is selected.
+The documentation task does not activate any previous qualification permission.
+Local worktree counts/paths and active ownership remain incomplete evidence.
+Do not execute the generic synchronization example below in a dirty or owned
+worktree. Actual preservation, ownership and exact-ref checks come first.
+
 Read the committed generic development projection in `docs/ai-development/`
 and `ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION.md` before the EP-specific
 architecture, provenance, and qualification sources below. The projection is
