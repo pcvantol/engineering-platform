@@ -4,20 +4,47 @@
   "documentary_only": true,
   "execution_authorized": false,
   "observed_date": "2026-09-10",
-  "base_main": "d329852b06f71a10e13b91dd1d1f87982ef6b90d",
-  "local_inventory": "USER_REPORTED_REPAIR_ONLY_FULL_INVENTORY_MISSING",
-  "protected_parked_pr": {"number":175,"head":"9ac3bd24e6842b4a1f2da356791261c9524f4893","disposition":"DRAFT_PARKED_NOT_QUALIFIED","first_create_after_assurance_proven":false},
+  "base_main": "4145429c3447728ce8a23c055d8d0b1451107759",
+  "local_inventory": "USER_REPORTED_AND_LOCAL_READBACK_CLEANUP_COMPLETE",
+  "cleanup_evidence": {
+    "baseline_worktrees": 1,
+    "local_feature_branches": 0,
+    "stashes": 0,
+    "unpreserved_wip": 0
+  },
+  "protected_parked_pr": {
+    "number": 175,
+    "state": "OPEN",
+    "draft": true,
+    "head": "9ac3bd24e6842b4a1f2da356791261c9524f4893",
+    "disposition": "PARKED_NOT_QUALIFIED",
+    "first_create_after_assurance_proven": false,
+    "durable_current_managed_lifecycle_qualified": false
+  },
+  "durable_remote_refs": [
+    {"ref":"codex/ep-operational-installation-record-v1","sha":"4026ad1e671ad86d23dc9f8c56b7c4d5ddeb8819","disposition":"PARKED_REMOTE"},
+    {"ref":"codex/ep-version-operation-reconciliation-v1","sha":"63bb8f14bbbd176109f4da1d20e2d96dc3081125","disposition":"PARKED_REMOTE"},
+    {"ref":"parking/2026-09-10/ep-local-stash-residual","sha":"2982ff8ca42085e09eecf92de38e37bb71d64eec","disposition":"PARKED_UNREVIEWED_SOURCE","qualification":"NOT_QUALIFIED","delivery":"NOT_DELIVERY"},
+    {"ref":"parking/2026-09-10/ep-release-2.3.1-prior-tip","sha":"3c934ee2b1c432463c140e7dc8cee007a8a46531","disposition":"HISTORICAL_PROVENANCE_PRESERVED"},
+    {"ref":"release-2.3.1","sha":"2ff4ee7441b8d8bade6c39e2c52dd62187af87ef","disposition":"RELEASE_HISTORY"}
+  ],
+  "qualification_distinctions": {
+    "hosted_source_tests_are_durable_current_managed_lifecycle_qualification": false,
+    "existing_draft_proves_first_draft_creation_after_assurance": false
+  },
   "external_nodes": [],
   "nodes": [
-    {"id":"E-LOCAL","disposition":"OPEN_EVIDENCE_GAP","depends_on":[],"acceptance":"Complete actual local worktree/ref/file/lease inventory; no automatic cleanup"},
-    {"id":"E-TEST-RESIDUAL","disposition":"PARKED","depends_on":[],"acceptance":"Compare 4026ad1 post-merge tests with actual current implementation and tests"},
-    {"id":"E-VERSION-RESIDUAL","disposition":"PARKED","depends_on":[],"acceptance":"Reconcile prepared/applied receipt; no stale projection merge or new version allocation"},
-    {"id":"E-PR-STRATEGY","disposition":"PARKED_DECISION_REQUIRED","depends_on":[],"acceptance":"Keep 175 unchanged now; later explicit proof strategy that cannot rewrite early publication"},
-    {"id":"E-RUNTIME","disposition":"PARKED_CAPABILITY_UNVERIFIED","depends_on":[],"acceptance":"Existing supported isolated exact-wheel route with real admission/authority; no primary update or new infrastructure implicitly authorized"},
-    {"id":"E-QUALIFY","disposition":"PARKED","depends_on":["E-RUNTIME","E-PR-STRATEGY"],"acceptance":"Frozen candidate/profile, actual scoped authority, durable validation and independent Q/S; original budget retained"},
-    {"id":"E-PUBLICATION-PROOF","disposition":"PARKED","depends_on":["E-QUALIFY"],"acceptance":"Correct host gate/readback/recovery evidence under chosen strategy; 175 not proof of first-create ordering"},
+    {"id":"E-LOCAL","disposition":"RESOLVED","depends_on":[],"acceptance":"One baseline main worktree, zero local feature branches, zero stashes and zero unpreserved WIP"},
+    {"id":"E-TEST-RESIDUAL","disposition":"PARKED_REMOTE","depends_on":[],"ref":"codex/ep-operational-installation-record-v1","sha":"4026ad1e671ad86d23dc9f8c56b7c4d5ddeb8819","acceptance":"Compare the post-113 guard tests with future owning main before any selective delivery or retirement"},
+    {"id":"E-VERSION-RESIDUAL","disposition":"PARKED_REMOTE","depends_on":[],"ref":"codex/ep-version-operation-reconciliation-v1","sha":"63bb8f14bbbd176109f4da1d20e2d96dc3081125","acceptance":"Reconcile the prepared/applied receipt discrepancy against actual operation evidence before any delivery or retirement"},
+    {"id":"E-LOCAL-STASH-RESIDUAL","disposition":"PARKED_UNREVIEWED_SOURCE","depends_on":[],"ref":"parking/2026-09-10/ep-local-stash-residual","sha":"2982ff8ca42085e09eecf92de38e37bb71d64eec","acceptance":"Classify all preserved residual bytes against future owning main before any delivery; parking is NOT_QUALIFIED / NOT_DELIVERY."},
+    {"id":"E-RELEASE-PRIOR-TIP","disposition":"HISTORICAL_PROVENANCE_PRESERVED","depends_on":[],"ref":"parking/2026-09-10/ep-release-2.3.1-prior-tip","sha":"3c934ee2b1c432463c140e7dc8cee007a8a46531","acceptance":"Retain provenance only; this node is not active product work and must not become an execution predecessor."},
+    {"id":"E-PR-STRATEGY","disposition":"PARKED_DECISION_REQUIRED","depends_on":[],"acceptance":"Keep 175 unchanged now; later choose an explicit proof strategy without rewriting its early publication"},
+    {"id":"E-RUNTIME","disposition":"PARKED_CAPABILITY_UNVERIFIED","depends_on":[],"acceptance":"Prove a supported isolated exact-wheel route with real admission and authority; no primary update or new infrastructure is implied"},
+    {"id":"E-QUALIFY","disposition":"PARKED","depends_on":["E-RUNTIME","E-PR-STRATEGY"],"acceptance":"Frozen candidate/profile, actual scoped authority, durable current validation and independent Quality/Security with original budget retained"},
+    {"id":"E-PUBLICATION-PROOF","disposition":"PARKED","depends_on":["E-QUALIFY"],"acceptance":"Correct host gate, readback and recovery evidence under the selected strategy; 175 is not proof of first-create ordering"},
     {"id":"E-MERGE","disposition":"PARKED_SEPARATE_AUTHORITY","depends_on":["E-PUBLICATION-PROOF"],"acceptance":"Explicit level-B selection, exact-head qualification, protected merge and main ancestry; no merge now"},
-    {"id":"E-PRODUCER","disposition":"PARKED","depends_on":["E-MERGE"],"acceptance":"Separate actual artifact/installed capability qualification before Forge consumer claims; not the full installer programme"},
-    {"id":"E-LATER","disposition":"PARKED","depends_on":[],"acceptance":"Existing RL/OI/HY/POL/SA/Agent graphs retained; no new blanket first-canary prerequisite"}
+    {"id":"E-PRODUCER","disposition":"PARKED","depends_on":[],"acceptance":"Later Forge readiness tests only the actually required producer capability; this closure does not require all of 175 or all installer work"},
+    {"id":"E-LATER","disposition":"PARKED","depends_on":[],"acceptance":"Existing installer, release, hygiene, policy, Agent and subagent graphs remain parked and are not blanket first-Forge-E2E prerequisites"}
   ]
 }

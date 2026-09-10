@@ -9,14 +9,17 @@ and [documentary DAG](docs/development/CONSOLIDATION_PARKING_2026_09_10_DAG.json
 Product work is PARKED. Keep #175 draft and its head untouched; no merge,
 close/recreate, new review/run, installer or primary-runtime update is selected.
 The documentation task does not activate any previous qualification permission.
-Local worktree counts/paths and active ownership remain incomplete evidence.
-Do not execute the generic synchronization example below in a dirty or owned
-worktree. Actual preservation, ownership and exact-ref checks come first.
+Physical local cleanup is complete: the pre-documentation baseline had one
+`main` worktree, no local feature branches, no stashes and no unpreserved WIP.
+The consolidation record preserves the remaining remote source/provenance refs
+by exact SHA. Do not execute the generic synchronization example below in a
+dirty or owned worktree.
 
-Read the committed generic development projection in `docs/ai-development/`
-and `ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION.md` before the EP-specific
-architecture, provenance, and qualification sources below. The projection is
-committed local evidence; it does not dynamically load another repository.
+Read the committed generic development projection and
+[`ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION.md`](docs/ai-development/ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION.md)
+in `docs/ai-development/` before the EP-specific architecture, provenance, and
+qualification sources below. The projection is committed local evidence; it
+does not dynamically load another repository.
 
 Run repository synchronization from the intended Engineering Platform checkout
 before qualification or implementation work:
@@ -38,7 +41,7 @@ history-preserved source context, see
 
 For local host operation and qualification, see
 [`docs/development/LOCAL_AGENT_RUNNER.md`](docs/development/LOCAL_AGENT_RUNNER.md)
-and [`docs/engineering/ENGINEERING_QUALIFICATION.md`](docs/engineering/ENGINEERING_QUALIFICATION.md).
+and [`src/engineering_platform/ENGINEERING_QUALIFICATION.md`](src/engineering_platform/ENGINEERING_QUALIFICATION.md).
 
 Validate the projection offline with:
 

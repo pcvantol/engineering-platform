@@ -1,15 +1,17 @@
 # EP consolidation and parked repair / installation work
 
-Increment: `FOUR_REPO_CONSOLIDATION_PARKING_2026_09_10`, recorded 2026-09-10.
+Increment: `FOUR_REPO_CONSOLIDATION_PARKING_2026_09_10`, reconciled 2026-09-10.
 Scoped record under [EP roadmap](ENGINEERING_PLATFORM_ROADMAP.md).
 [Documentary DAG](CONSOLIDATION_PARKING_2026_09_10_DAG.json).
 
 ## Current disposition
 
-The owner requests consolidation and parking, not execution of the next task.
+Physical local repository cleanup is complete; retained remote product/source
+and provenance refs remain parked. This is consolidation and parking, not
+execution of the next task.
 Keep PR #175 OPEN/DRAFT/PARKED and do not alter its head, mark ready, merge,
 close/recreate it, dispatch reviews/runs, or change the primary installation.
-This NO_BUMP documentation is a separate change from that repair. It becomes
+This `NO_BUMP` documentation is a separate change from that repair. It becomes
 canonical through its own protected merge and does not qualify #175.
 
 PARKED is planning state, not cancellation, runtime dismissal, stopped-process
@@ -23,10 +25,13 @@ Missing capabilities are recorded, not implemented as a side effect.
 SOURCE_VERIFIED: GitHub main/heads/PR metadata observed 2026-09-10.
 HOSTED_QUALIFICATION: actual Actions conclusions on the exact PR head.
 USER_REPORTED: the owner's two EP architecture reports and detailed closure
-checklist supplied in this task. No direct Mac/CENTRAL access was available;
-local tests and runtime claims remain attributed rather than promoted.
+checklist supplied in this task. LOCAL_READBACK_VERIFIED: direct Git checkout,
+worktree, branch and stash readback before the temporary documentation worktree
+was created. No runtime/CENTRAL inspection or qualification was performed;
+reported tests and runtime claims remain attributed rather than promoted.
 
-- Main: `d329852b06f71a10e13b91dd1d1f87982ef6b90d`.
+- Pre-documentation main: `4145429c3447728ce8a23c055d8d0b1451107759`,
+  equal locally and on `origin/main`.
 - Repair branch: `codex/ep-managed-post-assurance-publication-closure-v1`.
 - Remote/PR head: `9ac3bd24e6842b4a1f2da356791261c9524f4893`.
 - Historical original: `7c347f887ddd01b15f70234a324c2de2fd9844a2`.
@@ -36,48 +41,46 @@ local tests and runtime claims remain attributed rather than promoted.
 
 [Heads](https://api.github.com/repos/pcvantol/engineering-platform/git/matching-refs/heads/) ·
 [PR #175](https://github.com/pcvantol/engineering-platform/pull/175) ·
-[main-to-candidate comparison](https://github.com/pcvantol/engineering-platform/compare/d329852b06f71a10e13b91dd1d1f87982ef6b90d...9ac3bd24e6842b4a1f2da356791261c9524f4893).
+[original repair-base-to-candidate comparison](https://github.com/pcvantol/engineering-platform/compare/d329852b06f71a10e13b91dd1d1f87982ef6b90d...9ac3bd24e6842b4a1f2da356791261c9524f4893).
 The pinned comparison is 21 commits ahead/0 behind across 28 files. This is
 retained source, not a merged or installed repair. The new documentation PR is
 bookkeeping, not an additional implementation lane or duplicate of #175.
 
-## Every retained remote non-main ref
+## Every retained durable remote non-main ref
 
 | Ref / exact tip | Assessment and disposition |
 | --- | --- |
 | codex/ep-managed-post-assurance-publication-closure-v1 / `9ac3bd24e6842b4a1f2da356791261c9524f4893` | PARKED_NOT_QUALIFIED; retain #175 and all source; do not merge or delete |
-| codex/ep-operational-installation-record-v1 / `4026ad1e671ad86d23dc9f8c56b7c4d5ddeb8819` | PARKED_TEST_RESIDUAL. #113 merged head `13900601a5ef7f84ec074410e0d51087d83e8214`; this tip adds a later guard-test commit. Do not assume the entire branch was delivered with #113. Compare residual assertions against current test suite before selective delivery or retirement |
-| codex/ep-version-operation-reconciliation-v1 / `63bb8f14bbbd176109f4da1d20e2d96dc3081125` | PARKED_RECEIPT_RESIDUAL. #125 merged earlier head; #126 closed unmerged. Branch says version-operation state applied while pinned main retains prepared. Reconcile actual operation evidence; do not merge stale version projections, fabricate a receipt or allocate another version |
-| release-2.3.1 / `2ff4ee7441b8d8bade6c39e2c52dd62187af87ef` | RETAIN_RELEASE_HISTORY. Divergent release identity is not a feature-cleanup candidate; do not delete or rewrite published identity |
+| codex/ep-operational-installation-record-v1 / `4026ad1e671ad86d23dc9f8c56b7c4d5ddeb8819` | PARKED_REMOTE test residual. #113 merged head `13900601a5ef7f84ec074410e0d51087d83e8214`; this tip adds a later guard-test commit. Compare residual assertions against future owning main before any selective delivery or retirement |
+| codex/ep-version-operation-reconciliation-v1 / `63bb8f14bbbd176109f4da1d20e2d96dc3081125` | PARKED_REMOTE version-operation residual. #125 merged earlier head; #126 closed unmerged. Reconcile the prepared/applied discrepancy against actual operation evidence before any delivery or retirement |
+| parking/2026-09-10/ep-local-stash-residual / `2982ff8ca42085e09eecf92de38e37bb71d64eec` | PARKED_UNREVIEWED_SOURCE / NOT_QUALIFIED / NOT_DELIVERY. Classify all preserved residual bytes against future owning main before any delivery |
+| parking/2026-09-10/ep-release-2.3.1-prior-tip / `3c934ee2b1c432463c140e7dc8cee007a8a46531` | HISTORICAL_PROVENANCE_PRESERVED only; not active product work and not an execution predecessor |
+| release-2.3.1 / `2ff4ee7441b8d8bade6c39e2c52dd62187af87ef` | RELEASE_HISTORY. Divergent release identity is not a feature-cleanup candidate; do not delete or rewrite published identity |
 
 Evidence: [#113](https://github.com/pcvantol/engineering-platform/pull/113),
 [post-merge test commit](https://github.com/pcvantol/engineering-platform/commit/4026ad1e671ad86d23dc9f8c56b7c4d5ddeb8819),
 [#125](https://github.com/pcvantol/engineering-platform/pull/125),
 [#126](https://github.com/pcvantol/engineering-platform/pull/126).
-The operational-record branch was 2 ahead/61 behind and version branch 1 ahead/49
-behind at this snapshot. Those counts describe ancestry, not semantic equivalence.
+The earlier operational-record/version ancestry counts describe ancestry, not
+semantic equivalence. All full tips above were fetched/read back before this
+reconciliation. `release-2.3.1 = RELEASE_HISTORY`.
 
-## Local inventory remains partial
+## Local cleanup is resolved
 
-The owner supplied detailed EP repair/DoD evidence, but not a complete EP
-worktree/branch inventory. Counts, full paths, local tips, stashes, untracked/
-ignored content, locks and live run/lease ownership remain OPEN_EVIDENCE_GAP.
-The known repair checkout and .engineering symlink must be retained. Inspect
-symlink metadata without following it into primary runtime data. No Mac
-checkout, branch, worktree, service or database is changed by this record.
-
-A later cleanup needs current exact refs/paths, complete content preservation,
-PR-head/post-merge-commit comparison, no conflicting owner and verified recovery
-material. Clean status, a merged PR or squash ancestry alone is insufficient.
-No reset/stash/global prune, force removal or publishing private runtime files.
-A Git bundle alone does not preserve untracked/uncommitted/ignored bytes.
+USER_REPORTED and LOCAL_READBACK_VERIFIED before the temporary documentation
+worktree: one local `main` worktree, zero local feature branches, zero stashes
+and zero unpreserved WIP. Local `main` equalled `origin/main`. The durable
+residuals are remote refs, not active local development. This documentation
+delivery creates one temporary isolated worktree/branch and removes it after
+protected merge; it does not touch #175, the parked refs, runtime or CENTRAL.
 
 ## #175: historical parking publication is not lifecycle qualification
 
-SOURCE_VERIFIED: #175 was created OPEN/DRAFT at `2026-09-10T07:46:09Z`, base
-main and head `9ac3bd24...`. Its body explicitly says the candidate is paused
-and not qualified through the required product route. The owner confirms it
-was opened on explicit request as a visible parking place.
+SOURCE_VERIFIED: #175 remains OPEN, DRAFT and PARKED_NOT_QUALIFIED at exact head
+`9ac3bd24e6842b4a1f2da356791261c9524f4893`. It was created at
+`2026-09-10T07:46:09Z`; its body says the candidate is paused and not qualified
+through the required product route. The owner confirms it was opened on
+explicit request as a visible parking place.
 
 Therefore:
 
@@ -94,6 +97,10 @@ Therefore:
 The original strict first-publication DoD remains unsatisfied by this PR.
 Source delivery, existing-PR qualification and fresh publication-path proof
 must be reported separately, not silently substituted for one another.
+
+Explicitly: `#175 hosted/source tests != durable current Managed lifecycle
+qualification`, and `#175 existing draft != proof that first draft creation
+happened after assurance`.
 
 ## Technical evidence and outstanding assurance
 
@@ -130,18 +137,20 @@ capability-level prevention of every HTTP/credential remote-write route.
 
 ## Parked decisions and documentary DAG
 
-| Node | Open point / future acceptance |
+| Node | Disposition and retained future acceptance |
 | --- | --- |
-| E-LOCAL | Complete host-local inventory and exact per-target preservation/ownership evidence |
-| E-TEST-RESIDUAL | Reconcile post-#113 guard tests; retain any genuine residual without merging obsolete base |
-| E-VERSION-RESIDUAL | Resolve prepared/applied version receipt discrepancy against actual operation evidence |
-| E-PR-STRATEGY | Keep #175 draft now; later select existing-PR vs fresh-publication proof, with auditable scope and no rewritten history |
-| E-RUNTIME | Prove a supported isolated candidate-wheel DEVELOPMENT route; primary 2.3.1 stays untouched; no new infrastructure by implication |
-| E-QUALIFY | Freeze exact SHA/version/profile and applicable authority; one real Managed run, durable explicit current validation, separate independent Q/S, full evidence and unchanged shared repair budget |
-| E-PUBLICATION-PROOF | Host decision/readback/recovery proof under the selected strategy; do not count #175 as first-create-after-assurance |
-| E-MERGE | Separate level-B decision, applicable protected checks/authorization and merge/main ancestry; not permitted by draft-only authority |
-| E-PRODUCER | Separate qualified exact-artifact/installed producer evidence required by later Forge E2E |
-| E-LATER | Park installer/provisioner/update/release productization, Project Hygiene, policy UI, Agent fleet and subagent optimization under their existing graphs |
+| E-LOCAL | RESOLVED — one local main worktree, zero feature branches/stashes/unpreserved WIP |
+| E-TEST-RESIDUAL | PARKED_REMOTE at `4026ad1e671ad86d23dc9f8c56b7c4d5ddeb8819`; reconcile post-#113 guard tests against future owning main |
+| E-VERSION-RESIDUAL | PARKED_REMOTE at `63bb8f14bbbd176109f4da1d20e2d96dc3081125`; resolve the prepared/applied discrepancy against actual operation evidence |
+| E-LOCAL-STASH-RESIDUAL | PARKED_UNREVIEWED_SOURCE at `2982ff8ca42085e09eecf92de38e37bb71d64eec`; classify all preserved residual bytes against future owning main before any delivery; parking is NOT_QUALIFIED / NOT_DELIVERY |
+| E-RELEASE-PRIOR-TIP | HISTORICAL_PROVENANCE_PRESERVED at `3c934ee2b1c432463c140e7dc8cee007a8a46531`; provenance only, never active product work or an execution predecessor |
+| E-PR-STRATEGY | PARKED_DECISION_REQUIRED — keep #175 draft now; later select existing-PR versus fresh-publication proof without rewriting history |
+| E-RUNTIME | PARKED_CAPABILITY_UNVERIFIED — prove a supported isolated candidate-wheel DEVELOPMENT route; primary 2.3.1 stays untouched |
+| E-QUALIFY | PARKED — freeze exact SHA/version/profile and applicable authority; one real Managed run, durable current validation, separate independent Q/S and unchanged shared repair budget |
+| E-PUBLICATION-PROOF | PARKED — host decision/readback/recovery proof under the selected strategy; #175 is not first-create-after-assurance proof |
+| E-MERGE | PARKED_SEPARATE_AUTHORITY — separate level-B decision, protected checks/authorization and merge/main ancestry |
+| E-PRODUCER | PARKED — later Forge readiness may test only the actually required producer capability; this closure does not decide that all of #175 or all installer work is required |
+| E-LATER | PARKED — installer/provisioner/update/release productization, Project Hygiene, policy UI, Agent fleet and subagent optimization remain under existing graphs |
 
 USER_REPORTED primary runtime is 2.3.1 and lacks the required typed adoption/
 strict durable validation/readback behavior. Earlier authorization for an
@@ -175,5 +184,7 @@ No broad credentialbroker/network redesign, installer work or optimization is
 started by this record. Cross-product pickup remains indexed by
 [Forge](https://github.com/pcvantol/forge/blob/main/docs/roadmap/CONSOLIDATION_PARKING_2026_09_10.md).
 
-No source repair, primary runtime/CENTRAL, grant, budget, release, installation,
-branch deletion or canary was changed. Physical consolidation is incomplete.
+No source repair, #175 head/state, primary runtime/CENTRAL, grant, budget,
+release, installation, qualification or canary was changed. Physical local
+consolidation is complete; every remaining durable source/provenance ref and
+product decision is explicitly parked above.
