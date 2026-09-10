@@ -1643,6 +1643,16 @@ class EngineeringRunner:
         while True:
             recovery = self._recovery_state(state.run_id)
             if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_AVAILABLE":
+                if state.next_action == "publish_first_implementation_pull_request":
+                    # Publication is externally observable.  Unlike an
+                    # implementation/repair turn it must never automatically
+                    # launch attempt two: the publication gate performs exact
+                    # branch/base/SHA readback before any later create action.
+                    raise CodexInvocationError(
+                        "First-publication acknowledgement is unresolved.",
+                        "Publication recovery requires exact GitHub readback before another dispatch.",
+                        next_action="NONE", terminal_condition="provider_turn_interrupted",
+                    )
                 precheck = self._provider_recovery_preflight(state)
                 if precheck is not None:
                     mark_precheck_failed(
