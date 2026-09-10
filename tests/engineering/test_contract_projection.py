@@ -17,6 +17,8 @@ from engineering_platform.storage import (
     open_storage,
     record_run_qualification_context,
     record_submission,
+    record_validation_command_invocation,
+    record_validation_command_terminal,
     record_validation_control_result,
     record_validation_profile,
     record_run_qualification_snapshot,
@@ -98,6 +100,17 @@ class ContractProjectionTests(unittest.TestCase):
             record_validation_profile(
                 root, run_id=state.run_id, selected_validation_tier="DOCUMENTATION", validation_profile_version="1.0",
                 required_validation_controls=("git_diff_check",), recorded_at="2026-08-28T00:00:00+00:00",
+                candidate_sha="a" * 40, currentness=1,
+            )
+            record_validation_command_invocation(
+                root, run_id=state.run_id, validation_id="git_diff_check",
+                command_id="contract-diff", category="repository",
+                control_identity="git diff --check", required_for_profile=True,
+                started_at="2026-08-28T00:00:00+00:00", currentness=1,
+            )
+            record_validation_command_terminal(
+                root, run_id=state.run_id, command_id="contract-diff",
+                completed_at="2026-08-28T00:00:01+00:00", exit_code=0,
             )
             record_validation_control_result(
                 root, run_id=state.run_id, validation_id="git_diff_check", category="repository",

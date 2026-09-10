@@ -2,8 +2,12 @@
 from __future__ import annotations
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -43,6 +47,110 @@ class ValidationControlLauncher:
 
 class ValidationProfileResolutionError(ValueError):
     """The selected run profile is absent or does not match this registry."""
+
+
+def validation_profile_identity(
+    *, candidate_sha: str, currentness: int, selected_validation_tier: str,
+    validation_profile_version: str, profile_reference: str,
+    profile_selection_source: str, required_validation_controls: tuple[str, ...],
+    control_bindings: tuple[dict[str, object], ...],
+) -> tuple[dict[str, object], str]:
+    """Build the canonical candidate-bound identity of one validation pass."""
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", candidate_sha) is None
+        or isinstance(currentness, bool) or not isinstance(currentness, int) or currentness < 0
+        or not all(isinstance(value, str) and value for value in (
+            selected_validation_tier, validation_profile_version,
+            profile_reference, profile_selection_source,
+        ))
+        or not required_validation_controls
+        or len(set(required_validation_controls)) != len(required_validation_controls)
+        or any(not isinstance(control, str) or not control for control in required_validation_controls)
+        or len(control_bindings) != len(required_validation_controls)
+        or any(not isinstance(binding, dict) for binding in control_bindings)
+        or tuple(binding.get("validation_id") for binding in control_bindings) != required_validation_controls
+    ):
+        raise ValidationProfileResolutionError("Validation profile identity is invalid.")
+    identity: dict[str, object] = {
+        "candidate_sha": candidate_sha,
+        "currentness": currentness,
+        "selected_validation_tier": selected_validation_tier,
+        "validation_profile_version": validation_profile_version,
+        "profile_reference": profile_reference,
+        "profile_selection_source": profile_selection_source,
+        "required_validation_controls": list(required_validation_controls),
+        "control_bindings": list(control_bindings),
+    }
+    digest = "sha256:" + hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return identity, digest
+
+
+def _valid_terminal_times(started_at: object, ended_at: object) -> bool:
+    if not isinstance(started_at, str) or not started_at or not isinstance(ended_at, str) or not ended_at:
+        return False
+    try:
+        start = datetime.fromisoformat(started_at)
+        end = datetime.fromisoformat(ended_at)
+    except ValueError:
+        return False
+    return start.tzinfo is not None and end.tzinfo is not None and end >= start
+
+
+def strict_required_controls_pass(
+    validation_context: object, *, candidate_sha: str, currentness: int,
+) -> bool:
+    """Require exact terminal receipts for every profile-owned required control."""
+    if not isinstance(validation_context, dict):
+        return False
+    try:
+        identity, digest = validation_profile_identity(
+            candidate_sha=candidate_sha,
+            currentness=currentness,
+            selected_validation_tier=validation_context["selected_validation_tier"],
+            validation_profile_version=validation_context["validation_profile_version"],
+            profile_reference=validation_context["profile_reference"],
+            profile_selection_source=validation_context["profile_selection_source"],
+            required_validation_controls=validation_context["required_validation_controls"],
+            control_bindings=validation_context["control_bindings"],
+        )
+    except (KeyError, TypeError, ValidationProfileResolutionError):
+        return False
+    if (
+        validation_context.get("candidate_sha") != candidate_sha
+        or validation_context.get("currentness") != currentness
+        or validation_context.get("profile_digest") != digest
+        or validation_context.get("profile_currentness_conflict") is True
+    ):
+        return False
+    required = tuple(identity["required_validation_controls"])
+    bindings = tuple(identity["control_bindings"])
+    controls = validation_context.get("controls")
+    if not isinstance(controls, dict):
+        return False
+    binding_by_id = {binding.get("validation_id"): binding for binding in bindings}
+    for validation_id in required:
+        binding = binding_by_id.get(validation_id)
+        control = controls.get(validation_id)
+        if not isinstance(binding, dict) or binding.get("required") is not True or not isinstance(control, dict):
+            return False
+        if (
+            control.get("validation_id") != validation_id
+            or control.get("required_for_profile") is not True
+            or control.get("execution_status") != "EXECUTED"
+            or control.get("result") != "PASS"
+            or control.get("exit_code") != 0
+            or control.get("currentness") != currentness
+            or not isinstance(control.get("command_id"), str)
+            or not control.get("command_id")
+            or control.get("evidence_authority") != "command_terminal"
+            or control.get("category") != binding.get("category")
+            or control.get("control_identity") != binding.get("control_identity")
+            or not _valid_terminal_times(control.get("started_at"), control.get("ended_at"))
+        ):
+            return False
+    return True
 
 
 def _python_command(*arguments: str) -> tuple[str, ...]:
@@ -144,6 +252,44 @@ def profile_control_bindings(profile: "ValidationProfile") -> tuple[dict[str, ob
     if any(binding is None for binding in bindings):
         raise ValidationProfileResolutionError("Selected validation profile launcher is unavailable.")
     return tuple(binding for binding in bindings if binding is not None)
+
+
+def matching_control_binding(
+    command: str, control_bindings: tuple[dict[str, object], ...],
+) -> dict[str, object] | None:
+    """Resolve only an exact, standalone profile-owned launcher command.
+
+    Python interpreter paths are normalized because the registry snapshots the
+    host interpreter while provider telemetry commonly reports ``python3``.
+    Arguments, shell composition and environment overrides remain exact.
+    """
+    if not isinstance(command, str) or not command or "\n" in command or "\r" in command:
+        return None
+    try:
+        observed = shlex.split(command)
+    except ValueError:
+        return None
+    if not observed or any(token in {"&&", "||", ";", "|"} for token in observed):
+        return None
+
+    def normalized(tokens: list[str]) -> tuple[str, ...]:
+        values = list(tokens)
+        if values and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(values[0]).name):
+            values[0] = "python"
+        return tuple(values)
+
+    observed_identity = normalized(observed)
+    matches = []
+    for binding in control_bindings:
+        expected = binding.get("command") if isinstance(binding, dict) else None
+        if (
+            isinstance(expected, list)
+            and expected
+            and all(isinstance(token, str) and token for token in expected)
+            and normalized(expected) == observed_identity
+        ):
+            matches.append(binding)
+    return matches[0] if len(matches) == 1 else None
 
 @dataclass(frozen=True)
 class ValidationProfile:

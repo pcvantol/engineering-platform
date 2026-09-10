@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with: {python-version: '3.12'}
+        with: {python-version: '3.14'}
       - name: Validate committed offline projection
         run: python3 docs/ai-development/validate_projection.py --profile engineering-platform --source-commit 6ec3b443c3ab3bdf76c626c2046d3778db570eb0 --extension-identity ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION
   validation-profile:
@@ -56,6 +56,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with: {fetch-depth: 0}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.14'}
       - id: profile
         run: PYTHONPATH=src python3 -m engineering_platform.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --branch "${{ github.head_ref || github.ref_name }}" --github-output "$GITHUB_OUTPUT"
   validate:
@@ -67,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with: {python-version: '3.12'}
+        with: {python-version: '3.14'}
       - name: Build and install committed canonical Engineering Platform wheel
         run: |
           python3 -m pip install build coverage
@@ -169,7 +171,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with: {python-version: '3.12'}
+        with: {python-version: '3.14'}
       - name: Install Engineering Platform runtime
         run: python3 -m pip install .
       - name: Install browser validation dependencies
@@ -216,7 +218,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with: {python-version: '3.12'}
+        with: {python-version: '3.14'}
       - name: Verify standalone qualification evidence
         run: |
           python -m pip install build .

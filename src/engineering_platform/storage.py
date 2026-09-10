@@ -22,7 +22,7 @@ import sys
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
 CENTRAL_OPERATIONAL_DATABASE_FILENAME = "epdata.sqlite"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 41
+ENGINEERING_STORAGE_SCHEMA_VERSION = 42
 STORE_AUTHORITY_POINTER = "store-authority.json"
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
@@ -1174,6 +1174,24 @@ def _schema_v41(connection: sqlite3.Connection) -> None:
         raise EngineeringStorageError("EP consumer credential migration source is absent.")
 
 
+def _schema_v42(connection: sqlite3.Connection) -> None:
+    """Persist candidate-bound validation profile identities per repair ordinal."""
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_validation_profile_identities ("
+        "run_id TEXT NOT NULL,currentness INTEGER NOT NULL CHECK(currentness>=0),"
+        "candidate_sha TEXT NOT NULL CHECK(length(candidate_sha)=40),"
+        "profile_digest TEXT NOT NULL CHECK(length(profile_digest)=71),"
+        "identity_payload TEXT NOT NULL,recorded_at TEXT NOT NULL,"
+        "PRIMARY KEY(run_id,currentness),UNIQUE(run_id,profile_digest))"
+    )
+    for operation in ("UPDATE", "DELETE"):
+        connection.execute(
+            f"CREATE TRIGGER IF NOT EXISTS execution_validation_profile_identities_immutable_{operation.casefold()} "
+            f"BEFORE {operation} ON execution_validation_profile_identities BEGIN "
+            "SELECT RAISE(ABORT, 'Validation profile identity evidence is immutable.'); END"
+        )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1262,6 +1280,7 @@ MIGRATIONS: dict[int, Migration] = {
     39: _schema_v39,
     40: _schema_v40,
     41: _schema_v41,
+    42: _schema_v42,
 }
 
 
@@ -1786,8 +1805,9 @@ def record_validation_profile(
     required_validation_controls: tuple[str, ...], recorded_at: str,
     profile_reference: str | None = None, profile_selection_source: str | None = None,
     control_bindings: tuple[dict[str, object], ...] | None = None,
+    candidate_sha: str | None = None, currentness: int | None = None,
     central_database: Path | None = None,
-) -> None:
+) -> str | None:
     """Persist the exact mandatory controls before their execution evidence."""
     if not run_id or not selected_validation_tier or not validation_profile_version or not recorded_at:
         raise EngineeringStorageError("Validation profile identity is invalid.")
@@ -1808,18 +1828,52 @@ def record_validation_profile(
     binding_ids = tuple(binding.get("validation_id") for binding in control_bindings if isinstance(binding, dict))
     if binding_ids != required_validation_controls:
         raise EngineeringStorageError("Validation profile bindings are invalid.")
+    resolved_reference = profile_reference or f"validation-profile-registry:{selected_validation_tier}@{validation_profile_version}"
+    resolved_source = profile_selection_source or "registry"
     payload = {
         "validation_ids": list(required_validation_controls),
-        "profile_reference": profile_reference or f"validation-profile-registry:{selected_validation_tier}@{validation_profile_version}",
-        "profile_selection_source": profile_selection_source or "registry",
+        "profile_reference": resolved_reference,
+        "profile_selection_source": resolved_source,
         "control_bindings": list(control_bindings),
     }
     connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
+        profile_digest = None
+        identity_payload = None
+        if candidate_sha is not None or currentness is not None:
+            if candidate_sha is None or currentness is None:
+                raise EngineeringStorageError("Candidate-bound validation profile identity is incomplete.")
+            from .validation_profile import ValidationProfileResolutionError, validation_profile_identity
+            try:
+                identity, profile_digest = validation_profile_identity(
+                    candidate_sha=candidate_sha, currentness=currentness,
+                    selected_validation_tier=selected_validation_tier,
+                    validation_profile_version=validation_profile_version,
+                    profile_reference=resolved_reference,
+                    profile_selection_source=resolved_source,
+                    required_validation_controls=required_validation_controls,
+                    control_bindings=control_bindings,
+                )
+            except ValidationProfileResolutionError as error:
+                raise EngineeringStorageError("Candidate-bound validation profile identity is invalid.") from error
+            identity_payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_profiles(run_id,selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at) VALUES(?,?,?,?,?)",
             (run_id, selected_validation_tier, validation_profile_version, _encoded_payload(payload), recorded_at),
         )
+        if profile_digest is not None and identity_payload is not None:
+            connection.execute(
+                "INSERT OR IGNORE INTO execution_validation_profile_identities("
+                "run_id,currentness,candidate_sha,profile_digest,identity_payload,recorded_at) VALUES(?,?,?,?,?,?)",
+                (run_id, currentness, candidate_sha, profile_digest, identity_payload, recorded_at),
+            )
+            stored = connection.execute(
+                "SELECT candidate_sha,profile_digest,identity_payload FROM execution_validation_profile_identities "
+                "WHERE run_id=? AND currentness=?", (run_id, currentness),
+            ).fetchone()
+            if stored != (candidate_sha, profile_digest, identity_payload):
+                raise EngineeringStorageError("Validation profile ordinal already has a different immutable identity.")
+        return profile_digest
     finally:
         connection.close()
 
@@ -1895,13 +1949,23 @@ def record_validation_command_terminal(
         connection.close()
 
 
-def load_validation_context(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
+def load_validation_context(
+    root: Path, run_id: str, *, currentness: int | None = None,
+    central_database: Path | None = None,
+) -> dict[str, object] | None:
     """Return the resolved profile and current control evidence without inference."""
     connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         profile = connection.execute(
             "SELECT selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at "
             "FROM execution_validation_profiles WHERE run_id=?", (run_id,)
+        ).fetchone()
+        strict_profile = connection.execute(
+            "SELECT currentness,candidate_sha,profile_digest,identity_payload,recorded_at "
+            "FROM execution_validation_profile_identities WHERE run_id=? "
+            + ("AND currentness=? " if currentness is not None else "")
+            + "ORDER BY currentness DESC LIMIT 1",
+            (run_id, currentness) if currentness is not None else (run_id,),
         ).fetchone()
         rows = connection.execute(
             "SELECT validation_id,category,control_identity,required_for_profile,execution_status,result,evidence_ref,observed_at,currentness "
@@ -1923,13 +1987,57 @@ def load_validation_context(root: Path, run_id: str, *, central_database: Path |
         }
     finally:
         connection.close()
-    if profile is None:
+    if strict_profile is None and profile is None:
         return None
-    try:
-        payload = json.loads(profile[2])
-        required = payload.get("validation_ids", [])
-    except (TypeError, json.JSONDecodeError, AttributeError) as error:
-        raise EngineeringStorageError("Validation profile controls are corrupt.") from error
+    candidate_sha = profile_digest = profile_currentness = None
+    if strict_profile is not None:
+        try:
+            identity = json.loads(strict_profile[3])
+        except (TypeError, json.JSONDecodeError) as error:
+            raise EngineeringStorageError("Validation profile identity is corrupt.") from error
+        if not isinstance(identity, dict):
+            raise EngineeringStorageError("Validation profile identity is invalid.")
+        from .validation_profile import ValidationProfileResolutionError, validation_profile_identity
+        try:
+            expected_identity, expected_digest = validation_profile_identity(
+                candidate_sha=identity["candidate_sha"], currentness=identity["currentness"],
+                selected_validation_tier=identity["selected_validation_tier"],
+                validation_profile_version=identity["validation_profile_version"],
+                profile_reference=identity["profile_reference"],
+                profile_selection_source=identity["profile_selection_source"],
+                required_validation_controls=tuple(identity["required_validation_controls"]),
+                control_bindings=tuple(identity["control_bindings"]),
+            )
+        except (KeyError, TypeError, ValidationProfileResolutionError) as error:
+            raise EngineeringStorageError("Validation profile identity is invalid.") from error
+        canonical_identity = json.dumps(expected_identity, sort_keys=True, separators=(",", ":"))
+        if (
+            strict_profile[0] != expected_identity["currentness"]
+            or strict_profile[1] != expected_identity["candidate_sha"]
+            or strict_profile[2] != expected_digest
+            or strict_profile[3] != canonical_identity
+        ):
+            raise EngineeringStorageError("Validation profile identity digest is invalid.")
+        selected_tier = expected_identity["selected_validation_tier"]
+        profile_version = expected_identity["validation_profile_version"]
+        payload = {
+            "validation_ids": expected_identity["required_validation_controls"],
+            "profile_reference": expected_identity["profile_reference"],
+            "profile_selection_source": expected_identity["profile_selection_source"],
+            "control_bindings": expected_identity["control_bindings"],
+        }
+        recorded_at = strict_profile[4]
+        candidate_sha = strict_profile[1]
+        profile_digest = strict_profile[2]
+        profile_currentness = strict_profile[0]
+    else:
+        assert profile is not None
+        try:
+            payload = json.loads(profile[2])
+        except (TypeError, json.JSONDecodeError, AttributeError) as error:
+            raise EngineeringStorageError("Validation profile controls are corrupt.") from error
+        selected_tier, profile_version, recorded_at = profile[0], profile[1], profile[3]
+    required = payload.get("validation_ids", [])
     if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
         raise EngineeringStorageError("Validation profile controls are invalid.")
     bindings = payload.get("control_bindings", [])
@@ -1937,9 +2045,15 @@ def load_validation_context(root: Path, run_id: str, *, central_database: Path |
         raise EngineeringStorageError("Validation profile bindings are invalid.")
     if bindings and tuple(binding.get("validation_id") for binding in bindings) != tuple(required):
         raise EngineeringStorageError("Validation profile bindings are invalid.")
+    evidence_currentness = max(
+        [int(row[8]) for row in rows] + [int(row[6]) for row in command_rows],
+        default=profile_currentness if profile_currentness is not None else 0,
+    )
     controls: dict[str, dict[str, object]] = {}
     for row in rows:
         validation_id, category, identity, is_required, status, result, evidence_ref, observed_at, currentness = row
+        if profile_currentness is not None and currentness != profile_currentness:
+            continue
         current = controls.get(validation_id)
         if current is None or int(currentness) > int(current["currentness"]):
             controls[validation_id] = {"validation_id": validation_id, "category": category, "control_identity": identity,
@@ -1947,15 +2061,33 @@ def load_validation_context(root: Path, run_id: str, *, central_database: Path |
                 "evidence_ref": evidence_ref, "observed_at": observed_at, "currentness": currentness}
         elif int(currentness) == int(current["currentness"]) and result != current["result"]:
             controls[validation_id] = {**current, "result": "UNRESOLVED", "conflict": True}
+    commands_by_control: dict[str, list[tuple[object, ...]]] = {}
     for row in command_rows:
-        validation_id, command_id, category, identity, is_required, started_at, currentness, completed_at, duration_ms, exit_code, result, terminal_ref = row
+        if profile_currentness is not None and row[6] != profile_currentness:
+            continue
+        commands_by_control.setdefault(str(row[0]), []).append(row)
+    for validation_id, command_records in commands_by_control.items():
+        latest_currentness = max(int(row[6]) for row in command_records)
+        current_records = [row for row in command_records if int(row[6]) == latest_currentness]
+        if len(current_records) != 1:
+            controls[validation_id] = {
+                "validation_id": validation_id, "required_for_profile": True,
+                "execution_status": "UNRESOLVED", "result": "UNRESOLVED",
+                "currentness": latest_currentness, "conflict": True,
+            }
+            continue
+        row = current_records[0]
+        validation_id, command_id, category, identity, is_required, started_at, command_currentness, completed_at, duration_ms, exit_code, result, terminal_ref = row
         diagnostic_artifact_id = f"validation-failure-diagnostic-{command_id}"
         diagnostic_execution_id = diagnostic_artifacts.get(diagnostic_artifact_id)
         controls[validation_id] = {
             "validation_id": validation_id, "category": category, "control_identity": identity,
-            "required_for_profile": bool(is_required), "execution_status": "EXECUTED",
+            "required_for_profile": bool(is_required),
+            "execution_status": "EXECUTED" if completed_at is not None else "NOT_EXECUTED",
             "result": result or "UNAVAILABLE", "evidence_ref": terminal_ref if completed_at else "command_invocation",
-            "observed_at": completed_at or started_at, "currentness": currentness,
+            "evidence_authority": "command_terminal" if completed_at is not None else "command_invocation",
+            "observed_at": completed_at or started_at, "currentness": command_currentness,
+            "command_id": command_id,
             "started_at": started_at, "ended_at": completed_at, "duration_ms": duration_ms, "exit_code": exit_code,
             # The artifact id is deterministically derived from the immutable
             # command receipt and the writer persists that command as the
@@ -1963,11 +2095,16 @@ def load_validation_context(root: Path, run_id: str, *, central_database: Path |
             # historical only; projections never backfill their association.
             "diagnostic_evidence_ref": f"artifact:{diagnostic_artifact_id}" if diagnostic_execution_id == command_id else "UNAVAILABLE",
         }
-    return {"selected_validation_tier": profile[0], "validation_profile_version": profile[1],
+    return {"selected_validation_tier": selected_tier, "validation_profile_version": profile_version,
             "profile_reference": payload.get("profile_reference", "UNAVAILABLE"),
             "profile_selection_source": payload.get("profile_selection_source", "UNAVAILABLE"),
             "required_validation_controls": tuple(required), "control_bindings": tuple(bindings),
-            "recorded_at": profile[3], "controls": controls}
+            "candidate_sha": candidate_sha, "currentness": profile_currentness,
+            "profile_digest": profile_digest,
+            "profile_currentness_conflict": (
+                profile_currentness is not None and evidence_currentness > profile_currentness
+            ),
+            "recorded_at": recorded_at, "controls": controls}
 
 
 def record_run_qualification_snapshot(root: Path, snapshot: dict[str, object]) -> dict[str, object]:

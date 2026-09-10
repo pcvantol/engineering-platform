@@ -36,6 +36,8 @@ from engineering_platform.provider_recovery import (
 )
 from engineering_platform.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
 from engineering_platform.storage import (
+    record_validation_command_invocation,
+    record_validation_command_terminal,
     record_run_qualification_context,
     record_submission,
     record_validation_control_result,
@@ -89,7 +91,19 @@ class RecoveredRunCrossSurfaceTests(unittest.TestCase):
         record_validation_profile(
             self.root, run_id=self.run_id, selected_validation_tier="DOCUMENTATION",
             validation_profile_version="1.0", required_validation_controls=("git_diff_check",),
+            candidate_sha=self.commit, currentness=2,
             recorded_at="2026-08-30T00:00:00+00:00",
+        )
+        record_validation_command_invocation(
+            self.root, run_id=self.run_id, validation_id="git_diff_check",
+            command_id="validation-current-profile", category="repository",
+            control_identity="git diff --check", required_for_profile=True,
+            started_at="2026-08-30T00:00:00+00:00", currentness=2,
+        )
+        record_validation_command_terminal(
+            self.root, run_id=self.run_id, command_id="validation-current-profile",
+            completed_at="2026-08-30T00:00:01+00:00",
+            exit_code=0 if qualified else 1,
         )
         record_validation_control_result(
             self.root, run_id=self.run_id, validation_id="git_diff_check", category="repository",
@@ -178,7 +192,7 @@ class RecoveredRunCrossSurfaceTests(unittest.TestCase):
         self.assertEqual(history["history"]["submission_id"], self.submission_id)
         self.assertEqual(history["history"]["producer_id"], self.producer_id)
         self.assertIsNone(history["history"]["retry_of"])
-        self.assertEqual(history["history"]["execution_activity_summary"]["activity"]["overall_activity_total"], 3)
+        self.assertEqual(history["history"]["execution_activity_summary"]["activity"]["overall_activity_total"], 4)
         self.assertEqual(lifecycle_projection(self.root, self.run_id)["terminal_state"], "COMPLETE")
         history_rows = json.loads(dashboard._prompt_history(self.root))["runs"]
         self.assertEqual(len(history_rows), 1)

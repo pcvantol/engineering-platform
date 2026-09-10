@@ -57,6 +57,24 @@ class DeterministicExecutionE2ETests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "QUALIFICATION_SERVER_CONFIGURATION_INVALID"):
             self.module.configure_deterministic_runtime(self.data, self.root)
 
+    def test_managed_fixture_has_a_real_suite_without_dirtying_its_candidate(self) -> None:
+        repository = self.root / "managed"
+        self.module.create_repository(repository)
+
+        completed = subprocess.run(
+            ("python3", "-m", "unittest", "discover"), cwd=repository,
+            check=False, text=True, capture_output=True,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            subprocess.run(
+                ("git", "-C", str(repository), "status", "--porcelain"),
+                check=True, text=True, capture_output=True,
+            ).stdout,
+            "",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

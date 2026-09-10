@@ -162,10 +162,24 @@ class FakeGitHub:
 class FakeAgent:
     def __init__(self, result: AgentResult) -> None:
         self.result, self.prompts, self.roots = result, [], []
+        self.command_callback: object | None = None
+
+    def set_command_callback(self, callback: object) -> None:
+        self.command_callback = callback
+
+    def _emit_required_validation_receipts(self, prompt: str, result: AgentResult) -> None:
+        if "Local repository validation gate" not in prompt or not callable(self.command_callback):
+            return
+        failed = result.terminal_state != "COMPLETE" or EngineeringRunner._has_failed_validation_evidence(result)
+        for ordinal, command in enumerate(("git diff --check", "python3 -m unittest discover"), start=1):
+            command_id = f"fake-validation-{len(self.prompts)}-{ordinal}"
+            self.command_callback("started", command_id, command)
+            self.command_callback("completed", command_id, command, 1 if failed and ordinal == 2 else 0)
 
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         self.roots.append(root)
         self.prompts.append(prompt)
+        self._emit_required_validation_receipts(prompt, self.result)
         return self.result
 
     def available(self) -> bool:
@@ -202,7 +216,9 @@ class SequencedFakeAgent(FakeAgent):
 
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         self.prompts.append(prompt)
-        return self.results.pop(0)
+        result = self.results.pop(0)
+        self._emit_required_validation_receipts(prompt, result)
+        return result
 
 
 class LiveStatusFakeAgent(FakeAgent):
@@ -429,10 +445,12 @@ class ClientContractTest(unittest.TestCase):
                     self.roots.append(root)
                     self.prompts.append(prompt_text)
                     if "Local repository validation gate" in prompt_text:
-                        return AgentResult(
+                        result = AgentResult(
                             "COMPLETE", branch, commit_sha=commit,
                             validation_evidence=({"command": "canonical suite", "result": "passed"},),
                         )
+                        self._emit_required_validation_receipts(prompt_text, result)
+                        return result
                     if "First implementation pull-request publication gate" in prompt_text:
                         self.pr_create_calls += 1
                         return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
@@ -1665,6 +1683,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
             else:
                 os.environ[key] = value
 
+    def _record_strict_passing_profile(
+        self, run_id: str, *, candidate_sha: str = "a" * 40, currentness: int = 0,
+    ) -> str:
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="FULL",
+            validation_profile_version=execution_host.VALIDATION_PROFILE_VERSION,
+            required_validation_controls=("repository_suite",),
+            candidate_sha=candidate_sha, currentness=currentness,
+            recorded_at="2026-09-10T10:00:00+00:00",
+        )
+        command_id = f"{run_id}-repository-suite"
+        record_validation_command_invocation(
+            self.root, run_id=run_id, validation_id="repository_suite",
+            command_id=command_id, category="repository",
+            control_identity="python3 -m unittest discover", required_for_profile=True,
+            started_at="2026-09-10T10:00:00+00:00", currentness=currentness,
+        )
+        record_validation_command_terminal(
+            self.root, run_id=run_id, command_id=command_id,
+            completed_at="2026-09-10T10:00:01+00:00", exit_code=0,
+        )
+        context = load_validation_context(self.root, run_id, currentness=currentness)
+        assert context is not None and isinstance(context["profile_digest"], str)
+        return context["profile_digest"]
+
     def test_new_run_initializes_and_records_canonical_prompt(self) -> None:
         quality_evidence = ({"activity": "TEST_COVERAGE", "result": "Added focused regression coverage."},)
         agent = FakeAgent(AgentResult("COMPLETE", quality_evidence=quality_evidence))
@@ -2608,8 +2651,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_first_implementation_publication_is_a_separate_post_assurance_dispatch(self) -> None:
         """The product gate, not provider wording, owns first PR creation."""
         sha = "a" * 40
+        validation_profile_digest = self._record_strict_passing_profile(
+            "publication-gate", candidate_sha=sha,
+        )
         profile = {"version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
-                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha}
+                   "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+                   "validation_profile_digest": validation_profile_digest}
         reviews = tuple({"reviewer": role, "status": "PASS", "candidate_sha": sha,
                          "profile_digest": profile["digest"], "invocation_id": f"{role}-1",
                          "findings": [], "contract_version": "1.0", "started_at": "now", "completed_at": "now"}
@@ -2617,7 +2664,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent = SequencedFakeAgent([AgentResult("COMPLETE", "main", 71, commit_sha=sha)])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
         state = TransactionState("publication-gate", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
-                                 branch="main", owner_authorized=True, assurance_profile=profile, assurance_reviews=reviews)
+                                 branch="main", owner_authorized=True,
+                                 local_validation_audit=({"outcome": "validated"},),
+                                 assurance_profile=profile, assurance_reviews=reviews)
         published, result = runner._publish_first_implementation_pull_request(
             state, AgentResult("COMPLETE", "main", commit_sha=sha)
         )
@@ -2678,7 +2727,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 validation_evidence=({"command": "python -m unittest tests.engineering", "result": "passed"},),
             ),
         ])
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch="codex/implementation"), FakeGitHub([]), agent, lambda _: None)
         state = TransactionState(
             "local-validation-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
             branch="codex/implementation", owner_authorized=True,
@@ -2791,7 +2840,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             for _ in range(3)
         ]
         runner = EngineeringRunner(
-            self.root, self.store, FakeRepository(), FakeGitHub([]), SequencedFakeAgent(failures), lambda _: None
+            self.root, self.store, FakeRepository(branch="codex/implementation"), FakeGitHub([]), SequencedFakeAgent(failures), lambda _: None
         )
         state = TransactionState(
             "local-validation-limit", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
@@ -2819,7 +2868,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 validation_disposition="environmental_instability",
             ),
         ])
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch="codex/implementation"), FakeGitHub([]), agent, lambda _: None)
         state = TransactionState(
             "validation-instability-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
             branch="codex/implementation", owner_authorized=True,

@@ -379,12 +379,21 @@ class TransactionState:
             raise StateError("checkpoint quality evidence is invalid or unsafe")
         profile_fields = {"version", "digest", "candidate_sha"}
         current_profile_fields = profile_fields | {"criteria_digest"}
+        validation_bound_profile_fields = current_profile_fields | {"validation_profile_digest"}
         if state.assurance_profile is not None and (
             not isinstance(state.assurance_profile, dict)
-            or set(state.assurance_profile) not in (profile_fields, current_profile_fields)
+            or set(state.assurance_profile) not in (
+                profile_fields, current_profile_fields, validation_bound_profile_fields,
+            )
             or not all(isinstance(value, str) and value for value in state.assurance_profile.values())
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", state.assurance_profile["digest"])
             or not re.fullmatch(r"[0-9a-f]{40}", state.assurance_profile["candidate_sha"])
+            or (
+                "validation_profile_digest" in state.assurance_profile
+                and not re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", state.assurance_profile["validation_profile_digest"],
+                )
+            )
         ):
             raise StateError("checkpoint assurance profile is invalid")
         review_fields = {"reviewer", "status", "candidate_sha", "profile_digest", "invocation_id", "findings"}

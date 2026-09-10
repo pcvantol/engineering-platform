@@ -82,6 +82,31 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(agent.wait_for_controlled_interruption_arm(self.root, SimpleNamespace(run_id="run-a")))
 
+    def test_local_validation_emits_real_canonical_terminal_receipts(self) -> None:
+        agent = DeterministicQualificationAgent()
+        events = []
+        agent.set_command_callback(lambda *event: events.append(event))
+        (self.root / "test_qualification_fixture.py").write_text(
+            "import unittest\n\n"
+            "class FixtureTest(unittest.TestCase):\n"
+            "    def test_fixture(self): self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+
+        result = agent.validate(self.root, "Local repository validation gate")
+
+        self.assertEqual(result.terminal_state, "COMPLETE")
+        self.assertEqual(
+            [(event[0], event[1]) for event in events],
+            [
+                ("started", "deterministic-validation-1"),
+                ("completed", "deterministic-validation-1"),
+                ("started", "deterministic-validation-2"),
+                ("completed", "deterministic-validation-2"),
+            ],
+        )
+        self.assertEqual([event[3] for event in events if event[0] == "completed"], [0, 0])
+
     def test_external_handoff_writes_only_the_explicit_fixture_contract(self) -> None:
         agent = DeterministicQualificationAgent()
         (self.root / ".engineering-platform").mkdir()
