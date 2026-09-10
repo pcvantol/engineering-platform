@@ -15,40 +15,48 @@ is never request authority.
 
 ## Operational-installation diagnosis scope
 
-`operational-diagnose` reads the selected Server LaunchAgent interpreter (not
-`PATH`), the registered EP installation identity and the selected interpreter's
-installed package metadata. `operational-inventory` separately reports only
-explicitly supplied candidate interpreters and service references, normalized
-as data paths while retaining each venv launcher spelling as a runtime
-identity. Thus two venv launchers that share a base Python remain distinct
-candidate installations.
+`operational-diagnose`, `operational-qualify`, `operational-readback` and
+`operational-update-assess` all resolve the same system-domain Server service
+descriptor. They never treat `PATH`, `sys.executable`, a source checkout or a
+legacy per-user LaunchAgent as the official runtime. An absent, malformed or
+observer-mismatched system descriptor yields a machine-readable `UNKNOWN`
+result with bounded system-service evidence rather than a guessed runtime.
+
+`operational-inventory` reports that same canonical system-service evidence as
+the official resolver surface. Explicit candidate interpreters and legacy
+service references remain optional diagnostic evidence beneath a separate
+`explicit_candidate_inventory` field; they cannot select the runtime or
+upgrade the scope. Their paths are normalized as data paths while each venv
+launcher spelling stays a distinct runtime identity. Thus two venv launchers
+that share a base Python remain distinct candidate installations.
 
 The product invariant is `PER_PRODUCT_MAX_OPERATIONAL_RELEASE_INSTALLATIONS =
-1` with required scope `MACOS_MACHINE`. The current read-only inventory can
-observe only the current OS user's explicit references; it reports
-`CURRENT_OS_USER_EXPLICIT_REFERENCES_ONLY` and `INCOMPLETE` rather than
-claiming Mac-wide uniqueness. No conflict in that bounded inventory is not
-`SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`. Cross-account service discovery
-and any removal/cutover remain an explicitly authorized future operation.
+1` with required scope `MACOS_MACHINE`. The current read-only observer covers
+the system LaunchDaemon surface, shared LaunchAgents and only caller-declared
+user LaunchAgent surfaces. It reports that bounded observation as `INCOMPLETE`
+rather than claiming Mac-wide uniqueness. No conflict in this bounded inventory
+is not `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`. Authoritative cross-account
+service discovery and any removal/cutover remain explicitly authorized future
+operations.
 
 `operational-readback` is the product-owned, machine-readable consumer surface
 for this same resolver. It uses only the fixed interpreter from the EP Server
-LaunchAgent. If that owned service reference is absent or invalid, it returns
-an explicit `UNKNOWN` observation and never falls back to the invoking shell,
-`sys.executable`, or `PATH`. A registered runtime is `ACTIVE` only after the
-actual health response proves its service, instance, package and executable
-identity and classifies the live artifact-verification state against the
-registered digest. A reachable response from a different instance is
-`UNHEALTHY`, not evidence for the selected installation.
+system-domain service descriptor. If that owned service reference is absent,
+malformed or differs from the bounded observer, it returns an explicit
+`UNKNOWN` observation and never falls back to the invoking shell,
+`sys.executable`, `PATH` or the legacy LaunchAgent. A registered runtime is
+`ACTIVE` only after the actual health response proves its service, instance,
+package and executable identity and classifies the live artifact-verification
+state against the registered digest. A reachable response from a different
+instance is `UNHEALTHY`, not evidence for the selected installation.
 
-The command accepts the same explicitly supplied candidate-interpreter and
-service-reference inputs as `operational-inventory`, and embeds their bounded
-evidence in its response. Current coverage remains `PARTIAL`; a caller cannot
-supply a `MACHINE_WIDE` mapping or turn a no-conflict explicit scan into a
-single-installation claim. The response keeps release-source facts separate:
-the installation record owns version, digest, source revision and observed
-channel, while a release source locator and qualification receipt remain with
-the qualified release evidence.
+The readback embeds the EP-issued system-service inventory, with separate
+outer evidence for the system, shared-user and caller-declared user surfaces.
+Current coverage remains `PARTIAL`; a caller cannot supply a `MACHINE_WIDE`
+mapping or turn a no-conflict observation into a single-installation claim.
+The response keeps release-source facts separate: the installation record owns
+version, digest, source revision and observed channel, while a release source
+locator and qualification receipt remain with the qualified release evidence.
 
 ## System-domain Server service foundation
 
@@ -91,12 +99,12 @@ and `single_operational_installation: false`. A root caller and an empty
 inspection result therefore still do not establish
 `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`.
 
-The existing `service-install` command remains the legacy per-user
-LaunchAgent lifecycle while the product-owned migration/provisioner operation
-is completed. The new source contract neither starts a LaunchDaemon nor
-removes that legacy agent by itself; both actions require a qualified,
-authorized EP installation operation with backup/migration/health/cleanup
-evidence.
+The existing `service-install` command and `server_service.py` remain legacy
+per-user LaunchAgent compatibility only; they are not authority for an
+operational readback, diagnosis, qualification or development-profile
+protection. The new source contract neither starts a LaunchDaemon nor removes
+that legacy agent by itself; both actions require a qualified, authorized EP
+installation operation with backup/migration/health/cleanup evidence.
 
 ## Operational update recovery boundary
 
@@ -160,7 +168,7 @@ explicit profile arguments, so a process restart cannot silently revert to the
 operational mode.
 
 This is a local EP Server development boundary only. It neither installs a
-LaunchAgent nor creates a second installer, and it is not proof of a
+system service nor creates a second installer, and it is not proof of a
 Mac-wide single operational installation. Forge Platform remains the owner of
 cross-product composition; EP retains the operational Server installation
 contract.

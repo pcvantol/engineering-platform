@@ -1,4 +1,10 @@
-"""macOS LaunchAgent lifecycle for the installed EP Server.
+"""Legacy macOS per-user LaunchAgent compatibility for the installed EP Server.
+
+This module is retained for historical compatibility while a product-owned
+system-domain LaunchDaemon provisioner is completed.  It is never the
+authority for official operational runtime resolution, installation readback,
+qualification, inventory or development-profile isolation; those surfaces use
+``system_server_service`` only.
 
 The Server remains the lifecycle and CENTRAL authority.  This module only
 installs one fixed per-user supervisor for its foreground ``serve`` command;
