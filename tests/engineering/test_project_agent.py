@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from engineering_platform import project_agent
+
+
+class ProjectAgentTests(unittest.TestCase):
+    def test_identity_is_stable_for_one_host_user_context(self) -> None:
+        host = project_agent.HostIdentity("host", "user", "Darwin", "arm64")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "identity.json"
+            first = project_agent.load_or_create_identity(host, path)
+            second = project_agent.load_or_create_identity(host, path)
+        self.assertEqual(first, second)
+        self.assertEqual(first.identity_format, project_agent.IDENTITY_FORMAT)
+
+    @patch("engineering_platform.project_agent.subprocess.run")
+    def test_inventory_supports_zero_one_and_many_explicit_roots(self, run: object) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "one").mkdir()
+            (root / "two").mkdir()
+            run.return_value = __import__("subprocess").CompletedProcess(("git",), 0, "true\n", "")
+            self.assertEqual(project_agent.inventory_repositories(()), ())
+            inventory = project_agent.inventory_repositories((root / "one", root / "two"))
+        self.assertEqual(len(inventory), 2)
+        self.assertTrue(all(item.is_git_repository for item in inventory))
+
+    @patch("engineering_platform.project_agent.shutil.which", return_value="/usr/bin/git")
+    @patch("engineering_platform.project_agent.subprocess.run")
+    def test_discovery_only_reports_safe_local_tool_facts(self, run: object, _: object) -> None:
+        run.return_value = __import__("subprocess").CompletedProcess(("git", "--version"), 0, "git version 2.45\n", "")
+        capability = project_agent.discover_tool("git")
+        self.assertEqual(capability.name, "git")
+        self.assertTrue(capability.available)
+        self.assertEqual(capability.version, "git version 2.45")
+
+    @patch("engineering_platform.project_agent.observe")
+    def test_cli_emits_a_serializable_snapshot(self, observe: object) -> None:
+        host = project_agent.HostIdentity("host", "user", "Linux", "x86_64")
+        identity = project_agent.AgentIdentity("agent", project_agent.IDENTITY_FORMAT, host.context_key, "2026-01-01T00:00:00+00:00")
+        observe.return_value = project_agent.AgentSnapshot(identity, project_agent.CapabilitySnapshot(host, project_agent.ToolCapability("git", False, None, None), (), ()), (), "2026-01-01T00:00:00+00:00")
+        with patch("builtins.print") as printed:
+            self.assertEqual(project_agent.main([]), 0)
+        payload = json.loads(printed.call_args.args[0])
+        self.assertEqual(payload["identity"]["agent_id"], "agent")
+        self.assertEqual(payload["capabilities"]["host"]["context_key"], host.context_key)
+
+
+if __name__ == "__main__":
+    unittest.main()
