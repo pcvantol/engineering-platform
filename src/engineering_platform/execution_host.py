@@ -1159,6 +1159,11 @@ class EngineeringRunner:
             return self._save_terminal(repair, result.terminal_state, "external_action_required", result.diagnostic)
         if result.pull_request not in {None, repair.pull_request}:
             return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the bounded pull request.")
+        # A repair result may not silently move its work to another branch and
+        # then have the host overwrite that identity below.  The checkpointed
+        # branch is the PR lineage boundary, including before publication.
+        if result.branch != repair.branch:
+            return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the checkpointed branch.")
         repaired_result = replace(
             result,
             branch=result.branch or repair.branch,
@@ -2429,7 +2434,20 @@ First implementation pull-request publication gate:
                 and re.fullmatch(r"[0-9a-f]{40}", candidate_sha)
             ):
                 raise RunnerError("candidate adoption is not authorised for this transaction")
-            state = replace(state, branch=branch, last_verified_sha=candidate_sha)
+            # The typed submission pins the initial adoption candidate.  A
+            # resumed run may already have a newer, host-verified repair
+            # candidate; never overwrite that durable lineage with the input
+            # SHA on resume.
+            if state.branch not in {None, branch}:
+                return self._save_terminal(
+                    state, "BLOCKED", "candidate_adoption_identity_invalid",
+                    "Candidate adoption branch conflicts with the durable run branch.",
+                )
+            state = replace(
+                state,
+                branch=branch,
+                last_verified_sha=state.last_verified_sha or candidate_sha,
+            )
         context = replace(context, run_id=state.run_id)
         passive_pr_wait = state.pull_request is not None and state.phase in {
             "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"
@@ -2604,8 +2622,9 @@ First implementation pull-request publication gate:
                 )
         elif candidate_adoption is not None:
             branch, candidate_sha = candidate_adoption
+            expected_sha = state.last_verified_sha or candidate_sha
             evidence = self.repository.inspect(self.root)
-            if not (evidence.clean and evidence.branch == branch and evidence.head_sha == candidate_sha):
+            if not (evidence.clean and evidence.branch == branch and evidence.head_sha == expected_sha):
                 return self._save_terminal(
                     state, "BLOCKED", "candidate_adoption_identity_invalid",
                     "Candidate adoption requires the exact clean checkpointed branch and SHA.",

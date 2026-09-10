@@ -1833,6 +1833,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(conflict.repair_audit[-1]["outcome"], "submitted_for_recheck")
         self.assertEqual(self.store.load(planned.run_id).repair_audit, conflict.repair_audit)
 
+        branch_conflict = runner._advance_after_repair_agent_result(
+            planned.__class__(**{**planned.__dict__, "run_id": "repair-branch-conflict"}),
+            AgentResult("COMPLETE", branch="codex/other", pull_request=17, diagnostic="changed branch"),
+        )
+        self.assertEqual((branch_conflict.phase, branch_conflict.next_action), ("BLOCKED", "bounded_scope_conflict"))
+
         failed_plan = planned.__class__(**{**planned.__dict__, "run_id": "repair-agent-failed"})
         failed = runner._advance_after_repair_agent_result(
             failed_plan, AgentResult("FAILED", branch=failed_plan.branch, pull_request=17, diagnostic="provider failure"),
