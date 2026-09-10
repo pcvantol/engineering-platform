@@ -19,6 +19,7 @@ from .storage import (
     open_storage,
     record_run_qualification_snapshot,
 )
+from .validation_profile import strict_required_controls_pass
 
 AUTHORITIES = frozenset(
     {
@@ -310,7 +311,22 @@ def terminal_snapshot(
         required = set(validation_context["required_validation_controls"])
         controls = validation_context["controls"]
         results = [controls.get(control, {}).get("result") for control in required]
-        required_state = "FAIL" if any(result == "FAIL" for result in results) else "PASS" if results and all(result == "PASS" for result in results) else "UNRESOLVED"
+        candidate = validation_context.get("candidate_sha")
+        profile_currentness = validation_context.get("currentness")
+        strict_pass = (
+            isinstance(candidate, str)
+            and isinstance(profile_currentness, int)
+            and strict_required_controls_pass(
+                validation_context, candidate_sha=candidate,
+                currentness=profile_currentness,
+            )
+        )
+        required_state = (
+            "PASS" if strict_pass
+            else "PASS" if action_intent == "VALIDATION_ONLY" and results and all(result == "PASS" for result in results)
+            else "FAIL" if any(result == "FAIL" for result in results)
+            else "UNRESOLVED"
+        )
         profile_projection = {key: validation_context[key] for key in (
             "selected_validation_tier", "validation_profile_version", "profile_reference",
             "profile_selection_source", "required_validation_controls", "control_bindings",

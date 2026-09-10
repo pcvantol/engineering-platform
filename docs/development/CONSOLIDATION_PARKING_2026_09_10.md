@@ -135,6 +135,22 @@ of QR-LOCAL-VALIDATION-PASS-001 and SEC-001 is not inferred from code/tests.
 Host sequencing, phase prompts and early-result rejection are not universal
 capability-level prevention of every HTTP/credential remote-write route.
 
+## Minimal strict-validation extraction for first-canary readiness
+
+`STRICT_CURRENT_CONTROL_VALIDATION_SLICE = SOURCE_DELIVERED / QUALIFIED` for
+the separately delivered minimal source increment. The normal Managed
+first-publication gate now requires the current validated audit plus an exact
+candidate-bound, repair-ordinal-bound persisted profile digest and explicit
+terminal PASS receipts for every profile-owned required control. Missing,
+stale, skipped, not-applicable, unavailable, prose-only, nonzero or malformed
+receipts remain ineligible; Quality/Security PASS cannot compensate.
+
+This extraction does not resume or qualify the parked publication programme:
+`EP #175 = OPEN_DRAFT_PARKED_NOT_QUALIFIED`, unchanged at its retained head.
+Its remaining candidate-adoption and duplicate-safe publication-recovery scope
+is `PARKED_NON_BLOCKER_FOR_FIRST_CANARY`. No primary runtime/CENTRAL,
+configuration, governance, installer, submission or canary state was changed.
+
 ## Parked decisions and documentary DAG
 
 | Node | Disposition and retained future acceptance |

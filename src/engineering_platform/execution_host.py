@@ -74,7 +74,8 @@ from .execution_models import AgentResult, PullRequestEvidence, RepositoryEviden
 from .validation_profile import (
     VALIDATION_PROFILE_VERSION, ValidationControlLauncher, ValidationProfile,
     ValidationProfileResolutionError, changed_paths, classify,
-    profile_control_bindings, resolve_producer_profile,
+    matching_control_binding, profile_control_bindings, resolve_producer_profile,
+    strict_required_controls_pass,
 )
 from .reviewer_evidence import ReviewerEvidence
 from .investigation_ledger import InvocationInvestigationLedger
@@ -200,6 +201,65 @@ project_codex_activity = executor_project_codex_activity
 project_codex_live_action_name = executor_project_codex_live_action_name
 _redacted_cli_tail = executor_redacted_cli_tail
 _format_cli_failure = executor_format_cli_failure
+
+
+def _validation_profile_digest(validation_context: object) -> str | None:
+    """Return only a storage-verified candidate-bound profile digest."""
+    if not isinstance(validation_context, dict):
+        return None
+    digest = validation_context.get("profile_digest")
+    candidate = validation_context.get("candidate_sha")
+    currentness = validation_context.get("currentness")
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        or not isinstance(candidate, str)
+        or re.fullmatch(r"[0-9a-f]{40}", candidate) is None
+        or isinstance(currentness, bool)
+        or not isinstance(currentness, int)
+        or currentness < 0
+    ):
+        return None
+    return digest
+
+
+def _required_validation_controls_pass(
+    state: TransactionState, validation_context: object,
+) -> bool:
+    """Require the exact current ordinal's candidate-bound terminal receipts."""
+    if not isinstance(validation_context, dict):
+        return False
+    profile = state.assurance_profile
+    candidate = (
+        profile.get("candidate_sha") if isinstance(profile, dict)
+        else validation_context.get("candidate_sha")
+    )
+    if not isinstance(candidate, str):
+        return False
+    return strict_required_controls_pass(
+        validation_context, candidate_sha=candidate,
+        currentness=state.repair_iterations,
+    )
+
+
+def _has_current_local_validation_evidence(
+    state: TransactionState, validation_context: object,
+) -> bool:
+    """Bind current validation audit, profile, candidate and receipts."""
+    if not isinstance(validation_context, dict) or not state.local_validation_audit:
+        return False
+    if state.local_validation_audit[-1].get("outcome") != "validated":
+        return False
+    profile = state.assurance_profile
+    if not isinstance(profile, dict):
+        return False
+    digest = _validation_profile_digest(validation_context)
+    return (
+        digest is not None
+        and profile.get("validation_profile_digest") == digest
+        and profile.get("candidate_sha") == validation_context.get("candidate_sha")
+        and _required_validation_controls_pass(state, validation_context)
+    )
 
 
 def assemble_prompt(
@@ -739,13 +799,14 @@ class EngineeringRunner:
                     required=True, currentness=state.repair_iterations,
                     central_database=self.store.central_database,
                 )
-                validation_id = (
-                    "git_diff_check" if kind == "format_or_diff" else
-                    "documentation_contract" if kind == "documentation_contract" else
-                    self._validation_id(command, kind) if kind == "browser_e2e" else
-                    "repository_suite" if kind == "tests" and tier == "FULL" else
-                    "engineering_python" if kind == "tests" else f"validation_{kind}"
-                )
+                if profile_context and profile_context.get("profile_digest"):
+                    binding = matching_control_binding(command, profile_context["control_bindings"])
+                    validation_id = (
+                        str(binding["validation_id"])
+                        if isinstance(binding, dict) else self._validation_id(command, kind)
+                    )
+                else:
+                    validation_id = self._validation_id_for_profile(command, kind, tier)
                 record_validation_control_result(
                     self.root, run_id=state.run_id, validation_id=validation_id, category="agent",
                     control_identity=command[:160], required_for_profile=validation_id in required_controls, execution_status="EXECUTED",
@@ -1203,6 +1264,10 @@ class EngineeringRunner:
             return "static_analysis"
         if any(tool in normalized for tool in ("bandit", "semgrep", "codeql", "pip-audit", "safety")):
             return "security"
+        if "console_route_ownership_guard.py" in normalized:
+            return "console_route_ownership"
+        if "npm run test:ui-localization" in normalized:
+            return "ui_localization"
         if "git diff --check" in normalized or "prettier" in normalized or "black --check" in normalized:
             return "format_or_diff"
         if any(tool in normalized for tool in ("npm run test:engineering-dashboard", "playwright", "selenium", "cypress", "e2e")):
@@ -1217,6 +1282,17 @@ class EngineeringRunner:
         if kind == "browser_e2e" and is_canonical_dashboard_command(command):
             return "dashboard_browser"
         return f"validation_{kind}"
+
+    @classmethod
+    def _validation_id_for_profile(cls, command: str, kind: str, tier: object) -> str:
+        """Map an observed command to its persisted profile-owned control."""
+        if kind == "format_or_diff":
+            return "git_diff_check"
+        if kind in {"documentation_contract", "console_route_ownership", "ui_localization"}:
+            return kind
+        if kind == "tests" and isinstance(tier, str):
+            return "repository_suite" if tier == "FULL" else "engineering_python"
+        return cls._validation_id(command, kind)
 
     def _invoke_provider_attempt_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
         """Run one provider attempt; recovery launch authority lives in storage."""
@@ -1272,12 +1348,26 @@ class EngineeringRunner:
                 if kind is not None:
                     validation_id = self._validation_id(command, kind)
                     try:
-                        profile = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
-                        required = validation_id in set(profile["required_validation_controls"]) if profile else False
+                        profile = load_validation_context(
+                            self.root, state.run_id, currentness=state.repair_iterations,
+                            central_database=self.store.central_database,
+                        )
+                        binding = matching_control_binding(
+                            command, profile.get("control_bindings", ()),
+                        ) if profile else None
+                        if isinstance(binding, dict):
+                            validation_id = str(binding["validation_id"])
+                            required = validation_id in set(profile["required_validation_controls"])
+                            category = str(binding["category"])
+                            identity = str(binding["control_identity"])
+                        else:
+                            required = False
+                            category = "agent"
+                            identity = command[:160]
                         started_at = datetime.now(timezone.utc).isoformat()
                         record_validation_command_invocation(
                             self.root, run_id=state.run_id, validation_id=validation_id, command_id=command_id,
-                            category="agent", control_identity=command[:160], required_for_profile=required,
+                            category=category, control_identity=identity, required_for_profile=required,
                             started_at=started_at, currentness=state.repair_iterations,
                             central_database=self.store.central_database,
                         )
@@ -1676,6 +1766,23 @@ class EngineeringRunner:
             return self._save_terminal(
                 state, "BLOCKED", "local_validation_scope", "Implementation must return one branch and no pull request before local validation."
             ), implementation
+        try:
+            candidate = self.repository.inspect(self.root)
+        except RunnerError:
+            return self._save_terminal(
+                state, "BLOCKED", "local_validation_scope",
+                "Implementation candidate could not be inspected before local validation.",
+            ), implementation
+        if (
+            not candidate.clean
+            or candidate.branch != branch
+            or re.fullmatch(r"[0-9a-f]{40}", candidate.head_sha) is None
+            or (implementation.commit_sha is not None and implementation.commit_sha != candidate.head_sha)
+        ):
+            return self._save_terminal(
+                state, "BLOCKED", "local_validation_scope",
+                "Local validation requires the exact clean implementation branch and candidate SHA.",
+            ), implementation
         validation = replace(
             state, phase="LOCAL_REPOSITORY_VALIDATION", branch=branch, pull_request=None,
             next_action="run_local_repository_validation", local_validation_iterations=0,
@@ -1697,6 +1804,8 @@ class EngineeringRunner:
                     profile_reference=f"validation-profile-registry:{profile.tier}@{VALIDATION_PROFILE_VERSION}",
                     profile_selection_source="diff_classification",
                     control_bindings=profile_control_bindings(profile),
+                    candidate_sha=candidate.head_sha,
+                    currentness=validation.repair_iterations,
                     recorded_at=datetime.now(timezone.utc).isoformat(),
                     central_database=self.store.central_database,
                 )
@@ -1733,6 +1842,16 @@ Local repository validation gate — read-only measurement:
                     description="local_repository_validation_commit_verified",
                 )
                 self._persist_agent_usage(validation.run_id)
+                try:
+                    validation_context = load_validation_context(
+                        self.root, validation.run_id,
+                        currentness=validation.repair_iterations,
+                        central_database=self.store.central_database,
+                    )
+                    after_validation = self.repository.inspect(self.root)
+                except (EngineeringStorageError, RunnerError):
+                    validation_context = None
+                    after_validation = None
             except ProviderReadinessBlocked as blocked:
                 return blocked.state, implementation
             except CodexInvocationError as error:
@@ -1755,12 +1874,41 @@ Local repository validation gate — read-only measurement:
                     validation, "BLOCKED", "implementation_pr_before_assurance",
                     "Read-only local validation returned a pull request before mandatory assurance.",
                 ), implementation
-            if result.terminal_state == "COMPLETE" and result.validation_evidence and not self._has_failed_validation_evidence(result):
+            candidate_unchanged = (
+                after_validation is not None
+                and after_validation.clean
+                and after_validation.branch == branch
+                and after_validation.head_sha == candidate.head_sha
+            )
+            if (
+                result.terminal_state == "COMPLETE"
+                and result.validation_evidence
+                and not self._has_failed_validation_evidence(result)
+                and candidate_unchanged
+                and _required_validation_controls_pass(validation, validation_context)
+            ):
                 validation = self._record_local_validation_audit(validation, result=result, outcome="validated", profile=profile)
                 return validation, replace(
                     result, branch=branch, pull_request=None,
                     validation_evidence=implementation.validation_evidence + result.validation_evidence,
                 )
+            if result.terminal_state == "COMPLETE" and not self._has_failed_validation_evidence(result):
+                controls = validation_context.get("controls", {}) if isinstance(validation_context, dict) else {}
+                required = validation_context.get("required_validation_controls", ()) if isinstance(validation_context, dict) else ()
+                has_current_failure = any(
+                    isinstance(controls.get(control), dict)
+                    and controls[control].get("currentness") == validation.repair_iterations
+                    and controls[control].get("result") == "FAIL"
+                    for control in required
+                )
+                if not has_current_failure:
+                    validation = self._record_local_validation_audit(
+                        validation, result=result, outcome="agent_failed", profile=profile,
+                    )
+                    return self._save_terminal(
+                        validation, "BLOCKED", "required_validation_unresolved",
+                        "Local validation did not produce current successful terminal evidence for every required control.",
+                    ), implementation
             validation = self._record_local_validation_audit(validation, result=result, outcome="validation_failed", profile=profile)
             if self._is_environmental_validation_instability(result):
                 return self._save_terminal(
@@ -1769,6 +1917,11 @@ Local repository validation gate — read-only measurement:
                     "validation_infrastructure_recovery_required",
                     "Required local validation is unstable: a failed required suite and a passing isolated rerun were recorded without an implementation correction. Preserve this run and create a separate validation-infrastructure recovery item.",
                 ), implementation
+            if result.terminal_state == "COMPLETE":
+                result = replace(
+                    result, terminal_state="FAILED",
+                    diagnostic="A required current validation control did not pass.",
+                )
         return validation, result
 
     def _run_quality_assurance(
@@ -1798,15 +1951,31 @@ Local repository validation gate — read-only measurement:
         profile_version = f"validation-profile@{VALIDATION_PROFILE_VERSION}"
         criteria = Path(quality.prompt_path).read_text(encoding="utf-8")
         criteria_digest = "sha256:" + hashlib.sha256(criteria.encode("utf-8")).hexdigest()
+        try:
+            validation_context = load_validation_context(
+                self.root, quality.run_id, currentness=quality.repair_iterations,
+                central_database=self.store.central_database,
+            )
+        except EngineeringStorageError:
+            validation_context = None
+        validation_profile_digest = _validation_profile_digest(validation_context)
         # Candidate identity and policy identity are intentionally independent:
         # a source revision must not silently select or weaken its own policy.
         profile_digest = "sha256:" + hashlib.sha256(
-            json.dumps({"baseline": profile_version, "criteria_digest": criteria_digest}, sort_keys=True).encode("utf-8")
+            json.dumps({
+                "baseline": profile_version,
+                "criteria_digest": criteria_digest,
+                "validation_profile_digest": validation_profile_digest,
+            }, sort_keys=True).encode("utf-8")
         ).hexdigest()
-        quality = replace(quality, assurance_profile={
+        assurance_profile = {
             "version": profile_version, "digest": profile_digest, "candidate_sha": candidate.head_sha,
             "criteria_digest": criteria_digest,
-        })
+        }
+        # Genesis deliberately has no host-owned local validation profile.
+        if validation_profile_digest is not None:
+            assurance_profile["validation_profile_digest"] = validation_profile_digest
+        quality = replace(quality, assurance_profile=assurance_profile)
         self.store.save(quality)
         write_live_status(self.root, quality, quality.next_action)
         evidence = ReviewerEvidence.from_repository(quality.run_id, quality.execution_mode, candidate)
@@ -1937,6 +2106,18 @@ Local repository validation gate — read-only measurement:
             if isinstance(finding, dict)
         )
 
+    def _validation_context(self, state: TransactionState) -> dict[str, object] | None:
+        try:
+            return load_validation_context(
+                self.root, state.run_id, currentness=state.repair_iterations,
+                central_database=self.store.central_database,
+            )
+        except EngineeringStorageError:
+            return None
+
+    def _current_local_validation_passes(self, state: TransactionState) -> bool:
+        return _has_current_local_validation_evidence(state, self._validation_context(state))
+
     def _publish_first_implementation_pull_request(
         self, state: TransactionState, implementation: AgentResult,
     ) -> tuple[TransactionState, AgentResult]:
@@ -1949,6 +2130,11 @@ Local repository validation gate — read-only measurement:
         """
         if state.execution_mode == "GENESIS" or state.pull_request or implementation.pull_request:
             return state, implementation
+        if not self._current_local_validation_passes(state):
+            return self._save_terminal(
+                state, "BLOCKED", "implementation_publication_assurance_required",
+                "First implementation PR publication requires current passing terminal receipts for the reviewed candidate.",
+            ), implementation
         if not self._current_assurance_passes(state):
             return self._save_terminal(state, "BLOCKED", "implementation_publication_assurance_required", "First implementation PR publication requires current passing quality and security assurance."), implementation
         try:

@@ -9,7 +9,7 @@ moved the canonical source projections forward to 2.3.2 without rewriting that
 published identity. The observed Mac has one 2.3.1 server process/data root and
 a distinct 2.3.0 PlatformIO PATH candidate. This is explicit-path investigation
 evidence, not proof of Mac-wide uniqueness and not authorization to remove or
-cut over either installation. CENTRAL schema 56, engineering-storage schema 41
+cut over either installation. CENTRAL schema 56, engineering-storage schema 42
 and repository-attachment schema 1.0 remain separate contracts.
 
 | Increment | Owning repository | Bounded result | Dependencies / acceptance |
@@ -64,6 +64,23 @@ cleanup model in their own release authorities. Their artifacts, versions and
 receipts remain product-specific. A production publication or an actual Mac
 installation/update remains outside this source order until separately
 authorized.
+
+## First-canary strict current-control validation slice
+
+`STRICT_CURRENT_CONTROL_VALIDATION_SLICE = SOURCE_DELIVERED / QUALIFIED`.
+Normal Managed first-publication eligibility now consumes one append-only,
+candidate-bound validation-profile identity for the current run-wide repair
+ordinal. The identity covers the selected tier, profile version/reference and
+selection source, exact required-control set and launcher bindings. Every
+required control must have one current terminal receipt with `EXECUTED`,
+`PASS`, exit code zero and valid start/end timestamps; provider summaries and
+Quality/Security passes cannot replace that evidence.
+
+This is only the minimal first-canary product-capability closure. It creates no
+submission, configuration, grant, installation, release or canary run. PR #175
+remains `OPEN_DRAFT_PARKED_NOT_QUALIFIED`; its candidate-adoption,
+publication-recovery and remaining scope are
+`PARKED_NON_BLOCKER_FOR_FIRST_CANARY` and were not changed or qualified here.
 
 ## Subagent orchestration and efficiency — retained audit and planned lane
 

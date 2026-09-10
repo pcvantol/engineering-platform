@@ -1,7 +1,7 @@
 from __future__ import annotations
 import unittest
 from engineering_platform.validation_profile import (
-    ValidationProfileResolutionError, browser_dashboard_required, classify, localization_required, phase_for_branch, profile_control_bindings,
+    ValidationProfileResolutionError, browser_dashboard_required, classify, localization_required, matching_control_binding, phase_for_branch, profile_control_bindings,
     producer_profile_payload, resolve_producer_profile,
 )
 
@@ -61,3 +61,18 @@ class ValidationProfileTests(unittest.TestCase):
         })
         with self.assertRaises(ValidationProfileResolutionError):
             producer_profile_payload("DASHBOARD ")
+
+    def test_required_control_binding_matches_only_its_exact_standalone_command(self) -> None:
+        bindings = profile_control_bindings(classify(["custom/mixed-scope.txt"]))
+        full = bindings[-1]
+        self.assertEqual(
+            matching_control_binding("python3 -m unittest discover", bindings), full,
+        )
+        for command in (
+            "python3 -m unittest tests.engineering.test_storage",
+            "PYTHONPATH=src python3 -m unittest discover",
+            "python3 -m unittest discover && true",
+            "python3 -m unittest discover\ngit diff --check",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(matching_control_binding(command, bindings))

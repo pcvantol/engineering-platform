@@ -79,8 +79,16 @@ def create_repository(path: Path, *, origin: Path | None = None) -> None:
     subprocess.run(("git", "init", "-q", "-b", "main", str(path)), check=True)  # nosec B603
     git(path, "config", "user.email", "qualification@example.invalid")
     git(path, "config", "user.name", "Installed qualification")
+    (path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
     (path / "BOOTSTRAP.md").write_text("# Installed qualification\n", encoding="utf-8")
-    git(path, "add", "BOOTSTRAP.md")
+    (path / "test_qualification_fixture.py").write_text(
+        "import unittest\n\n"
+        "class QualificationFixtureTest(unittest.TestCase):\n"
+        "    def test_fixture_is_executable(self):\n"
+        "        self.assertTrue(True)\n",
+        encoding="utf-8",
+    )
+    git(path, "add", ".gitignore", "BOOTSTRAP.md", "test_qualification_fixture.py")
     git(path, "commit", "-qm", "initial qualification repository")
     if origin is not None:
         subprocess.run(("git", "init", "-q", "--bare", str(origin)), check=True)  # nosec B603

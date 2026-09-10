@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 from .capability_review import MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION, ReviewerResult
@@ -19,9 +20,13 @@ from .execution_models import AgentResult, PullRequestEvidence
 class DeterministicQualificationAgent:
     def __init__(self) -> None:
         self._process_callback = None
+        self._command_callback = None
 
     def set_process_callback(self, callback: object) -> None:
         self._process_callback = callback
+
+    def set_command_callback(self, callback: object) -> None:
+        self._command_callback = callback
 
     def wait_for_controlled_interruption_arm(self, _root: Path, state: object) -> None:
         """Offer the installed recovery E2E one bounded, non-production arm window."""
@@ -160,9 +165,27 @@ class DeterministicQualificationAgent:
         """
         branch = subprocess.run(("git", "-C", str(root), "branch", "--show-current"), check=True, text=True, capture_output=True).stdout.strip()
         sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
+        outcomes = []
+        commands = (
+            ("git diff --check", ("git", "diff", "--check")),
+            ("python3 -m unittest discover", (sys.executable, "-m", "unittest", "discover")),
+        )
+        for ordinal, (identity, command) in enumerate(commands, start=1):
+            command_id = f"deterministic-validation-{ordinal}"
+            if callable(self._command_callback):
+                self._command_callback("started", command_id, identity)
+            completed = subprocess.run(
+                command, cwd=root, check=False, text=True, capture_output=True,
+            )
+            if callable(self._command_callback):
+                self._command_callback("completed", command_id, "", completed.returncode)
+            outcomes.append({
+                "command": identity,
+                "result": "passed" if completed.returncode == 0 else "failed",
+            })
         return AgentResult(
-            "COMPLETE", branch=branch, commit_sha=sha,
-            validation_evidence=({"command": "deterministic installed validation", "result": "passed"},),
+            "COMPLETE" if all(item["result"] == "passed" for item in outcomes) else "FAILED",
+            branch=branch, commit_sha=sha, validation_evidence=tuple(outcomes),
         )
     def review(self, _root: Path, selection: object, _objective: str, evidence: object = None) -> ReviewerResult:
         return ReviewerResult(

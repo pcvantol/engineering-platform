@@ -21,7 +21,8 @@ from .models import (
     EvidenceReference,
     require_compatible_version,
 )
-from ..storage import EngineeringStorageError, database_path
+from ..storage import EngineeringStorageError, database_path, load_validation_context
+from ..validation_profile import strict_required_controls_pass
 
 
 UNAVAILABLE = "UNAVAILABLE"
@@ -137,65 +138,51 @@ def _qualification_evidence(connection: sqlite3.Connection, run_id: str) -> tupl
             "SELECT submission_id,fresh_submission,retry_parent_run_id,resume_parent_run_id,recorded_at "
             "FROM execution_run_qualification_context WHERE run_id=?", (run_id,)
         ).fetchone()
-        profile = connection.execute(
-            "SELECT selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at "
-            "FROM execution_validation_profiles WHERE run_id=?", (run_id,)
-        ).fetchone()
-        controls = connection.execute(
-            "SELECT validation_id,category,required_for_profile,execution_status,result,observed_at,currentness "
-            "FROM execution_validation_control_results WHERE run_id=? ORDER BY id", (run_id,)
-        ).fetchall()
-        commands = connection.execute(
-            "SELECT inv.validation_id,inv.category,inv.required_for_profile,'EXECUTED',"
-            "COALESCE(term.result,'UNAVAILABLE'),COALESCE(term.completed_at,inv.started_at),inv.currentness "
-            "FROM execution_validation_command_invocations inv LEFT JOIN execution_validation_command_terminals term "
-            "ON term.run_id=inv.run_id AND term.command_id=inv.command_id WHERE inv.run_id=? ORDER BY inv.started_at",
-            (run_id,),
-        ).fetchall()
+        database = Path(str(connection.execute("PRAGMA database_list").fetchone()[2]))
+        validation = load_validation_context(Path("."), run_id, central_database=database)
     except sqlite3.OperationalError:
         return None, None
+    except EngineeringStorageError:
+        validation = None
     lineage_projection = None if lineage is None else {
         "submission_id": lineage[0], "fresh_submission": bool(lineage[1]),
         "retry_parent": lineage[2], "resume_parent": lineage[3], "recorded_at": lineage[4],
     }
-    if profile is None:
+    if validation is None:
         return lineage_projection, None
-    try:
-        payload = json.loads(profile[2])
-        required = payload.get("validation_ids", [])
-    except (AttributeError, TypeError, json.JSONDecodeError):
-        return lineage_projection, None
-    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
-        return lineage_projection, None
-    current: dict[str, sqlite3.Row] = {}
-    conflicts: set[str] = set()
-    for row in (*controls, *commands):
-        validation_id = str(row[0])
-        existing = current.get(validation_id)
-        if existing is None or int(row[6]) > int(existing[6]):
-            current[validation_id] = row
-        elif int(row[6]) == int(existing[6]) and row[4] != existing[4]:
-            conflicts.add(validation_id)
-    def result_for(validation_id: str) -> object:
-        if validation_id in conflicts:
-            return "UNRESOLVED"
-        row = current.get(validation_id)
-        return row[4] if row is not None else None
-    results = [result_for(validation_id) for validation_id in required]
-    required_state = "FAIL" if any(result == "FAIL" for result in results) else (
-        "PASS" if results and all(result == "PASS" for result in results) else "UNRESOLVED"
+    required = validation["required_validation_controls"]
+    controls = validation["controls"]
+    candidate = validation.get("candidate_sha")
+    currentness = validation.get("currentness")
+    strict_pass = (
+        isinstance(candidate, str) and isinstance(currentness, int)
+        and strict_required_controls_pass(
+            validation, candidate_sha=candidate, currentness=currentness,
+        )
+    )
+    results = [controls.get(item, {}).get("result") for item in required]
+    required_state = (
+        "PASS" if strict_pass else "FAIL" if any(result == "FAIL" for result in results)
+        else "UNRESOLVED"
     )
     return lineage_projection, {
-        "selected_validation_tier": profile[0], "validation_profile_version": profile[1],
-        "profile_reference": payload.get("profile_reference", UNAVAILABLE),
-        "profile_selection_source": payload.get("profile_selection_source", UNAVAILABLE),
-        "required_validation_controls": required, "required_validation_state": required_state,
-        "control_bindings": payload.get("control_bindings", UNAVAILABLE),
-        "recorded_at": profile[3],
+        "selected_validation_tier": validation["selected_validation_tier"],
+        "validation_profile_version": validation["validation_profile_version"],
+        "profile_reference": validation["profile_reference"],
+        "profile_selection_source": validation["profile_selection_source"],
+        "profile_digest": validation.get("profile_digest") or UNAVAILABLE,
+        "candidate_sha": candidate or UNAVAILABLE,
+        "currentness": currentness if isinstance(currentness, int) else UNAVAILABLE,
+        "required_validation_controls": list(required), "required_validation_state": required_state,
+        "control_bindings": list(validation["control_bindings"]),
+        "recorded_at": validation["recorded_at"],
         "controls": [
-            {"validation_id": validation_id, "category": row[1], "required_for_profile": bool(row[2]),
-             "execution_status": row[3], "result": result_for(validation_id), "observed_at": row[5]}
-            for validation_id, row in sorted(current.items())
+            {"validation_id": validation_id, "category": row.get("category", UNAVAILABLE),
+             "required_for_profile": row.get("required_for_profile", False),
+             "execution_status": row.get("execution_status", "UNRESOLVED"),
+             "result": row.get("result", "UNRESOLVED"),
+             "observed_at": row.get("observed_at", UNAVAILABLE)}
+            for validation_id, row in sorted(controls.items())
         ],
     }
 
