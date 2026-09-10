@@ -129,7 +129,7 @@ class FakeRepository:
 
 
 class FakeGitHub:
-    def __init__(self, responses: list[PullRequestEvidence | RunnerError], *, branch_response: PullRequestEvidence | None = None) -> None:
+    def __init__(self, responses: list[PullRequestEvidence | RunnerError], *, branch_response: PullRequestEvidence | RunnerError | None = None) -> None:
         self.responses = responses
         self.branch_response = branch_response
         self.calls = 0
@@ -147,6 +147,8 @@ class FakeGitHub:
 
     def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None:
         self.branch_calls.append(branch)
+        if isinstance(self.branch_response, RunnerError):
+            raise self.branch_response
         return self.branch_response
 
     def ready(self, number: int) -> None:
@@ -3121,6 +3123,87 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertTrue(blocked.terminal)
         self.assertEqual(blocked.next_action, "implementation_publication_evidence_invalid")
         self.assertEqual(agent.prompts, [])
+
+    def test_publication_readback_error_blocks_before_create_dispatch(self) -> None:
+        run_id, sha, branch = "publication-readback-error", "a" * 40, "codex/publication-readback-error"
+        validation_profile_digest = self._record_passing_validation_profile(run_id)
+        profile = {
+            "version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+            "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+            "validation_profile_digest": validation_profile_digest,
+        }
+        reviews = tuple({
+            "reviewer": role, "status": "PASS", "candidate_sha": sha,
+            "profile_digest": profile["digest"], "findings": [],
+        } for role in ("quality", "security"))
+        state = TransactionState(
+            run_id, "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
+            branch=branch, owner_authorized=True, last_verified_sha=sha,
+            validation_evidence=({"command": "python -m unittest discover", "result": "passed"},),
+            local_validation_audit=({"outcome": "validated"},),
+            assurance_profile=profile, assurance_reviews=reviews,
+        )
+        agent = FakeAgent(AgentResult("COMPLETE", branch, 72, commit_sha=sha))
+        blocked, _ = EngineeringRunner(
+            self.root, self.store, FakeRepository(branch=branch),
+            FakeGitHub([], branch_response=RunnerError("GitHub readback unavailable")), agent, lambda _: None,
+        )._publish_first_implementation_pull_request(
+            state, AgentResult("COMPLETE", branch, commit_sha=sha),
+        )
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "implementation_publication_evidence_invalid")
+        self.assertIn("not dispatched", blocked.diagnostic)
+        self.assertEqual(agent.prompts, [])
+
+    def test_publication_acknowledgement_readback_error_blocks_without_retry(self) -> None:
+        run_id, sha, branch = "publication-ack-readback-error", "a" * 40, "codex/publication-ack-error"
+        validation_profile_digest = self._record_passing_validation_profile(run_id)
+        profile = {
+            "version": "validation-profile@1.0", "digest": "sha256:" + "b" * 64,
+            "criteria_digest": "sha256:" + "c" * 64, "candidate_sha": sha,
+            "validation_profile_digest": validation_profile_digest,
+        }
+        reviews = tuple({
+            "reviewer": role, "status": "PASS", "candidate_sha": sha,
+            "profile_digest": profile["digest"], "findings": [],
+        } for role in ("quality", "security"))
+        state = TransactionState(
+            run_id, "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
+            branch=branch, owner_authorized=True, last_verified_sha=sha,
+            validation_evidence=({"command": "python -m unittest discover", "result": "passed"},),
+            local_validation_audit=({"outcome": "validated"},),
+            assurance_profile=profile, assurance_reviews=reviews,
+        )
+
+        class InterruptedPublicationAgent(FakeAgent):
+            def invoke(self, root: Path, prompt: str) -> AgentResult:
+                self.roots.append(root)
+                self.prompts.append(prompt)
+                raise CodexInvocationError(
+                    "Provider acknowledgement was interrupted.", "redacted provider detail",
+                    next_action="NONE", terminal_condition="provider_turn_interrupted",
+                    interruption_reason="interrupted",
+                )
+
+        class UncertainReadbackGitHub(FakeGitHub):
+            def pull_request_for_head_branch(self, requested: str) -> PullRequestEvidence | None:
+                self.branch_calls.append(requested)
+                if len(self.branch_calls) == 1:
+                    return None
+                raise RunnerError("GitHub acknowledgement readback unavailable")
+
+        agent = InterruptedPublicationAgent(AgentResult("BLOCKED"))
+        github = UncertainReadbackGitHub([])
+        blocked, _ = EngineeringRunner(
+            self.root, self.store, FakeRepository(branch=branch), github, agent, lambda _: None,
+        )._publish_first_implementation_pull_request(
+            state, AgentResult("COMPLETE", branch, commit_sha=sha),
+        )
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "implementation_publication_evidence_invalid")
+        self.assertIn("reconciled before any retry", blocked.diagnostic)
+        self.assertEqual(len(agent.prompts), 1)
+        self.assertEqual(github.branch_calls, [branch, branch])
 
     def test_malformed_mandatory_review_is_unresolved_not_an_empty_pass(self) -> None:
         class MalformedReviewer(FakeAgent):

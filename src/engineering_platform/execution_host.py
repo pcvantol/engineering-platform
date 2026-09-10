@@ -2257,7 +2257,10 @@ First implementation pull-request publication gate:
             try:
                 existing = self.github.pull_request_for_head_branch(before.branch)
             except RunnerError:
-                existing = None
+                return self._save_terminal(
+                    publication, "BLOCKED", "implementation_publication_evidence_invalid",
+                    "Pre-create pull-request readback was unavailable or ambiguous; first publication was not dispatched.",
+                ), implementation
             if existing is not None:
                 if not (
                     existing.state == "OPEN"
@@ -2289,7 +2292,10 @@ First implementation pull-request publication gate:
                     try:
                         recovered = self.github.pull_request_for_head_branch(before.branch)
                     except RunnerError:
-                        recovered = None
+                        return self._save_terminal(
+                            publication, "BLOCKED", "implementation_publication_evidence_invalid",
+                            "Pull-request acknowledgement readback was unavailable or ambiguous; publication must be reconciled before any retry.",
+                        ), implementation
                     if (
                         recovered is not None
                         and recovered.state == "OPEN"
