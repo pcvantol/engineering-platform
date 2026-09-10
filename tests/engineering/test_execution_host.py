@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import json
 import os
@@ -1704,6 +1705,103 @@ class LocalAgentRunnerTest(unittest.TestCase):
         digest = execution_host._validation_profile_digest(context)
         assert digest is not None
         return digest
+
+    def test_phase_policy_helpers_fail_closed_for_incomplete_trusted_state(self) -> None:
+        sha = "a" * 40
+        context: dict[str, object] = {
+            "selected_validation_tier": "FULL",
+            "validation_profile_version": execution_host.VALIDATION_PROFILE_VERSION,
+            "profile_reference": "validation-profile-registry:FULL@1.0",
+            "profile_selection_source": "diff_classification",
+            "required_validation_controls": ("repository_suite",),
+            "control_bindings": ({"validation_id": "repository_suite"},),
+            "controls": {
+                "repository_suite": {
+                    "required_for_profile": True,
+                    "execution_status": "EXECUTED",
+                    "result": "PASS",
+                    "currentness": 0,
+                    "exit_code": 0,
+                    "started_at": "2026-09-10T00:00:00+00:00",
+                    "ended_at": "2026-09-10T00:00:01+00:00",
+                },
+            },
+        }
+        validation_digest = execution_host._validation_profile_digest(context)
+        assert validation_digest is not None
+        assurance_digest = "sha256:" + "b" * 64
+        profile = {
+            "version": "validation-profile@1.0",
+            "digest": assurance_digest,
+            "candidate_sha": sha,
+            "criteria_digest": "sha256:" + "c" * 64,
+            "validation_profile_digest": validation_digest,
+        }
+        reviews = tuple(
+            {
+                "reviewer": role,
+                "status": "PASS",
+                "candidate_sha": sha,
+                "profile_digest": assurance_digest,
+                "invocation_id": role,
+                "findings": [],
+            }
+            for role in ("quality", "security")
+        )
+        state = TransactionState(
+            "phase-policy", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            owner_authorized=True, execution_mode="MANAGED", transaction_kind="IMPLEMENTATION",
+            branch="codex/candidate", last_verified_sha=sha,
+            next_action="publish_first_implementation_pull_request",
+            local_validation_audit=({"outcome": "validated"},),
+            assurance_profile=profile, assurance_reviews=reviews,
+        )
+
+        self.assertTrue(execution_host._has_current_assurance_evidence(state))
+        self.assertTrue(execution_host._has_current_local_validation_evidence(state, context))
+        self.assertTrue(execution_host._required_validation_controls_pass(state, context))
+        self.assertEqual(execution_host._managed_prompt_phase(state, context), "FIRST_PUBLICATION")
+
+        self.assertFalse(execution_host._has_current_assurance_evidence(replace(state, assurance_profile=None)))
+        self.assertFalse(execution_host._has_current_assurance_evidence(
+            replace(state, assurance_profile={"candidate_sha": sha}),
+        ))
+        blocking = {**reviews[0], "findings": [{"blocking": True, "disposition": "OPEN"}]}
+        self.assertFalse(execution_host._has_current_assurance_evidence(
+            replace(state, assurance_reviews=(blocking, reviews[1])),
+        ))
+        self.assertFalse(execution_host._has_current_local_validation_evidence(
+            replace(state, last_verified_sha="d" * 40), context,
+        ))
+        self.assertFalse(execution_host._has_current_local_validation_evidence(
+            replace(state, local_validation_audit=()), context,
+        ))
+        self.assertFalse(execution_host._has_current_local_validation_evidence(
+            replace(state, assurance_profile={**profile, "validation_profile_digest": "sha256:" + "e" * 64}), context,
+        ))
+        self.assertFalse(execution_host._required_validation_controls_pass(state, None))
+        self.assertFalse(execution_host._required_validation_controls_pass(
+            state, {**context, "controls": {"repository_suite": {"result": "PASS"}}},
+        ))
+        self.assertIsNone(execution_host._validation_profile_digest(
+            {**context, "profile_reference": None},
+        ))
+
+        self.assertEqual(execution_host._managed_prompt_phase(None), "UNSPECIFIED")
+        self.assertEqual(execution_host._managed_prompt_phase(replace(state, execution_mode="GENESIS")), "GENESIS")
+        self.assertEqual(execution_host._managed_prompt_phase(replace(state, transaction_kind="RECONCILIATION")), "RECONCILIATION")
+        self.assertEqual(execution_host._managed_prompt_phase(replace(state, action_intent="VALIDATION_ONLY")), "VALIDATION_ONLY")
+        self.assertEqual(execution_host._managed_prompt_phase(replace(state, transaction_kind="FINALIZATION")), "FINALIZATION")
+        self.assertEqual(execution_host._managed_prompt_phase(replace(state, phase="LOCAL_REPOSITORY_VALIDATION")), "LOCAL_VALIDATION")
+        self.assertEqual(execution_host._managed_prompt_phase(replace(state, phase="QUALITY_CONTROL_AGENT")), "ASSURANCE_REVIEW")
+        self.assertEqual(execution_host._managed_prompt_phase(replace(state, phase="REPAIR_AGENT", pull_request=None)), "PREPUBLICATION_REPAIR")
+        self.assertEqual(execution_host._managed_prompt_phase(replace(state, phase="REPAIR_AGENT", pull_request=101)), "EXISTING_PR_REPAIR")
+        self.assertEqual(execution_host._managed_prompt_phase(
+            replace(state, next_action="invoke_agent"), context,
+        ), "INITIAL_IMPLEMENTATION")
+        self.assertEqual(execution_host._managed_prompt_phase(
+            replace(state, execution_mode="UNKNOWN", transaction_kind="OTHER"), context,
+        ), "UNSPECIFIED")
 
     def test_new_run_initializes_and_records_canonical_prompt(self) -> None:
         quality_evidence = ({"activity": "TEST_COVERAGE", "result": "Added focused regression coverage."},)
