@@ -177,6 +177,10 @@ def _tables(connection: sqlite3.Connection) -> set[str]:
     return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
+def _views(connection: sqlite3.Connection) -> set[str]:
+    return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='view'")}
+
+
 def _schema(connection: sqlite3.Connection, tables: set[str] | None = None) -> int | None:
     tables = tables if tables is not None else _tables(connection)
     if "engineering_schema_migrations" not in tables:
@@ -1000,14 +1004,16 @@ def managed_lineage_attestation(baseline: Path, central: Path) -> dict[str, obje
             categories[_lineage_category(table, change)] += 1
     with _readonly(central) as connection:
         tables = _tables(connection)
+        views = _views(connection)
         producers: dict[str, set[str]] = {}
         if "execution_submissions" in tables:
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(execution_submissions)")}
             if {"execution_run_id", "producer_type"} <= columns:
                 for run_id, producer_type in connection.execute("SELECT execution_run_id,producer_type FROM execution_submissions WHERE execution_run_id IS NOT NULL"):
                     producers.setdefault(str(run_id), set()).add(str(producer_type))
-        if "execution_submission_links" in tables and "execution_submissions" in tables:
-            for run_id, producer_type in connection.execute("SELECT link.run_id,submission.producer_type FROM execution_submission_links AS link JOIN execution_submissions AS submission ON submission.submission_id=link.submission_id"):
+        submission_links = "execution_submission_run_links" if "execution_submission_run_links" in views else "execution_submission_links"
+        if submission_links in (tables | views) and "execution_submissions" in tables:
+            for run_id, producer_type in connection.execute(f"SELECT link.run_id,submission.producer_type FROM {submission_links} AS link JOIN execution_submissions AS submission ON submission.submission_id=link.submission_id"):
                 producers.setdefault(str(run_id), set()).add(str(producer_type))
     nodes = {(table, run_id) for table, runs in changed_runs.items() for run_id in runs}
     # A new submission is itself a canonical root even before a run link has

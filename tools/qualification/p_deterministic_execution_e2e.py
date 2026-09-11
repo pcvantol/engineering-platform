@@ -190,7 +190,8 @@ def verify_controlled_recovery(data_root: Path, checkout: Path, run_id: str, bas
         raise RuntimeError(f"CONTROLLED_RECOVERY_LINEAGE_INVALID: {recovery}")
     with urlopen(base + f"/api/prompt-history?project={project}", timeout=5) as response:  # nosec B310
         history = json.loads(response.read())
-    if not isinstance(history, list) or not any(item.get("run_id") == run_id for item in history if isinstance(item, dict)):
+    runs = history.get("runs") if isinstance(history, dict) else None
+    if not isinstance(runs, list) or not any(item.get("run_id") == run_id for item in runs if isinstance(item, dict)):
         raise RuntimeError("CONTROLLED_RECOVERY_DASHBOARD_HISTORY_UNAVAILABLE")
     return {"run_id": run_id, "control": "CONSUMED", "recovery": "RECOVERED", "dashboard_history": "VISIBLE"}
 

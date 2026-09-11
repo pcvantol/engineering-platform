@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from engineering_platform import local_repository_binding, parity_lifecycle_dispatcher, server, submission_service
 from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_timing import phase_spans
 from engineering_platform.parity_lifecycle_dispatcher import (
     ParityLifecycleDispatchError,
     ParityLifecycleDispatcher,
@@ -123,6 +124,24 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(
                 project, project, "canary", "HUMAN", "1", prompt, "HTTP",
+            )).submission_id
+
+    def _forge_submission(self, project: str, correlation_id: str) -> str:
+        constraints = {
+            "forge_execution": {
+                "contract_version": "1.0", "host_id": "host-alpha", "repository_id": project,
+                "correlation_id": correlation_id, "mission_id": "MISSION-0006",
+                "mission_revision": "5", "intent_id": "intent-0006", "intent_revision": "1",
+                "action_id": "implement-and-test-durable-status-projection",
+                "runtime_prompt": {"id": "prompt-0006", "content_digest": "sha256:" + "a" * 64},
+                "retry_of_correlation_id": None,
+            },
+        }
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            return submission_service.submit(connection, submission_service.SubmissionRequest(
+                project, project, "forge", "FORGE", "2.7.2", "Implement the bounded action.", "HTTP",
+                correlation_id=correlation_id, mission_id="MISSION-0006",
+                engineering_action_id="implement-and-test-durable-status-projection", constraints=constraints,
             )).submission_id
 
     def test_claims_one_submission_once_and_preserves_central_run_linkage(self) -> None:
@@ -251,6 +270,72 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(candidate.submission_id, retry.submission_id)
         self.assertIn(f"Retry-Of: {receipt.run_id}", candidate.prompt)
         self.assertFalse(duplicate)
+
+    def test_forge_retry_reuses_its_correlation_through_explicit_attempt_lineage(self) -> None:
+        """A blocked Forge run can retry without changing its producer identity."""
+        original = self._forge_submission("alpha", "forge-runtime-correlation-0006")
+        failing = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            first = failing.dispatch(original)
+        retry = retry_operator_gate(self.data, project_id="alpha", run_id=first.run_id)
+        succeeding = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            second = succeeding.dispatch(retry.submission_id)
+        self.assertEqual(second.state, "COMPLETE")
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            attempts = connection.execute(
+                "SELECT submission_id,canonical_submission_id,retry_parent_submission_id "
+                "FROM execution_submission_attempts ORDER BY recorded_at,submission_id"
+            ).fetchall()
+            links = connection.execute(
+                "SELECT submission_id,run_id FROM execution_submission_attempt_links ORDER BY submission_id"
+            ).fetchall()
+            lineage = connection.execute(
+                "SELECT submission_id,fresh_submission,retry_parent_run_id "
+                "FROM execution_run_qualification_context WHERE run_id=?", (second.run_id,)
+            ).fetchone()
+        self.assertIn((original, original, None), attempts)
+        self.assertIn((retry.submission_id, original, original), attempts)
+        self.assertIn((original, first.run_id), links)
+        self.assertIn((retry.submission_id, second.run_id), links)
+        self.assertEqual(lineage, (retry.submission_id, 0, first.run_id))
+        database = self.data / server.SERVER_DATABASE_FILENAME
+        with sqlite3.connect(database) as connection:
+            submitted_at, claimed_at = connection.execute(
+                "SELECT submission.created_at,dispatch.claimed_at FROM ep_submissions AS submission "
+                "JOIN ep_parity_lifecycle_dispatches AS dispatch ON dispatch.submission_id=submission.submission_id "
+                "WHERE dispatch.run_id=?", (second.run_id,),
+            ).fetchone()
+        queue_wait = phase_spans(self.roots["alpha"], second.run_id, central_database=database)[0]
+        self.assertEqual(queue_wait["phase_name"], "QUEUE_WAIT")
+        self.assertEqual(queue_wait["started_at"], submitted_at)
+        self.assertEqual(queue_wait["completed_at"], claimed_at)
+
+    def test_uncorrelated_retry_reuses_its_parent_submission_lineage(self) -> None:
+        """Retained non-Forge retries remain executable after the lineage repair."""
+        original = self._submission("alpha")
+        failing = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            first = failing.dispatch(original)
+        retry = retry_operator_gate(self.data, project_id="alpha", run_id=first.run_id)
+        succeeding = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            second = succeeding.dispatch(retry.submission_id)
+        self.assertEqual(second.state, "COMPLETE")
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            attempt = connection.execute(
+                "SELECT canonical_submission_id,retry_parent_submission_id "
+                "FROM execution_submission_attempts WHERE submission_id=?", (retry.submission_id,)
+            ).fetchone()
+        self.assertEqual(attempt, (original, original))
 
     def test_genesis_mode_is_forwarded_to_the_preserved_host_input(self) -> None:
         submission = self._submission("alpha", "Execution Mode: Genesis\nTarget repository: /tmp/target\n")

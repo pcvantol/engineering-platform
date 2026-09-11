@@ -22,7 +22,7 @@ import sys
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
 CENTRAL_OPERATIONAL_DATABASE_FILENAME = "epdata.sqlite"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 42
+ENGINEERING_STORAGE_SCHEMA_VERSION = 43
 STORE_AUTHORITY_POINTER = "store-authority.json"
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
@@ -1192,6 +1192,48 @@ def _schema_v42(connection: sqlite3.Connection) -> None:
         )
 
 
+def _schema_v43(connection: sqlite3.Connection) -> None:
+    """Retain one producer identity across explicitly linked retry attempts.
+
+    ``execution_submissions`` keeps the immutable producer envelope for the
+    original accepted submission. A CENTRAL retry is a distinct submission and
+    run, but it deliberately retains the producer correlation.
+    """
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_submission_attempts ("
+        "submission_id TEXT PRIMARY KEY,"
+        "canonical_submission_id TEXT NOT NULL REFERENCES execution_submissions(submission_id),"
+        "retry_parent_submission_id TEXT REFERENCES execution_submission_attempts(submission_id),"
+        "recorded_at TEXT NOT NULL,"
+        "CHECK((retry_parent_submission_id IS NULL AND submission_id=canonical_submission_id) "
+        "OR retry_parent_submission_id IS NOT NULL)"
+        ")"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_submission_attempt_links ("
+        "submission_id TEXT PRIMARY KEY REFERENCES execution_submission_attempts(submission_id),"
+        "run_id TEXT NOT NULL,linked_at TEXT NOT NULL,UNIQUE(run_id)"
+        ")"
+    )
+    connection.execute(
+        "INSERT OR IGNORE INTO execution_submission_attempts("
+        "submission_id,canonical_submission_id,retry_parent_submission_id,recorded_at) "
+        "SELECT submission_id,submission_id,NULL,received_at FROM execution_submissions"
+    )
+    connection.execute(
+        "INSERT OR IGNORE INTO execution_submission_attempt_links(submission_id,run_id,linked_at) "
+        "SELECT submission_id,run_id,linked_at FROM execution_submission_links"
+    )
+    connection.execute(
+        "CREATE VIEW IF NOT EXISTS execution_submission_run_links AS "
+        "SELECT run_id,submission_id FROM execution_submission_links "
+        "UNION "
+        "SELECT link.run_id,attempt.canonical_submission_id "
+        "FROM execution_submission_attempt_links AS link "
+        "JOIN execution_submission_attempts AS attempt ON attempt.submission_id=link.submission_id"
+    )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1281,6 +1323,7 @@ MIGRATIONS: dict[int, Migration] = {
     40: _schema_v40,
     41: _schema_v41,
     42: _schema_v42,
+    43: _schema_v43,
 }
 
 
@@ -1551,7 +1594,8 @@ def record_submission(
     link_run_id: str | None = None,
     execution_context: dict[str, object] | None = None,
     forge_governance_handoff: dict[str, object] | None = None,
-) -> None:
+    retry_parent_submission_id: str | None = None,
+) -> str:
     """Persist the complete producer envelope before an Inbox file is consumed."""
     if not all(isinstance(value, str) and value for value in (submission_id, producer_id, producer_type, prompt_content, received_at)):
         raise EngineeringStorageError("Execution submission identity is invalid.")
@@ -1566,42 +1610,108 @@ def record_submission(
             raise EngineeringStorageError("Execution Context snapshot version is invalid.")
         if handoff_version is not None and not isinstance(handoff_version, str):
             raise EngineeringStorageError("Forge Governance Handoff snapshot version is invalid.")
-        connection.execute(
-            "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,producer_version,contract_version,prompt_content,prompt_metadata,target_identity,original_envelope,correlation_id,mission_id,execution_run_id,received_at,execution_context_snapshot,execution_context_version,engineering_action_id,forge_governance_handoff_snapshot,forge_governance_handoff_version) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(submission_id) DO NOTHING",
-            (submission_id, producer_id, producer_type, producer_version, contract_version, prompt_content,
-             _encoded_payload(prompt_metadata), _encoded_payload(target_identity), encoded_envelope,
-             correlation_id, mission_id, execution_run_id, received_at, encoded_context, context_version, engineering_action_id, encoded_handoff, handoff_version),
-        )
+        if retry_parent_submission_id is not None and (
+            not isinstance(retry_parent_submission_id, str) or not retry_parent_submission_id
+        ):
+            raise EngineeringStorageError("Retry parent submission identity is invalid.")
+        retry_parent = None
+        if retry_parent_submission_id is not None:
+            retry_parent = connection.execute(
+                "SELECT attempt.canonical_submission_id,submission.producer_id "
+                "FROM execution_submission_attempts AS attempt "
+                "JOIN execution_submissions AS submission "
+                "ON submission.submission_id=attempt.canonical_submission_id "
+                "WHERE attempt.submission_id=?",
+                (retry_parent_submission_id,),
+            ).fetchone()
+            if retry_parent is None or str(retry_parent[1]) != producer_id:
+                raise EngineeringStorageError("Retry parent submission lineage is unavailable.")
+        existing_submission = connection.execute(
+            "SELECT submission_id FROM execution_submissions WHERE submission_id=?", (submission_id,)
+        ).fetchone()
+        correlated_submission = None if correlation_id is None else connection.execute(
+            "SELECT submission_id FROM execution_submissions WHERE producer_id=? AND correlation_id=?",
+            (producer_id, correlation_id),
+        ).fetchone()
+        canonical_submission_id = submission_id
+        if existing_submission is not None:
+            if retry_parent is not None and str(retry_parent[0]) != canonical_submission_id:
+                raise EngineeringStorageError("Retry parent submission lineage is unavailable.")
+        elif correlated_submission is not None:
+            canonical_submission_id = str(correlated_submission[0])
+            if retry_parent is None:
+                raise EngineeringStorageError("Producer correlation is already bound to a root submission.")
+            if str(retry_parent[0]) != canonical_submission_id:
+                raise EngineeringStorageError("Retry parent submission lineage is unavailable.")
+        elif retry_parent is not None:
+            canonical_submission_id = str(retry_parent[0])
+        else:
+            connection.execute(
+                "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,producer_version,contract_version,prompt_content,prompt_metadata,target_identity,original_envelope,correlation_id,mission_id,execution_run_id,received_at,execution_context_snapshot,execution_context_version,engineering_action_id,forge_governance_handoff_snapshot,forge_governance_handoff_version) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (submission_id, producer_id, producer_type, producer_version, contract_version, prompt_content,
+                 _encoded_payload(prompt_metadata), _encoded_payload(target_identity), encoded_envelope,
+                 correlation_id, mission_id, execution_run_id, received_at, encoded_context, context_version, engineering_action_id, encoded_handoff, handoff_version),
+            )
+
+        existing_attempt = connection.execute(
+            "SELECT canonical_submission_id,retry_parent_submission_id "
+            "FROM execution_submission_attempts WHERE submission_id=?", (submission_id,)
+        ).fetchone()
+        if existing_attempt is not None:
+            if tuple(existing_attempt) != (canonical_submission_id, retry_parent_submission_id):
+                raise EngineeringStorageError("Execution submission attempt lineage conflicts with retained evidence.")
+        else:
+            if retry_parent is not None:
+                if str(retry_parent[0]) != canonical_submission_id:
+                    raise EngineeringStorageError("Retry parent submission lineage is unavailable.")
+            elif canonical_submission_id != submission_id:
+                raise EngineeringStorageError("Producer correlation retry lineage is required.")
+            connection.execute(
+                "INSERT INTO execution_submission_attempts("
+                "submission_id,canonical_submission_id,retry_parent_submission_id,recorded_at) VALUES(?,?,?,?)",
+                (submission_id, canonical_submission_id, retry_parent_submission_id, received_at),
+            )
         if link_run_id:
-            existing = connection.execute(
-                "SELECT run_id FROM execution_submission_links WHERE submission_id=?",
+            existing_attempt_link = connection.execute(
+                "SELECT run_id FROM execution_submission_attempt_links WHERE submission_id=?",
                 (submission_id,),
             ).fetchone()
-            if existing is not None and existing[0] != link_run_id:
+            if existing_attempt_link is not None and existing_attempt_link[0] != link_run_id:
                 raise EngineeringStorageError("Execution submission is already bound to a different run.")
             connection.execute(
-                "INSERT INTO execution_submission_links(submission_id,run_id,linked_at) VALUES(?,?,?) ON CONFLICT(submission_id) DO NOTHING",
+                "INSERT INTO execution_submission_attempt_links(submission_id,run_id,linked_at) VALUES(?,?,?) ON CONFLICT(submission_id) DO NOTHING",
                 (submission_id, link_run_id, received_at),
             )
-            current = connection.execute(
-                "SELECT execution_run_id FROM execution_submissions WHERE submission_id=?",
-                (submission_id,),
-            ).fetchone()
-            if current is None:
-                raise EngineeringStorageError("Execution submission was not persisted.")
-            if current[0] not in (None, link_run_id):
-                raise EngineeringStorageError("Execution submission is already bound to a different run.")
-            # The link is the crash-safe admission-time binding. The FK-backed
-            # column is filled as soon as its execution-run row exists.
-            if current[0] is None and connection.execute(
-                "SELECT 1 FROM execution_runs WHERE run_id=?", (link_run_id,)
-            ).fetchone():
+            if canonical_submission_id == submission_id:
+                existing = connection.execute(
+                    "SELECT run_id FROM execution_submission_links WHERE submission_id=?",
+                    (submission_id,),
+                ).fetchone()
+                if existing is not None and existing[0] != link_run_id:
+                    raise EngineeringStorageError("Execution submission is already bound to a different run.")
                 connection.execute(
-                    "UPDATE execution_submissions SET execution_run_id=? WHERE submission_id=? AND execution_run_id IS NULL",
-                    (link_run_id, submission_id),
+                    "INSERT INTO execution_submission_links(submission_id,run_id,linked_at) VALUES(?,?,?) ON CONFLICT(submission_id) DO NOTHING",
+                    (submission_id, link_run_id, received_at),
                 )
+                current = connection.execute(
+                    "SELECT execution_run_id FROM execution_submissions WHERE submission_id=?",
+                    (submission_id,),
+                ).fetchone()
+                if current is None:
+                    raise EngineeringStorageError("Execution submission was not persisted.")
+                if current[0] not in (None, link_run_id):
+                    raise EngineeringStorageError("Execution submission is already bound to a different run.")
+                # The link is the crash-safe admission-time binding. The
+                # FK-backed column applies only to the original submission.
+                if current[0] is None and connection.execute(
+                    "SELECT 1 FROM execution_runs WHERE run_id=?", (link_run_id,)
+                ).fetchone():
+                    connection.execute(
+                        "UPDATE execution_submissions SET execution_run_id=? WHERE submission_id=? AND execution_run_id IS NULL",
+                        (link_run_id, submission_id),
+                    )
+        return canonical_submission_id
     finally:
         connection.close()
 
@@ -1681,7 +1791,7 @@ def load_execution_context_snapshot(root: Path, run_id: str) -> dict[str, object
     try:
         row = connection.execute(
             "SELECT submission.execution_context_snapshot FROM execution_submissions AS submission "
-            "JOIN execution_submission_links AS link ON link.submission_id=submission.submission_id "
+            "JOIN execution_submission_run_links AS link ON link.submission_id=submission.submission_id "
             "WHERE link.run_id=?", (run_id,)
         ).fetchone()
     finally:
@@ -1703,7 +1813,7 @@ def load_forge_governance_handoff_snapshot(root: Path, run_id: str) -> dict[str,
     try:
         row = connection.execute(
             "SELECT submission.forge_governance_handoff_snapshot FROM execution_submissions AS submission "
-            "JOIN execution_submission_links AS link ON link.submission_id=submission.submission_id "
+            "JOIN execution_submission_run_links AS link ON link.submission_id=submission.submission_id "
             "WHERE link.run_id=?", (run_id,)
         ).fetchone()
     finally:
@@ -1728,7 +1838,7 @@ def load_submission_for_run(root: Path, run_id: str, *, central_database: Path |
             "submission.producer_version,submission.contract_version,submission.correlation_id,"
             "submission.mission_id,submission.engineering_action_id,submission.execution_context_version,submission.execution_context_snapshot,"
             "submission.forge_governance_handoff_version,submission.forge_governance_handoff_snapshot "
-            "FROM execution_submissions AS submission JOIN execution_submission_links AS link "
+            "FROM execution_submissions AS submission JOIN execution_submission_run_links AS link "
             "ON link.submission_id=submission.submission_id WHERE link.run_id=?", (run_id,)
         ).fetchone()
     finally:
@@ -2514,6 +2624,11 @@ def install_central_operational_compatibility_schema(connection: sqlite3.Connect
         if version == 41 and "ep_installations" in server_owned_tables:
             continue
         MIGRATIONS[version](connection)
+
+
+def install_central_execution_submission_retry_schema(connection: sqlite3.Connection) -> None:
+    """Install only the retry-attempt extension on an established CENTRAL store."""
+    _schema_v43(connection)
 
 
 def activate_storage_schema(root: Path) -> sqlite3.Connection:

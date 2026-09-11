@@ -169,7 +169,7 @@ class ConsumerCredentialNamespaceMigrationTests(unittest.TestCase):
                     ("credential", "consumer", "project", verifier("storage-token"), b"f" * 32, "now"),
                 )
             with storage.activate_storage_schema(root) as connection:
-                self.assertEqual(storage._schema_version(connection), 42)
+                self.assertEqual(storage._schema_version(connection), storage.ENGINEERING_STORAGE_SCHEMA_VERSION)
                 self.assertEqual(
                     connection.execute("SELECT verifier,fingerprint FROM ep_consumer_credentials").fetchone(),
                     (verifier("storage-token"), b"f" * 32),

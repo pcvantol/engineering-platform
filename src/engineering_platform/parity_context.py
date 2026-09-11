@@ -49,6 +49,10 @@ class HistoricalCandidate:
     engineering_action_id: str | None
     constraints: dict[str, object]
     execution_mode: ExecutionMode
+    retry_parent_run_id: str | None
+    retry_parent_submission_id: str | None
+    submitted_at: str
+    claimed_at: str | None
 
     def producer_envelope(self) -> str:
         """Return the existing validated Producer Submission Envelope shape."""
@@ -181,7 +185,7 @@ def historical_candidate(
     """Adapt one canonical submission without allocating a run or dispatching it."""
     row = connection.execute(
         "SELECT project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,"
-        "constraints,correlation_id,mission_id,engineering_action_id,state,admission "
+        "constraints,correlation_id,mission_id,engineering_action_id,state,admission,created_at "
         "FROM ep_submissions WHERE submission_id=?", (submission_id,),
     ).fetchone()
     if row is None:
@@ -197,9 +201,22 @@ def historical_candidate(
     if not isinstance(constraints, dict):
         raise ParityContextError("SUBMISSION_CONSTRAINTS_INVALID")
     mode = execution_mode_for(str(row[6]))
+    retry_parent = connection.execute(
+        "SELECT run_id,submission_id FROM ep_parity_lifecycle_dispatches "
+        "WHERE project_id=? AND repository_id=? AND resolution_submission_id=? "
+        "AND operator_resolution='RETRIED'",
+        (context.project_id, context.repository_id, submission_id),
+    ).fetchone()
+    dispatch = connection.execute(
+        "SELECT claimed_at FROM ep_parity_lifecycle_dispatches WHERE submission_id=?", (submission_id,)
+    ).fetchone()
     return HistoricalCandidate(
         context, submission_id, str(row[6]), str(row[7]), str(row[2]), str(row[3]),
         str(row[4]) if row[4] is not None else None, str(row[5]),
         str(row[9]) if row[9] is not None else None, str(row[10]) if row[10] is not None else None,
         str(row[11]) if row[11] is not None else None, constraints, mode,
+        str(retry_parent[0]) if retry_parent is not None else None,
+        str(retry_parent[1]) if retry_parent is not None else None,
+        str(row[14]),
+        str(dispatch[0]) if dispatch is not None else None,
     )

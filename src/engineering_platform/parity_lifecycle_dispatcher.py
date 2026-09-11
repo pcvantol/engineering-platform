@@ -8,7 +8,7 @@ and telemetry remain owned by their historical implementations.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -22,6 +22,7 @@ from . import central_database, submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
+from .execution_timing import record_queue_wait_from_submission
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .parity_context import HistoricalCandidate, ParityProjectContext, historical_candidate, project_context
 from .platform_bootstrap import provision_runtime_workspace
@@ -315,6 +316,7 @@ class ParityLifecycleDispatcher:
                 "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?, 'CLAIMED', ?,?,?)",
                 (submission_id, context.project_id, context.repository_id, run_id, str(prompt), now, now),
             )
+            candidate = replace(candidate, claimed_at=now)
             installation = connection.execute("SELECT value FROM engineering_metadata WHERE key='installation.instance_id'").fetchone()
             if installation is None:
                 connection.execute("ROLLBACK")
@@ -334,7 +336,7 @@ class ParityLifecycleDispatcher:
         provision_runtime_workspace(repository_root)
         prompt.write_text(candidate.prompt, encoding="utf-8")
         now = _utcnow()
-        record_submission(
+        canonical_submission_id = record_submission(
             repository_root, submission_id=candidate.submission_id,
             producer_id=candidate.producer_id, producer_type=candidate.producer_type,
             producer_version=candidate.producer_version, contract_version="1.0",
@@ -349,17 +351,27 @@ class ParityLifecycleDispatcher:
             target_identity={"project_id": candidate.context.project_id, "repository_id": candidate.context.repository_id, "path": str(repository_root)},
             original_envelope=candidate.producer_envelope(), correlation_id=candidate.correlation_id,
             mission_id=candidate.mission_id, engineering_action_id=candidate.engineering_action_id,
-            link_run_id=run_id, received_at=now,
+            link_run_id=run_id, received_at=candidate.submitted_at,
+            retry_parent_submission_id=candidate.retry_parent_submission_id,
         )
+        if candidate.claimed_at is None:
+            raise ParityLifecycleDispatchError("SUBMISSION_CLAIM_TIMESTAMP_UNAVAILABLE")
+        try:
+            claimed_at = datetime.fromisoformat(candidate.claimed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ParityLifecycleDispatchError("SUBMISSION_CLAIM_TIMESTAMP_INVALID") from error
+        if not record_queue_wait_from_submission(repository_root, run_id, claimed_at=claimed_at):
+            raise ParityLifecycleDispatchError("SUBMISSION_QUEUE_TIMING_UNAVAILABLE")
         record_run_qualification_context(
             repository_root, run_id=run_id, submission_id=candidate.submission_id,
-            fresh_submission=True, retry_parent_run_id=None, resume_parent_run_id=None, recorded_at=now,
+            fresh_submission=candidate.retry_parent_run_id is None,
+            retry_parent_run_id=candidate.retry_parent_run_id, resume_parent_run_id=None, recorded_at=now,
         )
         host = execute_host_preflight(repository_root, run_id=run_id)
         workspace = execute_workspace_preflight(repository_root, candidate.prompt, run_id=run_id)
         capability = execute_capability_preflight(repository_root, candidate.prompt, run_id=run_id)
         decision, _ = _record_provider_free_admission(
-            repository_root, run_id=run_id, submission_id=candidate.submission_id,
+            repository_root, run_id=run_id, submission_id=canonical_submission_id,
             execution_mode=candidate.execution_mode, results=(host, workspace, capability),
         )
         if decision != "PASS":

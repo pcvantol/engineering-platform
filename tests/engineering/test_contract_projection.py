@@ -63,6 +63,22 @@ class ContractProjectionTests(unittest.TestCase):
             self.assertNotIn("absolute/private", payload)
             self.assertNotIn('"implementation_pr": 99', payload)
 
+    def test_retry_run_projects_its_root_submission(self) -> None:
+        """Retry runs retain the safe metadata of their immutable root submission."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_submission(
+                root, submission_id="original", producer_id="forge", producer_type="FORGE",
+                prompt_content="bounded", prompt_metadata={"objective_summary": "Repair the bounded projection"},
+                target_identity={}, original_envelope={}, received_at="2026-01-01T00:00:00+00:00", link_run_id="original-run",
+            )
+            record_submission(
+                root, submission_id="retry", producer_id="forge", producer_type="FORGE",
+                prompt_content="retry", prompt_metadata={}, target_identity={}, original_envelope={},
+                received_at="2026-01-02T00:00:00+00:00", link_run_id="retry-run", retry_parent_submission_id="original",
+            )
+            self.assertEqual(get_run_context(root, "retry-run")["objective"]["objective_summary"], "Repair the bounded projection")
+
     def test_unsafe_objective_metadata_is_omitted_instead_of_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
