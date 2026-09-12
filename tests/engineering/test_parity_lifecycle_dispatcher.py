@@ -385,6 +385,17 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertIn((original, first.run_id), links)
         self.assertIn((retry.submission_id, second.run_id), links)
         self.assertEqual(lineage, (retry.submission_id, 0, first.run_id))
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            parent_readback = submission_service.producer_readback(
+                connection, project_id="alpha", submission_id=original,
+            )
+            retry_readback = submission_service.producer_readback(
+                connection, project_id="alpha", submission_id=retry.submission_id,
+            )
+        self.assertEqual(parent_readback["disposition"]["resolution_submission_id"], retry.submission_id)
+        self.assertEqual(parent_readback["disposition"]["retry_parent_run_id"], None)
+        self.assertEqual(retry_readback["disposition"]["retry_parent_run_id"], first.run_id)
+        self.assertEqual(retry_readback["run"]["id"], second.run_id)
         database = self.data / server.SERVER_DATABASE_FILENAME
         with sqlite3.connect(database) as connection:
             submitted_at, claimed_at = connection.execute(
