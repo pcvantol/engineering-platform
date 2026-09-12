@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 
 from .storage import EngineeringStorageError, load_run_qualification_snapshot, open_storage
 from .agent_state import TransactionState
@@ -121,7 +122,12 @@ def _display_phase(phase: str, checkpoint: dict[str, object]) -> str:
     return "WAIT_FOR_OPERATOR_MERGE"
 
 
-def projection(root: Path, run_id: str | None) -> dict[str, object]:
+def projection(
+    root: Path,
+    run_id: str | None,
+    *,
+    central_database: Path | None = None,
+) -> dict[str, object]:
     """Project persisted lifecycle evidence for exactly one ``run_id``.
 
     Missing event history is explicitly represented as unavailable.  The
@@ -131,7 +137,18 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
     if not isinstance(run_id, str) or not run_id:
         return {"run_id": run_id, "available": False, "steps": []}
     try:
-        connection = open_storage(root, create=False)
+        # CENTRAL Console projections must be able to read the installed
+        # authority directly.  They are never allowed to infer a checkout
+        # store, and this read-only connection must not chmod or migrate the
+        # operational database merely to render a lifecycle path.
+        connection = (
+            open_storage(root, create=False)
+            if central_database is None
+            else sqlite3.connect(
+                f"file:{central_database.resolve()}?mode=ro",
+                uri=True,
+            )
+        )
         try:
             row = connection.execute(
                 "SELECT payload,phase FROM engineering_transactions WHERE run_id=?", (run_id,)
@@ -150,7 +167,7 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             ).fetchall()
         finally:
             connection.close()
-    except EngineeringStorageError:
+    except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
         return {"run_id": run_id, "available": False, "steps": []}
     if row is None:
         return {"run_id": run_id, "available": False, "steps": []}
@@ -426,7 +443,11 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
         # historical checkpoint ledger here: it can be stale after a host
         # interruption, whereas this row is atomically advanced with the
         # replacement provider receipt.
-        provider_recovery = load_recovery_state(root, run_id)
+        provider_recovery = load_recovery_state(
+            root,
+            run_id,
+            central_database=central_database,
+        )
         if provider_recovery is not None:
             recovery = {
                 "kind": "provider_interruption",
@@ -438,7 +459,11 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
                 "maximum_attempts": provider_recovery.get("maximum_attempts"),
                 "lifecycle_phase": provider_recovery.get("lifecycle_phase"),
             }
-    qualification = load_run_qualification_snapshot(root, run_id) or {}
+    qualification = load_run_qualification_snapshot(
+        root,
+        run_id,
+        central_database=central_database,
+    ) or {}
     return {
         "run_id": run_id,
         "execution_mode": mode,

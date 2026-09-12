@@ -480,8 +480,16 @@ function l(id, url, run, last, container) {
   if (last) lastLogRun = run;
   else currentLogRun = run;
   $(id).textContent = t("ui.diagnostic_loading");
-  fetch(url)
-    .then((x) => x.text())
+  fetch(url, { cache: "no-store" })
+    .then(async (response) => {
+      const text = await response.text();
+      const plainText = response.headers.get("content-type")?.toLowerCase().includes("text/plain");
+      // An API failure is structured JSON by contract. It is not diagnostic
+      // prose and must never become user-visible dashboard content, even if a
+      // stale deployment happens to answer a new Console route with JSON.
+      if (!response.ok || !plainText || /^[{[]/.test(text.trim())) throw Error("diagnostic unavailable");
+      return text;
+    })
     .then((x) => {
       const available =
         Boolean(x) &&
@@ -1079,8 +1087,10 @@ function renderWorkspaceGitLock(lock) {
   if (!stale) recoveryStatus.textContent = "";
 }
 function promptStarted(x) {
-  promptStartedAt = x?.started_at ? Date.parse(x.started_at) : undefined;
-  $("promptStarted").textContent = promptStartedAt
+  const startedAt = typeof x === "string" ? x : x?.started_at;
+  const parsed = Date.parse(String(startedAt || ""));
+  promptStartedAt = Number.isFinite(parsed) ? parsed : undefined;
+  $("promptStarted").textContent = Number.isFinite(promptStartedAt)
     ? locale.dateTime(new Date(promptStartedAt))
     : t("format.not_available");
   if (latestStatus) renderEstimate(latestStatus, latestDurationEstimate);
@@ -2516,7 +2526,7 @@ function renderHealthStatus(x, snapshot = {}) {
   if (active)
     l(
       "currentLog",
-      "/api/log/current",
+      "/api/execution-diagnostic/current",
       x.run_id || null,
       false,
       "currentDiagnostic",

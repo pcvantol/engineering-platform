@@ -14,7 +14,8 @@ physical execution binding only; it is not Console authority.
 | CENTRAL database controls | CENTRAL_NATIVE | Already served by `central_database`. |
 | Provider capacity | SERVER_PLATFORM_NATIVE | Already scoped to the installed runtime/CENTRAL policy. |
 | Selected-project queue | CENTRAL_NATIVE | `/api/dashboard-snapshot` reads CENTRAL submissions by `project_id`. |
-| Active execution, history, lifecycle | CENTRAL_NATIVE (read projection) | Snapshot, prompt history and run detail resolve `(project_id, run_id)` from CENTRAL. |
+| Active execution, history, lifecycle | CENTRAL_NATIVE (read projection) | Snapshot, prompt history and run detail resolve `(project_id, run_id)` from CENTRAL; both the active card and terminal detail receive the complete persisted step flow. |
+| Active execution diagnostic | CENTRAL_NATIVE (read projection) | `/api/execution-diagnostic/current` reads the active run's redacted component-log diagnostic and returns only `text/plain`; JSON is never a Console display contract. |
 | Telemetry and timing detail | CENTRAL_NATIVE (read projection) | Daily telemetry and day detail join CENTRAL telemetry to canonical project/run lineage. |
 | Provider usage | SERVER_PLATFORM_NATIVE | Current single-runtime Codex capacity is a Server/CENTRAL projection. |
 | Evidence report downloads | CENTRAL_NATIVE | Report index and artifact path are authorized by `(project_id, run_id)` in CENTRAL. |

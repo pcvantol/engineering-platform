@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform import server
 from engineering_platform.execution_timing import complete_phase, start_phase
 from engineering_platform.execution_lifecycle import intended_path, projection
 
@@ -31,6 +32,27 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(value["steps"][2]["state"], "PENDING")
         self.assertEqual(value["steps"][3]["state"], "ACTIVE")
         self.assertEqual(value["steps"][-1]["state"], "PENDING")
+
+    def test_central_projection_reads_the_installed_lifecycle_without_a_checkout(self) -> None:
+        """The Operations Console retains the complete flow for an active run."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "server"
+            server.initialize(root)
+            database = root / server.SERVER_DATABASE_FILENAME
+            StateStore(
+                root / "no-checkout",
+                central_database=database,
+                emit_local_projection=False,
+            ).save(TransactionState(
+                run_id="central-flow", repository="pcvantol/forge", prompt_path="CENTRAL:submission",
+                phase="EXECUTE_AGENT",
+            ))
+            value = projection(root, "central-flow", central_database=database)
+        self.assertTrue(value["available"])
+        self.assertEqual(value["current_step"], "EXECUTE_AGENT")
+        self.assertEqual(value["steps"][0]["state"], "START")
+        self.assertEqual(value["steps"][3]["state"], "ACTIVE")
+        self.assertGreaterEqual(len(value["steps"]), 10)
 
     def test_terminal_outcome_keeps_later_steps_pending_and_repairs_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

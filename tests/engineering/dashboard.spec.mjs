@@ -7420,6 +7420,32 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
+  test("formats the CENTRAL start time and never renders a JSON diagnostic error", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE" } },
+    }));
+    await page.route("**/api/execution-diagnostic/current", (route) => route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "CENTRAL_CONSOLE_ROUTE_UNAVAILABLE" }),
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "central-active-run",
+      current_phase: "EXECUTE_AGENT",
+    }, { prompt_started: "2026-09-12T12:40:55.376838+00:00" }));
+
+    await expect(page.locator("#promptStarted")).toContainText("12 september 2026");
+    await expect(page.locator("#promptStarted")).not.toContainText("2026-09-12T12:40:55.376838+00:00");
+    await expect(page.locator("#currentDiagnostic")).toBeVisible();
+    await expect(page.locator("#currentLog")).toHaveText(
+      DASHBOARD_MESSAGES.nl["ui.diagnostic_unavailable_active"],
+    );
+    await expect(page.locator("#currentLog")).not.toContainText("CENTRAL_CONSOLE_ROUTE_UNAVAILABLE");
+  });
+
   test("keeps the active prompt category visible for a blocked predecessor", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
