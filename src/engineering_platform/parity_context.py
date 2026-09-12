@@ -207,6 +207,34 @@ def historical_candidate(
         "AND operator_resolution='RETRIED'",
         (context.project_id, context.repository_id, submission_id),
     ).fetchone()
+    retry_parent_submission_id = None
+    if retry_parent is not None:
+        # A pre-lineage retry may have reached CENTRAL and failed before it
+        # wrote its local attempt row.  Retain the immediate parent run for
+        # execution qualification, but anchor the new attempt to the nearest
+        # persisted ancestor that can prove the immutable Producer envelope.
+        lineage_parent = connection.execute(
+            """WITH RECURSIVE retry_ancestors(submission_id,depth) AS (
+                   SELECT submission_id,0 FROM ep_parity_lifecycle_dispatches
+                   WHERE project_id=? AND repository_id=? AND resolution_submission_id=?
+                     AND operator_resolution='RETRIED'
+                   UNION ALL
+                   SELECT dispatch.submission_id,retry_ancestors.depth+1
+                   FROM ep_parity_lifecycle_dispatches AS dispatch
+                   JOIN retry_ancestors ON dispatch.resolution_submission_id=retry_ancestors.submission_id
+                   WHERE dispatch.project_id=? AND dispatch.repository_id=?
+                     AND dispatch.operator_resolution='RETRIED'
+               )
+               SELECT retry_ancestors.submission_id
+               FROM retry_ancestors
+               JOIN execution_submission_attempts AS attempt
+                 ON attempt.submission_id=retry_ancestors.submission_id
+               ORDER BY retry_ancestors.depth
+               LIMIT 1""",
+            (context.project_id, context.repository_id, submission_id,
+             context.project_id, context.repository_id),
+        ).fetchone()
+        retry_parent_submission_id = str(lineage_parent[0]) if lineage_parent is not None else None
     dispatch = connection.execute(
         "SELECT claimed_at FROM ep_parity_lifecycle_dispatches WHERE submission_id=?", (submission_id,)
     ).fetchone()
@@ -216,7 +244,7 @@ def historical_candidate(
         str(row[9]) if row[9] is not None else None, str(row[10]) if row[10] is not None else None,
         str(row[11]) if row[11] is not None else None, constraints, mode,
         str(retry_parent[0]) if retry_parent is not None else None,
-        str(retry_parent[1]) if retry_parent is not None else None,
+        retry_parent_submission_id,
         str(row[14]),
         str(dispatch[0]) if dispatch is not None else None,
     )
