@@ -70,7 +70,9 @@ verified, run-bound delivery evidence: normally a recorded merge revision, or
 an explicit host-verified Managed no-op revision after the unchanged,
 synchronized `main` checkout was rechecked in that transaction. EP never uses
 the ambient checkout `HEAD` as a substitute, and an advisory producer-reported
-SHA cannot override the host's before/after observation. `VALIDATION_ONLY`, `BLOCKED`, and
+SHA cannot override the host's before/after observation. A provider's `WAITING`
+may be terminalized only when it has this exact host-verified no-op shape.
+`VALIDATION_ONLY`, `BLOCKED`, and
 `FAILED` may have valid terminal evidence with a null revision; they are not
 fabricated into successful delivery.
 

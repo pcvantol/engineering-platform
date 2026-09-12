@@ -2231,7 +2231,11 @@ First implementation pull-request publication gate:
         if (
             state.transaction_kind != "IMPLEMENTATION"
             or state.action_intent != "MUTATING_DELIVERY"
-            or result.terminal_state != "COMPLETE"
+            # A provider may return WAITING after it proves the bounded work
+            # is already present and leaves the host-owned lifecycle to
+            # terminalize it.  Only the exact host-verified no-op shape below
+            # may turn that nonterminal provider state into delivery.
+            or result.terminal_state not in {"COMPLETE", "WAITING"}
             or result.branch is not None
             or result.pull_request is not None
             or result.terminal_condition != "repository_reconciled"
@@ -2285,7 +2289,12 @@ First implementation pull-request publication gate:
                 commit_sha=evidence.head_sha,
                 description="managed_noop_repository_reconciled",
             )
-            return self._poll(reconciled, result)
+            # This is the single place where a provider WAITING result becomes
+            # terminal: _is_verified_managed_noop has already proved the
+            # bounded, unchanged main checkout and recorded that proof above.
+            # Keep _poll's ordinary WAITING behavior intact for every other
+            # provider result.
+            return self._poll(reconciled, replace(result, terminal_state="COMPLETE"))
         recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
         if state.transaction_kind == "IMPLEMENTATION" and state.action_intent == "MUTATING_DELIVERY" and (
             result.terminal_state not in {"BLOCKED", "FAILED"} or recoverable_local_failure
