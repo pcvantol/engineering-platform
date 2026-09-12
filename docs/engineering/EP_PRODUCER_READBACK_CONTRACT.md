@@ -76,6 +76,18 @@ may be terminalized only when it has this exact host-verified no-op shape.
 `FAILED` may have valid terminal evidence with a null revision; they are not
 fabricated into successful delivery.
 
+For every terminal run, the authenticated `run` object additionally contains
+`execution_started_at`, `execution_completed_at`, and
+`execution_duration_ms`.  These are derived only from the durable
+`ep_execution_runs` claim and terminal-transition timestamps, normalized to
+UTC; the duration is therefore EP's governed lifecycle duration, rather than
+an unverified provider wall-clock claim.  The same fields are bound into every
+new immutable terminal-evidence artifact.  If either durable timestamp is
+missing, unordered, or invalid, EP exposes `evidence.status: INCOMPLETE` and
+does not issue a terminal artifact.  This is intentionally fail-closed:
+consumers must not infer a completed host execution from an HTTP response or
+from telemetry alone.
+
 The machine-readable response shape is
 [`producer-readback-v1.2.schema.json`](../../src/engineering_platform/schemas/producer-readback-v1.2.schema.json).
 

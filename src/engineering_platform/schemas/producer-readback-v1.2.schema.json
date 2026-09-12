@@ -27,7 +27,19 @@
         "recorded_at": {"type": ["string", "null"]}
       }
     },
-    "run": {"type": ["object", "null"]},
+    "run": {
+      "type": ["object", "null"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "minLength": 1},
+        "terminal": {"type": "boolean"},
+        "operator_resolution": {"type": "string"},
+        "updated_at": {"type": "string"},
+        "execution_started_at": {"type": "string", "format": "date-time"},
+        "execution_completed_at": {"type": "string", "format": "date-time"},
+        "execution_duration_ms": {"type": "integer", "minimum": 1}
+      }
+    },
     "result": {"type": "object", "additionalProperties": false, "required": ["outcome", "terminal", "delivery_qualified"]},
     "evidence": {"type": "object", "additionalProperties": false, "required": ["status", "terminal_artifact", "repository"]}
   }

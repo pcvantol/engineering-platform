@@ -77,6 +77,22 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(submission_service._repository_revision(verified, "COMPLETE"), (revision, True))
         self.assertEqual(submission_service._repository_revision(unproven, "COMPLETE"), (None, False))
 
+    def test_terminal_timing_is_utc_ordered_and_durable(self) -> None:
+        self.assertEqual(
+            submission_service._terminal_timing(
+                "2026-01-01T01:00:00+01:00", "2026-01-01T00:00:01+00:00",
+            ),
+            {
+                "execution_started_at": "2026-01-01T00:00:00+00:00",
+                "execution_completed_at": "2026-01-01T00:00:01+00:00",
+                "execution_duration_ms": 1000,
+            },
+        )
+        self.assertIsNone(submission_service._terminal_timing("now", "later"))
+        self.assertIsNone(submission_service._terminal_timing(
+            "2026-01-01T00:00:01+00:00", "2026-01-01T00:00:01+00:00",
+        ))
+
     def test_versioned_forge_submission_receipt_is_durable_and_idempotent(self) -> None:
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             request = submission_service.request_from_mapping(
@@ -349,9 +365,11 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(initial["provenance"]["status"], "PERSISTED")
 
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
-            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-readback", "djconnect", "COMPLETE", "now", "now", "MANAGED"))
-            connection.execute("INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("run-readback", "2026-01-01", "now", "now", "now", 0, 0, "COMPLETE", None, None, None, "MANAGED", "djconnect", "djconnect", "test"))
-            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submission_id, "djconnect", "djconnect", "run-readback", "COMPLETE", "/private/prompt", "now", "now", "NONE"))
+            started = "2026-01-01T00:00:00+00:00"
+            completed = "2026-01-01T00:00:01+00:00"
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-readback", "djconnect", "COMPLETE", started, completed, "MANAGED"))
+            connection.execute("INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("run-readback", "2026-01-01", started, started, completed, 0, 1, "COMPLETE", None, None, None, "MANAGED", "djconnect", "djconnect", "test"))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submission_id, "djconnect", "djconnect", "run-readback", "COMPLETE", "/private/prompt", started, completed, "NONE"))
             profile = {"version": "validation-profile@1", "digest": "sha256:" + "b" * 64, "candidate_sha": "c" * 40}
             finding = {"id": "security-1", "fingerprint": "d" * 32, "category": "SECURITY", "criterion": "post_implementation_assurance", "observation": "Project isolation lacks a negative test.", "severity": "HIGH", "confidence": "MEDIUM", "blocking": True, "disposition": "OPEN"}
             reviews = (
@@ -373,6 +391,9 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             terminal = json.loads(response.read())
         self.assertEqual(terminal["run"]["id"], "run-readback")
+        self.assertEqual(terminal["run"]["execution_started_at"], "2026-01-01T00:00:00+00:00")
+        self.assertEqual(terminal["run"]["execution_completed_at"], "2026-01-01T00:00:01+00:00")
+        self.assertEqual(terminal["run"]["execution_duration_ms"], 1000)
         self.assertEqual(terminal["result"], {"outcome": "COMPLETE", "terminal": True, "delivery_qualified": True})
         self.assertEqual(terminal["evidence"]["status"], "AVAILABLE")
         self.assertEqual(terminal["evidence"]["terminal_artifact"]["id"], artifact_id)
@@ -388,6 +409,9 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(returned_artifact_bytes, stored_artifact)
         self.assertEqual(artifact["submission"]["id"], submission_id)
         self.assertEqual(artifact["run"]["id"], "run-readback")
+        self.assertEqual(artifact["run"]["execution_started_at"], "2026-01-01T00:00:00+00:00")
+        self.assertEqual(artifact["run"]["execution_completed_at"], "2026-01-01T00:00:01+00:00")
+        self.assertEqual(artifact["run"]["execution_duration_ms"], 1000)
         self.assertEqual(artifact["assurance"]["repair_rounds"], {"used": 2, "maximum": 3})
         self.assertEqual(artifact["assurance"]["findings"]["artifact"]["id"], "assurance-findings:run-readback")
 
