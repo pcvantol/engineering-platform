@@ -7546,8 +7546,8 @@ function promptDetailDuration(value) {
 function promptDetailExecutionSections(history) {
   const timestamp = Date.parse(String(history.executed_at || ""));
   const context = history.execution_context && typeof history.execution_context === "object" ? history.execution_context : null;
+  const contextMissionId = executionContextValue(context?.mission_id) || executionContextValue(history.mission_id);
   const contextFields = context ? [
-    detailField(t("detail.mission_id"), executionContextValue(context.mission_id) || t("execution_context.not_supplied")),
     detailField(t("execution_context.business_summary"), executionContextValue(context.business_summary) || t("execution_context.not_supplied")),
     detailField(t("execution_context.engineering_summary"), executionContextValue(context.engineering_summary) || t("execution_context.not_supplied")),
     detailField(t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase) || t("execution_context.not_supplied")),
@@ -7595,7 +7595,7 @@ function promptDetailExecutionSections(history) {
     detailField(t("detail.producer_submission_contract"), history.producer_submission_contract_version || t("execution_context.not_supplied")),
     detailField(t("detail.submission_id"), history.submission_id || t("execution_context.not_supplied"), true),
     detailField(t("execution_context.version"), history.execution_context_version || t("execution_context.not_supplied")),
-    detailField(t("detail.mission_id"), history.mission_id || t("detail.not_recorded")),
+    detailField(t("detail.mission_id"), contextMissionId || t("detail.not_recorded")),
     detailField(t("detail.engineering_action_id"), history.engineering_action_id || t("detail.not_recorded")),
     detailField(t("detail.correlation_id"), history.correlation_id || t("detail.not_recorded")),
     detailField(t("detail.target_repository"), history.target_repository || t("detail.not_recorded")),

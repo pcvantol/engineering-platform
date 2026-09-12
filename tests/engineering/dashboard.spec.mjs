@@ -9497,6 +9497,7 @@ test.describe("Engineering Status browser smoke", () => {
     const executionContext = page.locator("#promptHistoryDetailContent > .prompt-detail-rightbar > .prompt-detail-card--execution-context");
     await expect(executionSummary).toHaveCount(1);
     await expect(executionContext).toHaveCount(1);
+    await expect(executionContext.locator(".field > .label").filter({ hasText: "Missie-ID" })).toHaveCount(1);
     await page.setViewportSize({ width: 1280, height: 900 });
     const desktopExecutionCards = await Promise.all([executionSummary.boundingBox(), executionContext.boundingBox()]);
     expect(desktopExecutionCards[0]).not.toBeNull();
