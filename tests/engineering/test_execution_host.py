@@ -2661,6 +2661,28 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(completed.commit_evidence[-1]["commit_sha"], "a" * 40)
         self.assertEqual(repository.cleanup_calls, [(None, None)])
 
+    def test_host_verified_managed_waiting_noop_reconciles_an_unchanged_main_checkout(self) -> None:
+        repository = FakeRepository()
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+        baseline = RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True)
+        state = TransactionState(
+            "verified-managed-waiting-noop", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            owner_authorized=True, action_intent="MUTATING_DELIVERY",
+        )
+        result = AgentResult(
+            "WAITING",
+            terminal_condition="repository_reconciled",
+            validation_evidence=({"command": "python -m unittest focused", "result": "PASS: focused checks"},),
+        )
+
+        completed = runner._advance_after_primary_agent_result(state, result, baseline)
+
+        self.assertEqual(completed.phase, "COMPLETE")
+        self.assertEqual(completed.commit_evidence[-1]["description"], "managed_noop_repository_reconciled")
+        self.assertEqual(repository.cleanup_calls, [(None, None)])
+
     def test_unverified_managed_noop_remains_blocked(self) -> None:
         repository = FakeRepository()
         runner = EngineeringRunner(

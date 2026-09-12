@@ -2231,7 +2231,11 @@ First implementation pull-request publication gate:
         if (
             state.transaction_kind != "IMPLEMENTATION"
             or state.action_intent != "MUTATING_DELIVERY"
-            or result.terminal_state != "COMPLETE"
+            # A provider may return WAITING after it proves the bounded work
+            # is already present and leaves the host-owned lifecycle to
+            # terminalize it.  Only the exact host-verified no-op shape below
+            # may turn that nonterminal provider state into delivery.
+            or result.terminal_state not in {"COMPLETE", "WAITING"}
             or result.branch is not None
             or result.pull_request is not None
             or result.terminal_condition != "repository_reconciled"
