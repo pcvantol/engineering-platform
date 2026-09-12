@@ -337,6 +337,40 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(attempt, (original, original))
 
+    def test_historical_retry_without_an_attempt_uses_its_persisted_ancestor(self) -> None:
+        """A pre-lineage retry failure does not strand its later successor."""
+        original = self._forge_submission("alpha", "forge-runtime-correlation-ancestor")
+        failing = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            first = failing.dispatch(original)
+        historical_retry = retry_operator_gate(self.data, project_id="alpha", run_id=first.run_id)
+        # Match an old retry that was claimed but failed before record_submission
+        # could persist an execution_submission_attempts row.
+        failed_context, _candidate, failed_run, _prompt, duplicate = failing._claim(historical_retry.submission_id)
+        self.assertEqual(failed_context.project_id, "alpha")
+        self.assertFalse(duplicate)
+        failing._set_state(historical_retry.submission_id, failed_run, "BLOCKED")
+        successor = retry_operator_gate(self.data, project_id="alpha", run_id=failed_run)
+        succeeding = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            completed = succeeding.dispatch(successor.submission_id)
+        self.assertEqual(completed.state, "COMPLETE")
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            attempt = connection.execute(
+                "SELECT canonical_submission_id,retry_parent_submission_id "
+                "FROM execution_submission_attempts WHERE submission_id=?", (successor.submission_id,),
+            ).fetchone()
+            lineage = connection.execute(
+                "SELECT fresh_submission,retry_parent_run_id FROM execution_run_qualification_context WHERE run_id=?",
+                (completed.run_id,),
+            ).fetchone()
+        self.assertEqual(attempt, (original, original))
+        self.assertEqual(lineage, (0, failed_run))
+
     def test_genesis_mode_is_forwarded_to_the_preserved_host_input(self) -> None:
         submission = self._submission("alpha", "Execution Mode: Genesis\nTarget repository: /tmp/target\n")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
