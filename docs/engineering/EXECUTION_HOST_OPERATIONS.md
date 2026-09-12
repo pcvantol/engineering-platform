@@ -239,6 +239,10 @@ artifact. Terminal-history reconciliation repairs a missing artifact from the
 same retained checkpoint and report bindings; it never reruns a provider or
 manufactures host evidence. The lifecycle log records either
 `lifecycle_terminal_evidence_available` or its bounded unavailable reason.
+Server schema 60 activates the dedicated CENTRAL artifact/run and
+artifact/submission bindings on existing installations, so producer readback
+can locate that immutable artifact without crossing the historical-run foreign
+keys.
 
 ## Local repository validation gate
 

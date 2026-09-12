@@ -940,6 +940,37 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 (server.SERVER_STORE_SCHEMA_VERSION,),
             )
 
+    def test_schema_59_upgrade_activates_central_artifact_bindings(self) -> None:
+        """A current pre-upgrade Server gains producer-readback bindings safely."""
+        identity = server.initialize(self.root)
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite3.connect(database) as connection:
+            connection.execute("DROP INDEX execution_artifact_records_ep_run_lookup")
+            connection.execute("ALTER TABLE execution_artifact_records DROP COLUMN ep_run_id")
+            connection.execute("ALTER TABLE execution_artifact_records DROP COLUMN ep_submission_id")
+            connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema60")
+            connection.execute(
+                "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+                "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+                "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59)))"
+            )
+            connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,59 FROM ep_installations_schema60")
+            connection.execute("DROP TABLE ep_installations_schema60")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=60")
+            connection.execute("UPDATE engineering_metadata SET value='59' WHERE key='installation.schema_version'")
+        self.assertEqual(server.initialize(self.root), identity)
+        with sqlite3.connect(database) as connection:
+            artifact_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(execution_artifact_records)")
+            }
+            self.assertTrue({"ep_run_id", "ep_submission_id"} <= artifact_columns)
+            indexes = {row[1] for row in connection.execute("PRAGMA index_list(execution_artifact_records)")}
+            self.assertIn("execution_artifact_records_ep_run_lookup", indexes)
+            self.assertEqual(
+                connection.execute("SELECT schema_version FROM ep_installations").fetchone(),
+                (server.SERVER_STORE_SCHEMA_VERSION,),
+            )
+
     def test_bootstrap_does_not_use_a_legacy_database_or_identity(self) -> None:
         legacy = self.root.parent / "legacy-schema40.db"
         with sqlite3.connect(legacy) as connection:

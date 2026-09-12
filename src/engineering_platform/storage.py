@@ -2668,6 +2668,16 @@ def install_central_execution_validation_profile_identity_schema(connection: sql
     _schema_v42(connection)
 
 
+def install_central_execution_artifact_binding_schema(connection: sqlite3.Connection) -> None:
+    """Install the CENTRAL-owned artifact/run binding columns additively.
+
+    Server schema migration owns this invocation for an already-current
+    CENTRAL installation.  The historical retained-store foreign keys remain
+    untouched; the dedicated EP columns preserve the authoritative binding.
+    """
+    _schema_v44(connection)
+
+
 def activate_storage_schema(root: Path) -> sqlite3.Connection:
     """Upgrade a shared EP database only at a controlled post-merge boundary."""
     root = root.resolve()

@@ -97,7 +97,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 59
+SERVER_STORE_SCHEMA_VERSION = 60
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -1350,6 +1350,24 @@ def _migrate_schema_59(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=59")
 
 
+def _migrate_schema_60(connection: sqlite3.Connection) -> None:
+    """Activate CENTRAL artifact bindings for a pre-existing Server store.
+
+    Storage schema 44 introduced the additive columns, but a Server already
+    at schema 59 does not replay historical retained-store migrations.  This
+    explicit Server-owned upgrade makes producer readback safe on that exact
+    installed path without rewriting an execution or its immutable evidence.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema59")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60)))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,60 FROM ep_installations_schema59")
+    connection.execute("DROP TABLE ep_installations_schema59")
+    storage.install_central_execution_artifact_binding_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(60)")
+    connection.execute("UPDATE engineering_metadata SET value='60' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=60")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -1420,14 +1438,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
@@ -1468,6 +1486,8 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_58(connection)
                             if current_schema < 59:
                                 _migrate_schema_59(connection)
+                            if current_schema < 60:
+                                _migrate_schema_60(connection)
                             connection.execute("COMMIT")
                             connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
@@ -1500,6 +1520,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_57(connection)
         _migrate_schema_58(connection)
         _migrate_schema_59(connection)
+        _migrate_schema_60(connection)
         connection.execute("COMMIT")
         connection.execute("PRAGMA legacy_alter_table=OFF")
         connection.execute("PRAGMA foreign_keys=ON")
