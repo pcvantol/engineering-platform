@@ -321,6 +321,38 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertIn(f"Retry-Of: {receipt.run_id}", candidate.prompt)
         self.assertFalse(duplicate)
 
+    def test_dismissed_retry_descendant_releases_the_full_fifo_chain(self) -> None:
+        """A dismissed terminal retry cannot leave an older retry as a ghost blocker."""
+        parent, retry, later = self._submission("alpha"), self._submission("alpha"), self._submission("alpha")
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("parent-run", "alpha", "FAILED", "now", "now"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                    submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,
+                    operator_resolution,resolution_submission_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (parent, "alpha", "alpha", "parent-run", "FAILED", "prompt", "now", "now", "RETRIED", retry),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("retry-run", "alpha", "FAILED", "now", "now"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                    submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,
+                    operator_resolution
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (retry, "alpha", "alpha", "retry-run", "FAILED", "prompt", "now", "now", "DISMISSED"),
+            )
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
+        context, candidate, _run_id, _prompt, duplicate = dispatcher._claim(later)
+        self.assertEqual(context.project_id, "alpha")
+        self.assertEqual(candidate.submission_id, later)
+        self.assertFalse(duplicate)
+
     def test_forge_retry_reuses_its_correlation_through_explicit_attempt_lineage(self) -> None:
         """A blocked Forge run can retry without changing its producer identity."""
         original = self._forge_submission("alpha", "forge-runtime-correlation-0006")

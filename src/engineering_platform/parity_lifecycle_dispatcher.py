@@ -325,7 +325,8 @@ class ParityLifecycleDispatcher:
                         OR (operator_resolution='RETRIED' AND resolution_submission_id!=?
                             AND NOT EXISTS (SELECT 1 FROM ep_parity_lifecycle_dispatches retry
                                 WHERE retry.submission_id=ep_parity_lifecycle_dispatches.resolution_submission_id
-                                  AND retry.operator_resolution='RETRIED'))
+                                  AND retry.state IN ('COMPLETE','BLOCKED','FAILED')
+                                  AND retry.operator_resolution IN ('NONE','RETRIED','DISMISSED')))
                     ) LIMIT 1""",
                 (context.project_id, submission_id),
             ).fetchone()

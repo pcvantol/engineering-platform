@@ -209,6 +209,11 @@ Lifecycle Worker may dispatch one eligible run from each different project in
 parallel, so a Genesis and a Managed run in separate projects may overlap; a
 second run in either same project cannot.
 
+A retry remains FIFO-pending only until its designated successor reaches a
+terminal resolved state (`NONE`, `RETRIED`, or `DISMISSED`). A dismissed or
+otherwise terminal successor therefore releases the entire resolved retry
+chain; it must never leave an earlier retry as a hidden queue blocker.
+
 ## Local repository validation gate
 
 Validation is selected from the actual bounded-branch diff. Documentation and

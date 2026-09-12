@@ -98,6 +98,33 @@ class LifecycleWorkerTests(unittest.TestCase):
             )
         self.assertEqual(LifecycleWorker(self.data, dispatcher_factory=_Dispatcher).eligible_submission_ids(), [])
 
+    def test_dismissed_retry_descendant_does_not_ghost_block_later_work(self) -> None:
+        parent, retry, later = self._submit("alpha"), self._submit("alpha"), self._submit("alpha")
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("parent-run", "alpha", "FAILED", "now", "now"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                    submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,
+                    operator_resolution,resolution_submission_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (parent, "alpha", "alpha", "parent-run", "FAILED", "prompt", "now", "now", "RETRIED", retry),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("retry-run", "alpha", "FAILED", "now", "now"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                    submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,
+                    operator_resolution
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (retry, "alpha", "alpha", "retry-run", "FAILED", "prompt", "now", "now", "DISMISSED"),
+            )
+        self.assertEqual(LifecycleWorker(self.data, dispatcher_factory=_Dispatcher).eligible_submission_ids(), [later])
+
     def test_operator_merge_wait_failed_resume_is_the_only_eligible_blocked_run(self) -> None:
         submission = self._submit("alpha")
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
