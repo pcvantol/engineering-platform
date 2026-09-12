@@ -62,6 +62,25 @@ activation, verify the actual owning publication contract and exact qualified
 source/artifact. A local candidate, a handoff, or this documentation is not proof.
 Do not reimplement the existing repair as part of this design.
 
+## SA-ROLE task/model design refinement — 2026-09-12
+
+`EP_ROLE_TASK_MODEL_POLICY_V1` now refines SA-ROLE with the
+[role/task matrix and policy design](../engineering/ROLE_TASK_MODEL_POLICY_V1.md),
+[seven-package roadmap](ROLE_TASK_MODEL_POLICY_V1_ROADMAP.md) and
+[documentary sub-DAG](ROLE_TASK_MODEL_POLICY_V1_DAG.json). It separates specialist
+selection (SA-SEL), model/effort allocation (SA-ROLE) and execution authority.
+First delivery is qualified multi-model routing on EP's existing managed Codex
+session; other adapters are separately qualified later, never automatic API fallback.
+
+All original statuses/edges and SA-F09 remain unchanged. SA-ROLE additionally
+requires completion of RMP-Q via the parent JSON's decomposition reference.
+RMP-RESOLVE uses SA-CTX/SA-OBS and the narrowly evidenced existing POL-E subset;
+no requirement to finish all policy UI or SA-Q first. Task/role/risk assignments,
+Q/S rubrics, constrained fallback, immutable snapshots, requested versus observed
+metadata, measured quality/cost and Console administration are covered together.
+The extension adds documentary tests, not runtime/CI behavior or policy activation.
+Current immutable timeout ceilings and one runwide repair budget remain mandatory.
+
 ## Existing contract joins
 
 Reuse the [policy/profile lane](POLICY_GOVERNANCE_V1_ROADMAP.md) for effective

@@ -221,5 +221,16 @@
       "acceptance": "Exact-source/artifact/provider/profile comparative corpus, predeclared thresholds, complete usage coverage and wall time, unique verified findings and non-regression; installed proof separate from source merge.",
       "qualification_evidence": []
     }
-  ]
+  ],
+  "role_task_model_policy": {
+    "increment": "EP_ROLE_TASK_MODEL_POLICY_V1",
+    "architecture": "docs/engineering/ROLE_TASK_MODEL_POLICY_V1.md",
+    "roadmap": "docs/development/ROLE_TASK_MODEL_POLICY_V1_ROADMAP.md",
+    "graph": "docs/development/ROLE_TASK_MODEL_POLICY_V1_DAG.json",
+    "parent_node": "SA-ROLE",
+    "completion_requires": [
+      "RMP-Q"
+    ],
+    "documentary_only": true
+  }
 }

@@ -65,3 +65,21 @@ GP-E/GP-Q/GP-X are PLANNED; a Workspace decision is not a substitute for the
 external target's gate. No duplicate workflow, live policy or executable DAG
 is introduced. The current Action assurance and bounded repair requirements
 remain intact and distinct from post-Action human review.
+
+## Task/role model allocation — existing SA-ROLE consumer
+
+The [role/task model policy design](../engineering/ROLE_TASK_MODEL_POLICY_V1.md)
+and [scoped roadmap/DAG](ROLE_TASK_MODEL_POLICY_V1_ROADMAP.md) define the
+EP_ROLE_TASK_MODEL_POLICY_V1 family under SA-ROLE. Its RMP-EFFECTIVE-POLICY gate
+requires only the qualified assignment/activation/snapshot subset owned by POL-E;
+it does not duplicate those services or make the entire POL-B/POL-Q/Workspace
+programme a prerequisite. Existing compatible implementations can satisfy that
+evidence gate after inspection; a policy name or documentation alone cannot.
+
+Task/role/risk preferences never override admission requirements or current host
+timeout ceilings. Per-invocation model/effort selection and approved alternatives
+are bound to the admitted effective profile. Console edits affect new runs unless
+an explicit owning migration is qualified. Model/provider changes do not reset
+three-round run/continuation consumption, grant authority or silently select a
+metered API. Concrete binding activation, representative model evaluation and
+later provider adapters remain separately governed implementation work.
