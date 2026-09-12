@@ -95,3 +95,19 @@ Documentation completion is NO_BUMP and may add offline documentary guards only.
 It does not implement any RMP runtime node or alter executable programme DAGs.
 The canonical EP roadmap already reaches this plan through its subagent section
 and SA-ROLE; the policy roadmap links the same family instead of duplicating it.
+
+## Adaptive Action sizing consumer contract
+
+The [execution-envelope/fit design](../engineering/ACTION_EXECUTION_ENVELOPE_V1.md)
+and [three-node owning DAG](action-execution-envelope-v1.json) provide EP's part
+of ADAPTIVE_ACTION_SIZING_V1. AS-E-OFFER/FIT/Q reuse qualified RMP catalogue,
+effective profile, SA context/observability and admission subsets; they do not
+replace or add a backward dependency to any existing RMP node. Forge decides
+Action decomposition; EP checks ALL required execution/review profiles and
+preserves profile/fit/admission/observed identity. Fit is non-generating, not
+permission, reservation or a new run. All new implementation stays PLANNED.
+
+No mandatory-context truncation, stale-profile fallback, hidden paid API usage,
+raised timeout or reset corrective lineage. Shared AS scenarios qualify EP's
+real adapter/admission path; Forge mocks alone cannot prove EP enforcement.
+No first-canary or full-Console/installer dependency is introduced.
