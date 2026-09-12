@@ -73,6 +73,31 @@ they are not fabricated into successful delivery.
 The machine-readable response shape is
 [`producer-readback-v1.2.schema.json`](../../src/engineering_platform/schemas/producer-readback-v1.2.schema.json).
 
+## Forge admission receipt and bidirectional audit
+
+Producer readback stays at `v1.2`; its exact root shape is not changed by this
+addition.  When an authenticated HTTP submission declares Forge execution
+provenance `v1.1`, the successful POST response additionally carries a
+versioned `receipt` object (`v1.0`).  It binds the accepted submission ID,
+receipt ID and time, EP installation and application versions, Forge
+application version, Forge Producer Contract version, Forge provenance
+version, producer-readback version and the canonical accepted-request digest.
+
+This receipt acknowledges admission only.  It is not a run receipt, a
+delivery result or terminal execution evidence.  The same fact is stored in
+the immutable `ep_forge_exchange_audit` table.  The redacted central
+`http_ingress` log records distinct `forge_submission_accepted` (`FORGE_TO_EP`)
+and `forge_submission_receipt_issued` (`EP_TO_FORGE`) events.  Those records
+never contain the prompt, bearer credential, local checkout path or unbounded
+request body.  The matching Forge client records its outbound submission and
+the validated EP receipt as separate immutable exchange facts.
+
+Historical Forge provenance `v1.0` remains readable and admissible for
+continuity, but lacks the two explicit version facts required to issue this
+audit receipt.  Deploy EP before a Forge client that requires the receipt:
+older Forge clients safely ignore the added POST field, while the new client
+fails closed for an absent or mismatched receipt.
+
 ## Operations Console queue disposition
 
 The Console-only mutation boundary is separate from the producer API:

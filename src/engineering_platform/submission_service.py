@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import central_database
+from .platform_version import CURRENT_PLATFORM_VERSION
 
 
 MAX_PROMPT_BYTES = 65536
@@ -44,6 +45,8 @@ _LIFECYCLE_EVENT_KINDS = (
     "ADMISSION_GRANTED",
     "EXECUTION_NOT_DISPATCHED",
 )
+FORGE_PROVENANCE_CONTRACT_VERSION = "1.1"
+EP_SUBMISSION_RECEIPT_CONTRACT_VERSION = "1.0"
 
 
 class SubmissionError(ValueError):
@@ -150,9 +153,10 @@ class SubmissionResult:
     transport: str
     producer_id: str
     duplicate: bool = False
+    receipt: Mapping[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"submission_id": self.submission_id, "project_id": self.project_id,
+        result: dict[str, object] = {"submission_id": self.submission_id, "project_id": self.project_id,
                 "repository_id": self.repository_id, "state": self.state,
                 "created_at": self.created_at, "admission": self.admission,
                 "transport": self.transport, "duplicate": self.duplicate,
@@ -160,6 +164,9 @@ class SubmissionResult:
                     transport=self.transport,
                     producer_id=self.producer_id,
                 )}
+        if self.receipt is not None:
+            result["receipt"] = dict(self.receipt)
+        return result
 
 
 def _now() -> str:
@@ -219,7 +226,14 @@ def _forge_provenance(request: SubmissionRequest) -> None:
     expected = {"contract_version", "host_id", "repository_id", "correlation_id", "mission_id",
                 "mission_revision", "intent_id", "intent_revision", "action_id", "runtime_prompt",
                 "retry_of_correlation_id"}
-    if set(raw) != expected or raw.get("contract_version") != "1.0":
+    contract_version = raw.get("contract_version")
+    if contract_version == "1.0":
+        permitted = expected
+    elif contract_version == FORGE_PROVENANCE_CONTRACT_VERSION:
+        permitted = expected | {"producer_contract_version", "forge_application_version"}
+    else:
+        permitted = set()
+    if set(raw) != permitted:
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
     prompt = raw.get("runtime_prompt")
     if not isinstance(prompt, Mapping) or set(prompt) != {"id", "content_digest"}:
@@ -234,6 +248,11 @@ def _forge_provenance(request: SubmissionRequest) -> None:
             or raw.get("mission_id") != request.mission_id
             or raw.get("action_id") != request.engineering_action_id
             or (raw.get("retry_of_correlation_id") is not None and not isinstance(raw.get("retry_of_correlation_id"), str))):
+        raise SubmissionError("INVALID_FORGE_PROVENANCE")
+    if contract_version == FORGE_PROVENANCE_CONTRACT_VERSION and (
+            raw.get("producer_contract_version") != "1.0"
+            or raw.get("forge_application_version") != request.producer_version
+            or not isinstance(request.producer_version, str)):
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
 
 
@@ -329,7 +348,7 @@ def lifecycle(connection: sqlite3.Connection, submission_id: str) -> dict[str, s
     return _lifecycle_payload(transport=str(row[1]), producer_id=str(row[0]))
 
 
-def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> SubmissionResult:
+def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_forge_exchange: bool = True) -> SubmissionResult:
     """Persist and admit one request; no provider or Agent is selected here."""
     _transport(request.transport)
     _validate_execution_mode(request)
@@ -354,9 +373,13 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> Submis
             if not _same_idempotent_request(tuple(duplicate[4:14]), request):
                 raise SubmissionError("IDEMPOTENCY_CONFLICT", 409)
             lifecycle(connection, str(duplicate[0]))
+            receipt = _forge_submission_receipt(
+                connection, project_id=request.project_id, submission_id=str(duplicate[0]),
+            ) if audit_forge_exchange else None
             return SubmissionResult(
                 str(duplicate[0]), request.project_id, str(duplicate[4]), str(duplicate[2]),
                 str(duplicate[1]), str(duplicate[3]), str(duplicate[14]), str(duplicate[5]), True,
+                receipt,
             )
     submission_id, created_at = "sub-" + secrets.token_hex(16), _now()
     # Admission intentionally validates CENTRAL topology only at submission
@@ -370,10 +393,13 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> Submis
         producer_id=request.producer_id, recorded_at=created_at,
     )
     connection.execute("INSERT INTO ep_submission_prompt_history(submission_id,prompt_digest,recorded_at) VALUES(?,?,?)", (submission_id, prompt_digest, created_at))
+    receipt = _record_forge_submission_acceptance(
+        connection, request=request, submission_id=submission_id, created_at=created_at,
+    ) if audit_forge_exchange else None
     lifecycle(connection, submission_id)
     return SubmissionResult(
         submission_id, request.project_id, request.repository_id, state, created_at,
-        admission, request.transport, request.producer_id,
+        admission, request.transport, request.producer_id, receipt=receipt,
     )
 
 
@@ -428,6 +454,88 @@ def _accepted_request_digest(*, repository_id: str, producer_id: str,
         "correlation_id": correlation_id, "mission_id": mission_id,
         "engineering_action_id": engineering_action_id,
     }))
+
+
+def _forge_submission_receipt(
+    connection: sqlite3.Connection, *, project_id: str, submission_id: str,
+) -> dict[str, object] | None:
+    """Return the immutable EP acceptance receipt for one Forge envelope.
+
+    Historic Forge v1.0 envelopes intentionally have no synthetic receipt:
+    their application and envelope versions were never supplied.  New v1.1
+    envelopes receive this receipt atomically with CENTRAL acceptance.
+    """
+    row = connection.execute(
+        """SELECT receipt_id,producer_contract_version,forge_provenance_contract_version,
+                  forge_application_version,ep_application_version,
+                  producer_readback_contract_version,accepted_request_digest,recorded_at
+             FROM ep_forge_exchange_audit
+            WHERE project_id=? AND submission_id=? AND event_kind='FORGE_SUBMISSION_ACCEPTED'""",
+        (project_id, submission_id),
+    ).fetchone()
+    if row is None:
+        return None
+    instance = connection.execute(
+        "SELECT value FROM engineering_metadata WHERE key='installation.instance_id'"
+    ).fetchone()
+    if instance is None:
+        raise SubmissionError("FORGE_RECEIPT_UNAVAILABLE", 500)
+    return {
+        "contract_version": EP_SUBMISSION_RECEIPT_CONTRACT_VERSION,
+        "id": str(row[0]),
+        "event": "FORGE_SUBMISSION_ACCEPTED",
+        "issued_at": str(row[7]),
+        "submission_id": submission_id,
+        "ep_instance_id": str(instance[0]),
+        "ep_application_version": str(row[4]),
+        "producer_contract_version": str(row[1]),
+        "forge_provenance_contract_version": str(row[2]),
+        "forge_application_version": str(row[3]),
+        "producer_readback_contract_version": str(row[5]),
+        "accepted_request_digest": str(row[6]),
+    }
+
+
+def _record_forge_submission_acceptance(
+    connection: sqlite3.Connection, *, request: SubmissionRequest, submission_id: str, created_at: str,
+) -> dict[str, object] | None:
+    """Durably attest the versioned Forge→EP envelope without its prompt.
+
+    This is a distinct immutable audit record, rather than a component log:
+    component logs have operator-configured retention, while a producer
+    receipt is part of the accountable inter-product exchange.
+    """
+    if request.transport != "HTTP" or request.producer_type != "FORGE":
+        return None
+    raw = (request.constraints or {}).get("forge_execution")
+    if not isinstance(raw, Mapping) or raw.get("contract_version") != FORGE_PROVENANCE_CONTRACT_VERSION:
+        return None
+    request_digest = _accepted_request_digest(
+        repository_id=request.repository_id, producer_id=request.producer_id,
+        producer_type=request.producer_type, producer_version=request.producer_version,
+        prompt_digest=hashlib.sha256(request.prompt.encode("utf-8")).hexdigest(),
+        constraints=request.constraints or {}, correlation_id=request.correlation_id,
+        mission_id=request.mission_id, engineering_action_id=request.engineering_action_id,
+    )
+    receipt_id = "ep-submission-receipt:" + submission_id
+    connection.execute(
+        """INSERT INTO ep_forge_exchange_audit(
+               audit_id,submission_id,project_id,direction,event_kind,receipt_id,
+               producer_contract_version,forge_provenance_contract_version,
+               forge_application_version,ep_application_version,
+               producer_readback_contract_version,accepted_request_digest,recorded_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "forge-exchange:" + submission_id, submission_id, request.project_id,
+            "FORGE_TO_EP", "FORGE_SUBMISSION_ACCEPTED", receipt_id,
+            str(raw["producer_contract_version"]), str(raw["contract_version"]),
+            str(raw["forge_application_version"]), CURRENT_PLATFORM_VERSION,
+            PRODUCER_READBACK_CONTRACT_VERSION, request_digest, created_at,
+        ),
+    )
+    return _forge_submission_receipt(
+        connection, project_id=request.project_id, submission_id=submission_id,
+    )
 
 
 def _read_constraints(value: object) -> dict[str, object] | None:

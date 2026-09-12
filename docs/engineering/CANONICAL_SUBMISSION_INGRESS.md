@@ -23,7 +23,10 @@ optional `idempotency_key`, correlation/action identifiers, and constraints.
 It uses a scoped bearer credential created for exactly one consumer/project
 registration. A credential for one project is not usable for another project.
 The response contains `submission_id`, project/repository identity, `state`,
-`created_at`, and `admission`. HTTP acceptance is not execution success.
+`created_at`, and `admission`.  For a Forge v1.1 provenance envelope it also
+contains the versioned EP admission receipt described in the
+[producer-readback contract](EP_PRODUCER_READBACK_CONTRACT.md#forge-admission-receipt-and-bidirectional-audit).
+HTTP acceptance is not execution success.
 
 The installed `engineering-platform submit` command is an HTTP consumer: it
 reads the prompt from `--prompt-file`, the bearer value from

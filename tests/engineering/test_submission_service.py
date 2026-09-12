@@ -36,6 +36,55 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
     def payload(self, key: str = "same") -> dict[str, object]:
         return {"repository_id": "djconnect", "producer": {"id": "test", "type": "HUMAN", "version": "1"}, "prompt": "Validate only; do not execute.", "idempotency_key": key}
 
+    def forge_payload(self, key: str = "forge-receipt") -> dict[str, object]:
+        payload = self.payload(key)
+        payload.update({
+            "producer": {"id": "forge", "type": "FORGE", "version": "2.7.2"},
+            "correlation_id": "forge-correlation-" + key,
+            "mission_id": "mission-" + key,
+            "engineering_action_id": "action-" + key,
+            "constraints": {"forge_execution": {
+                "contract_version": "1.1", "host_id": "engineering-platform",
+                "repository_id": "djconnect", "correlation_id": "forge-correlation-" + key,
+                "mission_id": "mission-" + key, "mission_revision": "1",
+                "intent_id": "intent-" + key, "intent_revision": "1", "action_id": "action-" + key,
+                "runtime_prompt": {"id": "prompt-" + key, "content_digest": "sha256:" + "a" * 64},
+                "retry_of_correlation_id": None, "producer_contract_version": "1.0",
+                "forge_application_version": "2.7.2",
+            }},
+        })
+        return payload
+
+    def test_versioned_forge_submission_receipt_is_durable_and_idempotent(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            request = submission_service.request_from_mapping(
+                "djconnect", self.forge_payload(), transport="HTTP",
+            )
+            accepted = submission_service.submit(connection, request)
+            self.assertIsNotNone(accepted.receipt)
+            self.assertEqual(accepted.to_dict()["receipt"], accepted.receipt)
+            self.assertEqual(accepted.receipt["forge_application_version"], "2.7.2")  # type: ignore[index]
+            self.assertEqual(accepted.receipt["producer_contract_version"], "1.0")  # type: ignore[index]
+            replay = submission_service.submit(connection, request)
+            self.assertTrue(replay.duplicate)
+            self.assertEqual(replay.receipt, accepted.receipt)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM ep_forge_exchange_audit").fetchone()[0], 1,
+            )
+            internal_retry = submission_service.submit(
+                connection,
+                submission_service.request_from_mapping("djconnect", self.forge_payload("internal"), transport="HTTP"),
+                audit_forge_exchange=False,
+            )
+            self.assertIsNone(internal_retry.receipt)
+            self.assertNotIn("receipt", internal_retry.to_dict())
+
+    def test_versioned_forge_submission_rejects_mismatched_application_provenance(self) -> None:
+        payload = self.forge_payload("invalid-provenance")
+        payload["constraints"]["forge_execution"]["forge_application_version"] = "2.7.1"  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PROVENANCE"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+
     def test_service_preserves_cross_transport_idempotency_and_history(self) -> None:
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             http = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload(), transport="HTTP"))
@@ -215,15 +264,17 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2"], "terminal_evidence": ["1.2"]})
         self.assertEqual(compatibility["producer"]["id"], "engineering-platform")
         payload = self.payload("readback")
-        payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "1.0"},
+        payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "2.7.2"},
                         "correlation_id": "forge-correlation-1", "mission_id": "mission-1",
                         "engineering_action_id": "action-1", "constraints": {"forge_execution": {
-                            "contract_version": "1.0", "host_id": "engineering-platform",
+                            "contract_version": "1.1", "host_id": "engineering-platform",
                             "repository_id": "djconnect", "correlation_id": "forge-correlation-1",
                             "mission_id": "mission-1", "mission_revision": "1", "intent_id": "intent-1",
                             "intent_revision": "1", "action_id": "action-1",
                             "runtime_prompt": {"id": "prompt-1", "content_digest": "sha256:" + "a" * 64},
                             "retry_of_correlation_id": None,
+                            "producer_contract_version": "1.0",
+                            "forge_application_version": "2.7.2",
                         }}})
         submit = Request(
             f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions",
@@ -233,6 +284,37 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with urlopen(submit) as response:  # nosec B310
             accepted = json.loads(response.read())
         submission_id = accepted["submission_id"]
+        receipt = accepted["receipt"]
+        self.assertEqual(receipt, {
+            "contract_version": "1.0", "id": "ep-submission-receipt:" + submission_id,
+            "event": "FORGE_SUBMISSION_ACCEPTED", "issued_at": accepted["created_at"],
+            "submission_id": submission_id, "ep_instance_id": receipt["ep_instance_id"],
+            "ep_application_version": "2.3.8", "producer_contract_version": "1.0",
+            "forge_provenance_contract_version": "1.1", "forge_application_version": "2.7.2",
+            "producer_readback_contract_version": "1.2",
+            "accepted_request_digest": receipt["accepted_request_digest"],
+        })
+        self.assertRegex(receipt["accepted_request_digest"], r"^sha256:[0-9a-f]{64}$")
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            audit = connection.execute(
+                "SELECT direction,event_kind,producer_contract_version,forge_provenance_contract_version,forge_application_version,ep_application_version,receipt_id,accepted_request_digest FROM ep_forge_exchange_audit WHERE submission_id=?",
+                (submission_id,),
+            ).fetchone()
+            self.assertEqual(audit, ("FORGE_TO_EP", "FORGE_SUBMISSION_ACCEPTED", "1.0", "1.1", "2.7.2", "2.3.8", receipt["id"], receipt["accepted_request_digest"]))
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("DELETE FROM ep_forge_exchange_audit WHERE submission_id=?", (submission_id,))
+            log = connection.execute(
+                "SELECT payload FROM engineering_component_logs WHERE component='http_ingress' AND json_extract(payload, '$.event')='forge_submission_accepted' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(log)
+            self.assertEqual(json.loads(log[0])["forge_application_version"], "2.7.2")
+            self.assertEqual(json.loads(log[0])["receipt_id"], receipt["id"])
+            self.assertEqual(json.loads(log[0])["ep_application_version"], "2.3.8")
+            receipt_log = connection.execute(
+                "SELECT payload FROM engineering_component_logs WHERE component='http_ingress' AND json_extract(payload, '$.event')='forge_submission_receipt_issued' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(receipt_log)
+            self.assertEqual(json.loads(receipt_log[0])["exchange_direction"], "EP_TO_FORGE")
         endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions/{submission_id}"
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             initial = json.loads(response.read())

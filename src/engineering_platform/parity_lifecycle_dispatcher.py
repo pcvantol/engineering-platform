@@ -112,7 +112,9 @@ def retry_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> sub
             mission_id=str(row[7]) if row[7] is not None else None,
             engineering_action_id=str(row[8]) if row[8] is not None else None, constraints=constraints,
         )
-        result = submission_service.submit(connection, request)
+        # A retry reuses EP's already-admitted local record.  It is not a new
+        # Forge→EP HTTP exchange and must not mint a second producer receipt.
+        result = submission_service.submit(connection, request, audit_forge_exchange=False)
         cursor = connection.execute(
             """UPDATE ep_parity_lifecycle_dispatches
                 SET operator_resolution=?,resolution_submission_id=?,updated_at=?

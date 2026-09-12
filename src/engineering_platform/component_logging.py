@@ -80,6 +80,16 @@ LIFECYCLE_CONTEXT_KEYS = frozenset(
         "log_component",
         "deleted_count",
         "user_action",
+        "forge_application_version",
+        "producer_contract_version",
+        "forge_provenance_contract_version",
+        "receipt_contract_version",
+        "receipt_id",
+        "producer_readback_contract_version",
+        "accepted_request_digest",
+        "ep_instance_id",
+        "ep_application_version",
+        "exchange_direction",
     }
 )
 
