@@ -2287,6 +2287,70 @@ def _central_console_lifecycle(data_root: Path, run_id: str) -> dict[str, object
     )
 
 
+def _central_console_terminal_revision_timeline(
+    data_root: Path, project_id: str, run_id: str,
+) -> list[dict[str, str]]:
+    """Project an exact terminal artifact's verified repository revision.
+
+    A successful no-change run has no phase commit to display, but its
+    integrity-verified terminal artifact can still attest the final repository
+    revision.  This stays distinct from a phase commit: malformed or tampered
+    payloads never become Console evidence.
+    """
+    try:
+        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+            row = connection.execute(
+                """SELECT a.artifact_id,a.created_at
+                     FROM execution_artifact_records AS a
+                     JOIN ep_parity_lifecycle_dispatches AS d
+                       ON a.ep_run_id=d.run_id OR a.run_id=d.run_id
+                    WHERE d.project_id=? AND d.run_id=?
+                      AND a.artifact_type='EP_TERMINAL_EVIDENCE'
+                      AND a.integrity_status='VERIFIED'
+                    ORDER BY a.created_at DESC,a.artifact_id DESC LIMIT 1""",
+                (project_id, run_id),
+            ).fetchone()
+            if row is None:
+                return []
+            payload = submission_service.producer_evidence_artifact(
+                connection, project_id=project_id, artifact_id=str(row[0]),
+            )
+    except sqlite3.Error:
+        return []
+    if payload is None:
+        return []
+    try:
+        evidence = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(evidence, Mapping) or evidence.get("artifact_type") != "EP_TERMINAL_EVIDENCE":
+        return []
+    submission = evidence.get("submission")
+    terminal_run = evidence.get("run")
+    repository = evidence.get("repository")
+    if not all(isinstance(value, Mapping) for value in (submission, terminal_run, repository)):
+        return []
+    revision = repository.get("revision")
+    outcome = terminal_run.get("outcome")
+    if (
+        submission.get("project_id") != project_id
+        or terminal_run.get("id") != run_id
+        or outcome not in {"COMPLETE", "BLOCKED", "FAILED"}
+        or not isinstance(revision, str)
+        or re.fullmatch(r"[0-9a-f]{40}", revision) is None
+    ):
+        return []
+    observed_at = row[1]
+    if not isinstance(observed_at, str) or not observed_at.strip():
+        return []
+    return [{
+        "phase": "TERMINAL",
+        "observed_at": observed_at,
+        "commit_sha": revision,
+        "description": "terminal_repository_revision_verified",
+    }]
+
+
 def _central_console_current_execution_diagnostic(data_root: Path, project_id: str) -> str | None:
     """Return the selected active run's latest safe diagnostic, if any.
 
@@ -2411,6 +2475,9 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
         # the active card.  Terminal history remains separate in the table,
         # while its exact step evidence stays available on demand.
         "lifecycle": _central_console_lifecycle(data_root, run_id),
+        "commit_timeline": _central_console_terminal_revision_timeline(
+            data_root, project_id, run_id,
+        ),
     }
 
 
@@ -4025,7 +4092,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "runtime": {},
                         "reviewers": [],
                         "commits": {},
-                        "commit_timeline": [],
+                        "commit_timeline": detail.get("commit_timeline", []),
                         "pull_requests": [],
                         "usage": {},
                         "evidence": [],

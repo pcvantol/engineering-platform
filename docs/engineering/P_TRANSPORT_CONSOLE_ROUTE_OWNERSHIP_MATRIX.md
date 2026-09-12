@@ -52,6 +52,9 @@ state** is the FIFO dispatch record's orchestration state. They can both be
 
 The active projection and every terminal history detail include the full
 persisted lifecycle path (the read-only step-bubble flow) for that exact run.
+Terminal detail additionally projects a final repository revision only when an
+integrity-verified terminal-evidence artifact binds it to that same run; this
+is labelled as a final revision rather than inferred as a phase commit.
 The active diagnostic endpoint reads only that run's redacted CENTRAL
 component-log diagnostics and responds as `text/plain`; absent, malformed, or
 JSON-shaped content becomes the localized unavailable state. Raw JSON error

@@ -2495,6 +2495,26 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("dialog[open]")).toHaveCount(1);
   });
 
+  test("labels a terminal repository revision without calling it a phase commit", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      renderPromptHistoryDetail({
+        history: { run_id: "inbox-terminal-revision", status: "COMPLETE", title: "No-change run" },
+        commit_timeline: [{
+          phase: "TERMINAL",
+          observed_at: "2026-09-12T12:40:55+00:00",
+          commit_sha: "b".repeat(40),
+          description: "terminal_repository_revision_verified",
+        }],
+      }, "No-change run");
+    });
+    const content = page.locator("#promptHistoryDetailContent");
+    await expect(content).toContainText("Geverifieerde eindrevisie");
+    await expect(content).toContainText("Uitvoeringsresultaat");
+    await expect(content).toContainText("Eindrevisie van de repository geverifieerd");
+    await expect(content).toContainText("b".repeat(40));
+  });
+
   test("renders terminal status recovery as a historical detail card", async ({ page }) => {
     const runId = "inbox-status-recovery";
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{

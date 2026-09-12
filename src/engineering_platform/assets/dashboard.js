@@ -7694,6 +7694,7 @@ function promptDetailExecutionActivitySection(activity) {
   ], false, "prompt-detail-card--execution-activity");
 }
 function commitTimelineKind(item) {
+  if (item.description === "terminal_repository_revision_verified") return "terminal_revision";
   const mergeKinds = {
     implementation_merge_verified: "implementation_merge",
     finalization_merge_verified: "finalization_merge",

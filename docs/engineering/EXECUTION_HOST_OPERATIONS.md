@@ -296,6 +296,12 @@ checkpoint. The execution-details modal renders them chronologically in a
 bounded, vertically scrollable card beside AI-provider usage; missing evidence
 is shown as missing rather than reconstructed from report text.
 
+For every terminal run, the Console may additionally show one **verified final
+repository revision**. It is not a phase commit: the projection exists only
+when the immutable terminal-evidence artifact passes integrity verification and
+is bound to that exact project and run. This makes a successful no-change run
+auditable without inventing an implementation or finalization commit.
+
 - **Pull-request merge hand-off** is shown as a persistent, dashboard-native
   wait state with a direct GitHub link once required checks are green. Closing
   the browser does not cancel it: the watcher polls the persisted run and
