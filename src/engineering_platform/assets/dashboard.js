@@ -1636,6 +1636,19 @@ function executionContextField(label, value, folder = false) {
   field.append(caption, output);
   return field;
 }
+const EXECUTION_CONTEXT_PHASE_PRESENTATION_KEYS = Object.freeze({
+  CLAIMED: "state.JOB_CLAIMED",
+  RUNNING: "status.running",
+  COMPLETE: "status.complete",
+  BLOCKED: "status.blocked",
+  FAILED: "status.failed",
+});
+function executionContextExecutionPhase(value) {
+  const raw = executionContextValue(value);
+  if (!raw) return "";
+  const key = EXECUTION_CONTEXT_PHASE_PRESENTATION_KEYS[raw.toUpperCase()];
+  return key ? t(key) : translate(raw);
+}
 function executionContextRuntimeStatus(value) {
   const raw = executionContextValue(value);
   return raw ? translate(raw) : "";
@@ -1710,7 +1723,7 @@ function renderExecutionContext(context, execution = {}) {
     [t("execution_context.engineering_summary"), context.engineering_summary],
     [t("execution_context.current_intent"), context.current_intent],
     [t("execution_context.current_engineering_action"), context.current_engineering_action],
-    [t("execution_context.execution_phase"), executionContextRuntimeStatus(context.execution_phase)],
+    [t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase)],
     [t("execution_context.planning_confidence"), context.planning_confidence],
     [t("execution_context.current_iteration"), context.current_iteration],
     [t("execution_context.mission_progress"), context.mission_progress],
@@ -7537,7 +7550,7 @@ function promptDetailExecutionSections(history) {
     detailField(t("detail.mission_id"), executionContextValue(context.mission_id) || t("execution_context.not_supplied")),
     detailField(t("execution_context.business_summary"), executionContextValue(context.business_summary) || t("execution_context.not_supplied")),
     detailField(t("execution_context.engineering_summary"), executionContextValue(context.engineering_summary) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.execution_phase"), executionContextRuntimeStatus(context.execution_phase) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase) || t("execution_context.not_supplied")),
     detailField(t("execution_context.mission_lifecycle"), executionContextValue(context.mission_lifecycle) || t("execution_context.not_supplied")),
     detailField(t("execution_context.decision_evidence_reference"), executionContextValue(context.decision_evidence_reference || context.decision_evidence) || t("execution_context.not_supplied")),
     detailField(t("execution_context.execution_receipt_reference"), executionContextValue(context.execution_receipt_reference || context.last_execution_receipt) || t("execution_context.not_supplied")),
