@@ -1838,7 +1838,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             self.assertEqual(response.read(), b"# CENTRAL report\n")
         with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/chat?project=djconnect") as response:
-            self.assertEqual(json.loads(response.read())["messages"][0]["content"], "CENTRAL transcript")
+            self.assertEqual(json.loads(response.read())["messages"][0]["text"], "CENTRAL transcript")
         with urlopen(f"http://127.0.0.1:{port}/api/logs/all?project=djconnect&page_size=200") as response:
             logs = json.loads(response.read())
         self.assertEqual(logs["scope"], "PLATFORM")

@@ -1972,7 +1972,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertIsNone(server._central_console_report(self.root, "project-a", "run-a"))
         connection.execute.side_effect = [Mock(fetchone=Mock(return_value=(1,))), Mock(fetchall=Mock(return_value=[("user", "hello", "model", "at")]))]
         with patch("engineering_platform.server.sqlite3.connect", return_value=database):
-            self.assertEqual(server._central_console_chat_history(self.root, "project-a", "run-a"), [{"role": "user", "content": "hello", "model": "model", "created_at": "at"}])
+            self.assertEqual(server._central_console_chat_history(self.root, "project-a", "run-a"), [{"role": "user", "text": "hello", "model": "model", "created_at": "at"}])
         connection.execute.side_effect = [Mock(fetchone=Mock(return_value=None))]
         with patch("engineering_platform.server.sqlite3.connect", return_value=database):
             self.assertIsNone(server._central_console_chat_history(self.root, "project-a", "run-a"))
