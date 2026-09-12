@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "increment": "HTTP_ONLY_PEERS_AND_THIN_CLI_V1",
+  "owner": "engineering-platform",
+  "status": "PLANNED",
+  "documentary_only": true,
+  "executable": false,
+  "execution_authority": false,
+  "version_change": "NO_BUMP",
+  "first_live_canary_prerequisite": false,
+  "parent_reference": "P-TRANSPORT",
+  "parent_relationship": "SCOPED_REFINEMENT_NOT_REVERSE_DEPENDENCY",
+  "architecture": "docs/engineering/HTTP_TRANSPORT_BOUNDARIES_V1.md",
+  "roadmap": "docs/engineering/HTTP_TRANSPORT_BOUNDARIES_V1.md",
+  "source_pins": {
+    "forge": "f2f1d8d8535d23323397df4ff7af8586f2c6364f",
+    "workspace": "a12d5b925da1e04b86c1142e709f6f0fb4c7f617",
+    "engineering-platform": "bd4c09ff85bc82783da6efb9f1f781dfb8100e17"
+  },
+  "shared_contract": {
+    "contract": "HTTP_ONLY_PEERS_AND_THIN_CLI_V1",
+    "peer_business_transport": "HTTP(S)",
+    "workspace_to_forge": "HTTP_ONLY",
+    "workspace_to_ep": "HTTP_ONLY",
+    "forge_to_ep": "HTTP_ONLY",
+    "console_to_forge": "HTTP_ONLY",
+    "workspace_client_to_server": "HTTP_ONLY",
+    "colocation_changes_boundary": false,
+    "peer_cli_fallback": false,
+    "peer_file_inbox_fallback": false,
+    "peer_direct_database_access": false,
+    "peer_python_import_execution": false,
+    "cli_is_business_authority": false,
+    "cli_is_peer_transport": false,
+    "local_cli_must_always_use_http": false,
+    "offline_cli_may_bypass_authority_or_single_writer": false,
+    "ep_file_inbox_retained": true,
+    "inbox_required_for_forge_or_workspace": false,
+    "workspace_replaced_by_console": false
+  },
+  "scenarios": [
+    "HT-01",
+    "HT-02",
+    "HT-03",
+    "HT-04",
+    "HT-05",
+    "HT-06",
+    "HT-07"
+  ],
+  "nodes": [
+    {
+      "id": "EH-CONTRACT",
+      "depends_on": [],
+      "status": "PLANNED",
+      "completion_evidence": [
+        "Classify existing ingress and peer restrictions"
+      ]
+    },
+    {
+      "id": "EH-CONFORMANCE",
+      "depends_on": [
+        "EH-CONTRACT"
+      ],
+      "status": "PLANNED",
+      "completion_evidence": [
+        "Retain three-ingress tests and add peer boundary negatives"
+      ]
+    },
+    {
+      "id": "EH-Q",
+      "depends_on": [
+        "EH-CONFORMANCE"
+      ],
+      "status": "PLANNED",
+      "completion_evidence": [
+        "Installed exact-source API and ingress conformance"
+      ]
+    }
+  ],
+  "external_requirements": {
+    "EH-CONFORMANCE": [
+      "EXISTING_P_TRANSPORT_OPERATIONS_USED_QUALIFIED"
+    ]
+  }
+}
