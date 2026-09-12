@@ -57,6 +57,26 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         })
         return payload
 
+    def test_verified_managed_noop_uses_its_explicit_run_bound_revision(self) -> None:
+        revision = "a" * 40
+        verified = TransactionState(
+            "verified-managed-noop", "djconnect", "prompt", "COMPLETE", terminal=True,
+            action_intent="MUTATING_DELIVERY", transaction_kind="IMPLEMENTATION",
+            terminal_condition="repository_reconciled", last_verified_sha=revision,
+            commit_evidence=({
+                "phase": "EXECUTE_AGENT", "observed_at": "2026-01-01T00:00:00+00:00",
+                "commit_sha": revision, "description": "managed_noop_repository_reconciled",
+            },),
+        )
+        unproven = TransactionState(
+            "unproven-managed-noop", "djconnect", "prompt", "COMPLETE", terminal=True,
+            action_intent="MUTATING_DELIVERY", transaction_kind="IMPLEMENTATION",
+            terminal_condition="repository_reconciled", last_verified_sha=revision,
+        )
+
+        self.assertEqual(submission_service._repository_revision(verified, "COMPLETE"), (revision, True))
+        self.assertEqual(submission_service._repository_revision(unproven, "COMPLETE"), (None, False))
+
     def test_versioned_forge_submission_receipt_is_durable_and_idempotent(self) -> None:
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             request = submission_service.request_from_mapping(

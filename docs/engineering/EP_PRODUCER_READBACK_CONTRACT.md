@@ -65,10 +65,13 @@ authentication and digest verification. It never parses and reserializes the
 artifact response. A missing, corrupt, or mismatched artifact is represented as
 `MISSING`, `CORRUPT`, or `INCOMPLETE`; the reader never fills it in.
 
-`COMPLETE` mutating delivery is qualified only when a recorded merge revision
-is present in the checkpoint's verified commit evidence. `VALIDATION_ONLY`,
-`BLOCKED`, and `FAILED` may have valid terminal evidence with a null revision;
-they are not fabricated into successful delivery.
+`COMPLETE` mutating delivery is qualified only when the checkpoint contains
+verified, run-bound delivery evidence: normally a recorded merge revision, or
+an explicit host-verified Managed no-op revision after the unchanged,
+synchronized `main` checkout was rechecked in that transaction. EP never uses
+the ambient checkout `HEAD` as a substitute. `VALIDATION_ONLY`, `BLOCKED`, and
+`FAILED` may have valid terminal evidence with a null revision; they are not
+fabricated into successful delivery.
 
 The machine-readable response shape is
 [`producer-readback-v1.2.schema.json`](../../src/engineering_platform/schemas/producer-readback-v1.2.schema.json).

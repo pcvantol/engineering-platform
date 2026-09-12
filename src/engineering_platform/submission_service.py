@@ -621,11 +621,33 @@ def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]
         return None, True
     revision = getattr(state, "finalization_merge_commit", None) or getattr(state, "implementation_merge_commit", None)
     evidence = getattr(state, "commit_evidence", ())
-    if not isinstance(revision, str) or not __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
-        return None, False
-    if not any(isinstance(item, dict) and item.get("commit_sha") == revision for item in evidence):
-        return None, False
-    return revision, True
+    if isinstance(revision, str) and __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
+        if any(isinstance(item, dict) and item.get("commit_sha") == revision for item in evidence):
+            return revision, True
+
+    # A Managed no-op is only delivery-qualified when the lifecycle recorded
+    # the exact inspected main revision as explicit evidence.  This is not an
+    # ambient-HEAD fallback: the record is written only after the host proves
+    # the unchanged, synchronized main checkout during the same transaction.
+    noop_revision = getattr(state, "last_verified_sha", None)
+    if (
+        getattr(state, "action_intent", None) == "MUTATING_DELIVERY"
+        and getattr(state, "transaction_kind", None) == "IMPLEMENTATION"
+        and getattr(state, "terminal_condition", None) == "repository_reconciled"
+        and getattr(state, "implementation_merge_commit", None) is None
+        and getattr(state, "finalization_merge_commit", None) is None
+        and isinstance(noop_revision, str)
+        and __import__("re").fullmatch(r"[0-9a-f]{40}", noop_revision)
+        and any(
+            isinstance(item, dict)
+            and item.get("phase") == "EXECUTE_AGENT"
+            and item.get("commit_sha") == noop_revision
+            and item.get("description") == "managed_noop_repository_reconciled"
+            for item in evidence
+        )
+    ):
+        return noop_revision, True
+    return None, False
 
 
 def write_terminal_evidence(

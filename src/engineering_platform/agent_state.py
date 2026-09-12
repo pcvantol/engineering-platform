@@ -47,6 +47,7 @@ COMMIT_EVIDENCE_DESCRIPTIONS = frozenset({
     "implementation_merge_verified",
     "finalization_merge_verified",
     "reconciliation_merge_verified",
+    "managed_noop_repository_reconciled",
 })
 SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
     r"(?i)\b(api[_ -]?key|oauth|access[_ -]?token|refresh[_ -]?token|secret|cookie|authorization|password)\b\s*[:=]\s*\S+|\bbearer\s+\S+|\b[A-Z][A-Z0-9_]{2,}\s*=\s*\S+"
