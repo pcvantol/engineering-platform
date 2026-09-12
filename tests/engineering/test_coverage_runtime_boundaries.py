@@ -286,6 +286,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         handler.end_headers = lambda: None
         responses: list[tuple[int, dict[str, object]]] = []
         handler._send = lambda status, payload, instance_id=None: responses.append((status, payload))
+        handler._send_text = lambda status, payload: responses.append((status, {"text": payload}))
         handler._send_ndjson = lambda entries: responses.append((200, {"entries": entries, "ndjson": True}))
         handler._send_console_asset = lambda request: False
         return handler, responses
@@ -787,6 +788,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         snapshots = {"runs": [{"run_id": "run-a"}]}
         routes = (
             "/", "/api/configuration", "/api/dashboard-snapshot", "/api/status",
+            "/api/execution-diagnostic/current",
             "/api/prompt-history", "/api/prompt-history/run-a/report", "/api/prompt-history/run-a/analysis",
             "/api/prompt-history/run-a/chat", "/api/prompt-history/run-a/details",
             "/api/telemetry/2026-01-01",
@@ -799,6 +801,8 @@ class InstallationBoundaryTests(unittest.TestCase):
             "engineering_platform.server._central_console_analysis", return_value=b"# central analysis"
         ), patch(
             "engineering_platform.server._central_console_chat_history", return_value=[{"role": "user"}]
+        ), patch(
+            "engineering_platform.server._central_console_current_execution_diagnostic", return_value="Safe diagnostic."
         ), patch("engineering_platform.server._central_console_run_detail", return_value={"run_id": "run-a"}), patch(
             "engineering_platform.server._central_console_telemetry_detail", return_value={"date": "2026-01-01"}
         ):
@@ -1577,6 +1581,11 @@ class InstallationBoundaryTests(unittest.TestCase):
         with patch("engineering_platform.server._console_queue_projection", return_value={"queue_depth": 0, "queue_items": [], "operator_handling": {}}), patch(
             "engineering_platform.server._console_platform_version", return_value="2.0"
         ), patch("engineering_platform.server._central_console_telemetry", return_value=[]), patch(
+            "engineering_platform.server._central_console_lifecycle", return_value={
+                "run_id": "run-active", "available": True,
+                "steps": [{"id": "START", "state": "START"}, {"id": "EXECUTE_AGENT", "state": "ACTIVE"}],
+            }
+        ), patch(
             "engineering_platform.server._central_console_run_records", return_value=[
                 {"run_id": "run-active", "state": "RUNNING", "status": "RUNNING", "created_at": "active-created", "updated_at": "active-updated", "execution_mode": "MANAGED"},
                 {"run_id": "run-terminal", "state": "BLOCKED", "status": "BLOCKED", "created_at": "terminal-created", "updated_at": "terminal-updated", "execution_mode": "MANAGED"},
@@ -1586,7 +1595,36 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(snapshot["status"]["watcher_state"], "ENGINEERING_RUN_ACTIVE")
         self.assertEqual(snapshot["status"]["run_id"], "run-active")
         self.assertEqual(snapshot["prompt_started"], "active-created")
+        self.assertTrue(snapshot["status"]["lifecycle"]["available"])
+        self.assertEqual(snapshot["status"]["lifecycle"]["steps"][1]["state"], "ACTIVE")
         self.assertEqual([entry["run_id"] for entry in snapshot["runs"]], ["run-terminal"])
+
+    def test_central_active_diagnostic_is_run_scoped_plain_text_and_never_json(self) -> None:
+        """An active diagnostic is a redacted display string, not an API body."""
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("run-project-a", "project-a", "RUNNING", "created", "updated"),
+            )
+            connection.execute(
+                "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                ("lifecycle_worker", json.dumps({"run_id": "run-project-a", "diagnostic": "Safe active diagnostic."}), "earlier"),
+            )
+            connection.execute(
+                "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                ("lifecycle_worker", json.dumps({
+                    "run_id": "run-project-a",
+                    "diagnostic": json.dumps({"error": "CENTRAL_CONSOLE_ROUTE_UNAVAILABLE"}),
+                }), "later"),
+            )
+            connection.execute(
+                "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                ("lifecycle_worker", json.dumps({"run_id": "run-project-b", "diagnostic": "Other project diagnostic."}), "latest"),
+            )
+        self.assertEqual(
+            server._central_console_current_execution_diagnostic(self.root, "project-a"),
+            "Safe active diagnostic.",
+        )
 
     def test_central_console_projects_immutable_forge_context_to_active_and_detail_views(self) -> None:
         """A Forge submission stays visible before host-side evidence exists."""

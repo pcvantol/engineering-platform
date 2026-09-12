@@ -25,6 +25,7 @@ class ConsoleRouteOwnershipTest(unittest.TestCase):
         for method, path in (
             ("GET", "/api/prompt-history/run-a/analysis"),
             ("POST", "/api/prompt-history/run-a/analysis-retry"),
+            ("GET", "/api/execution-diagnostic/current"),
         ):
             self.assertEqual(route_owner(method, path).owner, PROJECT, path)
 

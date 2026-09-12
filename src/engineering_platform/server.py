@@ -73,7 +73,9 @@ from .component_logging import (
     component_logger,
     log_event,
 )
+from .agent_state import redact_diagnostic
 from .ep_consumer_credentials import verifier
+from .execution_lifecycle import projection as lifecycle_projection
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import CURRENT_PLATFORM_VERSION, EngineeringPlatformManifest
 from .providers import (
@@ -2276,6 +2278,47 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
     return [_central_run_record(row, project_id) for row in rows]
 
 
+def _central_console_lifecycle(data_root: Path, run_id: str) -> dict[str, object]:
+    """Project one active run's persisted lifecycle from CENTRAL only."""
+    return lifecycle_projection(
+        data_root,
+        run_id,
+        central_database=data_root / SERVER_DATABASE_FILENAME,
+    )
+
+
+def _central_console_current_execution_diagnostic(data_root: Path, project_id: str) -> str | None:
+    """Return the selected active run's latest safe diagnostic, if any.
+
+    Component logs are the only operator-log authority.  A diagnostic is
+    intentionally scoped through the active project run and returned as plain
+    text only; a stored JSON document is not a Console presentation format.
+    """
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        active = connection.execute(
+            """SELECT run_id FROM ep_execution_runs
+                 WHERE project_id=? AND state IN ('CLAIMED','RUNNING')
+                 ORDER BY updated_at DESC,run_id DESC LIMIT 1""",
+            (project_id,),
+        ).fetchone()
+        if active is None:
+            return None
+        rows = connection.execute(
+            """SELECT payload FROM engineering_component_logs
+                 WHERE json_extract(payload, '$.run_id')=?
+                   AND json_extract(payload, '$.diagnostic') IS NOT NULL
+                 ORDER BY id DESC LIMIT 20""",
+            (str(active[0]),),
+        ).fetchall()
+    for (payload,) in rows:
+        diagnostic = _central_text(_central_json_object(payload).get("diagnostic"))
+        # Keep serialized API errors and other JSON payloads out of the UI.
+        # The unavailable state is more useful and safer than raw machinery.
+        if diagnostic and not diagnostic.lstrip().startswith(("{", "[")):
+            return redact_diagnostic(diagnostic, limit=500)
+    return None
+
+
 def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
     """Return the project status and terminal-history projections from CENTRAL.
 
@@ -2306,6 +2349,7 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
             # The current-run card is a distinct projection, but it must show
             # the same immutable Forge context as the terminal detail view.
             **active,
+            "lifecycle": _central_console_lifecycle(data_root, str(active["run_id"])),
         }
     return {
         "project_id": project_id,
@@ -3176,6 +3220,23 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             # traceback that obscures qualification diagnostics.
             return
 
+    def _send_text(self, status_code: int, payload: str) -> None:
+        """Return one non-JSON Console presentation response safely."""
+        encoded = payload.encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        route = getattr(self, "_console_route", None)
+        if route is not None:
+            self.send_header("EP-Console-Route-Owner", route.owner)
+        self.end_headers()
+        try:
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _send_artifact_bytes(self, payload: bytes, instance_id: str) -> None:
         """Return the verified immutable artifact bytes without JSON re-encoding."""
         self.send_response(200)
@@ -3877,6 +3938,14 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 return
             if request.path in {"/api/dashboard-snapshot", "/api/status"}:
                 self._send(200, _central_console_project_snapshot(self.server.data_root, selected))  # type: ignore[attr-defined]
+                return
+            if request.path == "/api/execution-diagnostic/current":
+                self._send_text(
+                    200,
+                    _central_console_current_execution_diagnostic(
+                        self.server.data_root, selected,  # type: ignore[attr-defined]
+                    ) or "",
+                )
                 return
             if request.path == "/api/prompt-history":
                 snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]

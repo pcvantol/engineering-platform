@@ -18,7 +18,7 @@ change authority, select a checkout, or delegate that route.
 | PLATFORM | `GET/POST /api/configuration`; `GET /api/central-data/export`; `POST /api/central-data/{relocate,relocate/browse,relocate/discard,import}`; `GET/POST /api/central-database/configuration` | Server settings and Central data operations; paths and imported bytes are never placed in the audit log |
 | HOST_ADMIN | `GET /api/host-admin/diagnostics` | Bounded installation-only disk and managed-runtime observation; no project, queue, execution or mutation authority |
 | PLATFORM | `GET /v1/operations/projects` | Operations Console platform listing |
-| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,analysis,chat,details}`, `/api/telemetry/{date}`; `POST /api/prompt-history/{run}/analysis-retry`, `/api/telemetry/clear`, `/api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, centrally indexed advisory analysis, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
+| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,analysis,chat,details}`, `/api/telemetry/{date}`, `/api/execution-diagnostic/current`; `POST /api/prompt-history/{run}/analysis-retry`, `/api/telemetry/clear`, `/api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, active redacted diagnostic, centrally indexed advisory analysis, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
 | TRANSPORT_INTERNAL | `/diagnostics/topology`, `/healthz`, `/readyz`, `/v1/projects/{project}/submissions`, `/v1/agent/{pair,register,heartbeat,attachment}` | Transport probes and authenticated transport endpoints, not Console delegation |
 | HISTORICAL_UNREACHABLE | `POST /api/runtime-directory/open` | Explicitly retired checkout-bound runtime action (`410 RUNTIME_DIRECTORY_RETIRED`) |
 
@@ -49,6 +49,12 @@ The active card names two deliberately separate EP states: **EP execution
 phase** is the state recorded for the Execution Host run; **EP dispatcher
 state** is the FIFO dispatch record's orchestration state. They can both be
 `RUNNING` during normal operation, but neither is inferred from the other.
+
+The same active projection includes the full persisted lifecycle path (the
+read-only step-bubble flow) for that exact run. The active diagnostic endpoint
+reads only that run's redacted CENTRAL component-log diagnostics and responds
+as `text/plain`; absent, malformed, or JSON-shaped content becomes the
+localized unavailable state. Raw JSON error responses are never Console prose.
 
 The Console never derives a branch, checkout, tracked-file count, Mission
 summary or prompt content. Those remain absent until the Execution Host records
