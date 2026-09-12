@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from engineering_platform import server, submission_service
@@ -357,7 +358,11 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(terminal["evidence"]["terminal_artifact"]["id"], artifact_id)
         self.assertEqual(terminal["evidence"]["repository"]["revision"], None)
         self.assertNotIn("/private", json.dumps(terminal))
-        with urlopen(Request(f"http://127.0.0.1:{self.port}/v1/projects/djconnect/artifacts/{artifact_id}", headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+        artifact_endpoint = (
+            f"http://127.0.0.1:{self.port}/v1/projects/djconnect/artifacts/"
+            f"{quote(artifact_id, safe='')}"
+        )
+        with urlopen(Request(artifact_endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             returned_artifact_bytes = response.read()
             artifact = json.loads(returned_artifact_bytes)
         self.assertEqual(returned_artifact_bytes, stored_artifact)

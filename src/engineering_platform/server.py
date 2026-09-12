@@ -30,7 +30,7 @@ from threading import Lock, RLock, Timer
 from typing import Mapping, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
-from urllib.parse import SplitResult, parse_qs, urlsplit
+from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 from uuid import uuid4
 
 from . import agent_trust
@@ -4061,7 +4061,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except sqlite3.Error:
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
-        artifact = re.fullmatch(r"/v1/projects/([^/]+)/artifacts/((?:terminal-evidence|assurance-findings):[^/]+)", request.path)
+        artifact = re.fullmatch(
+            r"/v1/projects/([^/]+)/artifacts/((?:terminal-evidence|assurance-findings):[^/]+)",
+            unquote(request.path),
+        )
         if artifact:
             project_id, artifact_id = artifact.groups()
             authorization = self.headers.get("Authorization", "")
