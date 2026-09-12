@@ -1,0 +1,328 @@
+{
+  "schema_version": 1,
+  "increment": "EP_ROLE_TASK_MODEL_POLICY_V1",
+  "owner": "engineering-platform",
+  "parent_graph": "docs/development/SUBAGENT_ORCHESTRATION_V1_DAG.json",
+  "parent_node": "SA-ROLE",
+  "finding": "SA-F09",
+  "status": "PLANNED",
+  "documentary_only": true,
+  "execution_authority": false,
+  "automatic_dispatch": false,
+  "version_change": "NO_BUMP",
+  "first_canary_prerequisite": false,
+  "source_pin": "4a6dace73ccc15146a9afe5db356957d8af4bbbb",
+  "architecture": "docs/engineering/ROLE_TASK_MODEL_POLICY_V1.md",
+  "roadmap": "docs/development/ROLE_TASK_MODEL_POLICY_V1_ROADMAP.md",
+  "policy_roadmap": "docs/development/POLICY_GOVERNANCE_V1_ROADMAP.md",
+  "first_delivery": "QUALIFIED_EXISTING_EP_MANAGED_CODEX_MULTIMODEL",
+  "later_provider_families": [
+    "OTHER_QUALIFIED_CLI",
+    "METERED_API_EXPLICIT_OPT_IN",
+    "LOCAL_MODEL_SERVICE_QUALIFIED_ADAPTER"
+  ],
+  "actual_model_ids_selected": [],
+  "runtime_activation": false,
+  "invariants": {
+    "ep_owns_execution_policy": true,
+    "forge_planning_policy_unchanged": true,
+    "reuse_effective_profiles_and_central": true,
+    "resolve_deterministically": true,
+    "role_selection_is_model_selection": false,
+    "automatic_api_fallback": false,
+    "provider_default_requires_explicit_policy": true,
+    "requested_is_observed": false,
+    "missing_usage_is_zero": false,
+    "unknown_observed_model_can_satisfy_exact_requirement": false,
+    "per_invocation_settings": true,
+    "quality_security_separate_invocations": true,
+    "different_models_required_for_independence": false,
+    "allow_ambiguous_fallback": false,
+    "allow_review_shopping": false,
+    "allow_repair_budget_reset": false,
+    "current_runwide_repair_limit": 3,
+    "current_timeout_constants_editable": false,
+    "live_profile_edits_change_active_runs": false,
+    "page_refresh_generates": false,
+    "model_switch_grants_authority": false,
+    "qualified_binding_required_before_activation": true,
+    "metadata_redefines_terminal_v12_without_versioning": false,
+    "all_optional_providers_required_for_v1": false
+  },
+  "external_requirements": [
+    {
+      "id": "RMP-EFFECTIVE-POLICY",
+      "owner": "engineering-platform",
+      "kind": "qualified_subset_evidence",
+      "status": "REQUIRED_EVIDENCE_UNVERIFIED",
+      "owning_lane": "POL-E",
+      "requirement": "Reuse qualified assignment/activation/effective-profile snapshot services required by this family, not all POL-B/POL-Q/Workspace work or a second policy engine.",
+      "evidence": []
+    }
+  ],
+  "external_dependencies": {
+    "RMP-RESOLVE": [
+      "SA-CTX",
+      "SA-OBS",
+      "RMP-EFFECTIVE-POLICY"
+    ]
+  },
+  "sibling_joins": {
+    "role_selection": "SA-SEL",
+    "findings_consumption": "SA-LOOP",
+    "deterministic_validation": "SA-VAL",
+    "deterministic_publication": "SA-PUB",
+    "parallel_mandatory_assurance": "SA-PAR"
+  },
+  "task_matrix": [
+    {
+      "task": "IMPLEMENTATION_CODE",
+      "role": "implementer",
+      "mode": "BOUNDED_WRITE",
+      "profile_intent": "implementation_balanced"
+    },
+    {
+      "task": "IMPLEMENTATION_DOCUMENTATION",
+      "role": "implementer",
+      "mode": "BOUNDED_WRITE",
+      "profile_intent": "documentation_efficient"
+    },
+    {
+      "task": "REPAIR_CORRECTIVE",
+      "role": "implementer",
+      "mode": "BOUNDED_WRITE",
+      "profile_intent": "repair_diagnostic"
+    },
+    {
+      "task": "QUALITY_REVIEW",
+      "role": "quality",
+      "mode": "READ_ONLY",
+      "profile_intent": "quality_correctness"
+    },
+    {
+      "task": "SECURITY_REVIEW",
+      "role": "security",
+      "mode": "READ_ONLY",
+      "profile_intent": "security_boundaries"
+    },
+    {
+      "task": "SPECIALIST_REVIEW",
+      "role": "SELECTED_REGISTERED_ROLE",
+      "mode": "READ_ONLY",
+      "profile_intent": "specialist_<role>"
+    },
+    {
+      "task": "FAILURE_DIAGNOSIS",
+      "role": "EXISTING_DIAGNOSTIC_RESPONSIBILITY",
+      "mode": "READ_ONLY",
+      "profile_intent": "diagnosis"
+    },
+    {
+      "task": "FINALIZATION_REASONING",
+      "role": "EXISTING_FINALIZATION_RESPONSIBILITY",
+      "mode": "PHASE_SCOPED",
+      "profile_intent": "finalization_reasoning"
+    },
+    {
+      "task": "VALIDATION_CONTROL",
+      "role": "HOST_DETERMINISTIC",
+      "mode": "NO_LLM_TARGET",
+      "profile_intent": null
+    },
+    {
+      "task": "PUBLICATION_CONTROL",
+      "role": "HOST_DETERMINISTIC",
+      "mode": "NO_LLM_TARGET",
+      "profile_intent": null
+    },
+    {
+      "task": "RECONCILIATION_CONTROL",
+      "role": "HOST_DETERMINISTIC",
+      "mode": "NO_LLM_TARGET",
+      "profile_intent": null
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "RMT-01",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Deterministic task/role/risk selection; equal-priority conflict and prompt-supplied model override rejected"
+    },
+    {
+      "id": "RMT-02",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Two different model/effort bindings through the same adapter; per-call arguments and observed metadata remain distinct"
+    },
+    {
+      "id": "RMT-03",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Unsupported model/tool/sandbox/effort/context/qualification denies dispatch rather than weakening requirements"
+    },
+    {
+      "id": "RMT-04",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Override intersection and stale activation rejected; edits do not rewrite an active run snapshot"
+    },
+    {
+      "id": "RMT-05",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Explicit provider-default and absent observations remain labelled; strict observed-identity requirements fail closed"
+    },
+    {
+      "id": "RMT-06",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Independent full Q/S rubric/context and candidate matching; cheap model cannot drop criteria or approve its own repair"
+    },
+    {
+      "id": "RMT-07",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Controlled concurrent adapter interleavings do not mix models/results/usage; no implicit SA-PAR enablement"
+    },
+    {
+      "id": "RMT-08",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Finite pre-dispatch fallback: approved alternate succeeds, cycle/unauthorized alternate and exhausted capacity denied"
+    },
+    {
+      "id": "RMT-09",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Timeout/ambiguous handoff never automatically switches provider; late superseded result cannot materialize twice"
+    },
+    {
+      "id": "RMT-10",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Repair across roles/models/SHA/PR/restart retains one runwide three-round ceiling and existing timeout limits"
+    },
+    {
+      "id": "RMT-11",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Qualified deterministic control paths use zero model calls; missing SA-VAL/SA-PUB integration is not mocked into success"
+    },
+    {
+      "id": "RMT-12",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Failure/cancel/replay usage attributed once; unknown usage/cost/actual model never becomes zero or requested value"
+    },
+    {
+      "id": "RMT-13",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Console authority, concurrent edits, five locales, redaction and preview/readback; refresh creates zero generations"
+    },
+    {
+      "id": "RMT-14",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Installed identity, persisted policy and restart evidence; unqualified/failed comparative corpus blocks binding activation"
+    },
+    {
+      "id": "RMT-15",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Versioned producer evidence compatibility; no silent v1.2 schema break or consumer authority expansion"
+    },
+    {
+      "id": "RMT-16",
+      "required": true,
+      "status": "PLANNED",
+      "requirement": "Account/data/billing boundary enforced; unavailable subscription never silently selects a metered API"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "RMP-CONTRACT",
+      "owner": "engineering-platform",
+      "status": "PLANNED",
+      "depends_on": [],
+      "delivery": "Task/role matrix and versioned rubrics",
+      "completion_evidence": [
+        "Registered phase/role mappings, complete Q/S rubrics and typed model-selection/observation contracts"
+      ]
+    },
+    {
+      "id": "RMP-CATALOG",
+      "owner": "engineering-platform",
+      "status": "PLANNED",
+      "depends_on": [
+        "RMP-CONTRACT"
+      ],
+      "delivery": "Qualified provider/model capability catalogue",
+      "completion_evidence": [
+        "EP-local adapter/account/version provenance, supported effort/output/data capabilities and honest unknown/default states"
+      ]
+    },
+    {
+      "id": "RMP-RESOLVE",
+      "owner": "engineering-platform",
+      "status": "PLANNED",
+      "depends_on": [
+        "RMP-CATALOG"
+      ],
+      "delivery": "Effective policy and deterministic selection",
+      "completion_evidence": [
+        "Reuse effective-policy authority, constrained precedence, immutable run snapshots, explicit conflicts and finite allowed alternatives"
+      ]
+    },
+    {
+      "id": "RMP-DISPATCH",
+      "owner": "engineering-platform",
+      "status": "PLANNED",
+      "depends_on": [
+        "RMP-RESOLVE"
+      ],
+      "delivery": "Per-invocation model and effort application",
+      "completion_evidence": [
+        "Actual managed-Codex adapter binding and isolation, candidate/rubric matching, no ambiguity replay and shared repair budget"
+      ]
+    },
+    {
+      "id": "RMP-EVIDENCE",
+      "owner": "engineering-platform",
+      "status": "PLANNED",
+      "depends_on": [
+        "RMP-DISPATCH"
+      ],
+      "delivery": "Requested-versus-observed ledger/readback",
+      "completion_evidence": [
+        "Reuse SA-OBS ledger, trustworthy observation provenance, missing usage and failure attribution, restart-safe lineage"
+      ]
+    },
+    {
+      "id": "RMP-CONSOLE",
+      "owner": "engineering-platform",
+      "status": "PLANNED",
+      "depends_on": [
+        "RMP-RESOLVE"
+      ],
+      "delivery": "Task/role administration and explanation",
+      "completion_evidence": [
+        "EP-native five-language preview/activation/readback, no in-flight drift or generated calls on refresh"
+      ]
+    },
+    {
+      "id": "RMP-Q",
+      "owner": "engineering-platform",
+      "status": "PLANNED",
+      "depends_on": [
+        "RMP-EVIDENCE",
+        "RMP-CONSOLE"
+      ],
+      "delivery": "Installed and comparative role qualification",
+      "completion_evidence": [
+        "All required RMT scenarios, real-core CI plus installed proof and separately authorized representative model comparisons"
+      ]
+    }
+  ]
+}
