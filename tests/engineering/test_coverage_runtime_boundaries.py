@@ -1789,6 +1789,26 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertTrue(server._central_console_clear_chat_history(self.root, project_id, run_id))
         self.assertEqual(server._central_console_chat_history(self.root, project_id, run_id), [])
 
+        def provider_failure_after_question_is_persisted(*_: object) -> str:
+            transcript = server._central_console_chat_history(self.root, project_id, run_id)
+            self.assertEqual([entry["text"] for entry in transcript or []], ["Bewaar deze vraag."])
+            raise server.CodexChatError("provider unavailable")
+
+        with patch(
+            "engineering_platform.server.respond_with_context",
+            side_effect=provider_failure_after_question_is_persisted,
+        ):
+            with self.assertRaisesRegex(server.CodexChatError, "provider unavailable"):
+                server._central_console_chat_response(
+                    self.root, project_id, run_id, "Bewaar deze vraag.",
+                )
+        transcript_after_provider_failure = server._central_console_chat_history(self.root, project_id, run_id)
+        self.assertEqual(
+            [entry["text"] for entry in transcript_after_provider_failure or []],
+            ["Bewaar deze vraag."],
+        )
+        self.assertTrue(server._central_console_clear_chat_history(self.root, project_id, run_id))
+
         body = json.dumps({"message": "Wat is de status?", "run_id": run_id}).encode()
         handler, responses = self._in_process_console_handler(
             "/api/codex-chat", body=body,
