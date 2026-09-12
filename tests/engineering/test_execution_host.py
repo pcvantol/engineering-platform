@@ -2633,6 +2633,45 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(agent.live_action, "invoke_agent")
         self.assertEqual(agent.activity_action, "Codex bewerkt bestanden")
 
+    def test_verified_managed_noop_reconciles_an_unchanged_main_checkout(self) -> None:
+        repository = FakeRepository()
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+        baseline = RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True)
+        state = TransactionState(
+            "verified-managed-noop", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            owner_authorized=True, action_intent="MUTATING_DELIVERY",
+        )
+        result = AgentResult(
+            "COMPLETE",
+            terminal_condition="repository_reconciled",
+            validation_evidence=({"command": "python -m unittest focused", "result": "PASS: focused checks"},),
+        )
+
+        completed = runner._advance_after_primary_agent_result(state, result, baseline)
+
+        self.assertEqual(completed.phase, "COMPLETE")
+        self.assertEqual(completed.terminal_condition, "repository_reconciled")
+        self.assertEqual(repository.cleanup_calls, [(None, None)])
+
+    def test_unverified_managed_noop_remains_blocked(self) -> None:
+        repository = FakeRepository()
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+        baseline = RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True)
+        state = TransactionState(
+            "unverified-managed-noop", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            owner_authorized=True, action_intent="MUTATING_DELIVERY",
+        )
+
+        blocked = runner._advance_after_primary_agent_result(state, AgentResult("COMPLETE"), baseline)
+
+        self.assertEqual(blocked.phase, "BLOCKED")
+        self.assertEqual(blocked.next_action, "local_validation_scope")
+        self.assertEqual(repository.cleanup_calls, [])
+
     def test_quality_assurance_does_not_create_or_replace_the_implementation_pr(self) -> None:
         agent = SequencedFakeAgent([
             AgentResult("COMPLETE", "codex/implementation", 701),
