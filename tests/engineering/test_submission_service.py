@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from engineering_platform import server, submission_service
 from engineering_platform.agent_state import TransactionState
+from engineering_platform.platform_version import CURRENT_PLATFORM_VERSION
 
 
 class CanonicalSubmissionServiceTest(unittest.TestCase):
@@ -289,7 +290,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             "contract_version": "1.0", "id": "ep-submission-receipt:" + submission_id,
             "event": "FORGE_SUBMISSION_ACCEPTED", "issued_at": accepted["created_at"],
             "submission_id": submission_id, "ep_instance_id": receipt["ep_instance_id"],
-            "ep_application_version": "2.3.8", "producer_contract_version": "1.0",
+            "ep_application_version": CURRENT_PLATFORM_VERSION, "producer_contract_version": "1.0",
             "forge_provenance_contract_version": "1.1", "forge_application_version": "2.7.2",
             "producer_readback_contract_version": "1.2",
             "accepted_request_digest": receipt["accepted_request_digest"],
@@ -300,7 +301,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 "SELECT direction,event_kind,producer_contract_version,forge_provenance_contract_version,forge_application_version,ep_application_version,receipt_id,accepted_request_digest FROM ep_forge_exchange_audit WHERE submission_id=?",
                 (submission_id,),
             ).fetchone()
-            self.assertEqual(audit, ("FORGE_TO_EP", "FORGE_SUBMISSION_ACCEPTED", "1.0", "1.1", "2.7.2", "2.3.8", receipt["id"], receipt["accepted_request_digest"]))
+            self.assertEqual(audit, ("FORGE_TO_EP", "FORGE_SUBMISSION_ACCEPTED", "1.0", "1.1", "2.7.2", CURRENT_PLATFORM_VERSION, receipt["id"], receipt["accepted_request_digest"]))
             with self.assertRaises(sqlite3.DatabaseError):
                 connection.execute("DELETE FROM ep_forge_exchange_audit WHERE submission_id=?", (submission_id,))
             log = connection.execute(
@@ -309,7 +310,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertIsNotNone(log)
             self.assertEqual(json.loads(log[0])["forge_application_version"], "2.7.2")
             self.assertEqual(json.loads(log[0])["receipt_id"], receipt["id"])
-            self.assertEqual(json.loads(log[0])["ep_application_version"], "2.3.8")
+            self.assertEqual(json.loads(log[0])["ep_application_version"], CURRENT_PLATFORM_VERSION)
             receipt_log = connection.execute(
                 "SELECT payload FROM engineering_component_logs WHERE component='http_ingress' AND json_extract(payload, '$.event')='forge_submission_receipt_issued' ORDER BY id DESC LIMIT 1"
             ).fetchone()
