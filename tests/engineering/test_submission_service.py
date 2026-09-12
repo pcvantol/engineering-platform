@@ -108,7 +108,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             )
             self.assertEqual(held["state"], "QUARANTINED")
             readback = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)
-            self.assertEqual(readback["disposition"], {"state": "QUARANTINED", "terminal": False, "execution_eligible": False, "revision": 1, "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None})
+            self.assertEqual(readback["disposition"], {"state": "QUARANTINED", "terminal": False, "execution_eligible": False, "revision": 1, "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None, "resolution_submission_id": None, "retry_parent_run_id": None})
             self.assertEqual(
                 submission_service.producer_readback(connection, project_id="djconnect", submission_id=submitted.submission_id)["submission"]["state"],
                 "QUARANTINED",

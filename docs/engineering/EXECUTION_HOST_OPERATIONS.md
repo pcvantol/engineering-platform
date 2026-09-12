@@ -224,6 +224,16 @@ branch drift, a pull request, or an unverifiable commit remains blocked. This
 allows an idempotent request whose bounded result is already present on `main`
 to complete without fabricating an empty branch or commit.
 
+## Producer retry lineage
+
+When an operator restarts a blocked or failed Forge delivery, the original
+producer submission remains the Forge correlation anchor. Its v1.2 producer
+readback exposes the internal successor submission identifier in
+`disposition.resolution_submission_id`; the successor exposes its exact parent
+run in `disposition.retry_parent_run_id`. Consumers must follow this lineage
+only when both identifiers agree with their persisted dispatch. An internal
+retry never produces a second Forge submission receipt.
+
 ## Local repository validation gate
 
 Validation is selected from the actual bounded-branch diff. Documentation and

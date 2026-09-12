@@ -761,13 +761,29 @@ def producer_readback(
         "SELECT o.operation_id,o.event_id,o.actor_reference,e.payload,o.recorded_at FROM ep_queue_disposition_operations o JOIN ep_submission_events e ON e.event_id=o.event_id WHERE o.project_id=? AND o.submission_id=? ORDER BY o.recorded_at DESC LIMIT 1",
         (project_id, submission_id),
     ).fetchone()
-    disposition = {"state": str(submission_state), "terminal": str(submission_state) == "DECLINED", "execution_eligible": str(submission_state) == "QUEUED", "revision": int(disposition_revision), "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None}
+    disposition = {"state": str(submission_state), "terminal": str(submission_state) == "DECLINED", "execution_eligible": str(submission_state) == "QUEUED", "revision": int(disposition_revision), "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None, "resolution_submission_id": None, "retry_parent_run_id": None}
     if disposition_row is not None:
         try:
             reason = json.loads(str(disposition_row[3])).get("reason", "NOT_RECORDED")
         except json.JSONDecodeError:
             reason = "NOT_RECORDED"
         disposition.update({"operation_id": str(disposition_row[0]), "event_reference": "event:" + str(disposition_row[1]), "actor_reference": str(disposition_row[2]), "reason": reason, "recorded_at": str(disposition_row[4])})
+    retry_resolution = connection.execute(
+        """SELECT resolution_submission_id FROM ep_parity_lifecycle_dispatches
+           WHERE project_id=? AND repository_id=? AND submission_id=?
+             AND operator_resolution='RETRIED' AND resolution_submission_id IS NOT NULL""",
+        (project_id, repository_id, submission_id),
+    ).fetchone()
+    if retry_resolution is not None:
+        disposition["resolution_submission_id"] = str(retry_resolution[0])
+    retry_parent = connection.execute(
+        """SELECT run_id FROM ep_parity_lifecycle_dispatches
+           WHERE project_id=? AND repository_id=? AND resolution_submission_id=?
+             AND operator_resolution='RETRIED'""",
+        (project_id, repository_id, submission_id),
+    ).fetchone()
+    if retry_parent is not None:
+        disposition["retry_parent_run_id"] = str(retry_parent[0])
     constraints = _read_constraints(raw_constraints)
     if constraints is None:
         # Existing data is retained, but cannot be represented as qualified
