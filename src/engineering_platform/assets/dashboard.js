@@ -1618,7 +1618,7 @@ function replaceWithLocalFilesystemLink(element, replacementValue = element?.tex
   element.replaceWith(link);
   return link;
 }
-function executionContextField(label, value, badge = false, folder = false) {
+function executionContextField(label, value, folder = false) {
   const field = document.createElement("p"), caption = document.createElement("span"), content = document.createElement("span");
   field.className = "field";
   caption.className = "label";
@@ -1626,9 +1626,16 @@ function executionContextField(label, value, badge = false, folder = false) {
   const supplied = executionContextValue(value);
   const output = folder && supplied.startsWith("/") ? localFilesystemLink(supplied) : content;
   if (output === content) content.textContent = supplied || t("execution_context.not_supplied");
-  if (badge) output.classList.add("execution-context__phase");
   field.append(caption, output);
   return field;
+}
+function executionContextRuntimeStatus(value) {
+  const raw = executionContextValue(value);
+  return raw ? translate(raw) : "";
+}
+function executionContextTimestamp(value) {
+  const raw = executionContextValue(value);
+  return raw ? formatTimestamp(raw) : "";
 }
 function inheritModalAccent(modal, trigger) {
   const source = trigger?.closest(".current-run,[data-modal-accent-source],.dashboard-modal-shell");
@@ -1683,7 +1690,7 @@ function renderExecutionContext(context, execution = {}) {
   if (!context || typeof context !== "object") {
     card.replaceChildren(
       Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
-      ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value, false, label === t("detail.target_checkout"))),
+      ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value, label === t("detail.target_checkout"))),
       Object.assign(document.createElement("p"), { textContent: t("execution_context.not_supplied") }),
     );
     return;
@@ -1696,15 +1703,15 @@ function renderExecutionContext(context, execution = {}) {
     [t("execution_context.engineering_summary"), context.engineering_summary],
     [t("execution_context.current_intent"), context.current_intent],
     [t("execution_context.current_engineering_action"), context.current_engineering_action],
-    [t("execution_context.execution_phase"), context.execution_phase, true],
+    [t("execution_context.execution_phase"), executionContextRuntimeStatus(context.execution_phase)],
     [t("execution_context.planning_confidence"), context.planning_confidence],
     [t("execution_context.current_iteration"), context.current_iteration],
     [t("execution_context.mission_progress"), context.mission_progress],
-    [t("execution_context.last_runtime_update"), context.last_runtime_update || context.last_updated_timestamp],
+    [t("execution_context.last_runtime_update"), executionContextTimestamp(context.last_runtime_update || context.last_updated_timestamp)],
     [t("execution_context.decision_evidence_reference"), context.decision_evidence_reference || context.decision_evidence],
     [t("execution_context.decision_type"), context.decision_type],
     [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
-    [t("execution_context.dispatcher_state"), context.dispatcher_state],
+    [t("execution_context.dispatcher_state"), executionContextRuntimeStatus(context.dispatcher_state)],
     [t("execution_context.approved_mission_queue_state"), context.approved_mission_queue_state],
     [t("execution_context.producer_host"), context.producer_host_id],
     [t("execution_context.mission_revision"), context.mission_revision],
@@ -1731,10 +1738,10 @@ function renderExecutionContext(context, execution = {}) {
   ];
   card.replaceChildren(
     Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
-    ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value, false, label === t("detail.target_checkout"))),
+    ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value, label === t("detail.target_checkout"))),
     ...suppliedFields.map(([label, value]) => executionContextField(label, value)),
     ...(planningFields.length
-      ? planningFields.map(([label, value, badge]) => executionContextField(label, value, badge))
+      ? planningFields.map(([label, value]) => executionContextField(label, value))
       : [Object.assign(document.createElement("p"), {
         className: "execution-context__planning-empty",
         textContent: t("execution_context.planning_not_supplied"),
@@ -7313,19 +7320,14 @@ function loadPromptHistoryDocument() {
       (promptHistoryDocumentKind === "analysis" ? "/analysis" : "/report"),
     { cache: "no-store" },
   )
-    .then((response) =>
-      response.ok
+    .then((response) => {
+      const markdown = response.headers.get("content-type")?.toLowerCase().includes("text/markdown");
+      return response.ok && markdown
         ? response.text()
-        : Promise.reject(
-            Error(
-              t(
-                promptHistoryDocumentKind === "analysis"
-                  ? "history.analysis_unavailable"
-                  : "history.report_unavailable",
-              ),
-            ),
-          ),
-    )
+        : Promise.reject(Error(
+          t(promptHistoryDocumentKind === "analysis" ? "history.analysis_unavailable" : "history.report_unavailable"),
+        ));
+    })
     .then((text) => {
       if (!text)
         throw Error(
@@ -7382,19 +7384,15 @@ async function retryPromptHistoryAnalysis() {
       "/api/prompt-history/" + encodeURIComponent(promptHistoryReportRun) + "/analysis-retry",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
     );
+    const markdown = response.headers.get("content-type")?.toLowerCase().includes("text/markdown");
     const text = await response.text();
-    if (!response.ok) {
-      let detail = "";
-      try { detail = JSON.parse(text).error || ""; } catch { /* controlled fallback below */ }
-      throw Error(detail || t("history.analysis_retry_failed"));
-    }
+    if (!response.ok || !markdown) throw Error(t("history.analysis_retry_failed"));
     promptHistoryReportText = text;
     renderMarkdownDocument(content, text);
     button.hidden = !reportAnalysisCanRetry(text);
-    void recordUserAction("prompt_history_analysis_regenerated", promptHistoryReportRun);
   } catch (error) {
     renderMarkdownDocument(content, promptHistoryReportText);
-    showDashboardError(error instanceof Error ? error.message : "", t("history.analysis_retry_failed"));
+    showDashboardError(t("history.analysis_retry_failed"), t("history.analysis_retry_failed"));
   } finally {
     button.disabled = false;
   }
@@ -7532,7 +7530,7 @@ function promptDetailExecutionSections(history) {
     detailField(t("detail.mission_id"), executionContextValue(context.mission_id) || t("execution_context.not_supplied")),
     detailField(t("execution_context.business_summary"), executionContextValue(context.business_summary) || t("execution_context.not_supplied")),
     detailField(t("execution_context.engineering_summary"), executionContextValue(context.engineering_summary) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.execution_phase"), executionContextValue(context.execution_phase) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.execution_phase"), executionContextRuntimeStatus(context.execution_phase) || t("execution_context.not_supplied")),
     detailField(t("execution_context.mission_lifecycle"), executionContextValue(context.mission_lifecycle) || t("execution_context.not_supplied")),
     detailField(t("execution_context.decision_evidence_reference"), executionContextValue(context.decision_evidence_reference || context.decision_evidence) || t("execution_context.not_supplied")),
     detailField(t("execution_context.execution_receipt_reference"), executionContextValue(context.execution_receipt_reference || context.last_execution_receipt) || t("execution_context.not_supplied")),

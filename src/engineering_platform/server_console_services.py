@@ -55,7 +55,10 @@ from .codex_chat import (
 from .codex_capacity import read_remaining_percent
 from .telemetry import clear_telemetry, daily_statistics, daily_timing_detail, execution_timing, prune_telemetry
 from .prompt_history import prompt_history, report_for_prompt_history, report_path_for_prompt_history
-from .report_analysis import analyze as analyze_terminal_report
+from .report_analysis import (
+    RETRYABLE_REPORT_ANALYSIS_STATUSES,
+    analyze as analyze_terminal_report,
+)
 from .recommendation_handoff import handoff_from_report
 from .storage import (
     EngineeringStorageError,
@@ -80,9 +83,6 @@ DASHBOARD_SNAPSHOT_SOURCE = str(uuid.uuid4())
 LOOPBACK_ADDRESS = "127.0.0.1"
 CODEX_PROCESS = re.compile(r"(?:^|\s)(?:\S*/)?codex(?:\s|$)")
 RATE_LIMIT_CACHE_SECONDS = 60
-RETRYABLE_REPORT_ANALYSIS_STATUSES = frozenset({
-    "provider_failed", "provider_unavailable", "invalid_structured_response",
-})
 _REPORT_ANALYSIS_RETRY_LOCK = Lock()
 _REPORT_ANALYSIS_RETRY_RUNS: set[str] = set()
 

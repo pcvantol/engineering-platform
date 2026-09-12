@@ -18,7 +18,7 @@ change authority, select a checkout, or delegate that route.
 | PLATFORM | `GET/POST /api/configuration`; `GET /api/central-data/export`; `POST /api/central-data/{relocate,relocate/browse,relocate/discard,import}`; `GET/POST /api/central-database/configuration` | Server settings and Central data operations; paths and imported bytes are never placed in the audit log |
 | HOST_ADMIN | `GET /api/host-admin/diagnostics` | Bounded installation-only disk and managed-runtime observation; no project, queue, execution or mutation authority |
 | PLATFORM | `GET /v1/operations/projects` | Operations Console platform listing |
-| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,chat,details}`, `/api/telemetry/{date}`; `POST /api/telemetry/clear`, `/api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
+| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,analysis,chat,details}`, `/api/telemetry/{date}`; `POST /api/prompt-history/{run}/analysis-retry`, `/api/telemetry/clear`, `/api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, centrally indexed advisory analysis, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
 | TRANSPORT_INTERNAL | `/diagnostics/topology`, `/healthz`, `/readyz`, `/v1/projects/{project}/submissions`, `/v1/agent/{pair,register,heartbeat,attachment}` | Transport probes and authenticated transport endpoints, not Console delegation |
 | HISTORICAL_UNREACHABLE | `POST /api/runtime-directory/open` | Explicitly retired checkout-bound runtime action (`410 RUNTIME_DIRECTORY_RETIRED`) |
 
@@ -45,6 +45,11 @@ Mission, Engineering Action, correlation and target repository. For Forge, the
 accepted versioned provenance also supplies host, mission/intent revisions,
 runtime-prompt identifier and digest, and retry correlation when present.
 
+The active card names two deliberately separate EP states: **EP execution
+phase** is the state recorded for the Execution Host run; **EP dispatcher
+state** is the FIFO dispatch record's orchestration state. They can both be
+`RUNNING` during normal operation, but neither is inferred from the other.
+
 The Console never derives a branch, checkout, tracked-file count, Mission
 summary or prompt content. Those remain absent until the Execution Host records
 run-specific evidence or Forge supplies a separately versioned context.
@@ -56,6 +61,15 @@ record. Read/download/copy actions requested by the Console can also be
 audited, but the log contains only action, actor, outcome and canonical target
 identifiers: no prompt text, AI-chat content, queue reason, local path, import
 payload or downloaded bytes.
+
+An advisory AI analysis is a separately indexed, integrity-verified CENTRAL
+Markdown artifact for the exact terminal `(project_id, run_id)`. The Console
+never falls back to a repository checkout or a legacy local analysis file.
+Only the bounded retryable processing states may be regenerated from that
+run's CENTRAL report; regeneration records a `dashboard_action_completed`
+audit event and cannot change the execution outcome. Document responses that
+are absent, malformed, or not Markdown are shown as a localized unavailable
+message, never as a JSON payload in the Console.
 
 ## Test and qualification coverage
 

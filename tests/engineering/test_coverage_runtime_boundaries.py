@@ -787,7 +787,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         snapshots = {"runs": [{"run_id": "run-a"}]}
         routes = (
             "/", "/api/configuration", "/api/dashboard-snapshot", "/api/status",
-            "/api/prompt-history", "/api/prompt-history/run-a/report",
+            "/api/prompt-history", "/api/prompt-history/run-a/report", "/api/prompt-history/run-a/analysis",
             "/api/prompt-history/run-a/chat", "/api/prompt-history/run-a/details",
             "/api/telemetry/2026-01-01",
         )
@@ -796,6 +796,8 @@ class InstallationBoundaryTests(unittest.TestCase):
         ), patch("engineering_platform.server._central_console_configuration", return_value={"scope": "CENTRAL"}), patch(
             "engineering_platform.server._central_console_project_snapshot", return_value=snapshots
         ), patch("engineering_platform.server._central_console_report", return_value=b"# central report"), patch(
+            "engineering_platform.server._central_console_analysis", return_value=b"# central analysis"
+        ), patch(
             "engineering_platform.server._central_console_chat_history", return_value=[{"role": "user"}]
         ), patch("engineering_platform.server._central_console_run_detail", return_value={"run_id": "run-a"}), patch(
             "engineering_platform.server._central_console_telemetry_detail", return_value={"date": "2026-01-01"}
@@ -814,6 +816,74 @@ class InstallationBoundaryTests(unittest.TestCase):
         ):
             missing._delegate_dashboard("do_GET")
         self.assertEqual(responses[-1], (404, {"error": "REPORT_NOT_FOUND"}))
+        missing_analysis, responses = self._in_process_console_handler(
+            "/api/prompt-history/run-a/analysis", headers={"X-Engineering-Platform-Project": "project-a"}
+        )
+        missing_analysis._central_database_configuration = lambda _method: False
+        with patch("engineering_platform.server._console_projects", return_value=projects), patch(
+            "engineering_platform.server._central_console_analysis", return_value=None
+        ):
+            missing_analysis._delegate_dashboard("do_GET")
+        self.assertEqual(responses[-1], (404, {"error": "ANALYSIS_NOT_FOUND"}))
+        retry_body = b"{}"
+        retry, responses = self._in_process_console_handler(
+            "/api/prompt-history/run-a/analysis-retry",
+            body=retry_body,
+            headers={"X-Engineering-Platform-Project": "project-a", "Content-Length": str(len(retry_body))},
+        )
+        retry._central_database_configuration = lambda _method: False
+        with patch("engineering_platform.server._console_projects", return_value=projects), patch(
+            "engineering_platform.server._retry_central_console_analysis", return_value=b"# Central analysis\n"
+        ) as regenerate, patch("engineering_platform.server._audit_dashboard_action") as audit:
+            retry._delegate_dashboard("do_POST")
+        self.assertEqual(retry.wfile.getvalue(), b"# Central analysis\n")
+        regenerate.assert_called_once_with(self.root, "project-a", "run-a")
+        audit.assert_called_once_with(
+            self.root,
+            action="prompt_history_analysis_regenerated",
+            project_id="project-a",
+            run_id="run-a",
+        )
+
+    def test_central_analysis_retry_only_uses_verified_central_evidence(self) -> None:
+        """The recovery path never falls back to a project checkout or raw output."""
+        unavailable = b"# Codex-analyse\n\n- Status: `provider_unavailable`\n"
+        self.assertEqual(server._central_analysis_processing_status(unavailable), "provider_unavailable")
+        self.assertIsNone(server._central_analysis_processing_status(b"# zonder vaste status"))
+        self.assertIsNone(server._central_analysis_processing_status(None))
+
+        with patch("engineering_platform.server._central_console_analysis", return_value=b"# analysis\n- Status: `processed`\n"):
+            with self.assertRaisesRegex(ValueError, "ANALYSIS_RETRY_UNAVAILABLE"):
+                server._retry_central_console_analysis(self.root, "project-a", "run-a")
+
+        report = self.root / "artifacts" / "reports" / "run-a.md"
+        report.parent.mkdir(parents=True)
+        report.write_text("# Engineeringrapport\n", encoding="utf-8")
+        replacement = self.root / "artifacts" / "report-analysis" / "run-a" / "retry" / "run-a.md"
+        replacement.parent.mkdir(parents=True)
+        replacement.write_text("# Veilige centrale analyse\n", encoding="utf-8")
+        with patch("engineering_platform.server._central_console_analysis", return_value=unavailable), patch(
+            "engineering_platform.server._central_console_report_path", return_value=report
+        ), patch("engineering_platform.server.analyze_terminal_report", return_value=replacement) as analyze, patch(
+            "engineering_platform.server.storage.record_artifact"
+        ) as record:
+            self.assertEqual(
+                server._retry_central_console_analysis(self.root, "project-a", "run-a"),
+                b"# Veilige centrale analyse\n",
+            )
+        analyze.assert_called_once()
+        self.assertEqual(analyze.call_args.args, (self.root, "run-a", report))
+        self.assertTrue(str(analyze.call_args.kwargs["output_directory"]).startswith(str(self.root / "artifacts")))
+        record.assert_called_once()
+        self.assertEqual(record.call_args.kwargs["artifact_type"], "ADVISORY_REPORT_ANALYSIS")
+        self.assertEqual(record.call_args.kwargs["content_type"], "text/markdown")
+        self.assertEqual(record.call_args.kwargs["ep_run_id"], "run-a")
+
+        with patch("engineering_platform.server._central_console_analysis", return_value=unavailable), patch(
+            "engineering_platform.server._central_console_report_path", return_value=None
+        ):
+            with self.assertRaisesRegex(ValueError, "REPORT_NOT_FOUND"):
+                server._retry_central_console_analysis(self.root, "project-a", "run-a")
 
     def test_console_log_routes_are_central_and_mutations_reject_bad_origins(self) -> None:
         with patch("engineering_platform.server._central_console_component_logs", return_value={"entries": [{"event": "ready"}]}), patch(
@@ -1584,7 +1654,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(provenance.host_id, "forge-host-alpha")
         self.assertEqual(provenance.runtime_prompt_id, "prompt-0006")
         self.assertNotIn("unrelated_prompt_text", provenance.execution_context(
-            mission_id=None, action_id=None, dispatch_state="RUNNING", updated_at="now", transport_receipt_id=None,
+            mission_id=None, action_id=None, execution_phase="RUNNING", dispatch_state="RUNNING", updated_at="now", transport_receipt_id=None,
         ))
         versioned = server._CentralForgeProvenance.from_constraints(json.dumps({
             "forge_execution": {
@@ -1595,7 +1665,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertIsNotNone(versioned)
         assert versioned is not None
         versioned_context = versioned.execution_context(
-            mission_id=None, action_id=None, dispatch_state="RUNNING", updated_at="now", transport_receipt_id=None,
+            mission_id=None, action_id=None, execution_phase="RUNNING", dispatch_state="RUNNING", updated_at="now", transport_receipt_id=None,
         )
         self.assertEqual(versioned_context["producer_contract_version"], "1.0")
         self.assertEqual(versioned_context["forge_application_version"], "2.7.2")

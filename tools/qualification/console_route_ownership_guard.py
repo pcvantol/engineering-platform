@@ -16,7 +16,8 @@ _REPRESENTATIVE_PATHS = (
     ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"),
     ("GET", "/api/host-admin/diagnostics"),
     ("GET", "/api/configuration"), ("POST", "/api/configuration"),
-    ("GET", "/api/prompt-history"), ("POST", "/api/execution-retry"),
+    ("GET", "/api/prompt-history"), ("GET", "/api/prompt-history/example-run/analysis"),
+    ("POST", "/api/prompt-history/example-run/analysis-retry"), ("POST", "/api/execution-retry"),
     ("GET", "/healthz"), ("POST", "/api/runtime-directory/open"),
 )
 _PLATFORM_DISPATCH_MARKERS = (

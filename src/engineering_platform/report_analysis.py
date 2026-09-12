@@ -14,6 +14,9 @@ from .providers import CodexCliProvider
 MAX_ANALYSIS_LENGTH = 8_000
 MAX_REPORT_CONTEXT_LENGTH = 300_000
 _RUN_ID = __import__("re").compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+RETRYABLE_REPORT_ANALYSIS_STATUSES = frozenset({
+    "provider_failed", "provider_unavailable", "invalid_structured_response",
+})
 
 
 class AnalysisProcessingError(ValueError):
@@ -108,8 +111,8 @@ def _markdown(payload: dict[str, object], *, processing_status: str = "processed
     )[:MAX_ANALYSIS_LENGTH]
 
 
-def _write(root: Path, run_id: str, value: str) -> Path:
-    directory = root / ".engineering" / "report-analysis"
+def _write(root: Path, run_id: str, value: str, *, output_directory: Path | None = None) -> Path:
+    directory = output_directory or root / ".engineering" / "report-analysis"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     destination = directory / f"{run_id}.md"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{run_id}.", suffix=".tmp", dir=directory)
@@ -125,9 +128,21 @@ def _write(root: Path, run_id: str, value: str) -> Path:
     return destination
 
 
-def _fallback(root: Path, run_id: str, status: str, summary: str) -> Path:
+def _fallback(
+    root: Path,
+    run_id: str,
+    status: str,
+    summary: str,
+    *,
+    output_directory: Path | None = None,
+) -> Path:
     """Write a controlled processing reason without persisting provider output."""
-    return _write(root, run_id, _markdown({"summary": summary}, processing_status=status))
+    return _write(
+        root,
+        run_id,
+        _markdown({"summary": summary}, processing_status=status),
+        output_directory=output_directory,
+    )
 
 
 def _payload(output: str) -> dict[str, object]:
@@ -156,14 +171,23 @@ def _bounded_report_context(report_text: str) -> str:
     )
 
 
-def analyze(root: Path, run_id: str, report: Path) -> Path:
+def analyze(
+    root: Path,
+    run_id: str,
+    report: Path,
+    *,
+    output_directory: Path | None = None,
+) -> Path:
     """Persist a bounded advisory analysis; failure never changes transaction outcome."""
     if not _RUN_ID.fullmatch(run_id):
         raise ValueError("run_id is invalid")
     try:
         report_text = report.read_text(encoding="utf-8")
     except OSError:
-        return _fallback(root, run_id, "report_unavailable", "Engineeringrapport was niet beschikbaar voor analyse.")
+        return _fallback(
+            root, run_id, "report_unavailable", "Engineeringrapport was niet beschikbaar voor analyse.",
+            output_directory=output_directory,
+        )
     prompt = """Analyseer uitsluitend het onderstaande Engineeringrapport. Voer geen commando's uit, wijzig geen bestanden, doe geen netwerkverzoeken en doe geen aannames buiten het rapport. Het resultaat is adviserend: repositorybewijs, commits, validatie en het terminale checkpoint zijn altijd leidend. Geef compacte, feitelijke Nederlandse tekst voor samenvatting, bevindingen, issues, risico's, volgende stappen en advies aan de Product Architect. Herhaal geen geheimen, promptinhoud of ruwe loguitvoer.\n\nENGINEERINGRAPPORT:\n""" + _bounded_report_context(report_text)
     schema_path: Path | None = None
     try:
@@ -181,13 +205,22 @@ def analyze(root: Path, run_id: str, report: Path) -> Path:
             input_text=prompt,
         )
         if completed.returncode:
-            return _fallback(root, run_id, "provider_failed", "Codex-analyse kon niet worden uitgevoerd. De Engineering-uitkomst blijft ongewijzigd.")
+            return _fallback(
+                root, run_id, "provider_failed", "Codex-analyse kon niet worden uitgevoerd. De Engineering-uitkomst blijft ongewijzigd.",
+                output_directory=output_directory,
+            )
         raw = _payload(completed.stdout)
-        return _write(root, run_id, _markdown(raw))
+        return _write(root, run_id, _markdown(raw), output_directory=output_directory)
     except OSError:
-        return _fallback(root, run_id, "provider_unavailable", "Codex-analyse kon niet worden uitgevoerd. De Engineering-uitkomst blijft ongewijzigd.")
+        return _fallback(
+            root, run_id, "provider_unavailable", "Codex-analyse kon niet worden uitgevoerd. De Engineering-uitkomst blijft ongewijzigd.",
+            output_directory=output_directory,
+        )
     except AnalysisProcessingError:
-        return _fallback(root, run_id, "invalid_structured_response", "Codex-analyse kon niet veilig worden verwerkt. De Engineering-uitkomst blijft ongewijzigd.")
+        return _fallback(
+            root, run_id, "invalid_structured_response", "Codex-analyse kon niet veilig worden verwerkt. De Engineering-uitkomst blijft ongewijzigd.",
+            output_directory=output_directory,
+        )
     finally:
         if schema_path is not None:
             schema_path.unlink(missing_ok=True)

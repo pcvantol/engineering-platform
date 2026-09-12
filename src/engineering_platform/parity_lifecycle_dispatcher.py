@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import sqlite3
 import uuid
+from uuid import uuid4
 from typing import Callable, Protocol
 
 from . import central_database, submission_service
@@ -37,6 +38,7 @@ from .component_logging import component_logger, log_event
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
     ENGINEERING_STORAGE_SCHEMA_VERSION,
+    EngineeringStorageError,
     record_admission_decision,
     record_artifact,
     record_run_qualification_context,
@@ -477,7 +479,45 @@ class ParityLifecycleDispatcher:
                 created_at=_utcnow(), run_id=state.run_id,
                 central_database=central_database.path(data_root), artifact_root=data_root / "artifacts",
             )
-            analyze_terminal_report(repository_root, state.run_id, report)
+            try:
+                analysis = analyze_terminal_report(
+                    repository_root,
+                    state.run_id,
+                    report,
+                    output_directory=(
+                        data_root / "artifacts" / "report-analysis" / state.run_id / uuid4().hex
+                    ),
+                )
+                artifact_id = f"report-analysis:{state.run_id}:{uuid4().hex}"
+                record_artifact(
+                    repository_root,
+                    analysis,
+                    artifact_id=artifact_id,
+                    artifact_type="ADVISORY_REPORT_ANALYSIS",
+                    content_type="text/markdown",
+                    created_at=_utcnow(),
+                    run_id=state.run_id,
+                    ep_run_id=state.run_id,
+                    central_database=central_database.path(data_root),
+                    artifact_root=data_root / "artifacts",
+                )
+                log_event(
+                    _lifecycle_logger(data_root),
+                    logging.INFO,
+                    "lifecycle_report_analysis_available",
+                    run_id=state.run_id,
+                    context={"artifact_id": artifact_id},
+                )
+            except (EngineeringStorageError, OSError, sqlite3.DatabaseError) as error:
+                # AI analysis is advisory.  An unavailable analysis may never
+                # rewrite an already-terminal Engineering outcome.
+                log_event(
+                    _lifecycle_logger(data_root),
+                    logging.WARNING,
+                    "lifecycle_report_analysis_unavailable",
+                    run_id=state.run_id,
+                    diagnostic=type(error).__name__,
+                )
         # A terminal history row and the producer-facing terminal artifact are
         # independent durable projections.  Reconciliation must repair the
         # latter even when the former was already indexed by an older runtime.

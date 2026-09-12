@@ -213,11 +213,11 @@ reports never claim successful implementation or delivery.
 
 ## Advisory Codex analysis
 
-After a terminal report is written, the runner may request one separate Codex
-CLI analysis of that exact local report. The analysis is read-only, bounded and
-stored locally per run under `.engineering/report-analysis/<run-id>.md`. It
-distils findings, issues, risks, next steps and advice for the Product
-Architect. Its output is advisory and redacted before persistence. Every
+After a terminal report is written, the lifecycle dispatcher may request one
+separate Codex CLI analysis of that exact report. The analysis is read-only,
+bounded, redacted before persistence, and registered as an integrity-verified
+CENTRAL Markdown artifact for the same `(project_id, run_id)`. It distils
+findings, issues, risks, next steps and advice for the Product Architect. Every
 analysis also records a bounded **Analyseverwerking** status. If the provider
 is unavailable, fails, or returns an invalid structured response, the matching
 safe reason is shown there; raw provider output and diagnostics are never
@@ -230,15 +230,18 @@ and authoritative.
 
 The private Engineering Status dashboard exposes an **AI analysis** column in
 Prompt History next to the engineering report. View and download actions are
-available only when the analysis file belongs to that exact Run ID; analyses
-from another execution are never selected as a fallback.
+available only for the matching verified CENTRAL artifact; an older local file
+or another run is never selected as a fallback. A response that is unavailable
+or is not Markdown is rendered as a localized unavailable message, never as
+technical JSON.
 
 For a controlled temporary processing failure (`provider_failed`,
 `provider_unavailable` or `invalid_structured_response`), the analysis dialog
-also offers **Generate analysis again**. It is bound to that same indexed
-terminal report and regenerates only the advisory analysis; it never resumes,
-retries or changes the Engineering execution, checkpoint, branch or pull
-request. A successfully processed analysis is deliberately not retryable.
+also offers **Generate analysis again**. It is bound to that same centrally
+indexed terminal report, emits a redacted Console audit event, and regenerates
+only the advisory analysis; it never resumes, retries or changes the
+Engineering execution, checkpoint, branch or pull request. A successfully
+processed analysis is deliberately not retryable.
 
 If a terminal report temporarily cannot be read in its dialog, the dashboard
 offers **Reload report**. That action repeats only the read-only retrieval of

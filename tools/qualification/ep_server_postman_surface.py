@@ -58,6 +58,8 @@ CASES: tuple[Case, ...] = (
     Case("Central database configuration rejects bad request", "POST", "/api/central-database/configuration", 400, "{}"),
     Case("Project history", "GET", "/api/prompt-history", 200, project=True),
     Case("Missing project report", "GET", "/api/prompt-history/missing-run/report", 404, project=True),
+    Case("Missing project advisory analysis", "GET", "/api/prompt-history/missing-run/analysis", 404, project=True),
+    Case("Unavailable advisory analysis retry", "POST", "/api/prompt-history/missing-run/analysis-retry", 409, "{}", True, True),
     Case("Missing project chat", "GET", "/api/prompt-history/missing-run/chat", 404, project=True),
     Case("Missing project detail", "GET", "/api/prompt-history/missing-run/details", 404, project=True),
     Case("Missing telemetry day", "GET", "/api/telemetry/2026-01-01", 404, project=True),
