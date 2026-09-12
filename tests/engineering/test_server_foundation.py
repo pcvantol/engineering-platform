@@ -826,6 +826,30 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(report["integrity"], "PASS")
 
+    def test_schema_41_installation_upgrades_through_the_ordered_current_path(self) -> None:
+        """Retained first-generation CENTRAL stores remain forward-compatible."""
+        self.root.mkdir()
+        identity = server.RuntimeIdentity("schema-41-fixture", "2026-01-01T00:00:00+00:00")
+        server._write_json(self.root / server.SERVER_IDENTITY_FILENAME, {
+            "instance_id": identity.instance_id,
+            "created_at": identity.created_at,
+        })
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            server._install_schema_41(connection, identity)
+
+        self.assertEqual(server.initialize(self.root), identity)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT version FROM engineering_schema_migrations ORDER BY version"
+                ).fetchall(),
+                [(version,) for version in range(41, server.SERVER_STORE_SCHEMA_VERSION + 1)],
+            )
+            self.assertEqual(
+                connection.execute("SELECT schema_version FROM ep_installations").fetchone(),
+                (server.SERVER_STORE_SCHEMA_VERSION,),
+            )
+
     def test_schema_56_upgrade_activates_retry_attempt_lineage(self) -> None:
         """An installed host gains retry lineage without a new data root."""
         identity = server.initialize(self.root)

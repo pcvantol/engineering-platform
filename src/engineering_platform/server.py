@@ -1636,6 +1636,39 @@ def _migrate_schema_60(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=60")
 
 
+_SERVER_SCHEMA_UPGRADE_STEPS = (
+    (42, _migrate_schema_42),
+    (43, _migrate_schema_43),
+    (44, _migrate_schema_44),
+    (45, _migrate_schema_45),
+    (46, _migrate_schema_46),
+    (47, _migrate_schema_47),
+    (48, _migrate_schema_48),
+    (49, _migrate_schema_49),
+    (50, _migrate_schema_50),
+    (51, _migrate_schema_51),
+    (52, _migrate_schema_52),
+    (53, _migrate_schema_53),
+    (54, _migrate_schema_54),
+    (55, _migrate_schema_55),
+    (56, _migrate_schema_56),
+    (57, _migrate_schema_57),
+    (58, _migrate_schema_58),
+    (59, _migrate_schema_59),
+    (60, _migrate_schema_60),
+)
+_SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
+    range(41, SERVER_STORE_SCHEMA_VERSION + 1)
+)
+
+
+def _upgrade_existing_schema(connection: sqlite3.Connection, current_schema: int) -> None:
+    """Apply every required forward-only step to one retained installation."""
+    for target_schema, upgrade in _SERVER_SCHEMA_UPGRADE_STEPS:
+        if current_schema < target_schema:
+            upgrade(connection)
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -1706,56 +1739,21 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in _SUPPORTED_SERVER_SCHEMA_VERSIONS:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59}:
+                    if current_schema < SERVER_STORE_SCHEMA_VERSION:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
                             connection.execute("PRAGMA foreign_keys=OFF")
                             connection.execute("PRAGMA legacy_alter_table=ON")
                             connection.execute("BEGIN IMMEDIATE")
-                            if current_schema == 42:
-                                _migrate_schema_43(connection)
-                            if current_schema in {42, 43}:
-                                _migrate_schema_44(connection)
-                            if current_schema in {42, 43, 44}:
-                                _migrate_schema_45(connection)
-                            if current_schema in {42, 43, 44, 45}:
-                                _migrate_schema_46(connection)
-                            if current_schema in {42, 43, 44, 45, 46}:
-                                _migrate_schema_47(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47}:
-                                _migrate_schema_48(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48}:
-                                _migrate_schema_49(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49}:
-                                _migrate_schema_50(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50}:
-                                _migrate_schema_51(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51}:
-                                _migrate_schema_52(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52}:
-                                _migrate_schema_53(connection)
-                            if current_schema < 54:
-                                _migrate_schema_54(connection)
-                            if current_schema < 55:
-                                _migrate_schema_55(connection)
-                            if current_schema < 56:
-                                _migrate_schema_56(connection)
-                            if current_schema < 57:
-                                _migrate_schema_57(connection)
-                            if current_schema < 58:
-                                _migrate_schema_58(connection)
-                            if current_schema < 59:
-                                _migrate_schema_59(connection)
-                            if current_schema < 60:
-                                _migrate_schema_60(connection)
+                            _upgrade_existing_schema(connection, current_schema)
                             connection.execute("COMMIT")
                             connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
