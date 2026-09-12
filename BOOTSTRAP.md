@@ -51,3 +51,13 @@ python3 docs/ai-development/validate_projection.py \
   --source-commit 6ec3b443c3ab3bdf76c626c2046d3778db570eb0 \
   --extension-identity ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION
 ```
+
+## Peer transport and ingress conformance
+
+The [HTTP-only peer / thin-CLI design and scoped roadmap](docs/engineering/HTTP_TRANSPORT_BOUNDARIES_V1.md)
+and [documentary P-TRANSPORT conformance DAG](docs/development/HTTP_TRANSPORT_BOUNDARIES_V1_DAG.json)
+retain EP's HTTP, CLI and Server-owned File Inbox while requiring Forge and
+Workspace product integration to use only authenticated HTTP. This is owning
+navigation to a design/conformance slice, not a new runtime transport, version,
+installation permission or first-canary dependency. Existing qualified ingress
+behavior is retained; only the added conformance evidence is PLANNED.
