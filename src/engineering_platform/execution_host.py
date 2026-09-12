@@ -2224,6 +2224,34 @@ First implementation pull-request publication gate:
             f"Agent result referenced already merged PR #{pull_request.number}; a new transaction must return its own open pull request.",
         )
 
+    def _is_verified_managed_noop(
+        self, state: TransactionState, result: AgentResult, baseline: RepositoryEvidence,
+    ) -> bool:
+        """Accept only a host-proven, already-reconciled Managed delivery."""
+        if (
+            state.transaction_kind != "IMPLEMENTATION"
+            or state.action_intent != "MUTATING_DELIVERY"
+            or result.terminal_state != "COMPLETE"
+            or result.branch is not None
+            or result.pull_request is not None
+            or result.terminal_condition != "repository_reconciled"
+            or not result.validation_evidence
+            or self._has_failed_validation_evidence(result)
+            or not (baseline.clean and baseline.branch == "main" and baseline.main_contains_head)
+        ):
+            return False
+        try:
+            current = self.repository.inspect(self.root)
+        except RunnerError:
+            return False
+        return (
+            current.clean
+            and current.branch == "main"
+            and current.main_contains_head
+            and current.head_sha == baseline.head_sha
+            and (result.commit_sha is None or result.commit_sha == current.head_sha)
+        )
+
     def _advance_after_primary_agent_result(
         self, state: TransactionState, result: AgentResult, evidence: RepositoryEvidence,
     ) -> TransactionState:
@@ -2236,6 +2264,14 @@ First implementation pull-request publication gate:
             if state.terminal or state.phase in {"REPAIR_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"}:
                 return state
             return self._reconcile_genesis_result(state, result)
+        if self._is_verified_managed_noop(state, result, evidence):
+            reconciled = replace(
+                state,
+                last_verified_sha=evidence.head_sha,
+                latest_repository_evidence=_repository_summary(evidence),
+                terminal_condition="repository_reconciled",
+            )
+            return self._poll(reconciled, result)
         recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
         if state.transaction_kind == "IMPLEMENTATION" and state.action_intent == "MUTATING_DELIVERY" and (
             result.terminal_state not in {"BLOCKED", "FAILED"} or recoverable_local_failure

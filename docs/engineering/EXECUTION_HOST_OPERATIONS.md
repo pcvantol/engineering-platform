@@ -214,6 +214,16 @@ terminal resolved state (`NONE`, `RETRIED`, or `DISMISSED`). A dismissed or
 otherwise terminal successor therefore releases the entire resolved retry
 chain; it must never leave an earlier retry as a hidden queue blocker.
 
+## Verified no-op reconciliation
+
+A Managed mutating delivery may finish without a new branch only when the
+provider returns `COMPLETE` with no pull request, records positive validation
+evidence, and the host proves that the checkout remained the same clean `main`
+commit before and after execution. Missing validation, a failed validation,
+branch drift, a pull request, or an unverifiable commit remains blocked. This
+allows an idempotent request whose bounded result is already present on `main`
+to complete without fabricating an empty branch or commit.
+
 ## Local repository validation gate
 
 Validation is selected from the actual bounded-branch diff. Documentation and
