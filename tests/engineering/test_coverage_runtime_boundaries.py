@@ -1772,19 +1772,24 @@ class InstallationBoundaryTests(unittest.TestCase):
             )
         artifact = self.root / "artifacts" / "projects" / project_id / "runs" / run_id / "terminal-evidence-v1.json"
         artifact.parent.mkdir(parents=True)
-        artifact.write_text(json.dumps({
+        terminal_evidence = {
             "artifact_type": "EP_TERMINAL_EVIDENCE",
             "submission": {"id": submission_id, "project_id": project_id, "repository_id": "repo-a"},
             "run": {"id": run_id, "outcome": "COMPLETE"},
             "repository": {"id": "repo-a", "revision": "b" * 40, "revision_required": True},
-        }), encoding="utf-8")
-        storage.record_artifact(
-            self.root, artifact, artifact_id=f"terminal-evidence:{run_id}", artifact_type="EP_TERMINAL_EVIDENCE",
-            content_type="application/json", created_at="2026-09-12T12:40:55+00:00", run_id=run_id,
-            submission_id=submission_id, producer_id="forge", ep_run_id=run_id,
-            ep_submission_id=submission_id, central_database=self.root / server.SERVER_DATABASE_FILENAME,
-            artifact_root=self.root / "artifacts",
-        )
+        }
+
+        def record_terminal_evidence(payload: object) -> None:
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            storage.record_artifact(
+                self.root, artifact, artifact_id=f"terminal-evidence:{run_id}", artifact_type="EP_TERMINAL_EVIDENCE",
+                content_type="application/json", created_at="2026-09-12T12:40:55+00:00", run_id=run_id,
+                submission_id=submission_id, producer_id="forge", ep_run_id=run_id,
+                ep_submission_id=submission_id, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+                artifact_root=self.root / "artifacts",
+            )
+
+        record_terminal_evidence(terminal_evidence)
 
         self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [{
             "phase": "TERMINAL", "observed_at": "2026-09-12T12:40:55+00:00",
@@ -1793,6 +1798,25 @@ class InstallationBoundaryTests(unittest.TestCase):
         }])
 
         artifact.write_text("tampered", encoding="utf-8")
+        self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])
+        record_terminal_evidence({})
+        self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])
+        record_terminal_evidence({
+            "artifact_type": "EP_TERMINAL_EVIDENCE", "submission": {}, "run": {}, "repository": {},
+        })
+        self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])
+        wrong_project_evidence = {
+            **terminal_evidence,
+            "submission": {**terminal_evidence["submission"], "project_id": "other-project"},
+        }
+        record_terminal_evidence(wrong_project_evidence)
+        self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])
+        record_terminal_evidence(terminal_evidence)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "UPDATE execution_artifact_records SET created_at='' WHERE artifact_id=?",
+                (f"terminal-evidence:{run_id}",),
+            )
         self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])
 
     def test_console_event_and_report_helpers_reject_unowned_or_unavailable_central_artifacts(self) -> None:
