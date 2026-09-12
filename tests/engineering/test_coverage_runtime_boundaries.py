@@ -845,6 +845,46 @@ class InstallationBoundaryTests(unittest.TestCase):
             run_id="run-a",
         )
 
+    def test_central_analysis_retry_only_uses_verified_central_evidence(self) -> None:
+        """The recovery path never falls back to a project checkout or raw output."""
+        unavailable = b"# Codex-analyse\n\n- Status: `provider_unavailable`\n"
+        self.assertEqual(server._central_analysis_processing_status(unavailable), "provider_unavailable")
+        self.assertIsNone(server._central_analysis_processing_status(b"# zonder vaste status"))
+        self.assertIsNone(server._central_analysis_processing_status(None))
+
+        with patch("engineering_platform.server._central_console_analysis", return_value=b"# analysis\n- Status: `processed`\n"):
+            with self.assertRaisesRegex(ValueError, "ANALYSIS_RETRY_UNAVAILABLE"):
+                server._retry_central_console_analysis(self.root, "project-a", "run-a")
+
+        report = self.root / "artifacts" / "reports" / "run-a.md"
+        report.parent.mkdir(parents=True)
+        report.write_text("# Engineeringrapport\n", encoding="utf-8")
+        replacement = self.root / "artifacts" / "report-analysis" / "run-a" / "retry" / "run-a.md"
+        replacement.parent.mkdir(parents=True)
+        replacement.write_text("# Veilige centrale analyse\n", encoding="utf-8")
+        with patch("engineering_platform.server._central_console_analysis", return_value=unavailable), patch(
+            "engineering_platform.server._central_console_report_path", return_value=report
+        ), patch("engineering_platform.server.analyze_terminal_report", return_value=replacement) as analyze, patch(
+            "engineering_platform.server.storage.record_artifact"
+        ) as record:
+            self.assertEqual(
+                server._retry_central_console_analysis(self.root, "project-a", "run-a"),
+                b"# Veilige centrale analyse\n",
+            )
+        analyze.assert_called_once()
+        self.assertEqual(analyze.call_args.args, (self.root, "run-a", report))
+        self.assertTrue(str(analyze.call_args.kwargs["output_directory"]).startswith(str(self.root / "artifacts")))
+        record.assert_called_once()
+        self.assertEqual(record.call_args.kwargs["artifact_type"], "ADVISORY_REPORT_ANALYSIS")
+        self.assertEqual(record.call_args.kwargs["content_type"], "text/markdown")
+        self.assertEqual(record.call_args.kwargs["ep_run_id"], "run-a")
+
+        with patch("engineering_platform.server._central_console_analysis", return_value=unavailable), patch(
+            "engineering_platform.server._central_console_report_path", return_value=None
+        ):
+            with self.assertRaisesRegex(ValueError, "REPORT_NOT_FOUND"):
+                server._retry_central_console_analysis(self.root, "project-a", "run-a")
+
     def test_console_log_routes_are_central_and_mutations_reject_bad_origins(self) -> None:
         with patch("engineering_platform.server._central_console_component_logs", return_value={"entries": [{"event": "ready"}]}), patch(
             "engineering_platform.server._console_projects", return_value=[]
