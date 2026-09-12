@@ -108,7 +108,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 60
+SERVER_STORE_SCHEMA_VERSION = 61
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -551,6 +551,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "execution_submission_attempt_links",
         "execution_validation_profile_identities",
         "ep_forge_exchange_audit",
+        "ep_forge_action_context_envelopes",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -569,6 +570,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_receipt_run_provenance_project_lookup",
         "ep_external_producer_bindings_active_key",
         "ep_forge_exchange_audit_project_lookup",
+        "ep_forge_action_context_envelopes_project_lookup",
     }
 )
 SERVER_REQUIRED_VIEWS = frozenset({"execution_submission_run_links"})
@@ -763,6 +765,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     # a second, checkout-local migration history.
     storage.install_central_operational_compatibility_schema(connection)
     _install_current_submission_schema(connection)
+    _install_forge_action_context_schema(connection)
 
     connection.execute(
         "INSERT INTO engineering_schema_migrations(version) VALUES(?)",
@@ -800,6 +803,43 @@ def _execute_schema_script(connection: sqlite3.Connection, script: str) -> None:
             statement = ""
     if statement.strip():
         raise ServerConfigurationError("EP Server schema definition is incomplete.")
+
+
+def _install_forge_action_context_schema(connection: sqlite3.Connection) -> None:
+    """Install the immutable, prospective Forge Action-context authority."""
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS ep_forge_action_context_envelopes (
+            submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            action_id TEXT NOT NULL,
+            envelope_version TEXT NOT NULL,
+            generator_id TEXT NOT NULL,
+            generator_model TEXT NOT NULL,
+            generator_version TEXT NOT NULL,
+            source_digest TEXT NOT NULL,
+            summary_digest TEXT NOT NULL,
+            envelope_digest TEXT NOT NULL,
+            document TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ep_forge_action_context_envelopes_project_lookup
+            ON ep_forge_action_context_envelopes(project_id,recorded_at DESC,submission_id);
+        CREATE TRIGGER IF NOT EXISTS ep_forge_action_context_envelopes_scope_insert
+        BEFORE INSERT ON ep_forge_action_context_envelopes
+        WHEN NOT EXISTS (
+            SELECT 1 FROM ep_submissions AS submission
+             WHERE submission.submission_id=NEW.submission_id
+               AND submission.project_id=NEW.project_id
+               AND submission.engineering_action_id=NEW.action_id
+        )
+        BEGIN SELECT RAISE(ABORT, 'FORGE_ACTION_CONTEXT_SUBMISSION_SCOPE_MISMATCH'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_forge_action_context_envelopes_immutable_update
+        BEFORE UPDATE ON ep_forge_action_context_envelopes
+        BEGIN SELECT RAISE(ABORT, 'Forge Action context envelope is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_forge_action_context_envelopes_immutable_delete
+        BEFORE DELETE ON ep_forge_action_context_envelopes
+        BEGIN SELECT RAISE(ABORT, 'Forge Action context envelope is immutable'); END;
+    """)
 
 
 def _install_current_submission_schema(connection: sqlite3.Connection) -> None:
@@ -1636,6 +1676,27 @@ def _migrate_schema_60(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=60")
 
 
+def _migrate_schema_61(connection: sqlite3.Connection) -> None:
+    """Persist prospective, immutable Forge Action-context envelopes.
+
+    No historical submission is populated here. A summary is valid only when
+    it crossed the versioned Forge→EP boundary with that submission; deriving
+    one later from a retained prompt would rewrite historical evidence.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema60")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+        "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61)))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,61 FROM ep_installations_schema60")
+    connection.execute("DROP TABLE ep_installations_schema60")
+    _install_forge_action_context_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(61)")
+    connection.execute("UPDATE engineering_metadata SET value='61' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=61")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -1656,6 +1717,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (58, _migrate_schema_58),
     (59, _migrate_schema_59),
     (60, _migrate_schema_60),
+    (61, _migrate_schema_61),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -1684,7 +1746,12 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
             installation = connection.execute("SELECT instance_id FROM ep_installations WHERE instance_id=?", (identity.instance_id,)).fetchone()
     except (OSError, sqlite3.DatabaseError) as error:
         raise ServerConfigurationError("EP Server store is unavailable.") from error
-    valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and SERVER_REQUIRED_VIEWS <= views and {"ep_forge_exchange_audit_scope_insert", "ep_forge_exchange_audit_immutable_update", "ep_forge_exchange_audit_immutable_delete"} <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
+    valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and SERVER_REQUIRED_VIEWS <= views and {
+        "ep_forge_exchange_audit_scope_insert", "ep_forge_exchange_audit_immutable_update",
+        "ep_forge_exchange_audit_immutable_delete", "ep_forge_action_context_envelopes_scope_insert",
+        "ep_forge_action_context_envelopes_immutable_update",
+        "ep_forge_action_context_envelopes_immutable_delete",
+    } <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
         raise ServerConfigurationError(
             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
@@ -2350,6 +2417,48 @@ def _central_text(value: object) -> str | None:
     return normalized[:512] if normalized else None
 
 
+def _central_forge_action_context(value: object, action_id: str | None) -> dict[str, str] | None:
+    """Return only a verified, safe Action summary from CENTRAL storage."""
+    document = _central_json_object(value)
+    generator = document.get("generator")
+    expected = {
+        "envelope_version", "action_id", "summary", "summary_digest", "envelope_digest", "generator",
+    }
+    if (set(document) != expected or not isinstance(generator, dict)
+            or set(generator) != {"id", "model", "version", "source_digest"}
+            or document.get("action_id") != action_id):
+        return None
+    try:
+        request = submission_service.SubmissionRequest(
+            project_id="projection", repository_id="projection", producer_id="forge",
+            producer_type="FORGE", producer_version="projection", prompt="projection",
+            transport="HTTP", engineering_action_id=action_id,
+            constraints={"forge_execution": {
+                "contract_version": "1.2", "host_id": "projection", "repository_id": "projection",
+                "correlation_id": "projection", "mission_id": "projection", "mission_revision": "1",
+                "intent_id": "projection", "intent_revision": "1", "action_id": action_id,
+                "runtime_prompt": {"id": "projection", "content_digest": "sha256:" + "0" * 64},
+                "retry_of_correlation_id": None, "producer_contract_version": "1.0",
+                "forge_application_version": "projection", "action_context_envelope": document,
+            }},
+        )
+        envelope = submission_service._forge_action_context(request)
+    except (submission_service.SubmissionError, TypeError, ValueError):
+        return None
+    if envelope is None:
+        return None
+    safe_generator = envelope["generator"]
+    assert isinstance(safe_generator, dict)
+    return {
+        "summary": str(envelope["summary"]),
+        "summary_digest": str(envelope["summary_digest"]),
+        "envelope_digest": str(envelope["envelope_digest"]),
+        "generator": "{id} · {model} · {version}".format(
+            id=safe_generator["id"], model=safe_generator["model"], version=safe_generator["version"],
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class _CentralForgeProvenance:
     """The safe, displayable subset of one admitted Forge provenance record."""
@@ -2403,6 +2512,7 @@ class _CentralForgeProvenance:
         dispatch_state: str | None,
         updated_at: str | None,
         transport_receipt_id: str | None,
+        action_context: Mapping[str, str] | None,
     ) -> dict[str, object]:
         """Build the explicit CENTRAL projection of admitted Forge facts."""
         context: dict[str, object] = {
@@ -2425,6 +2535,18 @@ class _CentralForgeProvenance:
             "runtime_prompt_digest": self.runtime_prompt_digest,
             "retry_of_correlation_id": self.retry_of_correlation_id,
         }
+        if action_context is not None:
+            context.update({
+                "engineering_summary": action_context["summary"],
+                "action_summary_status": "AVAILABLE",
+                "action_summary_generator": action_context["generator"],
+                "action_summary_digest": action_context["summary_digest"],
+                "action_context_envelope_digest": action_context["envelope_digest"],
+            })
+        elif self.contract_version in {"1.0", "1.1"}:
+            # Those submissions predate the dedicated envelope. Do not infer
+            # a summary from their retained prompt or from current Forge state.
+            context["action_summary_status"] = "NOT_AVAILABLE_HISTORICAL"
         # v1.0 provenance remains an exact historical Console projection.  The
         # v1.1 attributes are present only when an admitted Forge envelope
         # actually supplied them; absence is never represented as invented
@@ -2453,6 +2575,7 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
     execution_phase = _central_text(row["run_state"])
     dispatch_state = _central_text(row["dispatch_state"]) or execution_phase
     updated_at = _central_text(row["updated_at"])
+    action_context = _central_forge_action_context(row["action_context_document"], action_id)
     execution_context = forge.execution_context(
         mission_id=mission_id,
         action_id=action_id,
@@ -2460,6 +2583,7 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
         dispatch_state=dispatch_state,
         updated_at=updated_at,
         transport_receipt_id=_central_text(row["transport_receipt_id"]),
+        action_context=action_context,
     ) if forge else None
 
     return {
@@ -2508,7 +2632,7 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
                       d.submission_id,d.state AS dispatch_state,d.operator_resolution,
                       s.repository_id,s.producer_id,s.producer_type,s.producer_version,
                       s.constraints,s.correlation_id,s.mission_id,s.engineering_action_id,
-                      s.transport_receipt_id,
+                      s.transport_receipt_id,a.document AS action_context_document,
                       EXISTS (
                         SELECT 1 FROM execution_artifact_records AS a
                          WHERE a.artifact_type='ADVISORY_REPORT_ANALYSIS'
@@ -2519,6 +2643,7 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
                  FROM ep_execution_runs AS r
                  LEFT JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
                  LEFT JOIN ep_submissions AS s ON s.submission_id=d.submission_id
+                 LEFT JOIN ep_forge_action_context_envelopes AS a ON a.submission_id=s.submission_id
                 WHERE r.project_id=?
                 ORDER BY r.created_at DESC,r.run_id DESC LIMIT 1000""",
             (project_id,),

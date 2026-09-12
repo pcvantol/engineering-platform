@@ -47,10 +47,19 @@ receipt, commit or terminal artifact for a declined-but-unclaimed submission.
 Forge requests place the versioned, exact execution identity under
 `constraints.forge_execution`: host, repository, correlation, mission and
 revision, intent and revision, action, runtime-prompt ID/digest, and retry
-predecessor. EP validates that the duplicated boundary identities agree before
-admission. Other producers do not need this object. The entire canonical
-constraints object is already part of EP's idempotency comparison, so a replay
-with a changed runtime prompt or other relevant provenance is rejected.
+predecessor. Provenance v1.2 additionally carries the separately versioned
+Forge Action Context Envelope: a bounded credential-redacted Action summary,
+its source/summary/envelope digests, and fixed generator ID/model/version.
+EP validates all of those fields before admission and persists that document as
+immutable, submission-scoped CENTRAL evidence. Other producers do not need
+this object. The entire canonical constraints object is already part of EP's
+idempotency comparison, so a replay with a changed runtime prompt or other
+relevant provenance is rejected.
+
+Only that safe, persisted document may be projected in the Operations Console.
+EP never derives a summary from the Runtime Prompt or a current Forge record.
+Runs submitted under v1.0/v1.1 have no Action Context Envelope and remain
+explicitly unavailable in the Console; no upgrade or migration backfills them.
 
 At the existing finalization writer, EP serializes an `EP_TERMINAL_EVIDENCE`
 JSON artifact using UTF-8 canonical JSON (`sort_keys`, compact separators,
@@ -95,7 +104,7 @@ The machine-readable response shape is
 
 Producer readback stays at `v1.2`; its exact root shape is not changed by this
 addition.  When an authenticated HTTP submission declares Forge execution
-provenance `v1.1`, the successful POST response additionally carries a
+provenance `v1.1` or `v1.2`, the successful POST response additionally carries a
 versioned `receipt` object (`v1.0`).  It binds the accepted submission ID,
 receipt ID and time, EP installation and application versions, Forge
 application version, Forge Producer Contract version, Forge provenance
@@ -112,9 +121,10 @@ the validated EP receipt as separate immutable exchange facts.
 
 Historical Forge provenance `v1.0` remains readable and admissible for
 continuity, but lacks the two explicit version facts required to issue this
-audit receipt.  Deploy EP before a Forge client that requires the receipt:
-older Forge clients safely ignore the added POST field, while the new client
-fails closed for an absent or mismatched receipt.
+audit receipt. Provenance `v1.1` retains that receipt but deliberately lacks
+an Action Context Envelope. Deploy EP before a Forge client that requires the
+receipt: older Forge clients safely ignore the added POST field, while the new
+client fails closed for an absent or mismatched receipt.
 
 ## Operations Console queue disposition
 

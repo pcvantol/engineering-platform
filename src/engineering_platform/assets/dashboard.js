@@ -1657,6 +1657,12 @@ function executionContextTimestamp(value) {
   const raw = executionContextValue(value);
   return raw ? formatTimestamp(raw) : "";
 }
+function executionContextEngineeringSummary(context) {
+  if (context?.action_summary_status === "NOT_AVAILABLE_HISTORICAL") {
+    return t("execution_context.action_summary_not_available_historical");
+  }
+  return executionContextValue(context?.engineering_summary);
+}
 function inheritModalAccent(modal, trigger) {
   const source = trigger?.closest(".current-run,[data-modal-accent-source],.dashboard-modal-shell");
   const sample = source && document.createElement("span");
@@ -1720,7 +1726,10 @@ function renderExecutionContext(context, execution = {}) {
     [t("execution_context.mission_title"), context.mission_title],
     [t("execution_context.mission_lifecycle"), context.mission_lifecycle],
     [t("execution_context.business_summary"), context.business_summary],
-    [t("execution_context.engineering_summary"), context.engineering_summary],
+    [t("execution_context.engineering_summary"), executionContextEngineeringSummary(context)],
+    [t("execution_context.action_summary_generator"), context.action_summary_generator],
+    [t("execution_context.action_summary_digest"), context.action_summary_digest],
+    [t("execution_context.action_context_envelope_digest"), context.action_context_envelope_digest],
     [t("execution_context.current_intent"), context.current_intent],
     [t("execution_context.current_engineering_action"), context.current_engineering_action],
     [t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase)],
@@ -7549,7 +7558,10 @@ function promptDetailExecutionSections(history) {
   const contextMissionId = executionContextValue(context?.mission_id) || executionContextValue(history.mission_id);
   const contextFields = context ? [
     detailField(t("execution_context.business_summary"), executionContextValue(context.business_summary) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.engineering_summary"), executionContextValue(context.engineering_summary) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.engineering_summary"), executionContextEngineeringSummary(context) || t("execution_context.not_supplied")),
+    ...(context.action_summary_generator ? [detailField(t("execution_context.action_summary_generator"), executionContextValue(context.action_summary_generator))] : []),
+    ...(context.action_summary_digest ? [detailField(t("execution_context.action_summary_digest"), executionContextValue(context.action_summary_digest))] : []),
+    ...(context.action_context_envelope_digest ? [detailField(t("execution_context.action_context_envelope_digest"), executionContextValue(context.action_context_envelope_digest))] : []),
     detailField(t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase) || t("execution_context.not_supplied")),
     detailField(t("execution_context.mission_lifecycle"), executionContextValue(context.mission_lifecycle) || t("execution_context.not_supplied")),
     detailField(t("execution_context.decision_evidence_reference"), executionContextValue(context.decision_evidence_reference || context.decision_evidence) || t("execution_context.not_supplied")),
