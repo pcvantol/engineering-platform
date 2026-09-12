@@ -8436,6 +8436,10 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
 }
 function localizedDashboardError(message, fallback) {
   const raw = String(message || fallback || "").trim();
+  const knownError = {
+    PROJECT_RUN_NOT_AWAITING_OPERATOR: "error.project_run_not_awaiting_operator",
+  }[raw];
+  if (knownError) return t(knownError);
   const preflight = raw.match(/^Preflight (?:mislukt|failed):\s*(.*?)\s+(?:Herstel|Recovery):\s*(.*)$/iu);
   if (!preflight) return raw || t("ui.action_failed");
   const [, reason, recovery] = preflight;
