@@ -234,6 +234,12 @@ run in `disposition.retry_parent_run_id`. Consumers must follow this lineage
 only when both identifiers agree with their persisted dispatch. An internal
 retry never produces a second Forge submission receipt.
 
+For every terminal run, CENTRAL persists a separate immutable terminal-evidence
+artifact. Terminal-history reconciliation repairs a missing artifact from the
+same retained checkpoint and report bindings; it never reruns a provider or
+manufactures host evidence. The lifecycle log records either
+`lifecycle_terminal_evidence_available` or its bounded unavailable reason.
+
 ## Local repository validation gate
 
 Validation is selected from the actual bounded-branch diff. Documentation and

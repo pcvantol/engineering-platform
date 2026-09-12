@@ -458,30 +458,31 @@ class ParityLifecycleDispatcher:
         """
         if data_root is None:
             raise ParityLifecycleDispatchError("CENTRAL_HISTORY_DATABASE_REQUIRED")
-        if not state.terminal or cls._terminal_history_exists(repository_root, state.run_id, data_root):
+        if not state.terminal:
             return
-        report = generate_terminal_report(
-            repository_root, state,
-            getattr(runner, "platform_manifest", None),
-            getattr(runner, "detected_codex_cli", None),
-            getattr(runner, "reviewer_records", ()),
-            getattr(getattr(runner, "agent", None), "last_runtime_metadata", None),
-            getattr(getattr(runner, "agent", None), "last_execution_metadata", None),
-            central_database=central_database.path(data_root),
-        )
-        record_terminal_report(repository_root, report, central_database=central_database.path(data_root))
-        record_artifact(
-            repository_root, report, artifact_id=f"report:{state.run_id}",
-            artifact_type="TERMINAL_REPORT", content_type="text/markdown",
-            created_at=_utcnow(), run_id=state.run_id,
-            central_database=central_database.path(data_root), artifact_root=data_root / "artifacts",
-        )
-        # Write the producer-facing receipt from the verified terminal
-        # checkpoint and stored report, never from a later HTTP projection.
-        # A failure here leaves the dispatch non-terminal rather than exposing
-        # a successful-looking run without its required evidence artifact.
+        if not cls._terminal_history_exists(repository_root, state.run_id, data_root):
+            report = generate_terminal_report(
+                repository_root, state,
+                getattr(runner, "platform_manifest", None),
+                getattr(runner, "detected_codex_cli", None),
+                getattr(runner, "reviewer_records", ()),
+                getattr(getattr(runner, "agent", None), "last_runtime_metadata", None),
+                getattr(getattr(runner, "agent", None), "last_execution_metadata", None),
+                central_database=central_database.path(data_root),
+            )
+            record_terminal_report(repository_root, report, central_database=central_database.path(data_root))
+            record_artifact(
+                repository_root, report, artifact_id=f"report:{state.run_id}",
+                artifact_type="TERMINAL_REPORT", content_type="text/markdown",
+                created_at=_utcnow(), run_id=state.run_id,
+                central_database=central_database.path(data_root), artifact_root=data_root / "artifacts",
+            )
+            analyze_terminal_report(repository_root, state.run_id, report)
+        # A terminal history row and the producer-facing terminal artifact are
+        # independent durable projections.  Reconciliation must repair the
+        # latter even when the former was already indexed by an older runtime.
         try:
-            submission_service.write_terminal_evidence(
+            artifact_id = submission_service.write_terminal_evidence(
                 data_root, repository_root=repository_root, run_id=state.run_id,
             )
         except submission_service.SubmissionError as error:
@@ -490,7 +491,15 @@ class ParityLifecycleDispatcher:
             # checkpoint/artifact or delivery qualification.
             if error.code not in {"TERMINAL_EVIDENCE_BINDING_UNAVAILABLE", "TERMINAL_CHECKPOINT_INVALID"}:
                 raise
-        analyze_terminal_report(repository_root, state.run_id, report)
+            log_event(
+                _lifecycle_logger(data_root), logging.WARNING, "lifecycle_terminal_evidence_unavailable",
+                run_id=state.run_id, context={"reason_code": error.code},
+            )
+            return
+        log_event(
+            _lifecycle_logger(data_root), logging.INFO, "lifecycle_terminal_evidence_available",
+            run_id=state.run_id, context={"artifact_id": artifact_id},
+        )
 
     def reconcile_terminal_history(self) -> None:
         """Backfill only missing Console rows for terminal CENTRAL runs."""
