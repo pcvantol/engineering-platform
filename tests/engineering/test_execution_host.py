@@ -2653,6 +2653,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(completed.phase, "COMPLETE")
         self.assertEqual(completed.terminal_condition, "repository_reconciled")
+        self.assertEqual(completed.commit_evidence[-1]["description"], "managed_noop_repository_reconciled")
+        self.assertEqual(completed.commit_evidence[-1]["commit_sha"], "a" * 40)
         self.assertEqual(repository.cleanup_calls, [(None, None)])
 
     def test_unverified_managed_noop_remains_blocked(self) -> None:
@@ -2671,6 +2673,41 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(blocked.phase, "BLOCKED")
         self.assertEqual(blocked.next_action, "local_validation_scope")
         self.assertEqual(repository.cleanup_calls, [])
+
+    def test_unproven_managed_delivery_cannot_complete_without_a_merge_or_verified_noop(self) -> None:
+        state = TransactionState(
+            "unproven-managed-delivery", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", owner_authorized=True, action_intent="MUTATING_DELIVERY",
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+
+        blocked = runner._poll(state, AgentResult("COMPLETE", terminal_condition="repository_reconciled"))
+
+        self.assertEqual(blocked.phase, "BLOCKED")
+        self.assertEqual(blocked.next_action, "mutating_delivery_evidence_required")
+        self.assertEqual(runner.repository.cleanup_calls, [])
+
+    def test_verified_merge_remains_a_qualified_mutating_delivery(self) -> None:
+        revision = "a" * 40
+        state = TransactionState(
+            "merged-managed-delivery", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", owner_authorized=True, action_intent="MUTATING_DELIVERY",
+            implementation_merge_commit=revision,
+            commit_evidence=({
+                "phase": "WAIT_FOR_OPERATOR_MERGE", "observed_at": "2026-01-01T00:00:00+00:00",
+                "commit_sha": revision, "description": "implementation_merge_verified",
+            },),
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+
+        completed = runner._poll(state, AgentResult("COMPLETE"))
+
+        self.assertEqual(completed.phase, "COMPLETE")
+        self.assertEqual(runner.repository.cleanup_calls, [(None, None)])
 
     def test_quality_assurance_does_not_create_or_replace_the_implementation_pr(self) -> None:
         agent = SequencedFakeAgent([

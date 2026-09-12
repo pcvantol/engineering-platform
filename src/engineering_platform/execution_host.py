@@ -2271,6 +2271,16 @@ First implementation pull-request publication gate:
                 latest_repository_evidence=_repository_summary(evidence),
                 terminal_condition="repository_reconciled",
             )
+            # A verified Managed no-op is still a delivery decision.  Preserve
+            # the exact, host-observed main revision that made the decision
+            # safe, rather than letting a later terminal artifact infer an
+            # ambient checkout revision.
+            reconciled = self._append_verified_commit_evidence(
+                reconciled,
+                phase="EXECUTE_AGENT",
+                commit_sha=evidence.head_sha,
+                description="managed_noop_repository_reconciled",
+            )
             return self._poll(reconciled, result)
         recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
         if state.transaction_kind == "IMPLEMENTATION" and state.action_intent == "MUTATING_DELIVERY" and (
@@ -3059,6 +3069,32 @@ First implementation pull-request publication gate:
             if result and result.terminal_state == "COMPLETE":
                 evidence = self.repository.inspect(self.root)
                 if evidence.clean and evidence.main_contains_head:
+                    merged_revisions = {
+                        revision
+                        for revision in (state.implementation_merge_commit, state.finalization_merge_commit)
+                        if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision)
+                    }
+                    has_verified_merge = any(
+                        item.get("commit_sha") in merged_revisions
+                        for item in state.commit_evidence
+                    )
+                    has_verified_managed_noop = any(
+                        item.get("description") == "managed_noop_repository_reconciled"
+                        and item.get("phase") == "EXECUTE_AGENT"
+                        and item.get("commit_sha") == state.last_verified_sha
+                        for item in state.commit_evidence
+                    )
+                    if (
+                        state.owner_authorized
+                        and state.action_intent == "MUTATING_DELIVERY"
+                        and not (has_verified_merge or has_verified_managed_noop)
+                    ):
+                        return self._save_terminal(
+                            state,
+                            "BLOCKED",
+                            "mutating_delivery_evidence_required",
+                            "A mutating delivery requires a merged revision or a host-verified managed no-op revision.",
+                        )
                     return self._cleanup(state)
             return replace(
                 state, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="obtain_repository_evidence"

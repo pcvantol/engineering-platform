@@ -1,7 +1,7 @@
 {
   "name": "engineering-platform-browser-validation",
   "private": true,
-  "version": "2.3.15",
+  "version": "2.3.16",
   "scripts": {
     "test:engineering-dashboard": "PYTHONPATH=src python3 -m engineering_platform.dashboard_browser_validation",
     "test:engineering-dashboard-logic": "node --test tests/engineering/dashboard_status_store.test.mjs tests/engineering/ui_localization_contract.test.mjs",
