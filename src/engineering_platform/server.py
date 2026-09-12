@@ -2778,12 +2778,18 @@ def _central_console_append_chat_message(
 def _central_console_chat_response(
     data_root: Path, project_id: str, run_id: str, message: object,
 ) -> tuple[str, list[dict[str, object]]]:
-    """Generate and retain one read-only answer using only CENTRAL facts."""
+    """Persist a question, then generate and retain its read-only answer.
+
+    The question is stored before invoking the external provider.  Thus a
+    browser can close while the provider is working, and a provider failure
+    remains visible as a durable, redacted question when that same Run-ID is
+    opened again.
+    """
     context = _central_console_chat_context(data_root, project_id, run_id)
     if context is None:
         raise ValueError("CHAT_CONTEXT_UNAVAILABLE")
-    answer = respond_with_context(message, context)
     _central_console_append_chat_message(data_root, project_id, run_id, "user", message)
+    answer = respond_with_context(message, context)
     _central_console_append_chat_message(data_root, project_id, run_id, "assistant", answer, model=chat_model())
     return answer, _central_console_chat_history(data_root, project_id, run_id) or []
 

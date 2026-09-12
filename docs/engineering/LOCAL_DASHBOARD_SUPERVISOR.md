@@ -370,7 +370,11 @@ The adjacent AI-chat glyph opens a separate near-fullscreen, read-only
 question-and-answer context for that same Run ID. It receives only the selected
 run's bounded evidence and cannot start engineering work or alter repository
 state. Its transcript is stored privately with that terminal Run ID, so the
-same conversation remains available after a dashboard restart.
+same conversation remains available after a dashboard restart. EP persists a
+redacted submitted question before it invokes the AI provider. Consequently a
+closed dialog or an unavailable provider cannot discard that question; the
+later reopened conversation shows the submitted question and any successfully
+stored answer.
 When an artifact does not exist, the dashboard states that explicitly and does
 not present its action. Copy confirmation is a local toast only; it does not
 send report content to another service. On iPhone, a legacy clipboard fallback
