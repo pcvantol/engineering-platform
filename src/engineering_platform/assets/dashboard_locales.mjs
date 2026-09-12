@@ -4145,3 +4145,9 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"status.running":"In uitvoering", "state.R
 Object.assign(DASHBOARD_MESSAGES.de, {"status.running":"Wird ausgeführt", "state.RUNNING":"Wird ausgeführt"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"status.running":"En cours", "state.RUNNING":"En cours"});
 Object.assign(DASHBOARD_MESSAGES.es, {"status.running":"En ejecución", "state.RUNNING":"En ejecución"});
+
+Object.assign(DASHBOARD_MESSAGES.en, {"detail.commit_type.terminal_revision":"Verified final revision","detail.commit_description.terminal_repository_revision_verified":"Final repository revision verified from immutable terminal evidence.","state.TERMINAL":"Execution outcome"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"detail.commit_type.terminal_revision":"Geverifieerde eindrevisie","detail.commit_description.terminal_repository_revision_verified":"Eindrevisie van de repository geverifieerd uit onveranderlijke terminale uitvoeringsevidentie.","state.TERMINAL":"Uitvoeringsresultaat"});
+Object.assign(DASHBOARD_MESSAGES.de, {"detail.commit_type.terminal_revision":"Verifizierte Endrevision","detail.commit_description.terminal_repository_revision_verified":"Endrevision des Repositorys aus unveränderlicher terminaler Evidenz verifiziert.","state.TERMINAL":"Ausführungsergebnis"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"detail.commit_type.terminal_revision":"Révision finale vérifiée","detail.commit_description.terminal_repository_revision_verified":"Révision finale du dépôt vérifiée à partir de la preuve terminale immuable.","state.TERMINAL":"Résultat d’exécution"});
+Object.assign(DASHBOARD_MESSAGES.es, {"detail.commit_type.terminal_revision":"Revisión final verificada","detail.commit_description.terminal_repository_revision_verified":"Revisión final del repositorio verificada a partir de evidencia terminal inmutable.","state.TERMINAL":"Resultado de ejecución"});

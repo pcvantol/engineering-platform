@@ -22,7 +22,7 @@ import socket
 from contextlib import redirect_stdout
 from threading import RLock
 
-from engineering_platform import agent_trust, central_database, project_topology, server, server_relay
+from engineering_platform import agent_trust, central_database, project_topology, server, server_relay, storage
 from engineering_platform import providers
 from engineering_platform import codex_capacity
 from engineering_platform import pr_check_repair
@@ -1720,7 +1720,15 @@ class InstallationBoundaryTests(unittest.TestCase):
             "terminal_state": "BLOCKED",
             "steps": [{"id": "START", "state": "START"}, {"id": "TERMINAL", "state": "BLOCKED"}],
         }
-        detail = {"run_id": "run-terminal", "status": "BLOCKED", "lifecycle": lifecycle}
+        timeline = [{
+            "phase": "TERMINAL", "observed_at": "2026-09-12T12:40:55+00:00",
+            "commit_sha": "a" * 40,
+            "description": "terminal_repository_revision_verified",
+        }]
+        detail = {
+            "run_id": "run-terminal", "status": "BLOCKED", "lifecycle": lifecycle,
+            "commit_timeline": timeline,
+        }
         with patch("engineering_platform.server._console_projects", return_value=projects), patch(
             "engineering_platform.server._central_console_run_detail", return_value=detail
         ):
@@ -1733,7 +1741,59 @@ class InstallationBoundaryTests(unittest.TestCase):
         payload = responses[-1][1]
         self.assertEqual(payload["history"], detail)
         self.assertEqual(payload["lifecycle"], lifecycle)
+        self.assertEqual(payload["commit_timeline"], timeline)
         self.assertNotIn("run", payload)
+
+    def test_central_terminal_revision_timeline_requires_verified_exact_artifact(self) -> None:
+        """Only immutable terminal evidence can supply a final revision item."""
+        run_id = "run-terminal"
+        project_id = "project-a"
+        submission_id = "submission-terminal"
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (project_id, "DECLARATION", "ACTIVE", "now", "now"),
+            )
+            connection.execute(
+                "INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("repo-a", project_id, "repo-a", "authority", "DECLARATION", "now", "now"),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (run_id, project_id, "COMPLETE", "2026-09-12T12:00:00+00:00", "2026-09-12T12:40:55+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (submission_id, project_id, "repo-a", "forge", "FORGE", "HTTP", "bounded", "sha256:prompt", "{}", "QUEUED", "ADMITTED", "now"),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (submission_id, project_id, "repo-a", run_id, "COMPLETE", "CENTRAL:prompt", "now", "now"),
+            )
+        artifact = self.root / "artifacts" / "projects" / project_id / "runs" / run_id / "terminal-evidence-v1.json"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text(json.dumps({
+            "artifact_type": "EP_TERMINAL_EVIDENCE",
+            "submission": {"id": submission_id, "project_id": project_id, "repository_id": "repo-a"},
+            "run": {"id": run_id, "outcome": "COMPLETE"},
+            "repository": {"id": "repo-a", "revision": "b" * 40, "revision_required": True},
+        }), encoding="utf-8")
+        storage.record_artifact(
+            self.root, artifact, artifact_id=f"terminal-evidence:{run_id}", artifact_type="EP_TERMINAL_EVIDENCE",
+            content_type="application/json", created_at="2026-09-12T12:40:55+00:00", run_id=run_id,
+            submission_id=submission_id, producer_id="forge", ep_run_id=run_id,
+            ep_submission_id=submission_id, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+            artifact_root=self.root / "artifacts",
+        )
+
+        self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [{
+            "phase": "TERMINAL", "observed_at": "2026-09-12T12:40:55+00:00",
+            "commit_sha": "b" * 40,
+            "description": "terminal_repository_revision_verified",
+        }])
+
+        artifact.write_text("tampered", encoding="utf-8")
+        self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])
 
     def test_console_event_and_report_helpers_reject_unowned_or_unavailable_central_artifacts(self) -> None:
         """Central report/chat helpers cannot be tricked into reading a checkout artifact."""
