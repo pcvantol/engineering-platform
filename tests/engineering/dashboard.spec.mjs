@@ -2735,6 +2735,34 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#executionContext")).toHaveCSS("background-color", "rgb(255, 255, 255)");
   });
 
+  test("translates execution phase in active and historical execution context", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "inbox-translated-phase",
+      execution_context: { execution_phase: "COMPLETE" },
+    }, {}));
+
+    await expect(page.locator("#executionContext")).toContainText("EP-uitvoeringsfase");
+    await expect(page.locator("#executionContext")).toContainText("Voltooid");
+    await expect(page.locator("#executionContext")).not.toContainText("COMPLETE");
+
+    await page.evaluate(() => renderPromptHistoryDetail({
+      history: {
+        run_id: "inbox-translated-phase",
+        status: "COMPLETE",
+        title: "Vertaalde uitvoeringsfase",
+        execution_context: { execution_phase: "COMPLETE" },
+      },
+    }));
+    const historyContext = page.locator("#promptHistoryDetailContent .prompt-detail-card--execution-context");
+    await expect(historyContext).toContainText("EP-uitvoeringsfase");
+    await expect(historyContext).toContainText("Voltooid");
+    await expect(historyContext).not.toContainText("COMPLETE");
+  });
+
   test("keeps lease-lost finalization visible for safe recovery", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
