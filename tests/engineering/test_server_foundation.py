@@ -801,14 +801,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(request.agent_id, "future-agent")
         self.assertFalse(hasattr(request, "credential"))
 
-    def test_fresh_store_is_official_schema_47_with_empty_operational_state(self) -> None:
+    def test_fresh_store_installs_only_the_current_schema_revision(self) -> None:
         identity = server.initialize(self.root)
         report = server.validate_store(self.root, identity)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
-            self.assertEqual(
-                connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
-                server.SERVER_STORE_SCHEMA_VERSION,
-            )
+            self.assertEqual(connection.execute(
+                "SELECT version FROM engineering_schema_migrations ORDER BY version"
+            ).fetchall(), [(server.SERVER_STORE_SCHEMA_VERSION,)])
+            self.assertEqual(connection.execute(
+                "SELECT value FROM engineering_metadata WHERE key='installation.schema_version'"
+            ).fetchone(), (str(server.SERVER_STORE_SCHEMA_VERSION),))
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_installations").fetchone()[0], 1)
             for table in (
                 "ep_agent_registrations",
@@ -845,7 +847,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56)))")
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,56 FROM ep_installations_schema57")
             connection.execute("DROP TABLE ep_installations_schema57")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=57")
+            connection.execute("DELETE FROM engineering_schema_migrations")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(56)")
             connection.execute("UPDATE engineering_metadata SET value='56' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
@@ -883,7 +886,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,57 FROM ep_installations_schema58")
             connection.execute("DROP TABLE ep_installations_schema58")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=58")
+            connection.execute("DELETE FROM engineering_schema_migrations")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(57)")
             connection.execute("UPDATE engineering_metadata SET value='57' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
@@ -920,7 +924,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,58 FROM ep_installations_schema59")
             connection.execute("DROP TABLE ep_installations_schema59")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=59")
+            connection.execute("DELETE FROM engineering_schema_migrations")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(58)")
             connection.execute("UPDATE engineering_metadata SET value='58' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
@@ -957,7 +962,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,59 FROM ep_installations_schema60")
             connection.execute("DROP TABLE ep_installations_schema60")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=60")
+            connection.execute("DELETE FROM engineering_schema_migrations")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(59)")
             connection.execute("UPDATE engineering_metadata SET value='59' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
