@@ -22,7 +22,7 @@ import sys
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
 CENTRAL_OPERATIONAL_DATABASE_FILENAME = "epdata.sqlite"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 43
+ENGINEERING_STORAGE_SCHEMA_VERSION = 44
 STORE_AUTHORITY_POINTER = "store-authority.json"
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
@@ -1234,6 +1234,21 @@ def _schema_v43(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v44(connection: sqlite3.Connection) -> None:
+    """Bind CENTRAL-owned artifacts without crossing historical foreign keys."""
+    columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(execution_artifact_records)")
+    }
+    if "ep_run_id" not in columns:
+        connection.execute("ALTER TABLE execution_artifact_records ADD COLUMN ep_run_id TEXT")
+    if "ep_submission_id" not in columns:
+        connection.execute("ALTER TABLE execution_artifact_records ADD COLUMN ep_submission_id TEXT")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS execution_artifact_records_ep_run_lookup "
+        "ON execution_artifact_records(ep_run_id,ep_submission_id)"
+    )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1324,6 +1339,7 @@ MIGRATIONS: dict[int, Migration] = {
     41: _schema_v41,
     42: _schema_v42,
     43: _schema_v43,
+    44: _schema_v44,
 }
 
 
@@ -2293,6 +2309,8 @@ def record_artifact(
     mission_id: str | None = None,
     execution_id: str | None = None,
     producer_id: str | None = None,
+    ep_run_id: str | None = None,
+    ep_submission_id: str | None = None,
     projection_status: str = "AVAILABLE",
     central_database: Path | None = None,
     artifact_root: Path | None = None,
@@ -2310,12 +2328,20 @@ def record_artifact(
             run_id = None
         if submission_id and not connection.execute("SELECT 1 FROM execution_submissions WHERE submission_id=?", (submission_id,)).fetchone():
             submission_id = None
+        if ep_run_id:
+            ep_run = connection.execute("SELECT 1 FROM ep_execution_runs WHERE run_id=?", (ep_run_id,)).fetchone()
+            if ep_run is None:
+                ep_run_id = None
+        if ep_submission_id:
+            ep_submission = connection.execute("SELECT 1 FROM ep_submissions WHERE submission_id=?", (ep_submission_id,)).fetchone()
+            if ep_submission is None:
+                ep_submission_id = None
         connection.execute(
-            "INSERT INTO execution_artifact_records(artifact_id,artifact_type,digest_algorithm,digest,content_type,run_id,submission_id,mission_id,execution_id,producer_id,created_at,integrity_status,storage_location,projection_status) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(artifact_id) DO UPDATE SET digest=excluded.digest,integrity_status=excluded.integrity_status,projection_status=excluded.projection_status",
+            "INSERT INTO execution_artifact_records(artifact_id,artifact_type,digest_algorithm,digest,content_type,run_id,submission_id,mission_id,execution_id,producer_id,ep_run_id,ep_submission_id,created_at,integrity_status,storage_location,projection_status) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(artifact_id) DO UPDATE SET digest=excluded.digest,integrity_status=excluded.integrity_status,projection_status=excluded.projection_status,run_id=COALESCE(execution_artifact_records.run_id,excluded.run_id),submission_id=COALESCE(execution_artifact_records.submission_id,excluded.submission_id),mission_id=COALESCE(execution_artifact_records.mission_id,excluded.mission_id),producer_id=COALESCE(execution_artifact_records.producer_id,excluded.producer_id),ep_run_id=COALESCE(execution_artifact_records.ep_run_id,excluded.ep_run_id),ep_submission_id=COALESCE(execution_artifact_records.ep_submission_id,excluded.ep_submission_id)",
             (artifact_id, artifact_type, "sha256", digest, content_type, run_id, submission_id, mission_id,
-             execution_id, producer_id, created_at, "VERIFIED", location, projection_status),
+             execution_id, producer_id, ep_run_id, ep_submission_id, created_at, "VERIFIED", location, projection_status),
         )
     finally:
         connection.close()

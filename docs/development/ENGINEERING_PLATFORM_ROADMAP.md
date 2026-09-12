@@ -9,7 +9,7 @@ moved the canonical source projections forward to 2.3.2 without rewriting that
 published identity. The observed Mac has one 2.3.1 server process/data root and
 a distinct 2.3.0 PlatformIO PATH candidate. This is explicit-path investigation
 evidence, not proof of Mac-wide uniqueness and not authorization to remove or
-cut over either installation. CENTRAL schema 57, engineering-storage schema 43
+cut over either installation. CENTRAL schema 57, engineering-storage schema 44
 and repository-attachment schema 1.0 remain separate contracts.
 
 | Increment | Owning repository | Bounded result | Dependencies / acceptance |

@@ -220,6 +220,39 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(checkpoint["phase"], "COMPLETE")
         self.assertEqual(checkpoint["terminal_state"], "COMPLETE")
 
+    def test_terminal_history_reconciliation_repairs_a_missing_producer_artifact(self) -> None:
+        """A retained terminal history row cannot strand its producer readback."""
+        submission = self._submission("alpha")
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=_CheckpointingRunner)
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            receipt = dispatcher.dispatch(submission)
+        artifact_id = f"terminal-evidence:{receipt.run_id}"
+        artifact_path = self.data / "artifacts" / "projects" / "alpha" / "runs" / receipt.run_id / "terminal-evidence-v1.json"
+        artifact_path.unlink(missing_ok=True)
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("DELETE FROM execution_artifact_records WHERE artifact_id=?", (artifact_id,))
+        dispatcher.reconcile_terminal_history()
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            readback = submission_service.producer_readback(
+                connection, project_id="alpha", submission_id=submission,
+            )
+            artifact_binding = connection.execute(
+                "SELECT ep_run_id,ep_submission_id FROM execution_artifact_records WHERE artifact_id=?", (artifact_id,)
+            ).fetchone()
+            events = connection.execute(
+                "SELECT payload FROM engineering_component_logs WHERE component='lifecycle_worker' ORDER BY id"
+            ).fetchall()
+        self.assertEqual(readback["evidence"]["status"], "AVAILABLE")
+        self.assertEqual(readback["evidence"]["terminal_artifact"]["id"], artifact_id)
+        self.assertEqual(artifact_binding, (receipt.run_id, submission))
+        self.assertTrue(any(
+            json.loads(payload).get("event") == "lifecycle_terminal_evidence_available"
+            and json.loads(payload).get("run_id") == receipt.run_id
+            for (payload,) in events
+        ))
+
     def test_initialize_only_dispatch_materializes_input_on_normal_resume(self) -> None:
         """A visible pre-run dispatch remains resumable after qualification pauses it."""
         submission = self._submission("alpha")

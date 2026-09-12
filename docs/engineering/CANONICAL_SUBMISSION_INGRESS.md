@@ -89,7 +89,7 @@ CENTRAL migration; no schema-40 database is migrated or read.
 
 ## Post-merge installation plan
 
-1. Install the Server artifact and run its forward schema-43 initialization
+1. Install the Server artifact and run its forward schema-44 initialization
    against the existing CENTRAL data root.
 2. Register the intended consumer for its explicit project and issue its
    scoped credential through the operator credential workflow.

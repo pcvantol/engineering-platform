@@ -691,7 +691,8 @@ def write_terminal_evidence(
         record_artifact(repository_root, findings_target, artifact_id=findings_id, artifact_type="EP_ASSURANCE_FINDINGS",
                         content_type="application/json", created_at=_now(), run_id=run_id, submission_id=str(row[0]),
                         mission_id=str(row[10]) if row[10] is not None else None, producer_id=str(row[4]),
-                        central_database=database, artifact_root=data_root / "artifacts")
+                        central_database=database, artifact_root=data_root / "artifacts",
+                        ep_run_id=run_id, ep_submission_id=str(row[0]))
     payload = {
         "artifact_type": "EP_TERMINAL_EVIDENCE", "contract_version": TERMINAL_EVIDENCE_CONTRACT_VERSION,
         "submission": {"id": str(row[0]), "project_id": str(row[1]), "repository_id": str(row[2]),
@@ -723,6 +724,7 @@ def write_terminal_evidence(
         content_type="application/json", created_at=_now(), run_id=run_id,
         submission_id=str(row[0]), mission_id=str(row[10]) if row[10] is not None else None,
         producer_id=str(row[4]), central_database=database, artifact_root=data_root / "artifacts",
+        ep_run_id=run_id, ep_submission_id=str(row[0]),
     )
     return artifact_id
 
@@ -828,8 +830,8 @@ def producer_readback(
         elif terminal:
             artifact = connection.execute(
                 """SELECT artifact_id,digest_algorithm,digest,content_type,integrity_status,storage_location
-                     FROM execution_artifact_records WHERE artifact_id=? AND run_id=?""",
-                (_terminal_artifact_id(str(run_id)), run_id),
+                     FROM execution_artifact_records WHERE artifact_id=? AND (run_id=? OR ep_run_id=?)""",
+                (_terminal_artifact_id(str(run_id)), run_id, run_id),
             ).fetchone()
             if artifact is None:
                 evidence["status"] = "MISSING"
@@ -896,7 +898,7 @@ def producer_evidence_artifact(
     row = connection.execute(
         """SELECT a.digest_algorithm,a.digest,a.storage_location
              FROM execution_artifact_records a
-             JOIN ep_parity_lifecycle_dispatches d ON d.run_id=a.run_id
+             JOIN ep_parity_lifecycle_dispatches d ON d.run_id=a.ep_run_id OR d.run_id=a.run_id
             WHERE d.project_id=? AND a.artifact_id=? AND a.artifact_type IN ('EP_TERMINAL_EVIDENCE','EP_ASSURANCE_FINDINGS')""",
         (project_id, artifact_id),
     ).fetchone()

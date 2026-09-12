@@ -554,12 +554,18 @@ class EngineeringStorageTest(unittest.TestCase):
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=41")
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=42")
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=43")
+                connection.execute("DELETE FROM engineering_schema_migrations WHERE version=44")
             with activate_storage_schema(root) as connection:
                 columns = {
                     row[1]
                     for row in connection.execute("PRAGMA table_info(provider_usage_snapshots)")
                 }
                 self.assertTrue({"uncached_input_tokens", "uncached_input_delta"} <= columns)
+                artifact_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(execution_artifact_records)")
+                }
+                self.assertTrue({"ep_run_id", "ep_submission_id"} <= artifact_columns)
                 self.assertEqual(
                     connection.execute(
                         "SELECT MAX(version) FROM engineering_schema_migrations"
