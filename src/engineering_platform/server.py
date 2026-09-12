@@ -97,7 +97,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 57
+SERVER_STORE_SCHEMA_VERSION = 58
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -118,6 +118,7 @@ _CODEX_RATE_LIMIT_CACHE: tuple[float, bytes] | None = None
 _CODEX_RATE_LIMIT_CACHE_LOCK = Lock()
 _CODEX_IDENTITY_CACHE: tuple[float, dict[str, str]] | None = None
 _CODEX_IDENTITY_CACHE_LOCK = Lock()
+_DASHBOARD_AUDIT_ACTION_PATTERN = re.compile(r"[a-z][a-z0-9_]{2,95}")
 
 
 def _http_json_openapi_document() -> dict[str, object]:
@@ -537,6 +538,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "execution_lifecycle_events",
         "execution_submission_attempts",
         "execution_submission_attempt_links",
+        "execution_validation_profile_identities",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -1286,6 +1288,25 @@ def _migrate_schema_57(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=57")
 
 
+def _migrate_schema_58(connection: sqlite3.Connection) -> None:
+    """Install the retained-host validation identity table in CENTRAL.
+
+    Version 42 of the retired local store introduced this table, but its
+    additive schema was not yet included in the Server-owned migration chain.
+    Without it, the first real retained-host execution can fail before it
+    creates a checkpoint. This migration is idempotent and does not rewrite
+    any execution evidence.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema57")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58)))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,58 FROM ep_installations_schema57")
+    connection.execute("DROP TABLE ep_installations_schema57")
+    storage.install_central_execution_validation_profile_identity_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(58)")
+    connection.execute("UPDATE engineering_metadata SET value='58' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=58")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -1355,14 +1376,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
@@ -1399,6 +1420,8 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_56(connection)
                             if current_schema < 57:
                                 _migrate_schema_57(connection)
+                            if current_schema < 58:
+                                _migrate_schema_58(connection)
                             connection.execute("COMMIT")
                             connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
@@ -1429,6 +1452,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_55(connection)
         _migrate_schema_56(connection)
         _migrate_schema_57(connection)
+        _migrate_schema_58(connection)
         connection.execute("COMMIT")
         connection.execute("PRAGMA legacy_alter_table=OFF")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -1796,6 +1820,39 @@ def _audit_platform_data_action(
     )
 
 
+def _audit_dashboard_action(
+    data_root: Path,
+    *,
+    action: str,
+    project_id: str | None = None,
+    run_id: str | None = None,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    """Record one bounded completed Console action in the CENTRAL audit log.
+
+    The request body, chat text, queue reason, artifact bytes and local paths
+    are intentionally not audit metadata.  The action identity and its scoped
+    target are sufficient to reconstruct what an operator asked EP to do.
+    """
+    context: dict[str, object] = {
+        "audit_action": action,
+        "audit_actor": DASHBOARD_AUDIT_ACTOR,
+        "audit_outcome": "COMPLETED",
+        "user_action": action,
+    }
+    if project_id is not None:
+        context["project_id"] = project_id
+    if details:
+        context.update(details)
+    log_event(
+        _operations_console_logger(data_root),
+        logging.INFO,
+        "dashboard_action_completed",
+        run_id=run_id,
+        context=context,
+    )
+
+
 def status(data_root: Path) -> dict[str, object]:
     identity = initialize(data_root)
     config = ServerConfiguration.load(data_root)
@@ -1954,30 +2011,203 @@ def _console_platform_version() -> str:
     ).platform_version
 
 
-def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
-    """Return the Slice-B project status/history projection from CENTRAL only."""
-    queue = _console_queue_projection(data_root, project_id)
+def _central_json_object(value: object) -> dict[str, object]:
+    """Decode one stored CENTRAL JSON object without exposing its raw form."""
+    if not isinstance(value, str):
+        return {}
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _central_text(value: object) -> str | None:
+    """Return a bounded scalar from a persisted producer record."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized[:512] if normalized else None
+
+
+@dataclass(frozen=True)
+class _CentralForgeProvenance:
+    """The safe, displayable subset of one admitted Forge provenance record."""
+
+    contract_version: str | None
+    host_id: str | None
+    repository_id: str | None
+    correlation_id: str | None
+    mission_id: str | None
+    mission_revision: str | None
+    intent_id: str | None
+    intent_revision: str | None
+    action_id: str | None
+    runtime_prompt_id: str | None
+    runtime_prompt_digest: str | None
+    retry_of_correlation_id: str | None
+
+    @classmethod
+    def from_constraints(cls, value: object) -> _CentralForgeProvenance | None:
+        """Project only known Forge keys; raw constraints never reach Console."""
+        raw = _central_json_object(value).get("forge_execution")
+        if not isinstance(raw, dict):
+            return None
+        runtime_prompt = raw.get("runtime_prompt")
+        prompt = runtime_prompt if isinstance(runtime_prompt, dict) else {}
+        return cls(
+            contract_version=_central_text(raw.get("contract_version")),
+            host_id=_central_text(raw.get("host_id")),
+            repository_id=_central_text(raw.get("repository_id")),
+            correlation_id=_central_text(raw.get("correlation_id")),
+            mission_id=_central_text(raw.get("mission_id")),
+            mission_revision=_central_text(raw.get("mission_revision")),
+            intent_id=_central_text(raw.get("intent_id")),
+            intent_revision=_central_text(raw.get("intent_revision")),
+            action_id=_central_text(raw.get("action_id")),
+            runtime_prompt_id=_central_text(prompt.get("id")),
+            runtime_prompt_digest=_central_text(prompt.get("content_digest")),
+            retry_of_correlation_id=_central_text(raw.get("retry_of_correlation_id")),
+        )
+
+    def execution_context(
+        self,
+        *,
+        mission_id: str | None,
+        action_id: str | None,
+        dispatch_state: str | None,
+        updated_at: str | None,
+        transport_receipt_id: str | None,
+    ) -> dict[str, object]:
+        """Build the explicit CENTRAL projection of admitted Forge facts."""
+        return {
+            "context_version": self.contract_version,
+            "mission_id": mission_id,
+            "current_intent": self.intent_id,
+            "current_engineering_action": action_id,
+            "execution_phase": dispatch_state,
+            "last_runtime_update": updated_at,
+            "dispatcher_state": dispatch_state,
+            "execution_receipt_reference": transport_receipt_id,
+            "producer_host_id": self.host_id,
+            "mission_revision": self.mission_revision,
+            "intent_id": self.intent_id,
+            "intent_revision": self.intent_revision,
+            "runtime_prompt_id": self.runtime_prompt_id,
+            "runtime_prompt_digest": self.runtime_prompt_digest,
+            "retry_of_correlation_id": self.retry_of_correlation_id,
+        }
+
+
+def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
+    """Project one run and its immutable admitted Producer facts for Console.
+
+    ``ep_submissions`` is the canonical input record.  In particular, it is
+    available even if host preparation stopped before the legacy-compatible
+    workspace evidence could be persisted.  Do not return the raw constraints
+    document: it can contain producer prompt metadata and is not a Console
+    presentation contract.
+    """
+    forge = _CentralForgeProvenance.from_constraints(row["constraints"])
+    submission_id = _central_text(row["submission_id"])
+    mission_id = _central_text(row["mission_id"]) or (forge.mission_id if forge else None)
+    action_id = _central_text(row["engineering_action_id"]) or (forge.action_id if forge else None)
+    correlation_id = _central_text(row["correlation_id"]) or (forge.correlation_id if forge else None)
+    dispatch_state = _central_text(row["dispatch_state"]) or _central_text(row["run_state"])
+    updated_at = _central_text(row["updated_at"])
+    execution_context = forge.execution_context(
+        mission_id=mission_id,
+        action_id=action_id,
+        dispatch_state=dispatch_state,
+        updated_at=updated_at,
+        transport_receipt_id=_central_text(row["transport_receipt_id"]),
+    ) if forge else None
+
+    return {
+        "run_id": str(row["run_id"]),
+        "status": dispatch_state,
+        "state": dispatch_state,
+        "title": submission_id or str(row["run_id"]),
+        "executed_at": updated_at,
+        "created_at": _central_text(row["created_at"]),
+        "updated_at": updated_at,
+        "execution_mode": _central_text(row["execution_mode"]),
+        "project_id": project_id,
+        "submission_id": submission_id,
+        "producer_id": _central_text(row["producer_id"]),
+        "producer_type": _central_text(row["producer_type"]),
+        "producer_version": _central_text(row["producer_version"]),
+        # The CENTRAL parity adapter uses the published Producer Submission
+        # contract.  It has a fixed version and is separate from Forge's
+        # immutable provenance-contract version below.
+        "producer_submission_contract_version": "1.0" if submission_id else None,
+        "execution_context_version": forge.contract_version if forge else None,
+        "mission_id": mission_id,
+        "engineering_action_id": action_id,
+        "correlation_id": correlation_id,
+        "target_repository": _central_text(row["repository_id"]) or (forge.repository_id if forge else None),
+        # A checkout/branch/file count describes host evidence for this run;
+        # never infer it from a current local binding or current Git state.
+        "target_branch": None,
+        "target_checkout_path": None,
+        "tracked_file_count": None,
+        "execution_metadata": {},
+        "execution_context": execution_context,
+        "operator_resolution": _central_text(row["operator_resolution"]) or "NONE",
+    }
+
+
+def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[str, object]]:
+    """Read all project runs with their admitted CENTRAL submission lineage."""
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
-        runs = connection.execute(
-            """SELECT run_id,state,created_at,updated_at,execution_mode
-                FROM ep_execution_runs WHERE project_id=?
-                ORDER BY created_at DESC,run_id DESC LIMIT 1000""",
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,r.execution_mode,
+                      d.submission_id,d.state AS dispatch_state,d.operator_resolution,
+                      s.repository_id,s.producer_id,s.producer_type,s.producer_version,
+                      s.constraints,s.correlation_id,s.mission_id,s.engineering_action_id,
+                      s.transport_receipt_id
+                 FROM ep_execution_runs AS r
+                 LEFT JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
+                 LEFT JOIN ep_submissions AS s ON s.submission_id=d.submission_id
+                WHERE r.project_id=?
+                ORDER BY r.created_at DESC,r.run_id DESC LIMIT 1000""",
             (project_id,),
         ).fetchall()
-        dispatches = dict(connection.execute(
-            "SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=?",
-            (project_id,),
-        ).fetchall())
-    records = [
-        {
-            "run_id": str(run_id), "status": str(dispatches.get(run_id, state)),
-            "state": str(dispatches.get(run_id, state)), "created_at": str(created_at),
-            "updated_at": str(updated_at), "execution_mode": execution_mode,
-            "project_id": project_id,
-        }
-        for run_id, state, created_at, updated_at, execution_mode in runs
-    ]
+    return [_central_run_record(row, project_id) for row in rows]
+
+
+def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
+    """Return the project status and terminal-history projections from CENTRAL.
+
+    A live lifecycle is operational state, not historical evidence. Keep it
+    exclusively in the current-run status projection; the history table may
+    only receive a durable terminal outcome.
+    """
+    queue = _console_queue_projection(data_root, project_id)
+    records = _central_console_run_records(data_root, project_id)
     active = next((record for record in records if record["state"] in {"CLAIMED", "RUNNING"}), None)
+    terminal_records = [
+        record for record in records
+        if record["state"] in {"COMPLETE", "BLOCKED", "FAILED"}
+    ]
+    active_status: dict[str, object] = {}
+    if active is not None:
+        # The retained dashboard renderer recognizes this established current
+        # lifecycle contract. CENTRAL owns the facts, while this small shape
+        # adapter keeps the active run visible without inventing history.
+        active_phase = "RUNNING" if active["state"] == "RUNNING" else "INITIALIZE"
+        active_status = {
+            "watcher_state": "ENGINEERING_RUN_ACTIVE",
+            "run_id": active["run_id"],
+            "current_phase": active_phase,
+            "current_action": active_phase,
+            "prompt_title": active["run_id"],
+            "submitted_filename": active["run_id"],
+            # The current-run card is a distinct projection, but it must show
+            # the same immutable Forge context as the terminal detail view.
+            **active,
+        }
     return {
         "project_id": project_id,
         "scope": "PROJECT",
@@ -1987,11 +2217,13 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
             "queue_depth": queue["queue_depth"],
             "queue_items": queue["queue_items"],
             "active_run": active["run_id"] if active else None,
-            "last_executed_run": records[0]["run_id"] if records else None,
+            "last_executed_run": terminal_records[0]["run_id"] if terminal_records else None,
             "lifecycle_source": "CENTRAL",
+            **active_status,
         },
-        "runs": records,
+        "runs": terminal_records,
         "queue": queue,
+        "prompt_started": active["created_at"] if active else None,
         "telemetry": _central_console_telemetry(data_root, project_id),
     }
 
@@ -2026,8 +2258,8 @@ def _no_project_console_snapshot(data_root: Path) -> dict[str, object]:
 
 def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -> dict[str, object] | None:
     """Resolve a run by canonical project/run identity, never by checkout."""
-    snapshot = _central_console_project_snapshot(data_root, project_id)
-    return next((record for record in snapshot["runs"] if record["run_id"] == run_id), None)
+    return next((record for record in _central_console_run_records(data_root, project_id)
+                 if record["run_id"] == run_id), None)
 
 
 def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[str, object]]:
@@ -2862,6 +3094,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if snapshot is None:
             self._send(503, {"error": "CENTRAL_DATABASE_UNAVAILABLE"})
             return
+        _audit_dashboard_action(
+            self.server.data_root,  # type: ignore[attr-defined]
+            action="central_database_backup_downloaded",
+        )
         filename = f"engineering-platform-central-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.db"
         self.send_response(200)
         self.send_header("Content-Type", "application/vnd.sqlite3")
@@ -2920,9 +3156,15 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path == "/api/central-data/relocate/browse" and method == "do_POST":
             try:
                 directory = _choose_local_directory(self.server.data_root)  # type: ignore[attr-defined]
-                self._send(200, installation_relocation.prepare(self.server.data_root, directory))  # type: ignore[attr-defined]
+                prepared = installation_relocation.prepare(self.server.data_root, directory)  # type: ignore[attr-defined]
             except (ValueError, OSError) as error:
                 self._send(400, {"error": str(error)})
+            else:
+                _audit_platform_data_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="RELOCATE_PREPARED", outcome="COMPLETED",
+                )
+                self._send(200, prepared)
             return True
         if request.path == "/api/central-data/relocate/discard" and method == "do_POST":
             try:
@@ -2934,6 +3176,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
                 self._send(409, {"error": str(error)})
                 return True
+            _audit_platform_data_action(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="RELOCATE_PREPARATION_DISCARDED", outcome="COMPLETED",
+            )
             self._send(204, {})
             return True
         if request.path == "/api/central-data/relocate" and method == "do_POST":
@@ -2946,6 +3192,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
                 self._send(409, {"error": str(error)})
                 return True
+            _audit_platform_data_action(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="RELOCATE", outcome="REQUESTED",
+            )
             self._send(202, {**result, "restarting": True})
             self.server.restart_after_shutdown = True  # type: ignore[attr-defined]
             Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
@@ -2970,6 +3220,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except (ValueError, OSError, central_data_transfer.CentralDataTransferError) as error:
                 self._send(409, {"error": str(error)})
                 return True
+            _audit_platform_data_action(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="IMPORT", outcome="STAGED", details={"package_format": "EPDATA"},
+            )
             self._send(202, {**result, "restarting": True})
             self.server.restart_after_shutdown = True  # type: ignore[attr-defined]
             Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
@@ -3182,6 +3436,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send(400, {"error": "LOG_COMPONENT_INVALID"})
             else:
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="component_logs_cleared",
+                    details={"log_component": payload["component"], "deleted_count": result["deleted"]},
+                )
                 self._send(200, result)
             return
         # Platform health is deliberately independent of the browser's
@@ -3343,6 +3602,72 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # project route below.
         projects = _console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
+        if method == "do_POST" and request.path == "/api/telemetry/clear":
+            if not _same_origin(self.headers):
+                self._send(403, {"error": "INVALID_ORIGIN"})
+                return
+            if not isinstance(selected, str) or selected not in project_ids:
+                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+                return
+            try:
+                if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
+                    raise ValueError
+                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    deleted = connection.execute(
+                        "DELETE FROM execution_runs WHERE run_id IN "
+                        "(SELECT run_id FROM ep_parity_lifecycle_dispatches WHERE project_id=?)",
+                        (selected,),
+                    ).rowcount
+            except (ValueError, OSError, sqlite3.DatabaseError):
+                self._send(400, {"error": "TELEMETRY_CLEAR_INVALID"})
+                return
+            _audit_dashboard_action(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="telemetry_cleared", project_id=selected,
+                details={"deleted_count": max(0, int(deleted or 0))},
+            )
+            self._send(200, {"cleared": True, "execution_runs": max(0, int(deleted or 0))})
+            return
+        if method == "do_POST" and request.path == "/api/audit/user-action":
+            if not _same_origin(self.headers):
+                self._send(403, {"error": "INVALID_ORIGIN"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 2 <= length <= 512:
+                    raise ValueError
+                payload = _strict_json_object(self.rfile.read(length))
+                if set(payload) not in ({"action"}, {"action", "run_id"}):
+                    raise ValueError
+                action = payload.get("action")
+                run_id = payload.get("run_id")
+                if not isinstance(action, str) or not _DASHBOARD_AUDIT_ACTION_PATTERN.fullmatch(action):
+                    raise ValueError
+                if run_id is not None and (not isinstance(run_id, str) or not _SAFE_REPORT_ID.fullmatch(run_id)):
+                    raise ValueError
+                if run_id is not None:
+                    with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                        run_project = connection.execute(
+                            "SELECT project_id FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
+                            (run_id,),
+                        ).fetchone()
+                    if run_project is None:
+                        raise ValueError
+                    canonical_project = str(run_project[0])
+                    if isinstance(selected, str) and selected not in {canonical_project, ""}:
+                        raise ValueError
+                else:
+                    canonical_project = selected if isinstance(selected, str) and selected in project_ids else None
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action, project_id=canonical_project,
+                    run_id=run_id,
+                )
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(400, {"error": "AUDIT_ACTION_INVALID"})
+                return
+            self._send(200, {"logged": True})
+            return
         if method == "do_GET" and isinstance(selected, str) and selected in project_ids:
             # Slice B: the core project read model is available even when its
             # checkout has been deleted or rebound.  Do this before the
@@ -3413,7 +3738,24 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if detail is None:
                     self._send(404, {"error": "RUN_NOT_FOUND"})
                 else:
-                    self._send(200, {"project_id": selected, "run": detail, "source": "CENTRAL"})
+                    # The dashboard detail dialog has one stable history
+                    # payload contract for both retained and CENTRAL-backed
+                    # terminal runs. Returning ``run`` here left its status
+                    # field unread and rendered every CENTRAL detail unknown.
+                    self._send(200, {
+                        "project_id": selected,
+                        "history": detail,
+                        "execution": {},
+                        "runtime": {},
+                        "reviewers": [],
+                        "commits": {},
+                        "commit_timeline": [],
+                        "pull_requests": [],
+                        "usage": {},
+                        "evidence": [],
+                        "lifecycle": {},
+                        "source": "CENTRAL",
+                    })
                 return
             telemetry_match = re.fullmatch(r"/api/telemetry/([0-9]{4}-[0-9]{2}-[0-9]{2})", request.path)
             if telemetry_match:
@@ -3473,6 +3815,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except ParityLifecycleDispatchError as error:
                 self._send(409, {"error": str(error)})
                 return
+            _audit_dashboard_action(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="execution_dismissed" if request.path == "/api/execution-dismiss" else "execution_retry_submitted",
+                project_id=selected,
+                run_id=run_id,
+            )
             self._send(200, result)
             return
         if method == "do_POST" and request.path == "/api/queue-disposition":
@@ -3508,6 +3856,17 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         expected_state=payload["expected_state"], expected_revision=payload["expected_revision"],
                         operation_id=payload["operation_id"], actor_reference=actor,
                     )
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="queue_disposition_changed",
+                    project_id=selected,
+                    details={
+                        "submission_id": payload["submission_id"],
+                        "queue_disposition": payload["disposition"],
+                        "operation_id": payload["operation_id"],
+                        "operator_reference": actor,
+                    },
+                )
                 self._send(200, result)
             except submission_service.SubmissionError as error:
                 self._send(error.status, {"error": error.code})

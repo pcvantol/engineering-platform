@@ -155,11 +155,26 @@ class LifecycleWorkerTests(unittest.TestCase):
         self._wait_for_dispatches([submission])
 
     def test_dispatch_failure_is_bounded_and_worker_can_stop(self) -> None:
-        self._submit("alpha")
+        submission = self._submit("alpha")
         _Dispatcher.fail = True
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         self.assertTrue(worker.run_once())
         self._wait_for_worker_state(worker, WORKER_DEGRADED)
+        deadline = time.monotonic() + 1.0
+        record = {}
+        while time.monotonic() < deadline:
+            with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+                payloads = connection.execute(
+                    "SELECT payload FROM engineering_component_logs "
+                    "WHERE component='lifecycle_worker' ORDER BY id"
+                ).fetchall()
+            records = [json.loads(payload) for (payload,) in payloads]
+            record = next((item for item in records if item.get("event") == "lifecycle_dispatch_failed"), {})
+            if record:
+                break
+            time.sleep(0.01)
+        self.assertEqual(record["event"], "lifecycle_dispatch_failed")
+        self.assertEqual(record["submission_id"], submission)
         worker.start(); worker.stop()
         self.assertEqual(worker.diagnostics().state, WORKER_STOPPED)
 

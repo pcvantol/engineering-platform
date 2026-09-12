@@ -170,6 +170,56 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertFalse((self.roots["alpha"] / ".engineering" / "engineering.db").exists())
         self.assertFalse((self.roots["alpha"] / ".engineering" / "engineering-runs").exists())
 
+    def test_dispatch_writes_central_run_scoped_operational_decisions(self) -> None:
+        """The central log records the operational lifecycle, not only service start-up."""
+        submission = self._submission("alpha")
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            receipt = dispatcher.dispatch(submission)
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            rows = connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='lifecycle_worker' ORDER BY id"
+            ).fetchall()
+        entries = [json.loads(payload) for (payload,) in rows]
+        entries = [entry for entry in entries if entry.get("run_id") == receipt.run_id]
+        self.assertTrue({
+            "lifecycle_submission_claimed",
+            "lifecycle_run_state_changed",
+            "lifecycle_input_materialized",
+            "lifecycle_admission_decided",
+            "lifecycle_runner_started",
+            "lifecycle_runner_finished",
+        } <= {entry["event"] for entry in entries})
+        admitted = next(entry for entry in entries if entry["event"] == "lifecycle_admission_decided")
+        self.assertEqual(admitted["admission_decision"], "PASS")
+        self.assertEqual(admitted["submission_id"], submission)
+        self.assertEqual(admitted["run_id"], receipt.run_id)
+
+    def test_central_checkpoint_writes_its_lifecycle_phase(self) -> None:
+        """Each retained-runner checkpoint is a run-scoped central log step."""
+        submission = self._submission("alpha")
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=_CheckpointingRunner)
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            receipt = dispatcher.dispatch(submission)
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            payloads = connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='lifecycle_worker' ORDER BY id"
+            ).fetchall()
+        checkpoint = next(
+            json.loads(payload)
+            for (payload,) in payloads
+            if json.loads(payload).get("run_id") == receipt.run_id
+            and json.loads(payload).get("event") == "lifecycle_phase_checkpointed"
+        )
+        self.assertEqual(checkpoint["phase"], "COMPLETE")
+        self.assertEqual(checkpoint["terminal_state"], "COMPLETE")
+
     def test_initialize_only_dispatch_materializes_input_on_normal_resume(self) -> None:
         """A visible pre-run dispatch remains resumable after qualification pauses it."""
         submission = self._submission("alpha")

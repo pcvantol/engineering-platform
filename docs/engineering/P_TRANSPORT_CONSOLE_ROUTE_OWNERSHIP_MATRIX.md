@@ -11,14 +11,14 @@ change authority, select a checkout, or delegate that route.
 | Owner | Routes | Component / intent |
 | --- | --- | --- |
 | PLATFORM | `GET /`, Console assets/icons, `/health`, `/api/platform-status`, `/api/dashboard-snapshot`, `/api/status`, `/api/events` | Console shell and Platform Components projection (selected project is presentation-only) |
-| PLATFORM | `GET /api/components/{ep_server,platform_database,lifecycle_worker,operations_console,dashboard_relay,http_ingress,cli_ingress,file_inbox_ingress,dependabot_producer}/details`, `GET /api/logs/all`, `GET /api/logs/{component}`, `POST /api/logs/all`, `/api/{process-metrics,usage}` | Platform Components, status popout, one CENTRAL log projection (server-filtered by EP-component, time, text, level, event, sort and page), controlled log clearing, File Inbox and Dependabot producer projection |
+| PLATFORM | `GET /api/components/{ep_server,platform_database,lifecycle_worker,operations_console,dashboard_relay,http_ingress,cli_ingress,file_inbox_ingress,dependabot_producer}/details`, `GET /api/logs/all`, `GET /api/logs/{component}`, `POST /api/logs/all`, `POST /api/audit/user-action`, `/api/{process-metrics,usage}` | Platform Components, status popout, one CENTRAL log projection (server-filtered by EP-component, time, text, level, event, sort and page), controlled log clearing and bounded redacted Console-action audit, File Inbox and Dependabot producer projection |
 | PLATFORM | `GET /api/provider-login-status`; `POST /api/provider-login/{repair,logout}` | Provider status and login actions |
 | PLATFORM | `GET /api/execution-runtime-status`; `POST /api/execution-runtime/repair` | Execution runtime status and repair |
 | PLATFORM | `GET /api/provider-capacity`, `/api/github-rate-limit`; `GET/POST /api/provider-capacity/configuration` | Provider capacity/readiness diagnostics and settings |
-| PLATFORM | `GET/POST /api/configuration`; `GET /api/central-database/download`; `POST /api/central-database/open-directory`; `GET/POST /api/central-database/configuration` | Server settings and Central database operations |
+| PLATFORM | `GET/POST /api/configuration`; `GET /api/central-data/export`; `POST /api/central-data/{relocate,relocate/browse,relocate/discard,import}`; `GET/POST /api/central-database/configuration` | Server settings and Central data operations; paths and imported bytes are never placed in the audit log |
 | HOST_ADMIN | `GET /api/host-admin/diagnostics` | Bounded installation-only disk and managed-runtime observation; no project, queue, execution or mutation authority |
 | PLATFORM | `GET /v1/operations/projects` | Operations Console platform listing |
-| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,chat,details}`, `/api/telemetry/{date}`; `POST /api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
+| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,chat,details}`, `/api/telemetry/{date}`; `POST /api/telemetry/clear`, `/api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
 | TRANSPORT_INTERNAL | `/diagnostics/topology`, `/healthz`, `/readyz`, `/v1/projects/{project}/submissions`, `/v1/agent/{pair,register,heartbeat,attachment}` | Transport probes and authenticated transport endpoints, not Console delegation |
 | HISTORICAL_UNREACHABLE | `POST /api/runtime-directory/open` | Explicitly retired checkout-bound runtime action (`410 RUNTIME_DIRECTORY_RETIRED`) |
 
@@ -33,6 +33,29 @@ change authority, select a checkout, or delegate that route.
 ## Removed fallback paths
 
 There are no platform-to-project fallback paths. Provider login repair/logout and execution-runtime repair resolve before project lookup; the retired runtime-directory action is unreachable rather than delegated.
+
+## CENTRAL execution and audit projection
+
+The Console reads the immutable accepted `ep_submissions` record together with
+its run/dispatch lineage. A `CLAIMED` or `RUNNING` run is shown only in the
+current-execution projection. Only `COMPLETE`, `BLOCKED` and `FAILED` runs are
+shown in execution history. The same immutable Producer record supplies the
+current card and run-detail values for Producer ID/type/version, submission,
+Mission, Engineering Action, correlation and target repository. For Forge, the
+accepted versioned provenance also supplies host, mission/intent revisions,
+runtime-prompt identifier and digest, and retry correlation when present.
+
+The Console never derives a branch, checkout, tracked-file count, Mission
+summary or prompt content. Those remain absent until the Execution Host records
+run-specific evidence or Forge supplies a separately versioned context.
+
+All lifecycle decisions and phase checkpoints are written to CENTRAL component
+logs with the run identifier and an appropriate level. Mutating Console
+operations additionally write a bounded `dashboard_action_completed` audit
+record. Read/download/copy actions requested by the Console can also be
+audited, but the log contains only action, actor, outcome and canonical target
+identifiers: no prompt text, AI-chat content, queue reason, local path, import
+payload or downloaded bytes.
 
 ## Test and qualification coverage
 

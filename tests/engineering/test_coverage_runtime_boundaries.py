@@ -596,6 +596,44 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertTrue(retired._central_database_configuration("do_GET"))
         self.assertEqual(retired_responses[-1], (410, {"error": "CENTRAL_DATABASE_DOWNLOAD_RETIRED"}))
 
+    def test_dashboard_user_actions_are_audited_centrally_without_user_content(self) -> None:
+        """Downloads and UI actions have a durable audit event, not a browser-only hook."""
+        body = b'{"action":"telemetry_downloaded"}'
+        handler, responses = self._in_process_console_handler(
+            "/api/audit/user-action", body=body, headers={"Content-Length": str(len(body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[]):
+            handler._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (200, {"logged": True}))
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            payload = connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='operations_console' ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        record = json.loads(payload)
+        self.assertEqual(record["event"], "dashboard_action_completed")
+        self.assertEqual(record["audit_action"], "telemetry_downloaded")
+        self.assertEqual(record["audit_actor"], "DASHBOARD_USER")
+
+    def test_project_telemetry_clear_is_central_and_audited(self) -> None:
+        """The destructive telemetry control clears only its selected project."""
+        body = b"{}"
+        handler, responses = self._in_process_console_handler(
+            "/api/telemetry/clear", body=body,
+            headers={"Content-Length": str(len(body)), "X-Engineering-Platform-Project": "project-a"},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": "project-a"}]):
+            handler._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (200, {"cleared": True, "execution_runs": 0}))
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            payload = connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='operations_console' ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        record = json.loads(payload)
+        self.assertEqual(record["audit_action"], "telemetry_cleared")
+        self.assertEqual(record["project_id"], "project-a")
+
     def test_central_data_transfer_routes_require_confirmation_and_quiesce_writers(self) -> None:
         """The Console exposes one guarded, whole-state transfer boundary."""
         browse, browse_responses = self._in_process_console_handler("/api/central-data/relocate/browse")
@@ -1441,16 +1479,12 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_central_console_projection_shapes_are_bounded_and_project_isolated(self) -> None:
         """Read-model shaping consumes CENTRAL rows only and preserves project identity."""
-        connection = Mock()
-        connection.execute.side_effect = [
-            Mock(fetchall=Mock(return_value=[("run-b", "COMPLETE", "created", "updated", "CLI")])),
-            Mock(fetchall=Mock(return_value=[("run-b", "COMPLETE")])),
-        ]
-        database = Mock(); database.__enter__ = Mock(return_value=connection); database.__exit__ = Mock(return_value=False)
         with patch("engineering_platform.server._console_queue_projection", return_value={"queue_depth": 1, "queue_items": [], "operator_handling": {}}), patch(
             "engineering_platform.server._console_platform_version", return_value="2.0"
         ), patch("engineering_platform.server._central_console_telemetry", return_value=[{"date": "2026-09-05"}]), patch(
-            "engineering_platform.server.sqlite3.connect", return_value=database
+            "engineering_platform.server._central_console_run_records", return_value=[{
+                "run_id": "run-b", "state": "COMPLETE", "status": "COMPLETE", "execution_mode": "CLI",
+            }]
         ):
             snapshot = server._central_console_project_snapshot(self.root, "project-a")
         self.assertEqual(snapshot["project_id"], "project-a")
@@ -1467,6 +1501,109 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(detail["runs"][0]["project_id"] if "project_id" in detail["runs"][0] else "project-a", "project-a")
         with patch("engineering_platform.server.sqlite3.connect", return_value=telemetry_database):
             self.assertIsNone(server._central_console_telemetry_detail(self.root, "project-a", "not-a-date"))
+
+    def test_central_console_projects_active_run_only_as_current_lifecycle(self) -> None:
+        """A live run is not also terminal history in the shared Console contract."""
+        with patch("engineering_platform.server._console_queue_projection", return_value={"queue_depth": 0, "queue_items": [], "operator_handling": {}}), patch(
+            "engineering_platform.server._console_platform_version", return_value="2.0"
+        ), patch("engineering_platform.server._central_console_telemetry", return_value=[]), patch(
+            "engineering_platform.server._central_console_run_records", return_value=[
+                {"run_id": "run-active", "state": "RUNNING", "status": "RUNNING", "created_at": "active-created", "updated_at": "active-updated", "execution_mode": "MANAGED"},
+                {"run_id": "run-terminal", "state": "BLOCKED", "status": "BLOCKED", "created_at": "terminal-created", "updated_at": "terminal-updated", "execution_mode": "MANAGED"},
+            ]
+        ):
+            snapshot = server._central_console_project_snapshot(self.root, "project-a")
+        self.assertEqual(snapshot["status"]["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(snapshot["status"]["run_id"], "run-active")
+        self.assertEqual(snapshot["prompt_started"], "active-created")
+        self.assertEqual([entry["run_id"] for entry in snapshot["runs"]], ["run-terminal"])
+
+    def test_central_console_projects_immutable_forge_context_to_active_and_detail_views(self) -> None:
+        """A Forge submission stays visible before host-side evidence exists."""
+        forge_context = {
+            "contract_version": "1.0", "host_id": "forge-host-alpha", "repository_id": "repo-a",
+            "correlation_id": "correlation-0006", "mission_id": "MISSION-0006",
+            "mission_revision": "5", "intent_id": "intent-0006", "intent_revision": "1",
+            "action_id": "implement-and-test-durable-status-projection",
+            "runtime_prompt": {"id": "prompt-0006", "content_digest": "sha256:" + "a" * 64},
+            "retry_of_correlation_id": None,
+        }
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("project-a", "DECLARATION", "ACTIVE", "now", "now"))
+            connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("repo-a", "project-a", "repo-a", "authority", "DECLARATION", "now", "now"))
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-forge", "project-a", "RUNNING", "created", "updated", "MANAGED"))
+            connection.execute("""INSERT INTO ep_submissions(
+                submission_id,project_id,repository_id,producer_id,producer_type,producer_version,
+                transport,prompt,prompt_digest,constraints,correlation_id,mission_id,
+                engineering_action_id,state,admission,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                "submission-forge", "project-a", "repo-a", "forge", "FORGE", "2.7.2",
+                "HTTP", "bounded Forge action", "sha256:prompt", json.dumps({"forge_execution": forge_context}),
+                "correlation-0006", "MISSION-0006", "implement-and-test-durable-status-projection",
+                "QUEUED", "ADMITTED", "created",
+            ))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", ("submission-forge", "project-a", "repo-a", "run-forge", "RUNNING", "CENTRAL:prompt", "created", "updated"))
+
+        detail = server._central_console_run_detail(self.root, "project-a", "run-forge")
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(detail["status"], "RUNNING")
+        self.assertEqual(detail["producer_id"], "forge")
+        self.assertEqual(detail["producer_type"], "FORGE")
+        self.assertEqual(detail["producer_submission_contract_version"], "1.0")
+        self.assertEqual(detail["submission_id"], "submission-forge")
+        self.assertEqual(detail["mission_id"], "MISSION-0006")
+        self.assertEqual(detail["engineering_action_id"], "implement-and-test-durable-status-projection")
+        self.assertEqual(detail["correlation_id"], "correlation-0006")
+        self.assertEqual(detail["target_repository"], "repo-a")
+        self.assertEqual(detail["execution_context"], {
+            "context_version": "1.0", "mission_id": "MISSION-0006", "current_intent": "intent-0006",
+            "current_engineering_action": "implement-and-test-durable-status-projection",
+            "execution_phase": "RUNNING", "last_runtime_update": "updated", "dispatcher_state": "RUNNING",
+            "execution_receipt_reference": None, "producer_host_id": "forge-host-alpha", "mission_revision": "5",
+            "intent_id": "intent-0006", "intent_revision": "1", "runtime_prompt_id": "prompt-0006",
+            "runtime_prompt_digest": "sha256:" + "a" * 64, "retry_of_correlation_id": None,
+        })
+        snapshot = server._central_console_project_snapshot(self.root, "project-a")
+        self.assertEqual(snapshot["status"]["run_id"], "run-forge")
+        self.assertEqual(snapshot["status"]["producer_id"], "forge")
+        self.assertEqual(snapshot["status"]["execution_context"], detail["execution_context"])
+        self.assertEqual(snapshot["runs"], [])
+
+    def test_central_forge_console_adapter_never_exposes_raw_constraints(self) -> None:
+        """The shared provenance adapter whitelists only displayable Forge facts."""
+        provenance = server._CentralForgeProvenance.from_constraints(json.dumps({
+            "forge_execution": {
+                "contract_version": "1.0", "host_id": "forge-host-alpha",
+                "runtime_prompt": {"id": "prompt-0006", "content_digest": "sha256:" + "a" * 64},
+                "unrelated_prompt_text": "do not expose this",
+            },
+        }))
+        self.assertIsNotNone(provenance)
+        assert provenance is not None
+        self.assertEqual(provenance.host_id, "forge-host-alpha")
+        self.assertEqual(provenance.runtime_prompt_id, "prompt-0006")
+        self.assertNotIn("unrelated_prompt_text", provenance.execution_context(
+            mission_id=None, action_id=None, dispatch_state="RUNNING", updated_at="now", transport_receipt_id=None,
+        ))
+        self.assertIsNone(server._CentralForgeProvenance.from_constraints("{bad json"))
+
+    def test_central_console_history_detail_uses_the_dashboard_history_contract(self) -> None:
+        """CENTRAL status remains readable in the existing history detail dialog."""
+        projects = [{"project_id": "project-a"}]
+        detail = {"run_id": "run-terminal", "status": "BLOCKED"}
+        with patch("engineering_platform.server._console_projects", return_value=projects), patch(
+            "engineering_platform.server._central_console_run_detail", return_value=detail
+        ):
+            handler, responses = self._in_process_console_handler(
+                "/api/prompt-history/run-terminal/details",
+                headers={"X-Engineering-Platform-Project": "project-a"},
+            )
+            handler._delegate_dashboard("do_GET")
+        self.assertEqual(responses[-1][0], 200)
+        payload = responses[-1][1]
+        self.assertEqual(payload["history"], detail)
+        self.assertNotIn("run", payload)
 
     def test_console_event_and_report_helpers_reject_unowned_or_unavailable_central_artifacts(self) -> None:
         """Central report/chat helpers cannot be tricked into reading a checkout artifact."""

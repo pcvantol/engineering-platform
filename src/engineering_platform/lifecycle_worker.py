@@ -9,6 +9,7 @@ the preserved EngineeringRunner.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import sqlite3
 from threading import Event, Lock, Thread
 from time import monotonic
@@ -16,6 +17,7 @@ from typing import Callable, Protocol
 
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatcher
 from . import central_database
+from .component_logging import component_logger, log_event
 
 
 WORKER_RUNNING = "RUNNING"
@@ -58,6 +60,11 @@ class LifecycleWorker:
     def __init__(self, data_root, *, dispatcher_factory: DispatcherFactory | None = None,
                  idle_seconds: float = 0.25, failure_seconds: float = 1.0) -> None:
         self.data_root = data_root.resolve()
+        self._logger = component_logger(
+            self.data_root,
+            "lifecycle_worker",
+            central_database=central_database.path(self.data_root),
+        )
         self._dispatcher_factory = dispatcher_factory or (lambda: ParityLifecycleDispatcher(self.data_root))
         self._idle_seconds = idle_seconds
         self._failure_seconds = failure_seconds
@@ -124,14 +131,33 @@ class LifecycleWorker:
 
     def _dispatch(self, submission_id: str) -> None:
         try:
-            self._dispatcher_factory().dispatch(submission_id)
+            receipt = self._dispatcher_factory().dispatch(submission_id)
         except Exception as error:  # Dispatcher persists its own terminal/recovery boundary.
             current = self.diagnostics()
             self._replace(state=WORKER_DEGRADED, failures=current.failures + 1,
                           last_error=type(error).__name__)
+            log_event(
+                self._logger,
+                logging.ERROR,
+                "lifecycle_dispatch_failed",
+                diagnostic=type(error).__name__,
+                context={"submission_id": submission_id},
+            )
         else:
             current = self.diagnostics()
             self._replace(state=WORKER_RUNNING, dispatched=current.dispatched + 1)
+            run_id = getattr(receipt, "run_id", None)
+            state = getattr(receipt, "state", None)
+            log_event(
+                self._logger,
+                logging.INFO,
+                "lifecycle_dispatch_finished",
+                run_id=run_id if isinstance(run_id, str) else None,
+                context={
+                    "submission_id": submission_id,
+                    "dispatch_state": state if isinstance(state, str) else "UNAVAILABLE",
+                },
+            )
         finally:
             with self._lock:
                 self._inflight.discard(submission_id)
@@ -150,6 +176,12 @@ class LifecycleWorker:
         for submission_id in candidates:
             current = self.diagnostics()
             self._replace(observed=current.observed + 1, last_submission_id=submission_id, last_error=None)
+            log_event(
+                self._logger,
+                logging.INFO,
+                "lifecycle_submission_selected",
+                context={"submission_id": submission_id},
+            )
             with self._lock:
                 self._inflight.add(submission_id)
                 # A nonterminal merge wait returns quickly after its one

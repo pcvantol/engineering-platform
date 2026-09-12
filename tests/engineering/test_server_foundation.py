@@ -868,6 +868,36 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with self.assertRaises(server.ServerConfigurationError):
             server.validate_store(self.root, identity)
 
+    def test_schema_57_upgrade_installs_validation_profile_identity_evidence(self) -> None:
+        """A Server-owned upgrade restores retained-runner validation evidence."""
+        identity = server.initialize(self.root)
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite3.connect(database) as connection:
+            connection.execute("DROP TABLE execution_validation_profile_identities")
+            connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema58")
+            connection.execute(
+                "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+                "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+                "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57)))"
+            )
+            connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,57 FROM ep_installations_schema58")
+            connection.execute("DROP TABLE ep_installations_schema58")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=58")
+            connection.execute("UPDATE engineering_metadata SET value='57' WHERE key='installation.schema_version'")
+        self.assertEqual(server.initialize(self.root), identity)
+        with sqlite3.connect(database) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name='execution_validation_profile_identities'"
+                ).fetchone(),
+                ("execution_validation_profile_identities",),
+            )
+            self.assertEqual(
+                connection.execute("SELECT schema_version FROM ep_installations").fetchone(),
+                (server.SERVER_STORE_SCHEMA_VERSION,),
+            )
+
     def test_bootstrap_does_not_use_a_legacy_database_or_identity(self) -> None:
         legacy = self.root.parent / "legacy-schema40.db"
         with sqlite3.connect(legacy) as connection:
