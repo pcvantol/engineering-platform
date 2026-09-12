@@ -1793,7 +1793,14 @@ class InstallationBoundaryTests(unittest.TestCase):
                 ).fetchone(),
                 (2,),
             )
-        self.assertTrue(server._central_console_clear_chat_history(self.root, project_id, run_id))
+        clear_body = json.dumps({"run_id": run_id}).encode()
+        clear, responses = self._in_process_console_handler(
+            "/api/codex-chat/clear", body=clear_body,
+            headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(clear_body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": project_id}]):
+            clear._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (200, {"cleared": True, "source": "CENTRAL"}))
         self.assertEqual(server._central_console_chat_history(self.root, project_id, run_id), [])
         # The Console view must not merely hide a cached transcript: the
         # selected run's persisted CENTRAL rows are permanently removed.
@@ -1870,7 +1877,6 @@ class InstallationBoundaryTests(unittest.TestCase):
             ["ai_chat_message_submitted", "ai_chat_response_failed"],
         )
         self.assertEqual(audit.call_args_list[-1].kwargs["outcome"], "FAILED")
-        clear_body = json.dumps({"run_id": run_id}).encode()
         clear, responses = self._in_process_console_handler(
             "/api/codex-chat/clear", body=clear_body,
             headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(clear_body))},
