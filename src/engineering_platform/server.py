@@ -1906,17 +1906,22 @@ def _audit_dashboard_action(
     project_id: str | None = None,
     run_id: str | None = None,
     details: Mapping[str, object] | None = None,
+    outcome: str = "COMPLETED",
 ) -> None:
-    """Record one bounded completed Console action in the CENTRAL audit log.
+    """Record one bounded Console action in the CENTRAL audit log.
 
     The request body, chat text, queue reason, artifact bytes and local paths
     are intentionally not audit metadata.  The action identity and its scoped
-    target are sufficient to reconstruct what an operator asked EP to do.
+    target are sufficient to reconstruct what an operator asked EP to do.  A
+    failed action is an operational warning rather than an informational
+    completion, so filtering Console logs by ``WARNING`` retains the event.
     """
+    if outcome not in {"COMPLETED", "FAILED"}:
+        raise ValueError("INVALID_DASHBOARD_AUDIT_OUTCOME")
     context: dict[str, object] = {
         "audit_action": action,
         "audit_actor": DASHBOARD_AUDIT_ACTOR,
-        "audit_outcome": "COMPLETED",
+        "audit_outcome": outcome,
         "user_action": action,
     }
     if project_id is not None:
@@ -1925,8 +1930,8 @@ def _audit_dashboard_action(
         context.update(details)
     log_event(
         _operations_console_logger(data_root),
-        logging.INFO,
-        "dashboard_action_completed",
+        logging.WARNING if outcome == "FAILED" else logging.INFO,
+        "dashboard_action_failed" if outcome == "FAILED" else "dashboard_action_completed",
         run_id=run_id,
         context=context,
     )
@@ -4349,6 +4354,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     action="ai_chat_response_failed", project_id=selected,
                     run_id=run_id,
                     details={"chat_content": "[REDACTED]", "failure": "REDACTED"},
+                    outcome="FAILED",
                 )
                 self._send(503, {"error": "AI_CHAT_UNAVAILABLE"})
                 return
@@ -4357,6 +4363,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self.server.data_root,  # type: ignore[attr-defined]
                     action="ai_chat_response_failed", project_id=selected, run_id=run_id,
                     details={"chat_content": "[REDACTED]", "failure": "REDACTED"},
+                    outcome="FAILED",
                 )
                 self._send(503, {"error": "AI_CHAT_UNAVAILABLE"})
                 return
@@ -4366,6 +4373,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         self.server.data_root,  # type: ignore[attr-defined]
                         action="ai_chat_response_failed", project_id=selected, run_id=run_id,
                         details={"chat_content": "[REDACTED]", "failure": "CHAT_CONTEXT_UNAVAILABLE"},
+                        outcome="FAILED",
                     )
                     self._send(404, {"error": "CHAT_CONTEXT_UNAVAILABLE"})
                     return

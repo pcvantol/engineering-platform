@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import inspect
 import io
+import logging
 import os
 import plistlib
 import re
@@ -1181,6 +1182,34 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(logged.call_args_list[1].kwargs["context"]["entry_count"], 3)
         self.assertEqual(logged.call_args_list[2].kwargs["context"]["new_location"], "/new/central")
         self.assertEqual(logger.call_count, 3)
+
+    @patch("engineering_platform.server.log_event")
+    @patch("engineering_platform.server._operations_console_logger")
+    def test_failed_dashboard_action_is_warn_level_and_has_failed_outcome(
+        self, logger: object, logged: object,
+    ) -> None:
+        server._audit_dashboard_action(
+            self.root,
+            action="ai_chat_response_failed",
+            project_id="forge",
+            run_id="inbox-failed-chat",
+            details={"chat_content": "[REDACTED]", "failure": "REDACTED"},
+            outcome="FAILED",
+        )
+
+        self.assertEqual(logged.call_args.args[1], logging.WARNING)
+        self.assertEqual(logged.call_args.args[2], "dashboard_action_failed")
+        self.assertEqual(logged.call_args.kwargs["run_id"], "inbox-failed-chat")
+        self.assertEqual(logged.call_args.kwargs["context"], {
+            "audit_action": "ai_chat_response_failed",
+            "audit_actor": "DASHBOARD_USER",
+            "audit_outcome": "FAILED",
+            "user_action": "ai_chat_response_failed",
+            "project_id": "forge",
+            "chat_content": "[REDACTED]",
+            "failure": "REDACTED",
+        })
+        logger.assert_called_once_with(self.root)
 
     @patch("engineering_platform.server.log_event")
     @patch("engineering_platform.server._central_provider_readiness")
