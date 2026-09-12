@@ -19,7 +19,7 @@ physical execution binding only; it is not Console authority.
 | Provider usage | SERVER_PLATFORM_NATIVE | Current single-runtime Codex capacity is a Server/CENTRAL projection. |
 | Evidence report downloads | CENTRAL_NATIVE | Report index and artifact path are authorized by `(project_id, run_id)` in CENTRAL. |
 | Prompt chat history | CENTRAL_NATIVE (read projection) | Immutable transcript lookup is scoped by CENTRAL project/run lineage. |
-| Provider-backed chat mutation and report analysis | RETIRED/UNREACHABLE from migrated routes | No CENTRAL Server authority is invented for historical root-backed mutation. |
+| Advisory report analysis and retry | CENTRAL_NATIVE (bounded project mutation) | An exact-run, integrity-verified Markdown artifact is read from CENTRAL. Retry is allowed only for a controlled transient analysis status and uses the matching CENTRAL report; it is audited and cannot change the execution. |
 | Configuration | CENTRAL_NATIVE (read projection) | Only CENTRAL maintenance/capacity policy is exposed; old root-local settings fail closed. |
 | Component logs | CENTRAL_NATIVE | Server-owned CENTRAL log index, explicitly `PLATFORM` scoped. |
 | Worktree, provider-login and update actions | RETIRED/UNREACHABLE | They are not supported installed Console actions in this phase. |

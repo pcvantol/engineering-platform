@@ -12,7 +12,7 @@ from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION
 
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 CONTRACT = re.compile(r"^(\d{4})\.(0[1-9]|1[0-2])$")
-CURRENT_PLATFORM_VERSION = "2.3.19"
+CURRENT_PLATFORM_VERSION = "2.3.20"
 MANIFEST_FIELDS = frozenset(
     {
         "platform_version",

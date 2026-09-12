@@ -689,6 +689,55 @@
       ]
     },
     {
+      "name": "Missing project advisory analysis",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/prompt-history/missing-run/analysis?project=postman-project"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status', () => pm.response.to.have.status(404));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Unavailable advisory analysis retry",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{baseUrl}}"
+          }
+        ],
+        "url": "{{baseUrl}}/api/prompt-history/missing-run/analysis-retry?project=postman-project",
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('expected status', () => pm.response.to.have.status(409));"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "Missing project chat",
       "request": {
         "method": "GET",

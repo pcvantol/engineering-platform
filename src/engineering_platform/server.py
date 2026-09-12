@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
 from html import escape
 import http.server
 import json
@@ -84,6 +85,7 @@ from .providers import (
     LocalProcessProvider,
     default_engineering_platform_codex_cli_prefix,
 )
+from .report_analysis import RETRYABLE_REPORT_ANALYSIS_STATUSES, analyze as analyze_terminal_report
 from .resources import package_path
 
 
@@ -2147,6 +2149,7 @@ class _CentralForgeProvenance:
         *,
         mission_id: str | None,
         action_id: str | None,
+        execution_phase: str | None,
         dispatch_state: str | None,
         updated_at: str | None,
         transport_receipt_id: str | None,
@@ -2157,7 +2160,10 @@ class _CentralForgeProvenance:
             "mission_id": mission_id,
             "current_intent": self.intent_id,
             "current_engineering_action": action_id,
-            "execution_phase": dispatch_state,
+            # The run state is owned by the Execution Host.  The separately
+            # persisted dispatcher state describes its FIFO orchestration and
+            # may legitimately differ while a run is being finalized.
+            "execution_phase": execution_phase,
             "last_runtime_update": updated_at,
             "dispatcher_state": dispatch_state,
             "execution_receipt_reference": transport_receipt_id,
@@ -2194,11 +2200,13 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
     mission_id = _central_text(row["mission_id"]) or (forge.mission_id if forge else None)
     action_id = _central_text(row["engineering_action_id"]) or (forge.action_id if forge else None)
     correlation_id = _central_text(row["correlation_id"]) or (forge.correlation_id if forge else None)
-    dispatch_state = _central_text(row["dispatch_state"]) or _central_text(row["run_state"])
+    execution_phase = _central_text(row["run_state"])
+    dispatch_state = _central_text(row["dispatch_state"]) or execution_phase
     updated_at = _central_text(row["updated_at"])
     execution_context = forge.execution_context(
         mission_id=mission_id,
         action_id=action_id,
+        execution_phase=execution_phase,
         dispatch_state=dispatch_state,
         updated_at=updated_at,
         transport_receipt_id=_central_text(row["transport_receipt_id"]),
@@ -2236,6 +2244,7 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
         "tracked_file_count": None,
         "execution_metadata": {},
         "execution_context": execution_context,
+        "analysis_available": bool(row["analysis_available"]),
         "operator_resolution": _central_text(row["operator_resolution"]) or "NONE",
     }
 
@@ -2249,7 +2258,14 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
                       d.submission_id,d.state AS dispatch_state,d.operator_resolution,
                       s.repository_id,s.producer_id,s.producer_type,s.producer_version,
                       s.constraints,s.correlation_id,s.mission_id,s.engineering_action_id,
-                      s.transport_receipt_id
+                      s.transport_receipt_id,
+                      EXISTS (
+                        SELECT 1 FROM execution_artifact_records AS a
+                         WHERE a.artifact_type='ADVISORY_REPORT_ANALYSIS'
+                           AND a.content_type='text/markdown'
+                           AND a.integrity_status='VERIFIED'
+                           AND (a.run_id=r.run_id OR a.ep_run_id=r.run_id)
+                      ) AS analysis_available
                  FROM ep_execution_runs AS r
                  LEFT JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
                  LEFT JOIN ep_submissions AS s ON s.submission_id=d.submission_id
@@ -2410,8 +2426,8 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
     }
 
 
-def _central_console_report(data_root: Path, project_id: str, run_id: str) -> bytes | None:
-    """Read one CENTRAL-indexed immutable report with project authorization."""
+def _central_console_report_path(data_root: Path, project_id: str, run_id: str) -> Path | None:
+    """Resolve one project-scoped CENTRAL report without a checkout fallback."""
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             """SELECT h.report_path FROM prompt_execution_history AS h
@@ -2424,9 +2440,93 @@ def _central_console_report(data_root: Path, project_id: str, run_id: str) -> by
     candidate = (data_root / "artifacts" / row[0].removeprefix("CENTRAL:")).resolve()
     try:
         candidate.relative_to((data_root / "artifacts").resolve())
-        return candidate.read_bytes() if candidate.is_file() else None
+        return candidate if candidate.is_file() else None
     except (OSError, ValueError):
         return None
+
+
+def _central_console_report(data_root: Path, project_id: str, run_id: str) -> bytes | None:
+    """Read one CENTRAL-indexed immutable report with project authorization."""
+    path = _central_console_report_path(data_root, project_id, run_id)
+    try:
+        return path.read_bytes() if path is not None else None
+    except OSError:
+        return None
+
+
+def _central_console_analysis_path(data_root: Path, project_id: str, run_id: str) -> Path | None:
+    """Resolve the latest verified advisory analysis for exactly one project run."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        row = connection.execute(
+            """SELECT a.digest_algorithm,a.digest,a.storage_location
+                 FROM execution_artifact_records AS a
+                WHERE a.artifact_type='ADVISORY_REPORT_ANALYSIS'
+                  AND a.content_type='text/markdown'
+                  AND a.integrity_status='VERIFIED'
+                  AND (a.run_id=? OR a.ep_run_id=?)
+                  AND EXISTS (
+                    SELECT 1 FROM ep_parity_lifecycle_dispatches AS d
+                     WHERE d.project_id=? AND d.run_id=?
+                  )
+                ORDER BY a.created_at DESC,a.artifact_id DESC LIMIT 1""",
+            (run_id, run_id, project_id, run_id),
+        ).fetchone()
+    if row is None or row[0] != "sha256" or not isinstance(row[1], str) or not isinstance(row[2], str):
+        return None
+    candidate = (data_root / "artifacts" / row[2]).resolve()
+    try:
+        candidate.relative_to((data_root / "artifacts").resolve())
+        if not candidate.is_file() or hashlib.sha256(candidate.read_bytes()).hexdigest() != row[1]:
+            return None
+        return candidate
+    except (OSError, ValueError):
+        return None
+
+
+def _central_console_analysis(data_root: Path, project_id: str, run_id: str) -> bytes | None:
+    """Read only a verified, project-scoped advisory analysis artifact."""
+    path = _central_console_analysis_path(data_root, project_id, run_id)
+    try:
+        return path.read_bytes() if path is not None else None
+    except OSError:
+        return None
+
+
+def _central_analysis_processing_status(value: bytes | None) -> str | None:
+    """Parse the fixed status line without treating an analysis as a protocol."""
+    if value is None:
+        return None
+    match = re.search(r"(?m)^- Status: `([a-z_]+)`$", value.decode("utf-8", errors="replace"))
+    return match.group(1) if match else None
+
+
+def _retry_central_console_analysis(data_root: Path, project_id: str, run_id: str) -> bytes:
+    """Regenerate a retryable advisory analysis using CENTRAL evidence only."""
+    if _central_analysis_processing_status(_central_console_analysis(data_root, project_id, run_id)) not in RETRYABLE_REPORT_ANALYSIS_STATUSES:
+        raise ValueError("ANALYSIS_RETRY_UNAVAILABLE")
+    report = _central_console_report_path(data_root, project_id, run_id)
+    if report is None:
+        raise ValueError("REPORT_NOT_FOUND")
+    analysis = analyze_terminal_report(
+        data_root,
+        run_id,
+        report,
+        output_directory=data_root / "artifacts" / "report-analysis" / run_id / uuid4().hex,
+    )
+    artifact_id = f"report-analysis:{run_id}:{uuid4().hex}"
+    storage.record_artifact(
+        data_root,
+        analysis,
+        artifact_id=artifact_id,
+        artifact_type="ADVISORY_REPORT_ANALYSIS",
+        content_type="text/markdown",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        run_id=run_id,
+        ep_run_id=run_id,
+        central_database=central_database.path(data_root),
+        artifact_root=data_root / "artifacts",
+    )
+    return analysis.read_bytes()
 
 
 def _central_console_chat_history(data_root: Path, project_id: str, run_id: str) -> list[dict[str, object]] | None:
@@ -3807,6 +3907,21 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
                 return
+            analysis_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/analysis", request.path)
+            if analysis_match:
+                content = _central_console_analysis(self.server.data_root, selected, analysis_match.group(1))  # type: ignore[attr-defined]
+                if content is None:
+                    self._send(404, {"error": "ANALYSIS_NOT_FOUND"})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                self.send_header("Content-Disposition", _report_content_disposition(analysis_match.group(1)))
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(content)
+                return
             chat_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/chat", request.path)
             if chat_match:
                 messages = _central_console_chat_history(self.server.data_root, selected, chat_match.group(1))  # type: ignore[attr-defined]
@@ -3957,6 +4072,42 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(400, {"error": "INVALID_REQUEST"})
             return
         if isinstance(selected, str) and selected in project_ids:
+            analysis_retry_match = re.fullmatch(
+                r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/analysis-retry",
+                request.path,
+            )
+            if method == "do_POST" and analysis_retry_match:
+                if not _same_origin(self.headers):
+                    self._send(403, {"error": "INVALID_ORIGIN"})
+                    return
+                try:
+                    if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
+                        raise ValueError("INVALID_REQUEST")
+                    content = _retry_central_console_analysis(
+                        self.server.data_root,  # type: ignore[attr-defined]
+                        selected,
+                        analysis_retry_match.group(1),
+                    )
+                except ValueError:
+                    self._send(409, {"error": "ANALYSIS_RETRY_UNAVAILABLE"})
+                    return
+                except (OSError, sqlite3.DatabaseError, storage.EngineeringStorageError):
+                    self._send(503, {"error": "ANALYSIS_RETRY_FAILED"})
+                    return
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="prompt_history_analysis_regenerated",
+                    project_id=selected,
+                    run_id=analysis_retry_match.group(1),
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(content)
+                return
             # No supported CENTRAL Console route may fall through to the
             # retained dashboard handler.  New routes must be added above
             # with an explicit Server/CENTRAL authority classification.

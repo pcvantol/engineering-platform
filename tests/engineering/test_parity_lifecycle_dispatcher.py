@@ -524,6 +524,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             report.return_value = self.data / "artifacts" / "projects" / "alpha" / "runs" / "terminal.md"
             report.return_value.parent.mkdir(parents=True, exist_ok=True)
             report.return_value.write_text("terminal", encoding="utf-8")
+            analyze.return_value = self.data / "artifacts" / "report-analysis" / "terminal.md"
+            analyze.return_value.parent.mkdir(parents=True, exist_ok=True)
+            analyze.return_value.write_text("# analysis\n", encoding="utf-8")
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
         record.assert_called_once()
@@ -532,7 +535,15 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             record.call_args.kwargs["central_database"],
             (self.data / server.SERVER_DATABASE_FILENAME).resolve(),
         )
-        analyze.assert_called_once_with(self.roots["alpha"].resolve(), receipt.run_id, report.return_value)
+        analyze.assert_called_once()
+        self.assertEqual(analyze.call_args.args, (self.roots["alpha"].resolve(), receipt.run_id, report.return_value))
+        self.assertIsInstance(analyze.call_args.kwargs["output_directory"], Path)
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            analysis = connection.execute(
+                "SELECT artifact_type,content_type,ep_run_id FROM execution_artifact_records "
+                "WHERE artifact_type='ADVISORY_REPORT_ANALYSIS'"
+            ).fetchone()
+        self.assertEqual(analysis, ("ADVISORY_REPORT_ANALYSIS", "text/markdown", receipt.run_id))
 
     def test_terminal_history_reconciliation_ignores_a_retained_row_without_a_local_checkpoint(self) -> None:
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
