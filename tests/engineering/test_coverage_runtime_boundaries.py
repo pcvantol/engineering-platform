@@ -1819,6 +1819,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             [call.kwargs["action"] for call in audit.call_args_list],
             ["ai_chat_message_submitted", "ai_chat_response_failed"],
         )
+        self.assertEqual(audit.call_args_list[-1].kwargs["outcome"], "FAILED")
         absent, responses = self._in_process_console_handler(
             "/api/codex-chat", body=body,
             headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(body))},
@@ -1832,6 +1833,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             [call.kwargs["action"] for call in audit.call_args_list],
             ["ai_chat_message_submitted", "ai_chat_response_failed"],
         )
+        self.assertEqual(audit.call_args_list[-1].kwargs["outcome"], "FAILED")
         clear_body = json.dumps({"run_id": run_id}).encode()
         clear, responses = self._in_process_console_handler(
             "/api/codex-chat/clear", body=clear_body,

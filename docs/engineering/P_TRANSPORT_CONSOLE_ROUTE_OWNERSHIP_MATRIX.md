@@ -67,7 +67,9 @@ run-specific evidence or Forge supplies a separately versioned context.
 All lifecycle decisions and phase checkpoints are written to CENTRAL component
 logs with the run identifier and an appropriate level. Mutating Console
 operations additionally write a bounded `dashboard_action_completed` audit
-record. Read/download/copy actions requested by the Console can also be
+record; an unsuccessful AI-chat response instead writes
+`dashboard_action_failed` at `WARNING` with `audit_outcome: FAILED`.
+Read/download/copy actions requested by the Console can also be
 audited, but the log contains only action, actor, outcome and canonical target
 identifiers: no prompt text, AI-chat content, queue reason, local path, import
 payload or downloaded bytes.

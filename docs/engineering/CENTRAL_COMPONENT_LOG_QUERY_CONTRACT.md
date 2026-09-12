@@ -35,6 +35,9 @@ changes, `platform_data_*` for data transfer/relocation, and
 telemetry/log clearing and explicit audited user actions such as report, JSON,
 telemetry and log downloads. AI-chat audit entries record only
 sent/received/failed action and run identity; message content is never logged.
+An AI-chat response failure is recorded as `dashboard_action_failed` with
+`audit_outcome: FAILED` at `WARNING` level, so it is visible in the normal
+warning filter rather than being presented as an informational completion.
 An audit record keeps bounded action, actor, outcome and canonical project/run
 identifiers, never prompt text, chat content, queue reason, local path,
 imported payload or downloaded bytes.
