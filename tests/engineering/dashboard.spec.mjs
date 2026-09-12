@@ -4076,6 +4076,25 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("localizes an unavailable operator action for every supported language", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    for (const language of SUPPORTED_LOCALES) {
+      await selectDashboardLocale(page, language);
+      await page.evaluate(() => window.showDashboardError("PROJECT_RUN_NOT_AWAITING_OPERATOR"));
+      const modal = page.locator("#dashboardErrorModal");
+      const translate = createTranslator(language);
+      await expect(modal).toBeVisible();
+      await expect(page.locator("#dashboardErrorModalText")).toHaveText(
+        translate("error.project_run_not_awaiting_operator"),
+      );
+      await expect(modal).not.toContainText("PROJECT_RUN_NOT_AWAITING_OPERATOR");
+      await page.locator("#dashboardErrorModalDismiss").click();
+      await expect(modal).not.toBeVisible();
+    }
+  });
+
   test("offers a safe branch synchronization recovery in a preflight error", async ({ page }) => {
     let recoveryRequested = false;
     await page.route("**/api/managed-branch-synchronization", async (route) => {
