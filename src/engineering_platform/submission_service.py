@@ -650,6 +650,27 @@ def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]
     return None, False
 
 
+def _terminal_timing(created_at: object, completed_at: object) -> dict[str, object] | None:
+    """Return only durable, ordered EP run timing for terminal evidence."""
+    if not isinstance(created_at, str) or not isinstance(completed_at, str):
+        return None
+    try:
+        started = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        completed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if started.tzinfo is None or completed.tzinfo is None:
+        return None
+    duration_ms = round((completed - started).total_seconds() * 1000)
+    if duration_ms < 1:
+        return None
+    return {
+        "execution_started_at": started.astimezone(timezone.utc).isoformat(),
+        "execution_completed_at": completed.astimezone(timezone.utc).isoformat(),
+        "execution_duration_ms": duration_ms,
+    }
+
+
 def write_terminal_evidence(
     data_root: Path, *, repository_root: Path, run_id: str,
 ) -> str:
@@ -668,11 +689,12 @@ def write_terminal_evidence(
             """SELECT d.submission_id,d.project_id,d.repository_id,d.state,
                       s.producer_id,s.producer_type,s.producer_version,s.prompt_digest,
                       s.constraints,s.correlation_id,s.mission_id,s.engineering_action_id,
-                      t.payload,h.terminal_state
+                      t.payload,h.terminal_state,r.created_at,r.updated_at
                  FROM ep_parity_lifecycle_dispatches d
                  JOIN ep_submissions s ON s.submission_id=d.submission_id
                  JOIN engineering_transactions t ON t.run_id=d.run_id
                  LEFT JOIN prompt_execution_history h ON h.run_id=d.run_id
+                 JOIN ep_execution_runs r ON r.run_id=d.run_id AND r.project_id=d.project_id
                 WHERE d.run_id=?""", (run_id,),
         ).fetchone()
     if row is None:
@@ -695,6 +717,9 @@ def write_terminal_evidence(
         correlation_id=row[9], mission_id=row[10], engineering_action_id=row[11],
     )
     revision, delivery_qualified = _repository_revision(checkpoint, outcome)
+    timing = _terminal_timing(row[14], row[15])
+    if timing is None:
+        raise SubmissionError("TERMINAL_TIMING_UNAVAILABLE", 500)
     artifact_id = _terminal_artifact_id(run_id)
     report_id = f"report:{run_id}"
     assurance_status, current_reviews, reviews = _current_assurance(checkpoint)
@@ -722,7 +747,7 @@ def write_terminal_evidence(
         "producer": {"id": str(row[4]), "type": str(row[5]), "version": row[6]},
         "correlation": {"correlation_id": row[9], "mission_id": row[10], "engineering_action_id": row[11]},
         "provenance": constraints.get("forge_execution"),
-        "run": {"id": run_id, "outcome": outcome, "delivery_qualified": delivery_qualified},
+        "run": {"id": run_id, "outcome": outcome, "delivery_qualified": delivery_qualified, **timing},
         "repository": {"id": str(row[2]), "revision": revision,
                        "revision_required": checkpoint.action_intent != "VALIDATION_ONLY" and outcome == "COMPLETE"},
         "report": {"id": report_id, "terminal_state": outcome},
@@ -766,10 +791,11 @@ def producer_readback(
         """SELECT s.repository_id,s.producer_id,s.producer_type,s.producer_version,
                   s.prompt_digest,s.constraints,s.correlation_id,s.mission_id,
                   s.engineering_action_id,s.state,s.admission,s.transport,s.created_at,s.disposition_revision,
-                  d.run_id,d.state,d.operator_resolution,d.updated_at
+                  d.run_id,d.state,d.operator_resolution,d.updated_at,r.created_at,r.updated_at
              FROM ep_submissions AS s
              LEFT JOIN ep_parity_lifecycle_dispatches AS d
                ON d.submission_id=s.submission_id
+             LEFT JOIN ep_execution_runs AS r ON r.run_id=d.run_id AND r.project_id=d.project_id
             WHERE s.project_id=? AND s.submission_id=?""",
         (project_id, submission_id),
     ).fetchone()
@@ -779,7 +805,7 @@ def producer_readback(
         repository_id, producer_id, producer_type, producer_version, prompt_digest,
         raw_constraints, correlation_id, mission_id, engineering_action_id, submission_state,
         admission, transport, created_at, disposition_revision, run_id, dispatch_state,
-        operator_resolution, updated_at,
+        operator_resolution, updated_at, run_created_at, run_completed_at,
     ) = row
     disposition_row = connection.execute(
         "SELECT o.operation_id,o.event_id,o.actor_reference,e.payload,o.recorded_at FROM ep_queue_disposition_operations o JOIN ep_submission_events e ON e.event_id=o.event_id WHERE o.project_id=? AND o.submission_id=? ORDER BY o.recorded_at DESC LIMIT 1",
@@ -849,7 +875,10 @@ def producer_readback(
         result = {"outcome": state, "terminal": terminal, "delivery_qualified": False}
         if not checkpoint_valid and str(dispatch_state) in _TERMINAL_OUTCOMES:
             evidence["status"] = "INCOMPLETE"
+        elif terminal and (timing := _terminal_timing(run_created_at, run_completed_at)) is None:
+            evidence["status"] = "INCOMPLETE"
         elif terminal:
+            run.update(timing)
             artifact = connection.execute(
                 """SELECT artifact_id,digest_algorithm,digest,content_type,integrity_status,storage_location
                      FROM execution_artifact_records WHERE artifact_id=? AND (run_id=? OR ep_run_id=?)""",
