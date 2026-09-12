@@ -1352,6 +1352,7 @@ function askCodex() {
     .slice(-CHAT_HISTORY_LIMIT);
   chatMessage("user", message, createdAt);
   updateChatActions();
+  void recordUserAction("ai_chat_message_submitted", chatContextRun);
   fetch("/api/codex-chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1373,9 +1374,11 @@ function askCodex() {
       renderChatHistory();
       updateChatHistoryCount(chatHistory.length);
       $("chatStatus").textContent = "";
+      void recordUserAction("ai_chat_response_received", chatContextRun);
     })
     .catch(() => {
       $("chatStatus").textContent = t("chat.unavailable");
+      void recordUserAction("ai_chat_response_failed", chatContextRun);
     })
     .finally(() => {
       $("chatSend").disabled = false;
@@ -1703,6 +1706,13 @@ function renderExecutionContext(context, execution = {}) {
     [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
     [t("execution_context.dispatcher_state"), context.dispatcher_state],
     [t("execution_context.approved_mission_queue_state"), context.approved_mission_queue_state],
+    [t("execution_context.producer_host"), context.producer_host_id],
+    [t("execution_context.mission_revision"), context.mission_revision],
+    [t("execution_context.intent_id"), context.intent_id],
+    [t("execution_context.intent_revision"), context.intent_revision],
+    [t("execution_context.runtime_prompt_id"), context.runtime_prompt_id],
+    [t("execution_context.runtime_prompt_digest"), context.runtime_prompt_digest],
+    [t("execution_context.retry_of_correlation_id"), context.retry_of_correlation_id],
   ].filter(([, value]) => executionContextValue(value));
   const profile = context.validation_profile && typeof context.validation_profile === "object"
     ? context.validation_profile : null;
@@ -2532,7 +2542,9 @@ function renderRunCategory(x) {
       : null;
   if (currentRunKey && current && currentRunKey !== activePromptCategoryRun) {
     activePromptCategoryRun = currentRunKey;
-    current.open = blockedPredecessor;
+    // An active run must be immediately discoverable. Preserve an operator's
+    // later manual collapse by changing this only when the run itself changes.
+    current.open = Boolean(active || blockedPredecessor);
   }
 }
 const dashboardStatusStore = createDashboardStatusStore({
@@ -3423,7 +3435,7 @@ function addChatMessageCopyButton(item, text) {
   button.textContent = "⧉";
   button.addEventListener("click", () => {
     copyText(String(text))
-      .then(() => void recordUserAction("chat_message_copied"))
+      .then(() => void recordUserAction("chat_message_copied", chatContextRun))
       .catch(() => {
         button.title = t("copy.failed");
       });
@@ -4184,7 +4196,6 @@ async function clearExecutionTelemetry() {
     if (!response.ok || !payload.cleared) throw new Error(payload.error || t("telemetry.clear_failed"));
     executionTelemetryPage = 1;
     executionTelemetry([]);
-    void recordUserAction("telemetry_cleared");
   } catch (error) {
     showDashboardToast(error instanceof Error && error.message ? error.message : t("telemetry.clear_failed"), DASHBOARD_TOAST_GLYPHS.error);
   }
@@ -5392,7 +5403,10 @@ function downloadPromptHistoryDetail(format) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
-  void recordUserAction(isMarkdown ? "prompt_history_details_markdown_downloaded" : "prompt_history_details_json_downloaded");
+  void recordUserAction(
+    isMarkdown ? "prompt_history_details_markdown_downloaded" : "prompt_history_details_json_downloaded",
+    promptHistoryDetailRunId,
+  );
 }
 function setPromptHistoryDetailDownloads(payload) {
   promptHistoryDetailPayload = payload && typeof payload === "object" ? payload : null;
@@ -7206,16 +7220,19 @@ formatComponentUptime = (value) => {
     ? formatComponentUptimeForMeasuredValues(value)
     : "";
 };
-function recordUserAction(action) {
+function recordUserAction(action, runId = null) {
+  const payload = { action: action };
+  if (typeof runId === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(runId))
+    payload.run_id = runId;
   return fetch("/api/audit/user-action", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: action }),
+    body: JSON.stringify(payload),
   }).catch(() => undefined);
 }
 $("downloadChat")?.addEventListener(
   "click",
-  () => void recordUserAction("chat_downloaded"),
+  () => void recordUserAction("chat_downloaded", chatContextRun),
 );
 let promptHistoryReportText = "",
   promptHistoryReportRun = "",
@@ -7260,6 +7277,7 @@ function downloadPromptHistoryReport() {
     promptHistoryDocumentKind === "analysis"
       ? "prompt_history_analysis_downloaded"
       : "prompt_history_report_downloaded",
+    promptHistoryReportRun,
   );
 }
 function promptHistoryReportReloadButton() {
@@ -7373,7 +7391,7 @@ async function retryPromptHistoryAnalysis() {
     promptHistoryReportText = text;
     renderMarkdownDocument(content, text);
     button.hidden = !reportAnalysisCanRetry(text);
-    void recordUserAction("prompt_history_analysis_regenerated");
+    void recordUserAction("prompt_history_analysis_regenerated", promptHistoryReportRun);
   } catch (error) {
     renderMarkdownDocument(content, promptHistoryReportText);
     showDashboardError(error instanceof Error ? error.message : "", t("history.analysis_retry_failed"));
@@ -7518,6 +7536,13 @@ function promptDetailExecutionSections(history) {
     detailField(t("execution_context.mission_lifecycle"), executionContextValue(context.mission_lifecycle) || t("execution_context.not_supplied")),
     detailField(t("execution_context.decision_evidence_reference"), executionContextValue(context.decision_evidence_reference || context.decision_evidence) || t("execution_context.not_supplied")),
     detailField(t("execution_context.execution_receipt_reference"), executionContextValue(context.execution_receipt_reference || context.last_execution_receipt) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.producer_host"), executionContextValue(context.producer_host_id) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.mission_revision"), executionContextValue(context.mission_revision) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.intent_id"), executionContextValue(context.intent_id) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.intent_revision"), executionContextValue(context.intent_revision) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.runtime_prompt_id"), executionContextValue(context.runtime_prompt_id) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.runtime_prompt_digest"), executionContextValue(context.runtime_prompt_digest) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.retry_of_correlation_id"), executionContextValue(context.retry_of_correlation_id) || t("execution_context.not_supplied")),
     ...executionContextSnapshotFields(context),
   ] : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   const summaryFields = [
@@ -8002,6 +8027,7 @@ $("promptHistoryReportCopy").addEventListener("click", () => {
         promptHistoryDocumentKind === "analysis"
           ? "prompt_history_analysis_copied"
           : "prompt_history_report_copied",
+        promptHistoryReportRun,
       ),
     );
 });
@@ -8502,6 +8528,7 @@ $("clearChat").addEventListener("click", () =>
         chatHistory = [];
         renderChatHistory();
         updateChatHistoryCount(0);
+        void recordUserAction("ai_chat_transcript_cleared", chatContextRun);
       })
       .catch(() => { $("chatStatus").textContent = t("chat.unavailable"); })
       .finally(() => { $("clearChat").disabled = false; updateChatActions(); });

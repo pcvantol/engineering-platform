@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -471,8 +472,25 @@ class StateStore:
         # composition root.  It must never rediscover that authority from the
         # execution checkout.  The directory remains only a compatibility
         # location for legacy JSON projections.
-        self.central_database = central_database.resolve() if central_database else None
+        environment_database = os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT)
+        self.central_database = (
+            central_database.resolve()
+            if central_database is not None
+            else Path(environment_database).expanduser().resolve()
+            if environment_database
+            else None
+        )
         self.emit_local_projection = emit_local_projection
+        self._lifecycle_logger = None
+        if self.central_database is not None:
+            # Delayed to keep the state validator independent of the logging
+            # formatter, which itself uses ``redact_diagnostic`` above.
+            from .component_logging import component_logger
+            self._lifecycle_logger = component_logger(
+                self.central_database.parent,
+                "lifecycle_worker",
+                central_database=self.central_database,
+            )
 
     def path_for(self, run_id: str) -> Path:
         if not RUN_ID_PATTERN.fullmatch(run_id):
@@ -535,10 +553,15 @@ class StateStore:
     def save(self, state: TransactionState) -> Path:
         path = self.path_for(state.run_id)
         canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
+        previous_phase: str | None = None
         try:
             connection = self._open(create=True)
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                prior = connection.execute(
+                    "SELECT phase FROM engineering_transactions WHERE run_id=?", (state.run_id,)
+                ).fetchone()
+                previous_phase = str(prior[0]) if prior is not None else None
                 connection.execute(
                     "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) "
                     "ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload,phase=excluded.phase,updated_at=excluded.updated_at",
@@ -556,6 +579,22 @@ class StateStore:
                 connection.close()
         except (EngineeringStorageError, OSError) as error:
             raise StateError("canonical engineering storage could not save checkpoint") from error
+        if self._lifecycle_logger is not None:
+            from .component_logging import log_event
+            log_event(
+                self._lifecycle_logger,
+                logging.INFO if not state.terminal or state.phase == "COMPLETE" else logging.WARNING,
+                "lifecycle_phase_checkpointed",
+                run_id=state.run_id,
+                diagnostic=state.diagnostic,
+                context={
+                    "previous_phase": previous_phase or "INITIAL",
+                    "phase": state.phase,
+                    "next_action": state.next_action,
+                    "terminal_state": state.phase if state.terminal else "RUNNING",
+                    "execution_mode": state.execution_mode,
+                },
+            )
         # CENTRAL runs must not create a repository-local checkpoint shadow.
         # The database row above is the sole durable state and is sufficient
         # for restart, recovery and Console/history projections.

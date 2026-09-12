@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -32,6 +33,7 @@ from .execution_reporting import generate_terminal_report
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
+from .component_logging import component_logger, log_event
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
     ENGINEERING_STORAGE_SCHEMA_VERSION,
@@ -70,6 +72,11 @@ def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> d
             connection.execute("ROLLBACK")
             raise ParityLifecycleDispatchError("PROJECT_RUN_NOT_AWAITING_OPERATOR")
         connection.execute("COMMIT")
+    log_event(
+        _lifecycle_logger(data_root), logging.INFO, "lifecycle_operator_gate_dismissed",
+        run_id=run_id,
+        context={"project_id": project_id, "operator_resolution": OPERATOR_RESOLUTION_DISMISSED},
+    )
     return {"run_id": run_id, "handling_state": OPERATOR_RESOLUTION_DISMISSED}
 
 
@@ -116,6 +123,15 @@ def retry_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> sub
             connection.execute("ROLLBACK")
             raise ParityLifecycleDispatchError("PROJECT_RETRY_RESOLUTION_CONFLICT")
         connection.execute("COMMIT")
+    log_event(
+        _lifecycle_logger(data_root), logging.INFO, "lifecycle_retry_submitted",
+        run_id=run_id,
+        context={
+            "project_id": project_id,
+            "submission_id": result.submission_id,
+            "operator_resolution": OPERATOR_RESOLUTION_RETRIED,
+        },
+    )
     return result
 
 
@@ -144,6 +160,15 @@ def _utcnow() -> str:
 def _allocate_run_id() -> str:
     """Allocate a canonical CENTRAL lifecycle run identity."""
     return f"inbox-{uuid.uuid4().hex}"
+
+
+def _lifecycle_logger(data_root: Path):
+    """Return the CENTRAL-backed lifecycle logger for run-scoped events."""
+    return component_logger(
+        data_root,
+        "lifecycle_worker",
+        central_database=central_database.path(data_root),
+    )
 
 
 def _record_provider_free_admission(
@@ -249,6 +274,7 @@ class ParityLifecycleDispatcher:
 
     def __init__(self, data_root: Path, *, runner_factory: RunnerFactory | None = None) -> None:
         self.data_root = data_root.resolve()
+        self._logger = _lifecycle_logger(self.data_root)
         self.runner_factory = runner_factory or (
             lambda root: _default_runner(root, central_database=central_database.path(self.data_root))
         )
@@ -399,6 +425,17 @@ class ParityLifecycleDispatcher:
                     WHERE submission_id=? AND run_id=?""",
                 (state, resolution, now, submission_id, run_id),
             )
+        log_event(
+            self._logger,
+            logging.INFO if state not in {"BLOCKED", "FAILED"} else logging.WARNING,
+            "lifecycle_run_state_changed",
+            run_id=run_id,
+            context={
+                "submission_id": submission_id,
+                "dispatch_state": state,
+                "operator_resolution": resolution,
+            },
+        )
 
     @staticmethod
     def _terminal_history_exists(repository_root: Path, run_id: str, data_root: Path) -> bool:
@@ -496,10 +533,63 @@ class ParityLifecycleDispatcher:
                    "recorded_at": _utcnow()}
         path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         path.chmod(0o600)
+        if component is not None:
+            log_event(
+                self._logger,
+                logging.WARNING,
+                "lifecycle_admission_decided",
+                run_id=run_id,
+                context={
+                    "submission_id": submission_id,
+                    "project_id": context.project_id,
+                    "repository_id": context.repository_id,
+                    "admission_decision": "FAIL",
+                    "failed_gate_ids": code or "unavailable",
+                },
+            )
+        log_event(
+            self._logger,
+            logging.ERROR,
+            "lifecycle_precheckpoint_failed",
+            run_id=run_id,
+            diagnostic=message,
+            context={
+                "submission_id": submission_id,
+                "project_id": context.project_id,
+                "repository_id": context.repository_id,
+                "failure_stage": stage,
+                "diagnostic_code": payload["diagnostic_code"],
+            },
+        )
 
     def dispatch(self, submission_id: str) -> DispatchReceipt:
         context, candidate, run_id, prompt, duplicate = self._claim(submission_id)
+        log_event(
+            self._logger,
+            logging.INFO,
+            "lifecycle_submission_claimed",
+            run_id=run_id,
+            context={
+                "submission_id": submission_id,
+                "project_id": context.project_id,
+                "repository_id": context.repository_id,
+                "duplicate_claim": duplicate,
+                "execution_mode": candidate.execution_mode,
+                "retry_parent_run_id": candidate.retry_parent_run_id,
+            },
+        )
         if context.local_repository_root is None:
+            log_event(
+                self._logger,
+                logging.ERROR,
+                "lifecycle_local_binding_unavailable",
+                run_id=run_id,
+                context={
+                    "submission_id": submission_id,
+                    "project_id": context.project_id,
+                    "repository_id": context.repository_id,
+                },
+            )
             raise ParityLifecycleDispatchError("LOCAL_BINDING_UNBOUND")
         repository_root = context.local_repository_root
         self._set_state(submission_id, run_id, "RUNNING")
@@ -518,7 +608,46 @@ class ParityLifecycleDispatcher:
                 # the runner.
                 if not duplicate or not prompt.is_file():
                     self._persist_historical_input(repository_root, candidate, run_id, prompt)
+                    log_event(
+                        self._logger,
+                        logging.INFO,
+                        "lifecycle_input_materialized",
+                        run_id=run_id,
+                        context={
+                            "submission_id": submission_id,
+                            "project_id": context.project_id,
+                            "repository_id": context.repository_id,
+                            "execution_mode": candidate.execution_mode,
+                            "retry_parent_run_id": candidate.retry_parent_run_id,
+                        },
+                    )
+                    log_event(
+                        self._logger,
+                        logging.INFO,
+                        "lifecycle_admission_decided",
+                        run_id=run_id,
+                        context={
+                            "submission_id": submission_id,
+                            "project_id": context.project_id,
+                            "repository_id": context.repository_id,
+                            "admission_decision": "PASS",
+                            "failed_gate_ids": "",
+                        },
+                    )
                 runner = self.runner_factory(repository_root)
+                log_event(
+                    self._logger,
+                    logging.INFO,
+                    "lifecycle_runner_started",
+                    run_id=run_id,
+                    context={
+                        "submission_id": submission_id,
+                        "project_id": context.project_id,
+                        "repository_id": context.repository_id,
+                        "duplicate_claim": duplicate,
+                        "execution_mode": candidate.execution_mode,
+                    },
+                )
                 state = runner.run(
                     prompt, run_id=run_id, resume=duplicate,
                     owner_authorized=candidate.execution_mode == "MANAGED",
@@ -529,6 +658,18 @@ class ParityLifecycleDispatcher:
                 self._project_terminal_history(repository_root, state, runner, self.data_root)
             terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
             self._set_state(submission_id, run_id, terminal)
+            log_event(
+                self._logger,
+                logging.INFO if terminal == "COMPLETE" else logging.WARNING,
+                "lifecycle_runner_finished",
+                run_id=run_id,
+                context={
+                    "submission_id": submission_id,
+                    "project_id": context.project_id,
+                    "repository_id": context.repository_id,
+                    "terminal_state": terminal,
+                },
+            )
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, terminal, duplicate)
         except RunnerError as error:
             self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error)

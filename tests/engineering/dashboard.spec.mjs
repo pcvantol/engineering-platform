@@ -2662,6 +2662,16 @@ test.describe("Engineering Status browser smoke", () => {
       target_repository: "pcvantol/djconnect",
       checkout_path: "/Users/example/Documents/GitHub/djconnect",
       active_branch: "main",
+      execution_context: {
+        context_version: "1.0",
+        mission_id: "MISSION-0006",
+        producer_host_id: "forge-host-alpha",
+        mission_revision: "5",
+        intent_id: "intent-0006",
+        intent_revision: "1",
+        runtime_prompt_id: "prompt-0006",
+        runtime_prompt_digest: "sha256:aaaaaaaa",
+      },
       lifecycle: {
         available: true,
         run_id: "consistent-active-run-surface",
@@ -2672,7 +2682,9 @@ test.describe("Engineering Status browser smoke", () => {
         ],
       },
     }, {}));
-    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await expect(page.locator("#currentRun")).toHaveAttribute("open", "");
+    await expect(page.locator("#executionContext")).toContainText("MISSION-0006");
+    await expect(page.locator("#executionContext")).toContainText("forge-host-alpha");
     await expect(page.locator(".execution-lifecycle")).toHaveCount(1);
     await expect(page.locator("#executionContext")).toHaveCount(1);
 
@@ -9324,7 +9336,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
     await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({
       json: {
-        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 }, execution_activity_summary: { activity: { primary_codex_commands_total: 1 }, terminal_delivery_diff: { total_unique_changed_paths: 0 } } },
+        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", producer_id: "forge", producer_type: "FORGE", producer_version: "2.7.2", producer_submission_contract_version: "1.0", submission_id: "submission-0006", execution_context_version: "1.0", mission_id: "MISSION-0006", engineering_action_id: "action-0006", correlation_id: "correlation-0006", execution_context: { context_version: "1.0", mission_id: "MISSION-0006", producer_host_id: "forge-host-alpha", mission_revision: "5", intent_id: "intent-0006", intent_revision: "1", runtime_prompt_id: "prompt-0006", runtime_prompt_digest: "sha256:aaaaaaaa", retry_of_correlation_id: "correlation-0005" }, execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 }, execution_activity_summary: { activity: { primary_codex_commands_total: 1 }, terminal_delivery_diff: { total_unique_changed_paths: 0 } } },
         execution: { seconds: 42, total_seconds: 61 },
         runtime: { runtime_provider: "codex_cli", codex_cli_version: "0.146.0" },
         usage: { input_tokens: 120, output_tokens: 45 },
@@ -9353,6 +9365,10 @@ test.describe("Engineering Status browser smoke", () => {
     await dispatchDashboardPointerClick(page.locator("#promptHistoryRows tr td").nth(1));
     await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
     await expect(page.locator("#promptHistoryDetailModal")).not.toBeFocused();
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("MISSION-0006");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("submission-0006");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("forge-host-alpha");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("intent-0006");
     const runtimeCard = page.locator("#promptHistoryDetailContent .prompt-detail-card").filter({
       has: page.locator("h3", { hasText: DASHBOARD_MESSAGES.nl["detail.runtime"] }),
     });

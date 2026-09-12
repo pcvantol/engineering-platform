@@ -21,6 +21,24 @@ The supported canonical component identifiers are `ep_server`,
 `platform_database`, `lifecycle_worker`, `operations_console`,
 `dashboard_relay`, `http_ingress`, `cli_ingress`, and `file_inbox_ingress`.
 
+## Lifecycle and Console audit records
+
+The Lifecycle Worker and parity dispatcher write run-scoped operational events
+for claim, input materialisation, admission decision, runner start/finish,
+state change, bounded failure and every persisted lifecycle phase checkpoint.
+The event includes the canonical run identifier and uses `INFO`, `WARNING` or
+`ERROR` according to the outcome; diagnostics remain redacted.
+
+`operations_console` writes `configuration_changed` for successful setting
+changes, `platform_data_*` for data transfer/relocation, and
+`dashboard_action_completed` for queue disposition, dismissal, retry,
+telemetry/log clearing and explicit audited user actions such as report, JSON,
+telemetry and log downloads. AI-chat audit entries record only
+sent/received/failed action and run identity; message content is never logged.
+An audit record keeps bounded action, actor, outcome and canonical project/run
+identifiers, never prompt text, chat content, queue reason, local path,
+imported payload or downloaded bytes.
+
 ## Query processing
 
 All filters are applied in CENTRAL **before** counting, sorting, and page

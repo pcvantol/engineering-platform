@@ -2631,6 +2631,17 @@ def install_central_execution_submission_retry_schema(connection: sqlite3.Connec
     _schema_v43(connection)
 
 
+def install_central_execution_validation_profile_identity_schema(connection: sqlite3.Connection) -> None:
+    """Install immutable validation-profile identity evidence in CENTRAL.
+
+    The retained Execution Host writes this evidence while running against the
+    CENTRAL operational database.  The Server owns the migration boundary, so
+    an established CENTRAL store must install the same additive table rather
+    than relying on a checkout-local storage migration having run earlier.
+    """
+    _schema_v42(connection)
+
+
 def activate_storage_schema(root: Path) -> sqlite3.Connection:
     """Upgrade a shared EP database only at a controlled post-merge boundary."""
     root = root.resolve()
