@@ -97,7 +97,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 58
+SERVER_STORE_SCHEMA_VERSION = 59
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -539,6 +539,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "execution_submission_attempts",
         "execution_submission_attempt_links",
         "execution_validation_profile_identities",
+        "ep_forge_exchange_audit",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -556,6 +557,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_parity_lifecycle_dispatches_run_lookup",
         "ep_receipt_run_provenance_project_lookup",
         "ep_external_producer_bindings_active_key",
+        "ep_forge_exchange_audit_project_lookup",
     }
 )
 SERVER_REQUIRED_VIEWS = frozenset({"execution_submission_run_links"})
@@ -1307,6 +1309,47 @@ def _migrate_schema_58(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=58")
 
 
+def _migrate_schema_59(connection: sqlite3.Connection) -> None:
+    """Persist immutable, versioned Forge↔EP acceptance provenance.
+
+    The row intentionally excludes the producer prompt, bearer credential and
+    any local checkout path.  It is evidence of the inter-product exchange,
+    not a second source of execution evidence or an operator-retained log.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema58")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59)))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,59 FROM ep_installations_schema58")
+    connection.execute("DROP TABLE ep_installations_schema58")
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS ep_forge_exchange_audit (
+            audit_id TEXT PRIMARY KEY,
+            submission_id TEXT NOT NULL UNIQUE REFERENCES ep_submissions(submission_id),
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            direction TEXT NOT NULL CHECK(direction='FORGE_TO_EP'),
+            event_kind TEXT NOT NULL CHECK(event_kind='FORGE_SUBMISSION_ACCEPTED'),
+            receipt_id TEXT NOT NULL UNIQUE,
+            producer_contract_version TEXT NOT NULL,
+            forge_provenance_contract_version TEXT NOT NULL,
+            forge_application_version TEXT NOT NULL,
+            ep_application_version TEXT NOT NULL,
+            producer_readback_contract_version TEXT NOT NULL,
+            accepted_request_digest TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ep_forge_exchange_audit_project_lookup ON ep_forge_exchange_audit(project_id,recorded_at DESC,submission_id);
+        CREATE TRIGGER IF NOT EXISTS ep_forge_exchange_audit_scope_insert BEFORE INSERT ON ep_forge_exchange_audit
+        WHEN NOT EXISTS (SELECT 1 FROM ep_submissions AS submission WHERE submission.submission_id=NEW.submission_id AND submission.project_id=NEW.project_id)
+        BEGIN SELECT RAISE(ABORT, 'FORGE_EXCHANGE_SUBMISSION_SCOPE_MISMATCH'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_forge_exchange_audit_immutable_update BEFORE UPDATE ON ep_forge_exchange_audit
+        BEGIN SELECT RAISE(ABORT, 'Forge exchange audit is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_forge_exchange_audit_immutable_delete BEFORE DELETE ON ep_forge_exchange_audit
+        BEGIN SELECT RAISE(ABORT, 'Forge exchange audit is immutable'); END;
+    """)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(59)")
+    connection.execute("UPDATE engineering_metadata SET value='59' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=59")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -1315,13 +1358,14 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
             tables = _table_names(connection)
             indexes = _index_names(connection)
             views = _view_names(connection)
+            triggers = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
             schema = _schema_version(connection)
             integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
             metadata = dict(connection.execute("SELECT key,value FROM engineering_metadata WHERE key IN ('installation.instance_id','installation.schema_version')"))
             installation = connection.execute("SELECT instance_id FROM ep_installations WHERE instance_id=?", (identity.instance_id,)).fetchone()
     except (OSError, sqlite3.DatabaseError) as error:
         raise ServerConfigurationError("EP Server store is unavailable.") from error
-    valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and SERVER_REQUIRED_VIEWS <= views and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
+    valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and SERVER_REQUIRED_VIEWS <= views and {"ep_forge_exchange_audit_scope_insert", "ep_forge_exchange_audit_immutable_update", "ep_forge_exchange_audit_immutable_delete"} <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
         raise ServerConfigurationError(
             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
@@ -1376,14 +1420,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
@@ -1422,6 +1466,8 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_57(connection)
                             if current_schema < 58:
                                 _migrate_schema_58(connection)
+                            if current_schema < 59:
+                                _migrate_schema_59(connection)
                             connection.execute("COMMIT")
                             connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
@@ -1453,6 +1499,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_56(connection)
         _migrate_schema_57(connection)
         _migrate_schema_58(connection)
+        _migrate_schema_59(connection)
         connection.execute("COMMIT")
         connection.execute("PRAGMA legacy_alter_table=OFF")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -2046,6 +2093,8 @@ class _CentralForgeProvenance:
     runtime_prompt_id: str | None
     runtime_prompt_digest: str | None
     retry_of_correlation_id: str | None
+    producer_contract_version: str | None
+    forge_application_version: str | None
 
     @classmethod
     def from_constraints(cls, value: object) -> _CentralForgeProvenance | None:
@@ -2068,6 +2117,8 @@ class _CentralForgeProvenance:
             runtime_prompt_id=_central_text(prompt.get("id")),
             runtime_prompt_digest=_central_text(prompt.get("content_digest")),
             retry_of_correlation_id=_central_text(raw.get("retry_of_correlation_id")),
+            producer_contract_version=_central_text(raw.get("producer_contract_version")),
+            forge_application_version=_central_text(raw.get("forge_application_version")),
         )
 
     def execution_context(
@@ -2096,6 +2147,8 @@ class _CentralForgeProvenance:
             "runtime_prompt_id": self.runtime_prompt_id,
             "runtime_prompt_digest": self.runtime_prompt_digest,
             "retry_of_correlation_id": self.retry_of_correlation_id,
+            "producer_contract_version": self.producer_contract_version,
+            "forge_application_version": self.forge_application_version,
         }
 
 
@@ -2140,7 +2193,9 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
         # The CENTRAL parity adapter uses the published Producer Submission
         # contract.  It has a fixed version and is separate from Forge's
         # immutable provenance-contract version below.
-        "producer_submission_contract_version": "1.0" if submission_id else None,
+        "producer_submission_contract_version": (
+            forge.producer_contract_version if forge and forge.producer_contract_version else "1.0" if submission_id else None
+        ),
         "execution_context_version": forge.contract_version if forge else None,
         "mission_id": mission_id,
         "engineering_action_id": action_id,
@@ -4043,6 +4098,33 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         raise submission_service.SubmissionError("UNAUTHENTICATED", 401)
                     request = submission_service.request_from_mapping(project_id, payload, transport=transport)
                     result = submission_service.submit(connection, request)
+                if result.receipt is not None:
+                    receipt = result.receipt
+                    logger = component_logger(
+                        self.server.data_root, "http_ingress",  # type: ignore[attr-defined]
+                        central_database=self.server.data_root / SERVER_DATABASE_FILENAME,  # type: ignore[attr-defined]
+                    )
+                    context = {
+                        "submission_id": result.submission_id,
+                        "project_id": result.project_id,
+                        "repository_id": result.repository_id,
+                        "forge_application_version": receipt["forge_application_version"],
+                        "producer_contract_version": receipt["producer_contract_version"],
+                        "forge_provenance_contract_version": receipt["forge_provenance_contract_version"],
+                        "receipt_contract_version": receipt["contract_version"],
+                        "receipt_id": receipt["id"],
+                        "producer_readback_contract_version": receipt["producer_readback_contract_version"],
+                        "accepted_request_digest": receipt["accepted_request_digest"],
+                        "ep_instance_id": receipt["ep_instance_id"],
+                        "ep_application_version": receipt["ep_application_version"],
+                    }
+                    log_event(logger, logging.INFO, "forge_submission_accepted",
+                              context={**context, "exchange_direction": "FORGE_TO_EP"})
+                    # This is the server-side issuance fact.  Forge records the
+                    # corresponding receipt only after it has received and
+                    # strictly bound the HTTP response to its envelope.
+                    log_event(logger, logging.INFO, "forge_submission_receipt_issued",
+                              context={**context, "exchange_direction": "EP_TO_FORGE"})
                 self._send(200, result.to_dict(), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except UnicodeDecodeError:
                 self._send(400, {"error": "MALFORMED_REQUEST"})
