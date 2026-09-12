@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 from html import escape
 import http.server
@@ -74,6 +74,13 @@ from .component_logging import (
     log_event,
 )
 from .agent_state import redact_diagnostic
+from .codex_chat import (
+    CHAT_RETENTION_DAYS,
+    MAX_HISTORY_ITEMS,
+    CodexChatError,
+    chat_model,
+    respond_with_context,
+)
 from .ep_consumer_credentials import verifier
 from .execution_lifecycle import projection as lifecycle_projection
 from .parity_context import ParityProjectStore, project_context
@@ -2662,8 +2669,133 @@ def _central_console_chat_history(data_root: Path, project_id: str, run_id: str)
             "SELECT role,content,model,created_at FROM execution_chat_messages WHERE run_id=? ORDER BY id",
             (run_id,),
         ).fetchall()
-    return [{"role": str(role), "content": str(content), "model": model, "created_at": str(created_at)}
+    # ``text`` is the stable Console transcript field.  Returning the storage
+    # column name (``content``) silently discarded every persisted message in
+    # the browser's strict transcript normalizer.
+    return [{"role": str(role), "text": str(content), "model": model, "created_at": str(created_at)}
             for role, content, model, created_at in rows]
+
+
+def _central_chat_text(value: object, *, limit: int) -> str:
+    """Keep CENTRAL chat context redacted, bounded and presentation-neutral."""
+    if not isinstance(value, str) or not value.strip():
+        return "Niet beschikbaar."
+    return redact_diagnostic(value, limit=limit) or "Niet beschikbaar."
+
+
+def _central_console_chat_context(
+    data_root: Path, project_id: str, run_id: str,
+) -> dict[str, object] | None:
+    """Build one bounded CENTRAL-only context package for a terminal run."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,
+                      d.submission_id,s.repository_id,s.producer_id,s.producer_type,
+                      s.producer_version,s.prompt,h.prompt_title
+                   FROM ep_execution_runs AS r
+                   JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
+                   JOIN ep_submissions AS s ON s.submission_id=d.submission_id
+                   JOIN prompt_execution_history AS h ON h.run_id=r.run_id
+                  WHERE r.project_id=? AND d.project_id=? AND r.run_id=?
+                    AND r.state IN ('COMPLETE','BLOCKED','FAILED')""",
+            (project_id, project_id, run_id),
+        ).fetchone()
+    if row is None:
+        return None
+    report = _central_console_report(data_root, project_id, run_id)
+    try:
+        report_text = report.decode("utf-8") if report is not None else "Niet beschikbaar."
+    except UnicodeDecodeError:
+        report_text = "Niet beschikbaar."
+    transcript = _central_console_chat_history(data_root, project_id, run_id) or []
+    conversation = [
+        {
+            "role": str(entry["role"]),
+            "text": _central_chat_text(entry.get("text"), limit=1_000),
+            "created_at": str(entry["created_at"]),
+        }
+        for entry in transcript[-8:]
+    ]
+    return {
+        "execution": {
+            "run_id": str(row["run_id"]),
+            "terminal_state": str(row["run_state"]),
+            "submission_id": str(row["submission_id"]),
+            "repository_id": str(row["repository_id"]),
+            "producer": {
+                "id": str(row["producer_id"]),
+                "type": str(row["producer_type"]),
+                "version": _central_chat_text(row["producer_version"], limit=80),
+            },
+            "started_at": _central_chat_text(row["created_at"], limit=80),
+            "completed_at": _central_chat_text(row["updated_at"], limit=80),
+            "title": _central_chat_text(row["prompt_title"], limit=500),
+        },
+        "submitted_prompt": _central_chat_text(row["prompt"], limit=4_000),
+        "verified_engineering_report": _central_chat_text(report_text, limit=6_000),
+        "conversation": conversation,
+    }
+
+
+def _central_console_append_chat_message(
+    data_root: Path, project_id: str, run_id: str, role: str, text: object, *, model: str | None = None,
+) -> None:
+    """Persist one redacted transcript item only after CENTRAL run authorization."""
+    if role not in {"user", "assistant"}:
+        raise ValueError("INVALID_CHAT_ROLE")
+    limit = 6_000 if role == "assistant" else 2_000
+    content = _central_chat_text(text, limit=limit)
+    if content == "Niet beschikbaar.":
+        raise CodexChatError("Het chatbericht bevat geen bewaarbare tekst.")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=CHAT_RETENTION_DAYS)).isoformat()
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        belongs = connection.execute(
+            """SELECT 1 FROM ep_parity_lifecycle_dispatches AS d
+                 JOIN prompt_execution_history AS h ON h.run_id=d.run_id
+                WHERE d.project_id=? AND d.run_id=?""",
+            (project_id, run_id),
+        ).fetchone()
+        if belongs is None:
+            raise ValueError("CHAT_CONTEXT_UNAVAILABLE")
+        connection.execute("DELETE FROM execution_chat_messages WHERE created_at<?", (cutoff,))
+        connection.execute(
+            "INSERT INTO execution_chat_messages(run_id,role,content,model,created_at) VALUES(?,?,?,?,?)",
+            (run_id, role, content, model, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.execute(
+            "DELETE FROM execution_chat_messages WHERE id IN ("
+            "SELECT id FROM execution_chat_messages WHERE run_id=? ORDER BY id DESC LIMIT -1 OFFSET ?)",
+            (run_id, MAX_HISTORY_ITEMS),
+        )
+
+
+def _central_console_chat_response(
+    data_root: Path, project_id: str, run_id: str, message: object,
+) -> tuple[str, list[dict[str, object]]]:
+    """Generate and retain one read-only answer using only CENTRAL facts."""
+    context = _central_console_chat_context(data_root, project_id, run_id)
+    if context is None:
+        raise ValueError("CHAT_CONTEXT_UNAVAILABLE")
+    answer = respond_with_context(message, context)
+    _central_console_append_chat_message(data_root, project_id, run_id, "user", message)
+    _central_console_append_chat_message(data_root, project_id, run_id, "assistant", answer, model=chat_model())
+    return answer, _central_console_chat_history(data_root, project_id, run_id) or []
+
+
+def _central_console_clear_chat_history(data_root: Path, project_id: str, run_id: str) -> bool:
+    """Clear only the selected project's advisory transcript, never run evidence."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        belongs = connection.execute(
+            """SELECT 1 FROM ep_parity_lifecycle_dispatches AS d
+                 JOIN prompt_execution_history AS h ON h.run_id=d.run_id
+                WHERE d.project_id=? AND d.run_id=?""",
+            (project_id, run_id),
+        ).fetchone()
+        if belongs is None:
+            return False
+        connection.execute("DELETE FROM execution_chat_messages WHERE run_id=?", (run_id,))
+    return True
 
 
 @dataclass(frozen=True)
@@ -4165,6 +4297,86 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 run_id=run_id,
             )
             self._send(200, result)
+            return
+        if method == "do_POST" and request.path in {"/api/codex-chat", "/api/codex-chat/clear"}:
+            if not _same_origin(self.headers):
+                self._send(403, {"error": "INVALID_ORIGIN"})
+                return
+            if not isinstance(selected, str) or selected not in project_ids:
+                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+                return
+            run_id: str | None = None
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 2 <= length <= 16_000:
+                    raise ValueError
+                payload = _strict_json_object(self.rfile.read(length))
+                if request.path == "/api/codex-chat/clear":
+                    if set(payload) != {"run_id"}:
+                        raise ValueError
+                    run_id = payload.get("run_id")
+                    if not isinstance(run_id, str) or not _SAFE_REPORT_ID.fullmatch(run_id):
+                        raise ValueError
+                    if not _central_console_clear_chat_history(self.server.data_root, selected, run_id):  # type: ignore[attr-defined]
+                        self._send(404, {"error": "CHAT_CONTEXT_UNAVAILABLE"})
+                        return
+                    _audit_dashboard_action(
+                        self.server.data_root,  # type: ignore[attr-defined]
+                        action="ai_chat_transcript_cleared", project_id=selected, run_id=run_id,
+                        details={"chat_content": "[REDACTED]"},
+                    )
+                    self._send(200, {"cleared": True, "source": "CENTRAL"})
+                    return
+                if set(payload) != {"message", "run_id"}:
+                    raise ValueError
+                run_id, message = payload.get("run_id"), payload.get("message")
+                if (
+                    not isinstance(run_id, str) or not _SAFE_REPORT_ID.fullmatch(run_id)
+                    or not isinstance(message, str) or not message.strip() or len(message) > 2_000
+                ):
+                    raise ValueError
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="ai_chat_message_submitted", project_id=selected, run_id=run_id,
+                    details={"chat_content": "[REDACTED]"},
+                )
+                answer, messages = _central_console_chat_response(
+                    self.server.data_root, selected, run_id, message,  # type: ignore[attr-defined]
+                )
+            except CodexChatError:
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="ai_chat_response_failed", project_id=selected,
+                    run_id=run_id,
+                    details={"chat_content": "[REDACTED]", "failure": "REDACTED"},
+                )
+                self._send(503, {"error": "AI_CHAT_UNAVAILABLE"})
+                return
+            except (OSError, sqlite3.DatabaseError):
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="ai_chat_response_failed", project_id=selected, run_id=run_id,
+                    details={"chat_content": "[REDACTED]", "failure": "REDACTED"},
+                )
+                self._send(503, {"error": "AI_CHAT_UNAVAILABLE"})
+                return
+            except ValueError as error:
+                if str(error) == "CHAT_CONTEXT_UNAVAILABLE":
+                    _audit_dashboard_action(
+                        self.server.data_root,  # type: ignore[attr-defined]
+                        action="ai_chat_response_failed", project_id=selected, run_id=run_id,
+                        details={"chat_content": "[REDACTED]", "failure": "CHAT_CONTEXT_UNAVAILABLE"},
+                    )
+                    self._send(404, {"error": "CHAT_CONTEXT_UNAVAILABLE"})
+                    return
+                self._send(400, {"error": "INVALID_CHAT_REQUEST"})
+                return
+            _audit_dashboard_action(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="ai_chat_response_received", project_id=selected, run_id=run_id,
+                details={"chat_content": "[REDACTED]", "model": chat_model()},
+            )
+            self._send(200, {"answer": answer, "model": chat_model(), "messages": messages, "source": "CENTRAL"})
             return
         if method == "do_POST" and request.path == "/api/queue-disposition":
             if not _same_origin(self.headers):

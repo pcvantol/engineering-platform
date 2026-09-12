@@ -753,8 +753,9 @@ review in the supported browser and a contrast review of the rendered page.
 
 **AI-gesprek** is available only through this same private listener, from the
 AI-chat glyph in a selected **Promptgeschiedenis** row. Its bounded context is
-the repository identity, that exact terminal prompt and its matching local
-Engineering Report. The visible interface is
+the exact terminal run's CENTRAL submission prompt, terminal metadata,
+redacted transcript and matching verified CENTRAL Engineering Report. It never
+falls back to a repository checkout or live repository status. The visible interface is
 provider-neutral; the current configured adapter is Codex CLI and is shown as
 such. It starts an ephemeral, read-only process and cannot inspect or submit
 Inbox files, modify a repository,
