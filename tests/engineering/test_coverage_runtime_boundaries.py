@@ -1786,8 +1786,24 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(context["submitted_prompt"], "bounded submitted prompt")
         self.assertNotIn("repository", context)
         self.assertIsNone(server._central_console_chat_context(self.root, "other-project", run_id))
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM execution_chat_messages WHERE run_id=?", (run_id,)
+                ).fetchone(),
+                (2,),
+            )
         self.assertTrue(server._central_console_clear_chat_history(self.root, project_id, run_id))
         self.assertEqual(server._central_console_chat_history(self.root, project_id, run_id), [])
+        # The Console view must not merely hide a cached transcript: the
+        # selected run's persisted CENTRAL rows are permanently removed.
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM execution_chat_messages WHERE run_id=?", (run_id,)
+                ).fetchone(),
+                (0,),
+            )
 
         def provider_failure_after_question_is_persisted(*_: object) -> str:
             transcript = server._central_console_chat_history(self.root, project_id, run_id)
