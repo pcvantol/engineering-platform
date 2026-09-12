@@ -2131,7 +2131,7 @@ class _CentralForgeProvenance:
         transport_receipt_id: str | None,
     ) -> dict[str, object]:
         """Build the explicit CENTRAL projection of admitted Forge facts."""
-        return {
+        context: dict[str, object] = {
             "context_version": self.contract_version,
             "mission_id": mission_id,
             "current_intent": self.intent_id,
@@ -2147,9 +2147,16 @@ class _CentralForgeProvenance:
             "runtime_prompt_id": self.runtime_prompt_id,
             "runtime_prompt_digest": self.runtime_prompt_digest,
             "retry_of_correlation_id": self.retry_of_correlation_id,
-            "producer_contract_version": self.producer_contract_version,
-            "forge_application_version": self.forge_application_version,
         }
+        # v1.0 provenance remains an exact historical Console projection.  The
+        # v1.1 attributes are present only when an admitted Forge envelope
+        # actually supplied them; absence is never represented as invented
+        # or misleading version data.
+        if self.producer_contract_version is not None:
+            context["producer_contract_version"] = self.producer_contract_version
+        if self.forge_application_version is not None:
+            context["forge_application_version"] = self.forge_application_version
+        return context
 
 
 def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:

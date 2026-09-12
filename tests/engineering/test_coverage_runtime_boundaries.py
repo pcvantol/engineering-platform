@@ -1586,6 +1586,19 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertNotIn("unrelated_prompt_text", provenance.execution_context(
             mission_id=None, action_id=None, dispatch_state="RUNNING", updated_at="now", transport_receipt_id=None,
         ))
+        versioned = server._CentralForgeProvenance.from_constraints(json.dumps({
+            "forge_execution": {
+                "contract_version": "1.1", "producer_contract_version": "1.0",
+                "forge_application_version": "2.7.2",
+            },
+        }))
+        self.assertIsNotNone(versioned)
+        assert versioned is not None
+        versioned_context = versioned.execution_context(
+            mission_id=None, action_id=None, dispatch_state="RUNNING", updated_at="now", transport_receipt_id=None,
+        )
+        self.assertEqual(versioned_context["producer_contract_version"], "1.0")
+        self.assertEqual(versioned_context["forge_application_version"], "2.7.2")
         self.assertIsNone(server._CentralForgeProvenance.from_constraints("{bad json"))
 
     def test_central_console_history_detail_uses_the_dashboard_history_contract(self) -> None:
