@@ -1664,6 +1664,9 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(detail["engineering_action_id"], "implement-and-test-durable-status-projection")
         self.assertEqual(detail["correlation_id"], "correlation-0006")
         self.assertEqual(detail["target_repository"], "repo-a")
+        self.assertEqual(detail["lifecycle"], {
+            "run_id": "run-forge", "available": False, "steps": [],
+        })
         self.assertEqual(detail["execution_context"], {
             "context_version": "1.0", "mission_id": "MISSION-0006", "current_intent": "intent-0006",
             "current_engineering_action": "implement-and-test-durable-status-projection",
@@ -1710,9 +1713,14 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertIsNone(server._CentralForgeProvenance.from_constraints("{bad json"))
 
     def test_central_console_history_detail_uses_the_dashboard_history_contract(self) -> None:
-        """CENTRAL status remains readable in the existing history detail dialog."""
+        """CENTRAL terminal detail keeps its persisted read-only step flow."""
         projects = [{"project_id": "project-a"}]
-        detail = {"run_id": "run-terminal", "status": "BLOCKED"}
+        lifecycle = {
+            "run_id": "run-terminal", "available": True,
+            "terminal_state": "BLOCKED",
+            "steps": [{"id": "START", "state": "START"}, {"id": "TERMINAL", "state": "BLOCKED"}],
+        }
+        detail = {"run_id": "run-terminal", "status": "BLOCKED", "lifecycle": lifecycle}
         with patch("engineering_platform.server._console_projects", return_value=projects), patch(
             "engineering_platform.server._central_console_run_detail", return_value=detail
         ):
@@ -1724,6 +1732,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(responses[-1][0], 200)
         payload = responses[-1][1]
         self.assertEqual(payload["history"], detail)
+        self.assertEqual(payload["lifecycle"], lifecycle)
         self.assertNotIn("run", payload)
 
     def test_console_event_and_report_helpers_reject_unowned_or_unavailable_central_artifacts(self) -> None:

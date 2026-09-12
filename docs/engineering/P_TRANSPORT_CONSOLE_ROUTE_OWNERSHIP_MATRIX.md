@@ -50,11 +50,12 @@ phase** is the state recorded for the Execution Host run; **EP dispatcher
 state** is the FIFO dispatch record's orchestration state. They can both be
 `RUNNING` during normal operation, but neither is inferred from the other.
 
-The same active projection includes the full persisted lifecycle path (the
-read-only step-bubble flow) for that exact run. The active diagnostic endpoint
-reads only that run's redacted CENTRAL component-log diagnostics and responds
-as `text/plain`; absent, malformed, or JSON-shaped content becomes the
-localized unavailable state. Raw JSON error responses are never Console prose.
+The active projection and every terminal history detail include the full
+persisted lifecycle path (the read-only step-bubble flow) for that exact run.
+The active diagnostic endpoint reads only that run's redacted CENTRAL
+component-log diagnostics and responds as `text/plain`; absent, malformed, or
+JSON-shaped content becomes the localized unavailable state. Raw JSON error
+responses are never Console prose.
 
 The Console never derives a branch, checkout, tracked-file count, Mission
 summary or prompt content. Those remain absent until the Execution Host records

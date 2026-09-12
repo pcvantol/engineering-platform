@@ -2279,7 +2279,7 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
 
 
 def _central_console_lifecycle(data_root: Path, run_id: str) -> dict[str, object]:
-    """Project one active run's persisted lifecycle from CENTRAL only."""
+    """Project one run's persisted lifecycle from CENTRAL only."""
     return lifecycle_projection(
         data_root,
         run_id,
@@ -2400,9 +2400,18 @@ def _no_project_console_snapshot(data_root: Path) -> dict[str, object]:
 
 
 def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -> dict[str, object] | None:
-    """Resolve a run by canonical project/run identity, never by checkout."""
-    return next((record for record in _central_console_run_records(data_root, project_id)
-                 if record["run_id"] == run_id), None)
+    """Resolve a run and its persisted flow by canonical CENTRAL identity."""
+    record = next((record for record in _central_console_run_records(data_root, project_id)
+                   if record["run_id"] == run_id), None)
+    if record is None:
+        return None
+    return {
+        **record,
+        # The historical detail dialog uses the same read-only bubble flow as
+        # the active card.  Terminal history remains separate in the table,
+        # while its exact step evidence stays available on demand.
+        "lifecycle": _central_console_lifecycle(data_root, run_id),
+    }
 
 
 def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[str, object]]:
@@ -4020,7 +4029,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "pull_requests": [],
                         "usage": {},
                         "evidence": [],
-                        "lifecycle": {},
+                        "lifecycle": detail.get("lifecycle", {}),
                         "source": "CENTRAL",
                     })
                 return
