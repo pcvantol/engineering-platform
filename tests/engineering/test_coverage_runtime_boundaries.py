@@ -1744,6 +1744,150 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["commit_timeline"], timeline)
         self.assertNotIn("run", payload)
 
+    def test_central_chat_routes_generate_and_store_only_project_scoped_redacted_transcripts(self) -> None:
+        """The installed Console owns both chat mutations without checkout fallback."""
+        project_id, run_id, submission_id = "project-a", "run-terminal", "submission-terminal"
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (project_id, "DECLARATION", "ACTIVE", "now", "now"),
+            )
+            connection.execute(
+                "INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("repo-a", project_id, "repo-a", "authority", "DECLARATION", "now", "now"),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (run_id, project_id, "COMPLETE", "started", "completed"),
+            )
+            connection.execute(
+                """INSERT INTO ep_submissions(
+                    submission_id,project_id,repository_id,producer_id,producer_type,producer_version,
+                    transport,prompt,prompt_digest,constraints,state,admission,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (submission_id, project_id, "repo-a", "forge", "FORGE", "2.7.6", "HTTP", "bounded submitted prompt", "sha256:prompt", "{}", "QUEUED", "ADMITTED", "started"),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (submission_id, project_id, "repo-a", run_id, "COMPLETE", "CENTRAL:prompt", "started", "completed"),
+            )
+            connection.execute(
+                "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,updated_at) VALUES(?,?,?,?,?)",
+                (run_id, "COMPLETE", "Central terminal run", "completed", "completed"),
+            )
+        with patch("engineering_platform.server.respond_with_context", return_value="Veilig antwoord.") as respond:
+            answer, messages = server._central_console_chat_response(
+                self.root, project_id, run_id, "Wat is de status?",
+            )
+        self.assertEqual(answer, "Veilig antwoord.")
+        self.assertEqual([entry["text"] for entry in messages], ["Wat is de status?", "Veilig antwoord."])
+        context = respond.call_args.args[1]
+        self.assertEqual(context["execution"]["run_id"], run_id)
+        self.assertEqual(context["submitted_prompt"], "bounded submitted prompt")
+        self.assertNotIn("repository", context)
+        self.assertIsNone(server._central_console_chat_context(self.root, "other-project", run_id))
+        self.assertTrue(server._central_console_clear_chat_history(self.root, project_id, run_id))
+        self.assertEqual(server._central_console_chat_history(self.root, project_id, run_id), [])
+
+        body = json.dumps({"message": "Wat is de status?", "run_id": run_id}).encode()
+        handler, responses = self._in_process_console_handler(
+            "/api/codex-chat", body=body,
+            headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": project_id}]), patch(
+            "engineering_platform.server._central_console_chat_response",
+            return_value=("Veilig antwoord.", [{"role": "assistant", "text": "Veilig antwoord."}]),
+        ) as response, patch("engineering_platform.server._audit_dashboard_action") as audit:
+            handler._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1][0], 200)
+        self.assertEqual(responses[-1][1]["source"], "CENTRAL")
+        response.assert_called_once_with(self.root, project_id, run_id, "Wat is de status?")
+        self.assertEqual(
+            [call.kwargs["action"] for call in audit.call_args_list],
+            ["ai_chat_message_submitted", "ai_chat_response_received"],
+        )
+        unavailable, responses = self._in_process_console_handler(
+            "/api/codex-chat", body=body,
+            headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": project_id}]), patch(
+            "engineering_platform.server._central_console_chat_response", side_effect=server.CodexChatError("provider unavailable"),
+        ), patch("engineering_platform.server._audit_dashboard_action") as audit:
+            unavailable._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (503, {"error": "AI_CHAT_UNAVAILABLE"}))
+        self.assertEqual(
+            [call.kwargs["action"] for call in audit.call_args_list],
+            ["ai_chat_message_submitted", "ai_chat_response_failed"],
+        )
+        absent, responses = self._in_process_console_handler(
+            "/api/codex-chat", body=body,
+            headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": project_id}]), patch(
+            "engineering_platform.server._central_console_chat_response", side_effect=ValueError("CHAT_CONTEXT_UNAVAILABLE"),
+        ), patch("engineering_platform.server._audit_dashboard_action") as audit:
+            absent._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (404, {"error": "CHAT_CONTEXT_UNAVAILABLE"}))
+        self.assertEqual(
+            [call.kwargs["action"] for call in audit.call_args_list],
+            ["ai_chat_message_submitted", "ai_chat_response_failed"],
+        )
+        clear_body = json.dumps({"run_id": run_id}).encode()
+        clear, responses = self._in_process_console_handler(
+            "/api/codex-chat/clear", body=clear_body,
+            headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(clear_body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": project_id}]), patch(
+            "engineering_platform.server._central_console_clear_chat_history", return_value=True,
+        ) as clear_history, patch("engineering_platform.server._audit_dashboard_action") as audit:
+            clear._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (200, {"cleared": True, "source": "CENTRAL"}))
+        clear_history.assert_called_once_with(self.root, project_id, run_id)
+        self.assertEqual(audit.call_args.kwargs["action"], "ai_chat_transcript_cleared")
+
+        self.assertEqual(server._central_chat_text(None, limit=80), "Niet beschikbaar.")
+        with self.assertRaisesRegex(ValueError, "INVALID_CHAT_ROLE"):
+            server._central_console_append_chat_message(self.root, project_id, run_id, "system", "ignored")
+        with self.assertRaises(server.CodexChatError):
+            server._central_console_append_chat_message(self.root, project_id, run_id, "user", " ")
+        with self.assertRaisesRegex(ValueError, "CHAT_CONTEXT_UNAVAILABLE"):
+            server._central_console_append_chat_message(self.root, "other-project", run_id, "user", "ignored")
+        self.assertFalse(server._central_console_clear_chat_history(self.root, "other-project", run_id))
+
+        no_context, responses = self._in_process_console_handler(
+            "/api/codex-chat", body=body,
+            headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[]):
+            no_context._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"}))
+        cross_origin, responses = self._in_process_console_handler(
+            "/api/codex-chat", body=body,
+            headers={
+                "Origin": "http://other-host", "Host": "127.0.0.1:8765",
+                "X-Engineering-Platform-Project": project_id, "Content-Length": str(len(body)),
+            },
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": project_id}]):
+            cross_origin._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (403, {"error": "INVALID_ORIGIN"}))
+        malformed, responses = self._in_process_console_handler(
+            "/api/codex-chat", body=b"{}",
+            headers={"X-Engineering-Platform-Project": project_id, "Content-Length": "2"},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": project_id}]):
+            malformed._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (400, {"error": "INVALID_CHAT_REQUEST"}))
+        failed_clear, responses = self._in_process_console_handler(
+            "/api/codex-chat/clear", body=clear_body,
+            headers={"X-Engineering-Platform-Project": project_id, "Content-Length": str(len(clear_body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": project_id}]), patch(
+            "engineering_platform.server._central_console_clear_chat_history", return_value=False,
+        ):
+            failed_clear._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (404, {"error": "CHAT_CONTEXT_UNAVAILABLE"}))
+
     def test_central_terminal_revision_timeline_requires_verified_exact_artifact(self) -> None:
         """Only immutable terminal evidence can supply a final revision item."""
         run_id = "run-terminal"

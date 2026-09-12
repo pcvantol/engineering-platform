@@ -18,7 +18,7 @@ change authority, select a checkout, or delegate that route.
 | PLATFORM | `GET/POST /api/configuration`; `GET /api/central-data/export`; `POST /api/central-data/{relocate,relocate/browse,relocate/discard,import}`; `GET/POST /api/central-database/configuration` | Server settings and Central data operations; paths and imported bytes are never placed in the audit log |
 | HOST_ADMIN | `GET /api/host-admin/diagnostics` | Bounded installation-only disk and managed-runtime observation; no project, queue, execution or mutation authority |
 | PLATFORM | `GET /v1/operations/projects` | Operations Console platform listing |
-| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,analysis,chat,details}`, `/api/telemetry/{date}`, `/api/execution-diagnostic/current`; `POST /api/prompt-history/{run}/analysis-retry`, `/api/telemetry/clear`, `/api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, active redacted diagnostic, centrally indexed advisory analysis, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
+| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,analysis,chat,details}`, `/api/telemetry/{date}`, `/api/execution-diagnostic/current`; `POST /api/prompt-history/{run}/analysis-retry`, `/api/codex-chat`, `/api/codex-chat/clear`, `/api/telemetry/clear`, `/api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, active redacted diagnostic, centrally indexed advisory analysis and read-only AI conversation, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
 | TRANSPORT_INTERNAL | `/diagnostics/topology`, `/healthz`, `/readyz`, `/v1/projects/{project}/submissions`, `/v1/agent/{pair,register,heartbeat,attachment}` | Transport probes and authenticated transport endpoints, not Console delegation |
 | HISTORICAL_UNREACHABLE | `POST /api/runtime-directory/open` | Explicitly retired checkout-bound runtime action (`410 RUNTIME_DIRECTORY_RETIRED`) |
 
@@ -80,6 +80,15 @@ run's CENTRAL report; regeneration records a `dashboard_action_completed`
 audit event and cannot change the execution outcome. Document responses that
 are absent, malformed, or not Markdown are shown as a localized unavailable
 message, never as a JSON payload in the Console.
+
+The AI conversation send and clear routes are likewise explicit CENTRAL
+project routes. A chat request receives only the exact terminal run's
+project-bound submission prompt, bounded verified report, terminal metadata
+and its own redacted transcript; it never falls back to a checkout, current
+repository status or another project's run. Both the submitted message and
+received answer produce redacted, run-scoped Console audit events. The chat
+history response uses the stable `text` field expected by the Console, rather
+than leaking an internal storage-column name.
 
 ## Test and qualification coverage
 

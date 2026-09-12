@@ -1362,7 +1362,6 @@ function askCodex() {
     .slice(-CHAT_HISTORY_LIMIT);
   chatMessage("user", message, createdAt);
   updateChatActions();
-  void recordUserAction("ai_chat_message_submitted", chatContextRun);
   fetch("/api/codex-chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1384,11 +1383,9 @@ function askCodex() {
       renderChatHistory();
       updateChatHistoryCount(chatHistory.length);
       $("chatStatus").textContent = "";
-      void recordUserAction("ai_chat_response_received", chatContextRun);
     })
     .catch(() => {
       $("chatStatus").textContent = t("chat.unavailable");
-      void recordUserAction("ai_chat_response_failed", chatContextRun);
     })
     .finally(() => {
       $("chatSend").disabled = false;
@@ -8537,7 +8534,6 @@ $("clearChat").addEventListener("click", () =>
         chatHistory = [];
         renderChatHistory();
         updateChatHistoryCount(0);
-        void recordUserAction("ai_chat_transcript_cleared", chatContextRun);
       })
       .catch(() => { $("chatStatus").textContent = t("chat.unavailable"); })
       .finally(() => { $("clearChat").disabled = false; updateChatActions(); });
