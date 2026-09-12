@@ -69,7 +69,8 @@ artifact response. A missing, corrupt, or mismatched artifact is represented as
 verified, run-bound delivery evidence: normally a recorded merge revision, or
 an explicit host-verified Managed no-op revision after the unchanged,
 synchronized `main` checkout was rechecked in that transaction. EP never uses
-the ambient checkout `HEAD` as a substitute. `VALIDATION_ONLY`, `BLOCKED`, and
+the ambient checkout `HEAD` as a substitute, and an advisory producer-reported
+SHA cannot override the host's before/after observation. `VALIDATION_ONLY`, `BLOCKED`, and
 `FAILED` may have valid terminal evidence with a null revision; they are not
 fabricated into successful delivery.
 

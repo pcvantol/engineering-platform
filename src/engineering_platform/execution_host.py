@@ -2244,12 +2244,16 @@ First implementation pull-request publication gate:
             current = self.repository.inspect(self.root)
         except RunnerError:
             return False
+        # The provider's reported SHA is advisory input, not delivery proof.
+        # A Forge Runtime Prompt can legitimately carry an earlier pinned
+        # repository-truth revision while this host has already synchronized
+        # main.  The no-op decision is qualified only by the host-observed
+        # before/after state for this run.
         return (
             current.clean
             and current.branch == "main"
             and current.main_contains_head
             and current.head_sha == baseline.head_sha
-            and (result.commit_sha is None or result.commit_sha == current.head_sha)
         )
 
     def _advance_after_primary_agent_result(
