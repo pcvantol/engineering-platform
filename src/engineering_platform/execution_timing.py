@@ -170,7 +170,9 @@ def record_queue_wait_from_submission(root: Path, run_id: str, *, claimed_at: da
     connection = open_storage(root)
     try:
         row = connection.execute(
-            "SELECT submission.received_at FROM execution_submissions AS submission JOIN execution_submission_links AS link ON link.submission_id=submission.submission_id WHERE link.run_id=?", (run_id,)
+            "SELECT attempt.recorded_at FROM execution_submission_attempts AS attempt "
+            "JOIN execution_submission_attempt_links AS link ON link.submission_id=attempt.submission_id "
+            "WHERE link.run_id=?", (run_id,)
         ).fetchone()
     finally:
         connection.close()

@@ -266,7 +266,7 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
         try:
             transaction = connection.execute("SELECT payload,phase,updated_at FROM engineering_transactions WHERE run_id=?", (run_id,)).fetchone()
             run = connection.execute("SELECT execution_mode,producer_id,producer_type,execution_started_at,execution_finished_at,execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)).fetchone()
-            submission = connection.execute("SELECT s.submission_id,s.producer_id,s.producer_type,s.prompt_metadata,s.received_at FROM execution_submissions AS s JOIN execution_submission_links AS l ON l.submission_id=s.submission_id WHERE l.run_id=?", (run_id,)).fetchone()
+            submission = connection.execute("SELECT s.submission_id,s.producer_id,s.producer_type,s.prompt_metadata,s.received_at FROM execution_submissions AS s JOIN execution_submission_run_links AS l ON l.submission_id=s.submission_id WHERE l.run_id=?", (run_id,)).fetchone()
             qualification_lineage, qualification_validation = _qualification_evidence(connection, run_id)
             try:
                 row = connection.execute(

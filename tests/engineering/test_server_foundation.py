@@ -823,6 +823,51 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(report["integrity"], "PASS")
 
+    def test_schema_56_upgrade_activates_retry_attempt_lineage(self) -> None:
+        """An installed host gains retry lineage without a new data root."""
+        identity = server.initialize(self.root)
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,prompt_content,prompt_metadata,target_identity,original_envelope,received_at) VALUES(?,?,?,?,?,?,?,?)",
+                ("pre-upgrade-submission", "fixture", "FORGE", "bounded", "{}", "{}", "{}", "2026-01-01T00:00:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO execution_submission_links(submission_id,run_id,linked_at) VALUES(?,?,?)",
+                ("pre-upgrade-submission", "pre-upgrade-run", "2026-01-01T00:00:00+00:00"),
+            )
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("DROP VIEW execution_submission_run_links")
+            connection.execute("DROP TABLE execution_submission_attempt_links")
+            connection.execute("DROP TABLE execution_submission_attempts")
+            connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema57")
+            connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56)))")
+            connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,56 FROM ep_installations_schema57")
+            connection.execute("DROP TABLE ep_installations_schema57")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=57")
+            connection.execute("UPDATE engineering_metadata SET value='56' WHERE key='installation.schema_version'")
+        self.assertEqual(server.initialize(self.root), identity)
+        with sqlite3.connect(database) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertTrue({"execution_submission_attempts", "execution_submission_attempt_links"} <= tables)
+            self.assertEqual(
+                connection.execute("SELECT name FROM sqlite_master WHERE type='view' AND name='execution_submission_run_links'").fetchone(),
+                ("execution_submission_run_links",),
+            )
+            self.assertEqual(
+                connection.execute("SELECT run_id,submission_id FROM execution_submission_run_links WHERE run_id='pre-upgrade-run'").fetchone(),
+                ("pre-upgrade-run", "pre-upgrade-submission"),
+            )
+            self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
+
+    def test_schema_57_store_without_retry_lineage_view_fails_closed(self) -> None:
+        """A structurally incomplete current store is never accepted for readback."""
+        identity = server.initialize(self.root)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("DROP VIEW execution_submission_run_links")
+        with self.assertRaises(server.ServerConfigurationError):
+            server.validate_store(self.root, identity)
+
     def test_bootstrap_does_not_use_a_legacy_database_or_identity(self) -> None:
         legacy = self.root.parent / "legacy-schema40.db"
         with sqlite3.connect(legacy) as connection:
@@ -1678,7 +1723,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             history = json.loads(response.read())
         self.assertEqual(snapshot["status"]["project_id"], "djconnect")
         self.assertEqual([run["run_id"] for run in snapshot["runs"]], ["dj-run"])
-        self.assertEqual([run["run_id"] for run in history], ["dj-run"])
+        self.assertEqual([run["run_id"] for run in history["runs"]], ["dj-run"])
         self.assertEqual(snapshot["telemetry"][0]["total_tokens"], 5)
         with urlopen(f"http://127.0.0.1:{port}/api/telemetry/2026-01-01?project=djconnect") as response:
             telemetry_detail = json.loads(response.read())

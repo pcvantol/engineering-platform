@@ -261,7 +261,7 @@ def submission_prompt_title(root: Path, run_id: str) -> str | None:
     try:
         row = connection.execute(
             "SELECT submission.prompt_metadata FROM execution_submissions AS submission "
-            "JOIN execution_submission_links AS link ON link.submission_id=submission.submission_id "
+            "JOIN execution_submission_run_links AS link ON link.submission_id=submission.submission_id "
             "WHERE link.run_id=?",
             (run_id,),
         ).fetchone()
@@ -460,7 +460,7 @@ def prompt_history(
                  WHERE chat.run_id = history.run_id AND chat.created_at >= ?)
             FROM prompt_execution_history AS history
             LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
-            LEFT JOIN execution_submission_links AS submission_link ON submission_link.run_id = history.run_id
+            LEFT JOIN execution_submission_run_links AS submission_link ON submission_link.run_id = history.run_id
             LEFT JOIN execution_submissions AS submission ON submission.submission_id = submission_link.submission_id
             LEFT JOIN execution_admission_decisions AS admission ON admission.run_id = history.run_id
             LEFT JOIN execution_dismissals AS dismissal ON dismissal.run_id = history.run_id

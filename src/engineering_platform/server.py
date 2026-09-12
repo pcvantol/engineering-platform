@@ -97,7 +97,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 56
+SERVER_STORE_SCHEMA_VERSION = 57
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -535,6 +535,8 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_external_producer_binding_audit",
         "engineering_transactions",
         "execution_lifecycle_events",
+        "execution_submission_attempts",
+        "execution_submission_attempt_links",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -554,6 +556,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_external_producer_bindings_active_key",
     }
 )
+SERVER_REQUIRED_VIEWS = frozenset({"execution_submission_run_links"})
 
 
 @dataclass(frozen=True)
@@ -659,6 +662,10 @@ def _table_names(connection: sqlite3.Connection) -> set[str]:
 
 def _index_names(connection: sqlite3.Connection) -> set[str]:
     return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+
+
+def _view_names(connection: sqlite3.Connection) -> set[str]:
+    return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='view'")}
 
 
 def _schema_version(connection: sqlite3.Connection) -> int:
@@ -1267,6 +1274,18 @@ def _migrate_schema_56(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=56")
 
 
+def _migrate_schema_57(connection: sqlite3.Connection) -> None:
+    """Activate retained-host retry-attempt lineage in the CENTRAL store."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema56")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57)))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,57 FROM ep_installations_schema56")
+    connection.execute("DROP TABLE ep_installations_schema56")
+    storage.install_central_execution_submission_retry_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(57)")
+    connection.execute("UPDATE engineering_metadata SET value='57' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=57")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -1274,18 +1293,19 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
             tables = _table_names(connection)
             indexes = _index_names(connection)
+            views = _view_names(connection)
             schema = _schema_version(connection)
             integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
             metadata = dict(connection.execute("SELECT key,value FROM engineering_metadata WHERE key IN ('installation.instance_id','installation.schema_version')"))
             installation = connection.execute("SELECT instance_id FROM ep_installations WHERE instance_id=?", (identity.instance_id,)).fetchone()
     except (OSError, sqlite3.DatabaseError) as error:
         raise ServerConfigurationError("EP Server store is unavailable.") from error
-    valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
+    valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and SERVER_REQUIRED_VIEWS <= views and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
         raise ServerConfigurationError(
             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
         )
-    return {"schema_version": schema, "integrity": "PASS", "required_tables": sorted(SERVER_REQUIRED_TABLES), "required_indexes": sorted(SERVER_REQUIRED_INDEXES)}
+    return {"schema_version": schema, "integrity": "PASS", "required_tables": sorted(SERVER_REQUIRED_TABLES), "required_indexes": sorted(SERVER_REQUIRED_INDEXES), "required_views": sorted(SERVER_REQUIRED_VIEWS)}
 
 
 def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int = 8765) -> RuntimeIdentity:
@@ -1335,14 +1355,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
@@ -1377,6 +1397,8 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_55(connection)
                             if current_schema < 56:
                                 _migrate_schema_56(connection)
+                            if current_schema < 57:
+                                _migrate_schema_57(connection)
                             connection.execute("COMMIT")
                             connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
@@ -1406,6 +1428,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_54(connection)
         _migrate_schema_55(connection)
         _migrate_schema_56(connection)
+        _migrate_schema_57(connection)
         connection.execute("COMMIT")
         connection.execute("PRAGMA legacy_alter_table=OFF")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -3349,9 +3372,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 return
             if request.path == "/api/prompt-history":
                 snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
-                # Keep the established Console list contract while changing
-                # only its authority source.
-                encoded = json.dumps(snapshot["runs"], separators=(",", ":")).encode("utf-8")
+                encoded = json.dumps({"runs": snapshot["runs"]}, separators=(",", ":")).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(encoded)))
