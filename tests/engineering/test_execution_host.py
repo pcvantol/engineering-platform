@@ -2646,6 +2646,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         result = AgentResult(
             "COMPLETE",
             terminal_condition="repository_reconciled",
+            # Producer provenance can carry an earlier pinned repository
+            # revision. The host's before/after observation remains the
+            # authoritative no-op delivery evidence.
+            commit_sha="b" * 40,
             validation_evidence=({"command": "python -m unittest focused", "result": "PASS: focused checks"},),
         )
 
