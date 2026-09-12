@@ -826,6 +826,30 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(report["integrity"], "PASS")
 
+    def test_current_schema_bootstrap_rolls_back_on_ddl_failure(self) -> None:
+        """A failed fresh bootstrap never leaves an operational partial store."""
+        with patch(
+            "engineering_platform.server._install_current_submission_schema",
+            side_effect=sqlite3.DatabaseError("injected bootstrap failure"),
+        ):
+            with self.assertRaises(sqlite3.DatabaseError):
+                server.initialize(self.root)
+
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(
+                connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),
+                [],
+            )
+
+        identity = server.initialize(self.root)
+        self.assertEqual(server.validate_store(self.root, identity)["integrity"], "PASS")
+
+    def test_ordered_upgrade_steps_cover_every_historical_server_schema(self) -> None:
+        self.assertEqual(
+            [target_schema for target_schema, _upgrade in server._SERVER_SCHEMA_UPGRADE_STEPS],
+            list(range(42, server.SERVER_STORE_SCHEMA_VERSION + 1)),
+        )
+
     def test_schema_41_installation_upgrades_through_the_ordered_current_path(self) -> None:
         """Retained first-generation CENTRAL stores remain forward-compatible."""
         self.root.mkdir()
