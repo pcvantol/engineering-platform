@@ -1564,17 +1564,25 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(snapshot["project_id"], "project-a")
         self.assertEqual(snapshot["status"]["active_run"], None)
         self.assertEqual(snapshot["runs"][0]["execution_mode"], "CLI")
-        telemetry_connection = Mock()
-        telemetry_connection.execute.return_value.fetchall.return_value = [
-            ("run-b", "2026-09-05T12:00:00Z", "COMPLETE", 4.2, 0.8, "codex", "model", "high", "HTTP", "repo-a"),
-        ]
-        telemetry_database = Mock(); telemetry_database.__enter__ = Mock(return_value=telemetry_connection); telemetry_database.__exit__ = Mock(return_value=False)
-        with patch("engineering_platform.server.sqlite3.connect", return_value=telemetry_database):
+        records = [{
+            "run_id": "run-b", "state": "COMPLETE", "status": "COMPLETE",
+            "created_at": "2026-09-05T12:00:00Z", "updated_at": "2026-09-05T12:04:12Z",
+            "producer_type": "FORGE", "target_repository": "repo-a",
+        }]
+        timing = {
+            "total_wall_time_ms": 252000, "queue_wait_time_ms": 800,
+            "provider_execution_time_ms": 4200, "validation_time_ms": 900,
+            "external_wait_time_ms": 0, "longest_phase": "PROVIDER_EXECUTION",
+            "phase_telemetry_available": True,
+            "phase_aggregates": [{"phase": "PROVIDER_EXECUTION", "duration_ms": 4200}],
+        }
+        with patch("engineering_platform.server._central_console_run_records", return_value=records), patch(
+            "engineering_platform.server.timing_summary", return_value=timing,
+        ):
             detail = server._central_console_telemetry_detail(self.root, "project-a", "2026-09-05")
         self.assertEqual(detail["summary"]["completed"], 1)
         self.assertEqual(detail["runs"][0]["project_id"] if "project_id" in detail["runs"][0] else "project-a", "project-a")
-        with patch("engineering_platform.server.sqlite3.connect", return_value=telemetry_database):
-            self.assertIsNone(server._central_console_telemetry_detail(self.root, "project-a", "not-a-date"))
+        self.assertIsNone(server._central_console_telemetry_detail(self.root, "project-a", "not-a-date"))
 
     def test_central_console_projects_active_run_only_as_current_lifecycle(self) -> None:
         """A live run is not also terminal history in the shared Console contract."""

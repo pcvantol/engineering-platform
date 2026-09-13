@@ -79,6 +79,23 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         provenance["action_context_envelope"] = envelope  # type: ignore[index]
         return payload
 
+    def forge_planning_context_payload(self, key: str = "forge-planning-context") -> dict[str, object]:
+        payload = self.forge_action_context_payload(key)
+        provenance = payload["constraints"]["forge_execution"]  # type: ignore[index]
+        provenance["contract_version"] = "1.3"  # type: ignore[index]
+        envelope = {
+            "envelope_version": "1.0", "mission_id": "mission-" + key,
+            "mission_revision": "1", "intent_id": "intent-" + key, "intent_revision": "1",
+            "action_id": "action-" + key, "mission_title": "Bounded fixture mission",
+            "business_summary": "Deliver the verified fixture outcome.",
+            "engineering_summary": "Exercise the versioned Forge boundary.",
+            "mission_lifecycle": "ACTIVE", "decision_evidence_reference": "architecture-review:fixture",
+            "decision_evidence_reference_digest": submission_service._action_context_digest("architecture-review:fixture"),
+        }
+        envelope["envelope_digest"] = submission_service._action_context_digest(envelope)
+        provenance["planning_context_envelope"] = envelope  # type: ignore[index]
+        return payload
+
     def test_forge_action_context_is_validated_persisted_immutable_and_never_backfilled(self) -> None:
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             legacy = submission_service.submit(
@@ -130,6 +147,39 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         malformed = self.forge_action_context_payload("malformed")
         malformed["constraints"]["forge_execution"]["action_context_envelope"]["summary"] = "api_key=raw-secret"  # type: ignore[index]
         with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_ACTION_CONTEXT"):
+            submission_service.request_from_mapping("djconnect", malformed, transport="HTTP")
+
+    def test_forge_v13_planning_context_is_bound_immutable_and_never_backfilled(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            legacy = submission_service.submit(
+                connection,
+                submission_service.request_from_mapping("djconnect", self.forge_action_context_payload("v12"), transport="HTTP"),
+            )
+            payload = self.forge_planning_context_payload()
+            accepted = submission_service.submit(
+                connection, submission_service.request_from_mapping("djconnect", payload, transport="HTTP"),
+            )
+            stored = connection.execute(
+                "SELECT mission_id,action_id,envelope_version,envelope_digest,decision_evidence_reference_digest,document "
+                "FROM ep_forge_planning_context_envelopes WHERE submission_id=?", (accepted.submission_id,),
+            ).fetchone()
+            envelope = payload["constraints"]["forge_execution"]["planning_context_envelope"]  # type: ignore[index]
+            self.assertEqual(stored[:-1], (
+                "mission-forge-planning-context", "action-forge-planning-context", "1.0",
+                envelope["envelope_digest"], envelope["decision_evidence_reference_digest"],
+            ))
+            self.assertEqual(json.loads(stored[-1]), envelope)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM ep_forge_planning_context_envelopes WHERE submission_id=?", (legacy.submission_id,)).fetchone(),
+                (0,),
+            )
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    "UPDATE ep_forge_planning_context_envelopes SET document='{}' WHERE submission_id=?", (accepted.submission_id,),
+                )
+        malformed = self.forge_planning_context_payload("malformed-planning")
+        malformed["constraints"]["forge_execution"]["planning_context_envelope"]["mission_title"] = "secret=plain"  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PLANNING_CONTEXT"):
             submission_service.request_from_mapping("djconnect", malformed, transport="HTTP")
 
     def test_verified_managed_noop_uses_its_explicit_run_bound_revision(self) -> None:
@@ -374,7 +424,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         server.start(self.root)
         with urlopen(f"http://127.0.0.1:{self.port}/v1/producer-compatibility") as response:  # nosec B310
             compatibility = json.loads(response.read())
-        self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2"], "terminal_evidence": ["1.2"]})
+        self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2"], "terminal_evidence": ["1.3"]})
         self.assertEqual(compatibility["producer"]["id"], "engineering-platform")
         payload = self.payload("readback")
         payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "2.7.2"},

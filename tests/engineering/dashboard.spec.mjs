@@ -7842,7 +7842,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(gap).toBeGreaterThanOrEqual(10);
   });
 
-  test("shows the current version beside a logged component reference", async ({ page }) => {
+  test("does not append a current version to historical component evidence", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
       renderPlatformHealth({ components: {
@@ -7857,6 +7857,9 @@ test.describe("Engineering Status browser smoke", () => {
       renderComponentLogs();
     });
     await expect(page.locator("#platformComponentLog tr")).toContainText(
+      "target_component: dashboard_relay",
+    );
+    await expect(page.locator("#platformComponentLog tr")).not.toContainText(
       "component_version: 2.3.0",
     );
   });

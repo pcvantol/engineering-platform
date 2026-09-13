@@ -18,7 +18,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import central_database
+from . import central_database, execution_host_evidence
 from .platform_version import CURRENT_PLATFORM_VERSION
 
 
@@ -46,7 +46,8 @@ _LIFECYCLE_EVENT_KINDS = (
     "ADMISSION_GRANTED",
     "EXECUTION_NOT_DISPATCHED",
 )
-FORGE_PROVENANCE_CONTRACT_VERSION = "1.2"
+FORGE_ACTION_CONTEXT_PROVENANCE_CONTRACT_VERSION = "1.2"
+FORGE_PROVENANCE_CONTRACT_VERSION = "1.3"
 EP_SUBMISSION_RECEIPT_CONTRACT_VERSION = "1.0"
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ACTION_CONTEXT_SECRET_ASSIGNMENT = re.compile(
@@ -94,7 +95,9 @@ def _redacted_action_summary(value: object) -> str | None:
 def _forge_action_context(request: SubmissionRequest) -> dict[str, object] | None:
     """Validate the separately versioned safe Forge Action-context envelope."""
     raw = (request.constraints or {}).get("forge_execution")
-    if not isinstance(raw, Mapping) or raw.get("contract_version") != FORGE_PROVENANCE_CONTRACT_VERSION:
+    if not isinstance(raw, Mapping) or raw.get("contract_version") not in {
+        FORGE_ACTION_CONTEXT_PROVENANCE_CONTRACT_VERSION, FORGE_PROVENANCE_CONTRACT_VERSION,
+    }:
         return None
     envelope = raw.get("action_context_envelope")
     if not isinstance(envelope, Mapping) or set(envelope) != {
@@ -135,6 +138,55 @@ def _forge_action_context(request: SubmissionRequest) -> dict[str, object] | Non
     }
     if _action_context_digest(immutable) != envelope.get("envelope_digest"):
         raise SubmissionError("INVALID_FORGE_ACTION_CONTEXT")
+    return {**immutable, "envelope_digest": envelope["envelope_digest"]}
+
+
+def _forge_planning_context(request: SubmissionRequest) -> dict[str, object] | None:
+    """Validate Forge's bounded v1.3 planning snapshot without reading a prompt."""
+    raw = (request.constraints or {}).get("forge_execution")
+    if not isinstance(raw, Mapping) or raw.get("contract_version") != FORGE_PROVENANCE_CONTRACT_VERSION:
+        return None
+    envelope = raw.get("planning_context_envelope")
+    expected = {
+        "envelope_version", "mission_id", "mission_revision", "intent_id", "intent_revision", "action_id",
+        "mission_title", "business_summary", "engineering_summary", "mission_lifecycle",
+        "decision_evidence_reference", "decision_evidence_reference_digest", "envelope_digest",
+    }
+    if not isinstance(envelope, Mapping) or set(envelope) != expected:
+        raise SubmissionError("INVALID_FORGE_PLANNING_CONTEXT")
+    identifiers = ("mission_id", "mission_revision", "intent_id", "intent_revision", "action_id")
+    if (
+        envelope.get("envelope_version") != "1.0"
+        or any(not isinstance(envelope.get(key), str) or not envelope[key] or len(envelope[key]) > MAX_FIELD_LENGTH for key in identifiers)
+        or envelope.get("mission_id") != request.mission_id
+        or envelope.get("mission_revision") != raw.get("mission_revision")
+        or envelope.get("intent_id") != raw.get("intent_id")
+        or envelope.get("intent_revision") != raw.get("intent_revision")
+        or envelope.get("action_id") != request.engineering_action_id
+        or not isinstance(envelope.get("envelope_digest"), str)
+        or _SHA256.fullmatch(str(envelope.get("envelope_digest"))) is None
+    ):
+        raise SubmissionError("INVALID_FORGE_PLANNING_CONTEXT")
+    for key in ("mission_title", "business_summary", "engineering_summary"):
+        value = envelope.get(key)
+        if value is not None and (not isinstance(value, str) or _redacted_action_summary(value) != value):
+            raise SubmissionError("INVALID_FORGE_PLANNING_CONTEXT")
+    lifecycle = envelope.get("mission_lifecycle")
+    if lifecycle is not None and (not isinstance(lifecycle, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", lifecycle) is None):
+        raise SubmissionError("INVALID_FORGE_PLANNING_CONTEXT")
+    reference, reference_digest = envelope.get("decision_evidence_reference"), envelope.get("decision_evidence_reference_digest")
+    if reference is None:
+        if reference_digest is not None:
+            raise SubmissionError("INVALID_FORGE_PLANNING_CONTEXT")
+    elif (
+        not isinstance(reference, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,255}", reference) is None
+        or _action_context_digest(reference) != reference_digest
+    ):
+        raise SubmissionError("INVALID_FORGE_PLANNING_CONTEXT")
+    immutable = {key: envelope[key] for key in expected - {"envelope_digest"}}
+    if _action_context_digest(immutable) != envelope.get("envelope_digest"):
+        raise SubmissionError("INVALID_FORGE_PLANNING_CONTEXT")
     return {**immutable, "envelope_digest": envelope["envelope_digest"]}
 
 
@@ -313,9 +365,14 @@ def _forge_provenance(request: SubmissionRequest) -> None:
         permitted = expected
     elif contract_version == "1.1":
         permitted = expected | {"producer_contract_version", "forge_application_version"}
+    elif contract_version == FORGE_ACTION_CONTEXT_PROVENANCE_CONTRACT_VERSION:
+        permitted = expected | {
+            "producer_contract_version", "forge_application_version", "action_context_envelope",
+        }
     elif contract_version == FORGE_PROVENANCE_CONTRACT_VERSION:
         permitted = expected | {
             "producer_contract_version", "forge_application_version", "action_context_envelope",
+            "planning_context_envelope",
         }
     else:
         permitted = set()
@@ -335,13 +392,15 @@ def _forge_provenance(request: SubmissionRequest) -> None:
             or raw.get("action_id") != request.engineering_action_id
             or (raw.get("retry_of_correlation_id") is not None and not isinstance(raw.get("retry_of_correlation_id"), str))):
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
-    if contract_version in {"1.1", FORGE_PROVENANCE_CONTRACT_VERSION} and (
+    if contract_version in {"1.1", FORGE_ACTION_CONTEXT_PROVENANCE_CONTRACT_VERSION, FORGE_PROVENANCE_CONTRACT_VERSION} and (
             raw.get("producer_contract_version") != "1.0"
             or raw.get("forge_application_version") != request.producer_version
             or not isinstance(request.producer_version, str)):
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
-    if contract_version == FORGE_PROVENANCE_CONTRACT_VERSION:
+    if contract_version in {FORGE_ACTION_CONTEXT_PROVENANCE_CONTRACT_VERSION, FORGE_PROVENANCE_CONTRACT_VERSION}:
         _forge_action_context(request)
+    if contract_version == FORGE_PROVENANCE_CONTRACT_VERSION:
+        _forge_planning_context(request)
 
 
 def request_from_mapping(project_id: str, payload: object, *, transport: str) -> SubmissionRequest:
@@ -484,6 +543,9 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
     _record_forge_action_context(
         connection, request=request, submission_id=submission_id, created_at=created_at,
     )
+    _record_forge_planning_context(
+        connection, request=request, submission_id=submission_id, created_at=created_at,
+    )
     receipt = _record_forge_submission_acceptance(
         connection, request=request, submission_id=submission_id, created_at=created_at,
     ) if audit_forge_exchange else None
@@ -515,7 +577,7 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
 
 
 PRODUCER_READBACK_CONTRACT_VERSION = "1.2"
-TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.2"
+TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.3"
 _TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
@@ -617,6 +679,27 @@ def _record_forge_action_context(
     )
 
 
+def _record_forge_planning_context(
+    connection: sqlite3.Connection, *, request: SubmissionRequest, submission_id: str, created_at: str,
+) -> None:
+    """Persist a v1.3 planning envelope exactly once with its submission."""
+    envelope = _forge_planning_context(request)
+    if envelope is None:
+        return
+    connection.execute(
+        """INSERT INTO ep_forge_planning_context_envelopes(
+               submission_id,project_id,mission_id,action_id,envelope_version,envelope_digest,
+               decision_evidence_reference_digest,document,recorded_at
+           ) VALUES(?,?,?,?,?,?,?,?,?)""",
+        (
+            submission_id, request.project_id, str(envelope["mission_id"]), str(envelope["action_id"]),
+            str(envelope["envelope_version"]), str(envelope["envelope_digest"]),
+            envelope["decision_evidence_reference_digest"],
+            json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False), created_at,
+        ),
+    )
+
+
 def _record_forge_submission_acceptance(
     connection: sqlite3.Connection, *, request: SubmissionRequest, submission_id: str, created_at: str,
 ) -> dict[str, object] | None:
@@ -629,7 +712,9 @@ def _record_forge_submission_acceptance(
     if request.transport != "HTTP" or request.producer_type != "FORGE":
         return None
     raw = (request.constraints or {}).get("forge_execution")
-    if not isinstance(raw, Mapping) or raw.get("contract_version") not in {"1.1", FORGE_PROVENANCE_CONTRACT_VERSION}:
+    if not isinstance(raw, Mapping) or raw.get("contract_version") not in {
+        "1.1", FORGE_ACTION_CONTEXT_PROVENANCE_CONTRACT_VERSION, FORGE_PROVENANCE_CONTRACT_VERSION,
+    }:
         return None
     request_digest = _accepted_request_digest(
         repository_id=request.repository_id, producer_id=request.producer_id,
@@ -841,6 +926,10 @@ def write_terminal_evidence(
     timing = _terminal_timing(row[14], row[15])
     if timing is None:
         raise SubmissionError("TERMINAL_TIMING_UNAVAILABLE", 500)
+    try:
+        host_execution = execution_host_evidence.terminal_projection(connection, run_id=run_id)
+    except ValueError:
+        raise SubmissionError("TERMINAL_HOST_EVIDENCE_INVALID", 500) from None
     artifact_id = _terminal_artifact_id(run_id)
     report_id = f"report:{run_id}"
     assurance_status, current_reviews, reviews = _current_assurance(checkpoint)
@@ -869,6 +958,7 @@ def write_terminal_evidence(
         "correlation": {"correlation_id": row[9], "mission_id": row[10], "engineering_action_id": row[11]},
         "provenance": constraints.get("forge_execution"),
         "run": {"id": run_id, "outcome": outcome, "delivery_qualified": delivery_qualified, **timing},
+        "host_execution": host_execution,
         "repository": {"id": str(row[2]), "revision": revision,
                        "revision_required": checkpoint.action_intent != "VALIDATION_ONLY" and outcome == "COMPLETE"},
         "report": {"id": report_id, "terminal_state": outcome},

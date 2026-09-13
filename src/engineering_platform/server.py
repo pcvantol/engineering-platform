@@ -83,6 +83,7 @@ from .codex_chat import (
 )
 from .ep_consumer_credentials import verifier
 from .execution_lifecycle import projection as lifecycle_projection
+from .execution_timing import timing_summary
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import CURRENT_PLATFORM_VERSION, EngineeringPlatformManifest
 from .providers import (
@@ -108,7 +109,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 61
+SERVER_STORE_SCHEMA_VERSION = 62
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -552,6 +553,8 @@ SERVER_REQUIRED_TABLES = frozenset(
         "execution_validation_profile_identities",
         "ep_forge_exchange_audit",
         "ep_forge_action_context_envelopes",
+        "ep_forge_planning_context_envelopes",
+        "ep_execution_host_evidence",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -571,6 +574,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_external_producer_bindings_active_key",
         "ep_forge_exchange_audit_project_lookup",
         "ep_forge_action_context_envelopes_project_lookup",
+        "ep_forge_planning_context_envelopes_project_lookup",
     }
 )
 SERVER_REQUIRED_VIEWS = frozenset({"execution_submission_run_links"})
@@ -766,6 +770,8 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     storage.install_central_operational_compatibility_schema(connection)
     _install_current_submission_schema(connection)
     _install_forge_action_context_schema(connection)
+    _install_forge_planning_context_schema(connection)
+    _install_execution_host_evidence_schema(connection)
 
     connection.execute(
         "INSERT INTO engineering_schema_migrations(version) VALUES(?)",
@@ -839,6 +845,65 @@ def _install_forge_action_context_schema(connection: sqlite3.Connection) -> None
         CREATE TRIGGER IF NOT EXISTS ep_forge_action_context_envelopes_immutable_delete
         BEFORE DELETE ON ep_forge_action_context_envelopes
         BEGIN SELECT RAISE(ABORT, 'Forge Action context envelope is immutable'); END;
+    """)
+
+
+def _install_forge_planning_context_schema(connection: sqlite3.Connection) -> None:
+    """Install immutable, prospective Forge planning-context evidence."""
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS ep_forge_planning_context_envelopes (
+            submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            mission_id TEXT NOT NULL,
+            action_id TEXT NOT NULL,
+            envelope_version TEXT NOT NULL,
+            envelope_digest TEXT NOT NULL,
+            decision_evidence_reference_digest TEXT,
+            document TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ep_forge_planning_context_envelopes_project_lookup
+            ON ep_forge_planning_context_envelopes(project_id,recorded_at DESC,submission_id);
+        CREATE TRIGGER IF NOT EXISTS ep_forge_planning_context_envelopes_scope_insert
+        BEFORE INSERT ON ep_forge_planning_context_envelopes
+        WHEN NOT EXISTS (
+            SELECT 1 FROM ep_submissions AS submission
+             WHERE submission.submission_id=NEW.submission_id
+               AND submission.project_id=NEW.project_id
+               AND submission.mission_id=NEW.mission_id
+               AND submission.engineering_action_id=NEW.action_id
+        )
+        BEGIN SELECT RAISE(ABORT, 'FORGE_PLANNING_CONTEXT_SUBMISSION_SCOPE_MISMATCH'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_forge_planning_context_envelopes_immutable_update
+        BEFORE UPDATE ON ep_forge_planning_context_envelopes
+        BEGIN SELECT RAISE(ABORT, 'Forge planning context envelope is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_forge_planning_context_envelopes_immutable_delete
+        BEFORE DELETE ON ep_forge_planning_context_envelopes
+        BEGIN SELECT RAISE(ABORT, 'Forge planning context envelope is immutable'); END;
+    """)
+
+
+def _install_execution_host_evidence_schema(connection: sqlite3.Connection) -> None:
+    """Install immutable start and once-finalized host execution evidence."""
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS ep_execution_host_evidence (
+            run_id TEXT PRIMARY KEY REFERENCES ep_execution_runs(run_id),
+            start_document TEXT NOT NULL,
+            captured_at TEXT NOT NULL,
+            terminal_document TEXT,
+            terminal_captured_at TEXT
+        );
+        CREATE TRIGGER IF NOT EXISTS ep_execution_host_evidence_start_immutable
+        BEFORE UPDATE ON ep_execution_host_evidence
+        WHEN OLD.start_document != NEW.start_document
+          OR OLD.captured_at != NEW.captured_at
+          OR OLD.terminal_document IS NOT NULL
+          OR NEW.terminal_document IS NULL
+          OR NEW.terminal_captured_at IS NULL
+        BEGIN SELECT RAISE(ABORT, 'Execution Host evidence is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_execution_host_evidence_immutable_delete
+        BEFORE DELETE ON ep_execution_host_evidence
+        BEGIN SELECT RAISE(ABORT, 'Execution Host evidence is immutable'); END;
     """)
 
 
@@ -1697,6 +1762,28 @@ def _migrate_schema_61(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=61")
 
 
+def _migrate_schema_62(connection: sqlite3.Connection) -> None:
+    """Persist prospective Forge planning and Execution Host evidence.
+
+    These are new immutable facts.  Existing submissions and completed runs
+    remain untouched; their absent planning or host observations are never
+    reconstructed from a prompt or a later checkout.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema61")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+        "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62)))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,62 FROM ep_installations_schema61")
+    connection.execute("DROP TABLE ep_installations_schema61")
+    _install_forge_planning_context_schema(connection)
+    _install_execution_host_evidence_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(62)")
+    connection.execute("UPDATE engineering_metadata SET value='62' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=62")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -1718,6 +1805,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (59, _migrate_schema_59),
     (60, _migrate_schema_60),
     (61, _migrate_schema_61),
+    (62, _migrate_schema_62),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -1751,6 +1839,11 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         "ep_forge_exchange_audit_immutable_delete", "ep_forge_action_context_envelopes_scope_insert",
         "ep_forge_action_context_envelopes_immutable_update",
         "ep_forge_action_context_envelopes_immutable_delete",
+        "ep_forge_planning_context_envelopes_scope_insert",
+        "ep_forge_planning_context_envelopes_immutable_update",
+        "ep_forge_planning_context_envelopes_immutable_delete",
+        "ep_execution_host_evidence_start_immutable",
+        "ep_execution_host_evidence_immutable_delete",
     } <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
         raise ServerConfigurationError(
@@ -2459,6 +2552,114 @@ def _central_forge_action_context(value: object, action_id: str | None) -> dict[
     }
 
 
+def _central_forge_planning_context(
+    value: object, *, mission_id: str | None, action_id: str | None,
+) -> dict[str, object] | None:
+    """Return a verified, redacted v1.3 Forge planning envelope only.
+
+    The stored document is a versioned producer contract, not free-form UI
+    data.  Recheck its complete shape and digest at the presentation boundary
+    so a malformed retained row cannot become apparent run context.
+    """
+    document = _central_json_object(value)
+    expected = {
+        "envelope_version", "mission_id", "mission_revision", "intent_id", "intent_revision",
+        "action_id", "mission_title", "business_summary", "engineering_summary", "mission_lifecycle",
+        "decision_evidence_reference", "decision_evidence_reference_digest", "envelope_digest",
+    }
+    if set(document) != expected or document.get("envelope_version") != "1.0":
+        return None
+    if document.get("mission_id") != mission_id or document.get("action_id") != action_id:
+        return None
+    digest = document.get("envelope_digest")
+    unsigned = {key: value for key, value in document.items() if key != "envelope_digest"}
+    if not isinstance(digest, str) or digest != submission_service._action_context_digest(unsigned):
+        return None
+    identifiers = ("mission_id", "mission_revision", "intent_id", "intent_revision", "action_id")
+    text_fields = ("mission_title", "business_summary", "engineering_summary", "mission_lifecycle")
+    if any(_central_text(document.get(key)) is None for key in identifiers):
+        return None
+    if any(document.get(key) is not None and _central_text(document.get(key)) is None for key in text_fields):
+        return None
+    reference = document.get("decision_evidence_reference")
+    reference_digest = document.get("decision_evidence_reference_digest")
+    if reference is not None and _central_text(reference) is None:
+        return None
+    if reference_digest is not None and (
+        not isinstance(reference_digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", reference_digest) is None
+    ):
+        return None
+    return {key: document[key] for key in expected}
+
+
+def _central_execution_host_projection(
+    start_value: object, terminal_value: object,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object] | None]:
+    """Project immutable host counters, never a workspace path or live Git state."""
+    start = _central_json_object(start_value)
+    terminal = _central_json_object(terminal_value)
+    if start.get("status") != "AVAILABLE" or terminal.get("status") != "AVAILABLE":
+        return {}, {}, None
+    branch = _central_text(start.get("target_branch"))
+    tracked = start.get("tracked_file_count")
+    diff = terminal.get("diff")
+    activity = terminal.get("activity")
+    if (
+        not isinstance(tracked, int) or isinstance(tracked, bool) or tracked < 0
+        or not isinstance(diff, dict) or not isinstance(activity, dict)
+    ):
+        return {}, {}, None
+    numeric_diff = {
+        key: diff.get(key) for key in ("modified", "created", "deleted", "renamed")
+    }
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+           for value in numeric_diff.values()):
+        return {}, {}, None
+    provider = activity.get("provider_invocations")
+    validation = activity.get("host_validation_actions")
+    if (
+        not isinstance(provider, int) or isinstance(provider, bool) or provider < 0
+        or not isinstance(validation, int) or isinstance(validation, bool) or validation < 0
+    ):
+        return {}, {}, None
+    metadata = {
+        "modified": numeric_diff["modified"], "created": numeric_diff["created"],
+        "deleted": numeric_diff["deleted"], "renamed": numeric_diff["renamed"],
+        # This is intentionally a provider-invocation count, not an inferred
+        # shell-command count.  Its definition is displayed with the metric.
+        "codex_commands_executed": provider,
+    }
+    summary = {
+        "activity": {
+            "metric_definition_version": 1,
+            "codex_command_definition": (
+                "One persisted Codex CLI provider invocation. It is not a shell command, "
+                "tool call, prompt, token count, or GitHub API request."
+            ),
+            "provider_invocations_total": provider,
+            "primary_codex_commands_total": provider,
+            "host_validation_commands_total": validation,
+            "overall_activity_total": provider + validation,
+        },
+        "terminal_delivery_diff": {
+            "authority": "IMMUTABLE_EXECUTION_HOST_EVIDENCE",
+            "transaction_baseline_sha": _central_text(start.get("target_commit")),
+            "terminal_target_sha": None,
+            # Counts are authoritative but individual paths are intentionally
+            # not retained in the CENTRAL presentation contract.
+            "total_unique_changed_paths": None,
+            "renamed": None,
+            "per_pr_changed_file_counts": "Not recorded by this execution-host evidence contract.",
+        },
+    }
+    return (
+        {"target_branch": branch, "tracked_file_count": tracked},
+        metadata,
+        summary,
+    )
+
+
 @dataclass(frozen=True)
 class _CentralForgeProvenance:
     """The safe, displayable subset of one admitted Forge provenance record."""
@@ -2513,6 +2714,7 @@ class _CentralForgeProvenance:
         updated_at: str | None,
         transport_receipt_id: str | None,
         action_context: Mapping[str, str] | None = None,
+        planning_context: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         """Build the explicit CENTRAL projection of admitted Forge facts."""
         context: dict[str, object] = {
@@ -2547,6 +2749,16 @@ class _CentralForgeProvenance:
             # Those submissions predate the dedicated envelope. Do not infer
             # a summary from their retained prompt or from current Forge state.
             context["action_summary_status"] = "NOT_AVAILABLE_HISTORICAL"
+        if planning_context is not None:
+            context.update({
+                "mission_title": planning_context.get("mission_title"),
+                "business_summary": planning_context.get("business_summary"),
+                "planning_engineering_summary": planning_context.get("engineering_summary"),
+                "mission_lifecycle": planning_context.get("mission_lifecycle"),
+                "decision_evidence_reference": planning_context.get("decision_evidence_reference"),
+                "decision_evidence_reference_digest": planning_context.get("decision_evidence_reference_digest"),
+                "planning_context_envelope_digest": planning_context.get("envelope_digest"),
+            })
         # v1.0 provenance remains an exact historical Console projection.  The
         # v1.1 attributes are present only when an admitted Forge envelope
         # actually supplied them; absence is never represented as invented
@@ -2576,6 +2788,12 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
     dispatch_state = _central_text(row["dispatch_state"]) or execution_phase
     updated_at = _central_text(row["updated_at"])
     action_context = _central_forge_action_context(row["action_context_document"], action_id)
+    planning_context = _central_forge_planning_context(
+        row["planning_context_document"], mission_id=mission_id, action_id=action_id,
+    )
+    host_fields, execution_metadata, activity_summary = _central_execution_host_projection(
+        row["host_start_document"], row["host_terminal_document"],
+    )
     execution_context = forge.execution_context(
         mission_id=mission_id,
         action_id=action_id,
@@ -2584,13 +2802,17 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
         updated_at=updated_at,
         transport_receipt_id=_central_text(row["transport_receipt_id"]),
         action_context=action_context,
+        planning_context=planning_context,
     ) if forge else None
 
     return {
         "run_id": str(row["run_id"]),
         "status": dispatch_state,
         "state": dispatch_state,
-        "title": submission_id or str(row["run_id"]),
+        # A submission identifier is not an execution title.  New Forge v1.3
+        # context may contribute a redacted Mission title; otherwise the UI
+        # presents the Run-ID as the sole reliable identity.
+        "title": _central_text(planning_context.get("mission_title")) if planning_context else str(row["run_id"]),
         "executed_at": updated_at,
         "created_at": _central_text(row["created_at"]),
         "updated_at": updated_at,
@@ -2613,11 +2835,13 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
         "target_repository": _central_text(row["repository_id"]) or (forge.repository_id if forge else None),
         # A checkout/branch/file count describes host evidence for this run;
         # never infer it from a current local binding or current Git state.
-        "target_branch": None,
+        "target_branch": host_fields.get("target_branch"),
         "target_checkout_path": None,
-        "tracked_file_count": None,
-        "execution_metadata": {},
+        "tracked_file_count": host_fields.get("tracked_file_count"),
+        "execution_metadata": execution_metadata,
         "execution_context": execution_context,
+        "execution_activity_summary": activity_summary,
+        "report_available": bool(row["report_available"]),
         "analysis_available": bool(row["analysis_available"]),
         "operator_resolution": _central_text(row["operator_resolution"]) or "NONE",
     }
@@ -2633,6 +2857,12 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
                       s.repository_id,s.producer_id,s.producer_type,s.producer_version,
                       s.constraints,s.correlation_id,s.mission_id,s.engineering_action_id,
                       s.transport_receipt_id,a.document AS action_context_document,
+                      p.document AS planning_context_document,
+                      h.start_document AS host_start_document,h.terminal_document AS host_terminal_document,
+                      EXISTS (
+                        SELECT 1 FROM prompt_execution_history AS history
+                         WHERE history.run_id=r.run_id AND history.report_path LIKE 'CENTRAL:%'
+                      ) AS report_available,
                       EXISTS (
                         SELECT 1 FROM execution_artifact_records AS a
                          WHERE a.artifact_type='ADVISORY_REPORT_ANALYSIS'
@@ -2644,6 +2874,8 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
                  LEFT JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
                  LEFT JOIN ep_submissions AS s ON s.submission_id=d.submission_id
                  LEFT JOIN ep_forge_action_context_envelopes AS a ON a.submission_id=s.submission_id
+                 LEFT JOIN ep_forge_planning_context_envelopes AS p ON p.submission_id=s.submission_id
+                 LEFT JOIN ep_execution_host_evidence AS h ON h.run_id=r.run_id
                 WHERE r.project_id=?
                 ORDER BY r.created_at DESC,r.run_id DESC LIMIT 1000""",
             (project_id,),
@@ -2658,6 +2890,48 @@ def _central_console_lifecycle(data_root: Path, run_id: str) -> dict[str, object
         run_id,
         central_database=data_root / SERVER_DATABASE_FILENAME,
     )
+
+
+def _central_console_execution_projection(
+    data_root: Path, record: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Read duration and runtime facts from CENTRAL timing evidence only."""
+    run_id = record.get("run_id")
+    if not isinstance(run_id, str):
+        return {}, {}
+    try:
+        timing = timing_summary(
+            data_root, run_id, central_database=data_root / SERVER_DATABASE_FILENAME,
+        )
+    except (storage.EngineeringStorageError, sqlite3.DatabaseError):
+        timing = {}
+    total_ms = timing.get("total_wall_time_ms")
+    provider_ms = timing.get("provider_execution_time_ms")
+    if not isinstance(total_ms, int) or isinstance(total_ms, bool) or total_ms < 1:
+        total_ms = None
+        created_at, updated_at = record.get("created_at"), record.get("updated_at")
+        if isinstance(created_at, str) and isinstance(updated_at, str):
+            try:
+                started = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                completed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                observed = round((completed - started).total_seconds() * 1000)
+                total_ms = observed if observed >= 1 else None
+            except ValueError:
+                pass
+    execution = {
+        "seconds": provider_ms / 1000 if isinstance(provider_ms, int) and provider_ms >= 0 else None,
+        "total_seconds": total_ms / 1000 if isinstance(total_ms, int) and total_ms >= 0 else None,
+    }
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        invocation = connection.execute(
+            """SELECT provider,model FROM provider_invocations
+                 WHERE run_id=? ORDER BY ordinal DESC LIMIT 1""", (run_id,),
+        ).fetchone()
+    runtime = {
+        "runtime_provider": invocation[0] if invocation and isinstance(invocation[0], str) else None,
+        "model": invocation[1] if invocation and isinstance(invocation[1], str) else None,
+    }
+    return execution, runtime
 
 
 def _central_console_terminal_revision_timeline(
@@ -2780,9 +3054,16 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
             "watcher_state": "ENGINEERING_RUN_ACTIVE",
             "run_id": active["run_id"],
             "current_phase": active_phase,
-            "current_action": active_phase,
-            "prompt_title": active["run_id"],
-            "submitted_filename": active["run_id"],
+            # CENTRAL does not receive a safe live Codex activity.  Do not
+            # present a synthetic run state as a real activity or filename.
+            "current_action": None,
+            "central_synthetic_runtime_fields": True,
+            "prompt_title": (
+                active.get("execution_context", {}).get("mission_title")
+                if isinstance(active.get("execution_context"), dict)
+                else None
+            ),
+            "submitted_filename": None,
             # The current-run card is a distinct projection, but it must show
             # the same immutable Forge context as the terminal detail view.
             **active,
@@ -2842,8 +3123,11 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
                    if record["run_id"] == run_id), None)
     if record is None:
         return None
+    execution, runtime = _central_console_execution_projection(data_root, record)
     return {
         **record,
+        "execution": execution,
+        "runtime": runtime,
         # The historical detail dialog uses the same read-only bubble flow as
         # the active card.  Terminal history remains separate in the table,
         # while its exact step evidence stays available on demand.
@@ -2855,67 +3139,124 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
 
 
 def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[str, object]]:
-    """Read bounded daily telemetry through CENTRAL's run/project lineage."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
-        rows = connection.execute(
-            """SELECT r.execution_date,COUNT(*),
-                      SUM(r.terminal_state='COMPLETE'),SUM(r.terminal_state='BLOCKED'),SUM(r.terminal_state='FAILED'),
-                      AVG(r.execution_seconds),AVG(r.total_execution_seconds),AVG(r.queue_wait_seconds),
-                      SUM(r.input_tokens),SUM(r.output_tokens),SUM(r.total_tokens)
-                 FROM execution_runs AS r
-                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
-                 WHERE d.project_id=?
-                 GROUP BY r.execution_date ORDER BY r.execution_date DESC LIMIT 360""",
-            (project_id,),
-        ).fetchall()
-    keys = (
-        "date", "prompt_count", "complete_count", "blocked_count", "failed_count",
-        "average_execution_seconds", "average_total_execution_seconds", "average_queue_wait_seconds",
-        "input_tokens", "output_tokens", "total_tokens",
-    )
-    return [dict(zip(keys, row, strict=True)) | {
-        "average_provider_execution_seconds": None, "average_validation_seconds": None,
-    } for row in rows]
+    """Aggregate CENTRAL run rows and immutable phase spans by UTC day.
+
+    The retired ``execution_runs`` telemetry projection is intentionally not
+    consulted: Forge runs are admitted directly into ``ep_execution_runs``.
+    """
+    grouped: dict[str, list[tuple[Mapping[str, object], dict[str, object]]]] = {}
+    for record in _central_console_run_records(data_root, project_id):
+        if record.get("state") not in {"COMPLETE", "BLOCKED", "FAILED"}:
+            continue
+        completed_at = record.get("updated_at")
+        if not isinstance(completed_at, str):
+            continue
+        try:
+            date = datetime.fromisoformat(completed_at.replace("Z", "+00:00")).astimezone(timezone.utc).date().isoformat()
+        except ValueError:
+            continue
+        try:
+            timing = timing_summary(
+                data_root, str(record["run_id"]), central_database=data_root / SERVER_DATABASE_FILENAME,
+            )
+        except (storage.EngineeringStorageError, sqlite3.DatabaseError):
+            timing = {}
+        grouped.setdefault(date, []).append((record, timing))
+    entries: list[dict[str, object]] = []
+    for date, rows in grouped.items():
+        def average(key: str) -> float | None:
+            values = [int(timing[key]) / 1000 for _, timing in rows
+                      if isinstance(timing.get(key), int) and timing[key] >= 0]
+            return round(sum(values) / len(values), 3) if values else None
+        entries.append({
+            "date": date,
+            "prompt_count": len(rows),
+            "complete_count": sum(row.get("state") == "COMPLETE" for row, _ in rows),
+            "blocked_count": sum(row.get("state") == "BLOCKED" for row, _ in rows),
+            "failed_count": sum(row.get("state") == "FAILED" for row, _ in rows),
+            "average_execution_seconds": average("provider_execution_time_ms"),
+            "average_total_execution_seconds": average("total_wall_time_ms"),
+            "average_queue_wait_seconds": average("queue_wait_time_ms"),
+            "average_provider_execution_seconds": average("provider_execution_time_ms"),
+            "average_validation_seconds": average("validation_time_ms"),
+            # Tokens are not part of the retained CENTRAL phase evidence.
+            "input_tokens": None, "output_tokens": None, "total_tokens": None,
+        })
+    return sorted(entries, key=lambda entry: str(entry["date"]), reverse=True)[:360]
 
 
 def _central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
     """Provide a project-isolated CENTRAL telemetry day without root fallback."""
     if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", execution_date):
         return None
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
-        rows = connection.execute(
-            """SELECT r.run_id,r.execution_started_at,r.terminal_state,r.total_execution_seconds,
-                      r.queue_wait_seconds,r.runtime_provider,r.runtime_model,r.reasoning_profile,
-                      r.producer_type,r.repository
-                 FROM execution_runs AS r
-                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
-                 WHERE d.project_id=? AND r.execution_date=?
-                 ORDER BY r.execution_started_at DESC LIMIT 250""",
-            (project_id, execution_date),
-        ).fetchall()
+    rows: list[tuple[Mapping[str, object], dict[str, object]]] = []
+    for record in _central_console_run_records(data_root, project_id):
+        if record.get("state") not in {"COMPLETE", "BLOCKED", "FAILED"}:
+            continue
+        timestamp = record.get("updated_at")
+        if not isinstance(timestamp, str):
+            continue
+        try:
+            if datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(timezone.utc).date().isoformat() != execution_date:
+                continue
+        except ValueError:
+            continue
+        try:
+            timing = timing_summary(data_root, str(record["run_id"]), central_database=data_root / SERVER_DATABASE_FILENAME)
+        except (storage.EngineeringStorageError, sqlite3.DatabaseError):
+            timing = {}
+        rows.append((record, timing))
     if not rows:
         return None
     run_rows = [{
-        "run_id": str(row[0]), "started_at": row[1], "status": row[2],
-        "total_duration_ms": round(float(row[3]) * 1000) if isinstance(row[3], (float, int)) else None,
-        "queue_wait_ms": round(float(row[4]) * 1000) if isinstance(row[4], (float, int)) else None,
-        "provider_duration_ms": None, "validation_duration_ms": None, "external_wait_ms": None,
-        "largest_phase": None, "producer_type": row[8], "repository": row[9],
-        "provider": row[5], "model": row[6], "reasoning_profile": row[7],
-        "phase_telemetry": "NOT_RECORDED",
-    } for row in rows]
+        "run_id": str(record["run_id"]), "started_at": record.get("created_at"), "status": record.get("state"),
+        "total_duration_ms": timing.get("total_wall_time_ms"),
+        "queue_wait_ms": timing.get("queue_wait_time_ms"),
+        "provider_duration_ms": timing.get("provider_execution_time_ms"),
+        "validation_duration_ms": timing.get("validation_time_ms"),
+        "external_wait_ms": timing.get("external_wait_time_ms"),
+        "largest_phase": timing.get("longest_phase"), "producer_type": record.get("producer_type"),
+        "repository": record.get("target_repository"), "provider": None, "model": None,
+        "reasoning_profile": None,
+        "phase_telemetry": "AVAILABLE" if timing.get("phase_telemetry_available") else "NOT_RECORDED",
+    } for record, timing in rows]
     durations = [row["total_duration_ms"] for row in run_rows if isinstance(row["total_duration_ms"], int)]
     waits = [row["queue_wait_ms"] for row in run_rows if isinstance(row["queue_wait_ms"], int)]
     def aggregate(values: list[int]) -> dict[str, int] | None:
         return {"average_ms": round(sum(values) / len(values)), "median_ms": sorted(values)[len(values) // 2], "total_ms": sum(values), "runs": len(values)} if values else None
+    phase_totals: dict[str, list[int]] = {}
+    for _, timing in rows:
+        for phase in timing.get("phase_aggregates", []):
+            if isinstance(phase, dict) and isinstance(phase.get("phase"), str) and isinstance(phase.get("duration_ms"), int):
+                phase_totals.setdefault(phase["phase"], []).append(phase["duration_ms"])
+    phases = [
+        {"phase": phase, "average_ms": round(sum(values) / len(values)),
+         "median_ms": sorted(values)[len(values) // 2], "total_ms": sum(values), "runs": len(values),
+         "share_percent": round(sum(values) * 100 / sum(
+             int(item.get("total_wall_time_ms", 0)) for _, item in rows
+             if isinstance(item.get("total_wall_time_ms"), int)
+         ), 3) if any(isinstance(item.get("total_wall_time_ms"), int) and item.get("total_wall_time_ms", 0) > 0 for _, item in rows) else 0.0}
+        for phase, values in sorted(phase_totals.items(), key=lambda item: (-sum(item[1]), item[0]))
+    ]
+    def timing_aggregate(key: str) -> dict[str, int] | None:
+        return aggregate([
+            int(timing[key]) for _, timing in rows
+            if isinstance(timing.get(key), int) and timing[key] >= 0
+        ])
     return {
-        "date": execution_date, "timezone": "UTC", "runs": run_rows, "phases": [], "phase_telemetry_available": False,
+        "date": execution_date, "timezone": "UTC", "runs": run_rows, "phases": phases,
+        "phase_telemetry_available": bool(phases),
         "summary": {"executions": len(run_rows), "completed": sum(row["status"] == "COMPLETE" for row in run_rows),
                     "blocked": sum(row["status"] == "BLOCKED" for row in run_rows), "failed": sum(row["status"] == "FAILED" for row in run_rows),
                     "total_wall_time": aggregate(durations), "queue_wait": aggregate(waits),
-                    "active_processing_time": None, "provider_execution": None, "validation": None, "external_wait": None, "overhead": None,
-                    "report_generation": None, "evidence_persistence": None},
-        "bottlenecks": {"longest_average_phase": None, "largest_accumulated_phase": None, "top_time_consumers": [], "shares": {}},
+                    "active_processing_time": timing_aggregate("active_ep_processing_time_ms"),
+                    "provider_execution": timing_aggregate("provider_execution_time_ms"),
+                    "validation": timing_aggregate("validation_time_ms"),
+                    "external_wait": timing_aggregate("external_wait_time_ms"),
+                    "overhead": timing_aggregate("overhead_time_ms"),
+                    "report_generation": timing_aggregate("report_generation_time_ms"),
+                    "evidence_persistence": timing_aggregate("evidence_persistence_time_ms")},
+        "bottlenecks": {"longest_average_phase": phases[0]["phase"] if phases else None, "largest_accumulated_phase": phases[0]["phase"] if phases else None, "top_time_consumers": phases[:3], "shares": {}},
     }
 
 
@@ -3113,7 +3454,7 @@ def _central_console_append_chat_message(
     limit = 6_000 if role == "assistant" else 2_000
     content = _central_chat_text(text, limit=limit)
     if content == "Niet beschikbaar.":
-        raise CodexChatError("Het chatbericht bevat geen bewaarbare tekst.")
+        raise CodexChatError("Het chatbericht bevat geen bewaarbare tekst.", code="CHAT_REQUEST_INVALID")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=CHAT_RETENTION_DAYS)).isoformat()
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
@@ -4715,12 +5056,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 answer, messages = _central_console_chat_response(
                     self.server.data_root, selected, run_id, message,  # type: ignore[attr-defined]
                 )
-            except CodexChatError:
+            except CodexChatError as error:
                 _audit_dashboard_action(
                     self.server.data_root,  # type: ignore[attr-defined]
                     action="ai_chat_response_failed", project_id=selected,
                     run_id=run_id,
-                    details={"chat_content": "[REDACTED]", "failure": "REDACTED"},
+                    details={"chat_content": "[REDACTED]", "failure_code": error.code},
                     outcome="FAILED",
                 )
                 self._send(503, {"error": "AI_CHAT_UNAVAILABLE"})
@@ -4729,7 +5070,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 _audit_dashboard_action(
                     self.server.data_root,  # type: ignore[attr-defined]
                     action="ai_chat_response_failed", project_id=selected, run_id=run_id,
-                    details={"chat_content": "[REDACTED]", "failure": "REDACTED"},
+                    details={"chat_content": "[REDACTED]", "failure_code": "CENTRAL_STORAGE_UNAVAILABLE"},
                     outcome="FAILED",
                 )
                 self._send(503, {"error": "AI_CHAT_UNAVAILABLE"})
@@ -4739,7 +5080,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     _audit_dashboard_action(
                         self.server.data_root,  # type: ignore[attr-defined]
                         action="ai_chat_response_failed", project_id=selected, run_id=run_id,
-                        details={"chat_content": "[REDACTED]", "failure": "CHAT_CONTEXT_UNAVAILABLE"},
+                        details={"chat_content": "[REDACTED]", "failure_code": "CHAT_CONTEXT_UNAVAILABLE"},
                         outcome="FAILED",
                     )
                     self._send(404, {"error": "CHAT_CONTEXT_UNAVAILABLE"})

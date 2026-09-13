@@ -1026,8 +1026,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 (server.SERVER_STORE_SCHEMA_VERSION,),
             )
 
-    def test_schema_60_upgrade_adds_only_prospective_immutable_action_context_storage(self) -> None:
-        """Schema 61 never invents a safe summary for already-admitted work."""
+    def test_schema_60_upgrade_adds_only_prospective_immutable_forge_and_host_evidence(self) -> None:
+        """Schemas 61/62 never invent facts for already-admitted work."""
         identity = server.initialize(self.root)
         database = self.root / server.SERVER_DATABASE_FILENAME
         with sqlite3.connect(database) as connection:
@@ -1039,6 +1039,17 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 connection.execute(f"DROP TRIGGER {trigger}")
             connection.execute("DROP INDEX ep_forge_action_context_envelopes_project_lookup")
             connection.execute("DROP TABLE ep_forge_action_context_envelopes")
+            for trigger in (
+                "ep_forge_planning_context_envelopes_scope_insert",
+                "ep_forge_planning_context_envelopes_immutable_update",
+                "ep_forge_planning_context_envelopes_immutable_delete",
+                "ep_execution_host_evidence_start_immutable",
+                "ep_execution_host_evidence_immutable_delete",
+            ):
+                connection.execute(f"DROP TRIGGER {trigger}")
+            connection.execute("DROP INDEX ep_forge_planning_context_envelopes_project_lookup")
+            connection.execute("DROP TABLE ep_forge_planning_context_envelopes")
+            connection.execute("DROP TABLE ep_execution_host_evidence")
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema61")
             connection.execute(
                 "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
@@ -1047,20 +1058,27 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,60 FROM ep_installations_schema61")
             connection.execute("DROP TABLE ep_installations_schema61")
-            # A clean schema-61 bootstrap records only its current marker.
-            # Recreate the historic schema-60 marker after removing it so the
-            # fixture remains an installed schema-60 authority.
+            # A clean bootstrap records only its current marker. Recreate the
+            # historic schema-60 marker so the fixture is a real installed
+            # authority that needs both prospective upgrades.
             connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=61")
             connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(60)")
             connection.execute("UPDATE engineering_metadata SET value='60' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_forge_action_context_envelopes").fetchone(), (0,))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_forge_planning_context_envelopes").fetchone(), (0,))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_execution_host_evidence").fetchone(), (0,))
             triggers = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
             self.assertTrue({
                 "ep_forge_action_context_envelopes_scope_insert",
                 "ep_forge_action_context_envelopes_immutable_update",
                 "ep_forge_action_context_envelopes_immutable_delete",
+                "ep_forge_planning_context_envelopes_scope_insert",
+                "ep_forge_planning_context_envelopes_immutable_update",
+                "ep_forge_planning_context_envelopes_immutable_delete",
+                "ep_execution_host_evidence_start_immutable",
+                "ep_execution_host_evidence_immutable_delete",
             } <= triggers)
             self.assertEqual(
                 connection.execute("SELECT schema_version FROM ep_installations").fetchone(),
@@ -1103,6 +1121,42 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         )
         self.assertEqual(historical["action_summary_status"], "NOT_AVAILABLE_HISTORICAL")
         self.assertNotIn("engineering_summary", historical)
+
+    def test_central_projects_only_verified_planning_and_host_execution_evidence(self) -> None:
+        """CENTRAL presents v1.3 facts without retaining a checkout path or prompt."""
+        planning = {
+            "envelope_version": "1.0", "mission_id": "mission-1", "mission_revision": "1",
+            "intent_id": "intent-1", "intent_revision": "2", "action_id": "action-1",
+            "mission_title": "Safe Mission", "business_summary": "Bounded business value.",
+            "engineering_summary": "Apply a bounded technical change.", "mission_lifecycle": "ACTIVE",
+            "decision_evidence_reference": "decision:opaque-1",
+            "decision_evidence_reference_digest": "sha256:" + "d" * 64,
+        }
+        planning["envelope_digest"] = submission_service._action_context_digest(planning)
+        self.assertEqual(
+            server._central_forge_planning_context(
+                json.dumps(planning, sort_keys=True), mission_id="mission-1", action_id="action-1",
+            ), planning,
+        )
+        self.assertIsNone(server._central_forge_planning_context(
+            json.dumps({**planning, "mission_title": "tampered"}), mission_id="mission-1", action_id="action-1",
+        ))
+        fields, metadata, activity = server._central_execution_host_projection(
+            json.dumps({
+                "status": "AVAILABLE", "target_branch": "main", "target_commit": "a" * 40,
+                "tracked_file_count": 4, "inventory_digest": "sha256:" + "b" * 64,
+            }),
+            json.dumps({
+                "status": "AVAILABLE", "tracked_file_count": 5, "inventory_digest": "sha256:" + "c" * 64,
+                "worktree_state": "CLEAN", "diff": {"modified": 0, "created": 1, "deleted": 0, "renamed": 0},
+                "activity": {"provider_invocations": 8, "host_validation_actions": 2},
+            }),
+        )
+        self.assertEqual(fields, {"target_branch": "main", "tracked_file_count": 4})
+        self.assertEqual(metadata, {"modified": 0, "created": 1, "deleted": 0, "renamed": 0, "codex_commands_executed": 8})
+        assert activity is not None
+        self.assertEqual(activity["activity"]["overall_activity_total"], 10)
+        self.assertNotIn("checkout_path", repr((fields, metadata, activity)))
 
     def test_bootstrap_does_not_use_a_legacy_database_or_identity(self) -> None:
         legacy = self.root.parent / "legacy-schema40.db"
@@ -1988,7 +2042,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(snapshot["status"]["project_id"], "djconnect")
         self.assertEqual([run["run_id"] for run in snapshot["runs"]], ["dj-run"])
         self.assertEqual([run["run_id"] for run in history["runs"]], ["dj-run"])
-        self.assertEqual(snapshot["telemetry"][0]["total_tokens"], 5)
+        # CENTRAL telemetry is deliberately sourced only from immutable
+        # execution evidence.  Legacy local token counters are not projected
+        # into a CENTRAL run after its checkout has gone away.
+        self.assertIsNone(snapshot["telemetry"][0]["total_tokens"])
         with urlopen(f"http://127.0.0.1:{port}/api/telemetry/2026-01-01?project=djconnect") as response:
             telemetry_detail = json.loads(response.read())
         self.assertEqual(telemetry_detail["runs"][0]["run_id"], "dj-run")

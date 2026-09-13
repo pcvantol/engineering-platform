@@ -1,4 +1,4 @@
-# EP producer readback contract v1.2
+# EP producer readback v1.2 and terminal-evidence v1.3 contract
 
 `v1.2` is the consumer-visible, authenticated readback contract for a
 canonical EP submission.  It belongs to the existing EP Server HTTP JSON API;
@@ -118,6 +118,34 @@ and `forge_submission_receipt_issued` (`EP_TO_FORGE`) events.  Those records
 never contain the prompt, bearer credential, local checkout path or unbounded
 request body.  The matching Forge client records its outbound submission and
 the validated EP receipt as separate immutable exchange facts.
+
+Forge provenance `v1.3` additionally carries a separately versioned immutable
+Planning Context Envelope. It contains only the bounded Mission title, redacted
+business/engineering summaries, lifecycle snapshot and opaque decision-evidence
+reference/digest. EP validates its identity and canonical digest, stores it as
+submission-scoped immutable evidence, and returns its exact value in readback
+and terminal evidence. Earlier submissions remain unchanged and never receive
+a reconstructed planning snapshot.
+
+Terminal evidence is version `1.3`. In addition to the v1.2 identities and
+timing, it binds `host_execution` v1.0: a path-free Execution Host baseline and
+terminal snapshot. Where the Host observed Git safely, this records branch,
+commit, inventory digests, tracked-file counts, diff counters and semantically
+defined provider/validation counters. An unavailable observation is explicit;
+EP never substitutes current checkout state. This evidence is captured at run
+start and terminalization in CENTRAL before the immutable artifact is written.
+
+## Historical report-analysis reconciliation
+
+`ADVISORY_REPORT_ANALYSIS` is a redacted, derived artifact and never changes a
+terminal run, producer receipt, terminal-evidence artifact or Forge context.
+When a Server starts, its Lifecycle Worker asynchronously finds CENTRAL-indexed
+terminal reports that predate the analysis flow and have no verified advisory
+artifact.  It generates and registers one report analysis against that exact
+immutable report.  A provider-unavailable result is still a bounded advisory
+artifact with a safe status and may be retried through the existing Console
+action.  The reconciliation never synthesizes an analysis from a prompt and
+never fills historical Forge planning/context evidence that was not submitted.
 
 Historical Forge provenance `v1.0` remains readable and admissible for
 continuity, but lacks the two explicit version facts required to issue this

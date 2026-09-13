@@ -29,6 +29,7 @@ OPERATOR_MERGE_RESUME_SECONDS = 60.0
 class Dispatcher(Protocol):
     def dispatch(self, submission_id: str) -> object: ...
     def reconcile_terminal_history(self) -> None: ...
+    def reconcile_report_analyses(self) -> None: ...
 
 
 DispatcherFactory = Callable[[], Dispatcher]
@@ -213,8 +214,9 @@ class LifecycleWorker:
         self._replace(state=WORKER_STOPPED)
 
     def _reconcile_terminal_history(self) -> None:
-        """Backfill historical Console rows without delaying Server readiness."""
-        reconcile = getattr(self._dispatcher_factory(), "reconcile_terminal_history", None)
+        """Restore additive terminal projections without delaying readiness."""
+        dispatcher = self._dispatcher_factory()
+        reconcile = getattr(dispatcher, "reconcile_terminal_history", None)
         if not callable(reconcile):
             return
         try:
@@ -224,6 +226,18 @@ class LifecycleWorker:
             # row must not prevent the HTTP Server from accepting fresh
             # CENTRAL submissions or prevent the worker from servicing a
             # project queue.
+            current = self.diagnostics()
+            self._replace(failures=current.failures + 1, last_error=type(error).__name__)
+            return
+        # Advisory analyses are independent, redacted derived artifacts.  A
+        # missing pre-feature artifact must not require re-running a terminal
+        # lifecycle or delay HTTP Server readiness.
+        reconcile_analyses = getattr(dispatcher, "reconcile_report_analyses", None)
+        if not callable(reconcile_analyses):
+            return
+        try:
+            reconcile_analyses()
+        except Exception as error:
             current = self.diagnostics()
             self._replace(failures=current.failures + 1, last_error=type(error).__name__)
 
