@@ -1674,6 +1674,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             "execution_receipt_reference": None, "producer_host_id": "forge-host-alpha", "mission_revision": "5",
             "intent_id": "intent-0006", "intent_revision": "1", "runtime_prompt_id": "prompt-0006",
             "runtime_prompt_digest": "sha256:" + "a" * 64, "retry_of_correlation_id": None,
+            "action_summary_status": "NOT_AVAILABLE_HISTORICAL",
         })
         snapshot = server._central_console_project_snapshot(self.root, "project-a")
         self.assertEqual(snapshot["status"]["run_id"], "run-forge")

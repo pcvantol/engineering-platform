@@ -57,6 +57,81 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         })
         return payload
 
+    def forge_action_context_payload(self, key: str = "forge-action-context") -> dict[str, object]:
+        payload = self.forge_payload(key)
+        provenance = payload["constraints"]["forge_execution"]  # type: ignore[index]
+        provenance["contract_version"] = "1.2"  # type: ignore[index]
+        summary = "Rotate api_key=[REDACTED] before deployment."
+        summary_digest = submission_service._action_context_digest(summary)
+        envelope = {
+            "envelope_version": "1.0",
+            "action_id": "action-" + key,
+            "summary": summary,
+            "summary_digest": summary_digest,
+            "generator": {
+                "id": "forge-redacted-action-summary",
+                "model": "deterministic-template",
+                "version": "1.0",
+                "source_digest": "sha256:" + "b" * 64,
+            },
+        }
+        envelope["envelope_digest"] = submission_service._action_context_digest(envelope)
+        provenance["action_context_envelope"] = envelope  # type: ignore[index]
+        return payload
+
+    def test_forge_action_context_is_validated_persisted_immutable_and_never_backfilled(self) -> None:
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            legacy = submission_service.submit(
+                connection,
+                submission_service.request_from_mapping("djconnect", self.forge_payload("historical"), transport="HTTP"),
+            )
+            current_payload = self.forge_action_context_payload()
+            request = submission_service.request_from_mapping("djconnect", current_payload, transport="HTTP")
+            accepted = submission_service.submit(connection, request)
+            self.assertTrue(submission_service.submit(connection, request).duplicate)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT action_id,envelope_version,generator_id,generator_model,generator_version,"
+                    "source_digest,summary_digest,envelope_digest,document FROM ep_forge_action_context_envelopes "
+                    "WHERE submission_id=?",
+                    (accepted.submission_id,),
+                ).fetchone()[:-1],
+                (
+                    "action-forge-action-context", "1.0", "forge-redacted-action-summary",
+                    "deterministic-template", "1.0", "sha256:" + "b" * 64,
+                    submission_service._action_context_digest("Rotate api_key=[REDACTED] before deployment."),
+                    submission_service._action_context_digest({
+                        "envelope_version": "1.0", "action_id": "action-forge-action-context",
+                        "summary": "Rotate api_key=[REDACTED] before deployment.",
+                        "summary_digest": submission_service._action_context_digest(
+                            "Rotate api_key=[REDACTED] before deployment."
+                        ),
+                        "generator": {
+                            "id": "forge-redacted-action-summary", "model": "deterministic-template",
+                            "version": "1.0", "source_digest": "sha256:" + "b" * 64,
+                        },
+                    }),
+                ),
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM ep_forge_action_context_envelopes WHERE submission_id=?", (legacy.submission_id,)).fetchone(),
+                (0,),
+            )
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    "UPDATE ep_forge_action_context_envelopes SET document='{}' WHERE submission_id=?",
+                    (accepted.submission_id,),
+                )
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    "DELETE FROM ep_forge_action_context_envelopes WHERE submission_id=?",
+                    (accepted.submission_id,),
+                )
+        malformed = self.forge_action_context_payload("malformed")
+        malformed["constraints"]["forge_execution"]["action_context_envelope"]["summary"] = "api_key=raw-secret"  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_ACTION_CONTEXT"):
+            submission_service.request_from_mapping("djconnect", malformed, transport="HTTP")
+
     def test_verified_managed_noop_uses_its_explicit_run_bound_revision(self) -> None:
         revision = "a" * 40
         verified = TransactionState(

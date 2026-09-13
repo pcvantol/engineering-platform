@@ -23,10 +23,24 @@ optional `idempotency_key`, correlation/action identifiers, and constraints.
 It uses a scoped bearer credential created for exactly one consumer/project
 registration. A credential for one project is not usable for another project.
 The response contains `submission_id`, project/repository identity, `state`,
-`created_at`, and `admission`.  For a Forge v1.1 provenance envelope it also
+`created_at`, and `admission`.  For a Forge v1.1 or v1.2 provenance envelope it also
 contains the versioned EP admission receipt described in the
 [producer-readback contract](EP_PRODUCER_READBACK_CONTRACT.md#forge-admission-receipt-and-bidirectional-audit).
 HTTP acceptance is not execution success.
+
+## Forge Action Context Envelope v1
+
+Forge provenance v1.2 can carry a separate Action Context Envelope.  It is a
+versioned, immutable document containing only a bounded, redacted Action
+summary, its source and summary digests, and the named generator/model/version.
+CENTRAL validates the exact envelope shape and all SHA-256 digests before
+acceptance, then stores it in its own immutable submission-scoped table.
+
+The dashboard reads that stored safe document only.  It never projects the
+runtime prompt, the source Action, an unredacted payload, or a mutable current
+Forge record.  The engineering summary projection is therefore unavailable for
+v1.0/v1.1 and other historical runs; upgrades deliberately do not create or
+backfill context-envelope records for them.
 
 The installed `engineering-platform submit` command is an HTTP consumer: it
 reads the prompt from `--prompt-file`, the bearer value from
@@ -89,7 +103,7 @@ CENTRAL migration; no schema-40 database is migrated or read.
 
 ## Post-merge installation plan
 
-1. Install the Server artifact and run its forward Server schema-60
+1. Install the Server artifact and run its forward Server schema-61
    initialization against the existing CENTRAL data root. It activates the
    additive engineering-storage schema-44 artifact bindings for an already
    current CENTRAL store; it does not rewrite a run or terminal evidence.

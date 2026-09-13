@@ -20,7 +20,7 @@ from unittest.mock import call, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import file_inbox, local_repository_binding, project_topology, providers, server
+from engineering_platform import file_inbox, local_repository_binding, project_topology, providers, server, submission_service
 from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
 from engineering_platform.providers import LaunchdRuntimeDetails, ProviderStatus
 
@@ -1025,6 +1025,84 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 connection.execute("SELECT schema_version FROM ep_installations").fetchone(),
                 (server.SERVER_STORE_SCHEMA_VERSION,),
             )
+
+    def test_schema_60_upgrade_adds_only_prospective_immutable_action_context_storage(self) -> None:
+        """Schema 61 never invents a safe summary for already-admitted work."""
+        identity = server.initialize(self.root)
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite3.connect(database) as connection:
+            for trigger in (
+                "ep_forge_action_context_envelopes_scope_insert",
+                "ep_forge_action_context_envelopes_immutable_update",
+                "ep_forge_action_context_envelopes_immutable_delete",
+            ):
+                connection.execute(f"DROP TRIGGER {trigger}")
+            connection.execute("DROP INDEX ep_forge_action_context_envelopes_project_lookup")
+            connection.execute("DROP TABLE ep_forge_action_context_envelopes")
+            connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema61")
+            connection.execute(
+                "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+                "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+                "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60)))"
+            )
+            connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,60 FROM ep_installations_schema61")
+            connection.execute("DROP TABLE ep_installations_schema61")
+            # A clean schema-61 bootstrap records only its current marker.
+            # Recreate the historic schema-60 marker after removing it so the
+            # fixture remains an installed schema-60 authority.
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=61")
+            connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(60)")
+            connection.execute("UPDATE engineering_metadata SET value='60' WHERE key='installation.schema_version'")
+        self.assertEqual(server.initialize(self.root), identity)
+        with sqlite3.connect(database) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_forge_action_context_envelopes").fetchone(), (0,))
+            triggers = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
+            self.assertTrue({
+                "ep_forge_action_context_envelopes_scope_insert",
+                "ep_forge_action_context_envelopes_immutable_update",
+                "ep_forge_action_context_envelopes_immutable_delete",
+            } <= triggers)
+            self.assertEqual(
+                connection.execute("SELECT schema_version FROM ep_installations").fetchone(),
+                (server.SERVER_STORE_SCHEMA_VERSION,),
+            )
+
+    def test_console_projects_only_the_persisted_safe_action_summary(self) -> None:
+        envelope = {
+            "envelope_version": "1.0", "action_id": "action-1",
+            "summary": "Apply the bounded safe change.",
+            "summary_digest": submission_service._action_context_digest("Apply the bounded safe change."),
+            "generator": {
+                "id": "forge-redacted-action-summary", "model": "deterministic-template",
+                "version": "1.0", "source_digest": "sha256:" + "a" * 64,
+            },
+        }
+        envelope["envelope_digest"] = submission_service._action_context_digest(envelope)
+        safe = server._central_forge_action_context(
+            json.dumps(envelope, sort_keys=True), "action-1",
+        )
+        self.assertEqual(safe, {
+            "summary": "Apply the bounded safe change.",
+            "summary_digest": envelope["summary_digest"],
+            "envelope_digest": envelope["envelope_digest"],
+            "generator": "forge-redacted-action-summary · deterministic-template · 1.0",
+        })
+        provenance = server._CentralForgeProvenance.from_constraints(json.dumps({"forge_execution": {
+            "contract_version": "1.1", "host_id": "engineering-platform", "repository_id": "forge",
+            "correlation_id": "correlation-1", "mission_id": "mission-1", "mission_revision": "1",
+            "intent_id": "intent-1", "intent_revision": "1", "action_id": "action-1",
+            "runtime_prompt": {"id": "prompt-1", "content_digest": "sha256:" + "b" * 64},
+            "retry_of_correlation_id": None, "producer_contract_version": "1.0",
+            "forge_application_version": "2.7.2",
+        }}))
+        self.assertIsNotNone(provenance)
+        historical = provenance.execution_context(
+            mission_id="mission-1", action_id="action-1", execution_phase="COMPLETE",
+            dispatch_state="COMPLETE", updated_at="2026-09-12T00:00:00+00:00",
+            transport_receipt_id=None, action_context=None,
+        )
+        self.assertEqual(historical["action_summary_status"], "NOT_AVAILABLE_HISTORICAL")
+        self.assertNotIn("engineering_summary", historical)
 
     def test_bootstrap_does_not_use_a_legacy_database_or_identity(self) -> None:
         legacy = self.root.parent / "legacy-schema40.db"

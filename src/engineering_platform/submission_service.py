@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 import unicodedata
 import secrets
 import sqlite3
@@ -45,8 +46,17 @@ _LIFECYCLE_EVENT_KINDS = (
     "ADMISSION_GRANTED",
     "EXECUTION_NOT_DISPATCHED",
 )
-FORGE_PROVENANCE_CONTRACT_VERSION = "1.1"
+FORGE_PROVENANCE_CONTRACT_VERSION = "1.2"
 EP_SUBMISSION_RECEIPT_CONTRACT_VERSION = "1.0"
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_ACTION_CONTEXT_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(api[ _-]?key|authorization|bearer|password|secret|token)\b\s*([:=])\s*[^\s,;]+"
+)
+_ACTION_CONTEXT_BEARER = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{8,}\b")
+_ACTION_CONTEXT_URL_CREDENTIAL = re.compile(r"(?i)(https?://)[^\s/@:]+:[^\s/@]+@")
+_ACTION_CONTEXT_KNOWN_TOKEN = re.compile(
+    r"\b(?:sk-[a-zA-Z0-9_-]{12,}|ghp_[a-zA-Z0-9]{12,}|github_pat_[a-zA-Z0-9_]{12,})\b"
+)
 
 
 class SubmissionError(ValueError):
@@ -54,6 +64,78 @@ class SubmissionError(ValueError):
     def __init__(self, code: str, status: int = 400) -> None:
         super().__init__(code)
         self.code, self.status = code, status
+
+
+def _action_context_digest(value: object) -> str:
+    """Return the Forge v1 Action-context canonical digest form."""
+    try:
+        payload = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        raise SubmissionError("INVALID_FORGE_ACTION_CONTEXT") from None
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _redacted_action_summary(value: object) -> str | None:
+    """Return the only Action-summary surface safe for CENTRAL storage."""
+    if not isinstance(value, str):
+        return None
+    summary = " ".join(value.replace("\0", " ").split())
+    summary = _ACTION_CONTEXT_URL_CREDENTIAL.sub(r"\1[REDACTED]@", summary)
+    summary = _ACTION_CONTEXT_KNOWN_TOKEN.sub("[REDACTED]", summary)
+    summary = _ACTION_CONTEXT_BEARER.sub("Bearer [REDACTED]", summary)
+    summary = _ACTION_CONTEXT_SECRET_ASSIGNMENT.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", summary,
+    )
+    return summary[:500] or None
+
+
+def _forge_action_context(request: SubmissionRequest) -> dict[str, object] | None:
+    """Validate the separately versioned safe Forge Action-context envelope."""
+    raw = (request.constraints or {}).get("forge_execution")
+    if not isinstance(raw, Mapping) or raw.get("contract_version") != FORGE_PROVENANCE_CONTRACT_VERSION:
+        return None
+    envelope = raw.get("action_context_envelope")
+    if not isinstance(envelope, Mapping) or set(envelope) != {
+        "envelope_version", "action_id", "summary", "summary_digest", "envelope_digest", "generator",
+    }:
+        raise SubmissionError("INVALID_FORGE_ACTION_CONTEXT")
+    generator = envelope.get("generator")
+    if not isinstance(generator, Mapping) or set(generator) != {"id", "model", "version", "source_digest"}:
+        raise SubmissionError("INVALID_FORGE_ACTION_CONTEXT")
+    action_id, summary = envelope.get("action_id"), envelope.get("summary")
+    scalar_values = (
+        envelope.get("envelope_version"), action_id, envelope.get("summary_digest"),
+        envelope.get("envelope_digest"), generator.get("id"), generator.get("model"),
+        generator.get("version"), generator.get("source_digest"),
+    )
+    if (not all(isinstance(value, str) and value and len(value) <= MAX_FIELD_LENGTH for value in scalar_values)
+            or not isinstance(summary, str) or not summary or len(summary) > 500
+            or action_id != request.engineering_action_id
+            or envelope.get("envelope_version") != "1.0"
+            or generator.get("id") != "forge-redacted-action-summary"
+            or generator.get("model") != "deterministic-template"
+            or generator.get("version") != "1.0"
+            or any(not _SHA256.fullmatch(str(value)) for value in (
+                envelope.get("summary_digest"), envelope.get("envelope_digest"), generator.get("source_digest"),
+            ))
+            or _redacted_action_summary(summary) != summary
+            or _action_context_digest(summary) != envelope.get("summary_digest")):
+        raise SubmissionError("INVALID_FORGE_ACTION_CONTEXT")
+    immutable = {
+        "envelope_version": envelope["envelope_version"],
+        "action_id": action_id,
+        "summary": summary,
+        "summary_digest": envelope["summary_digest"],
+        "generator": {
+            "id": generator["id"], "model": generator["model"], "version": generator["version"],
+            "source_digest": generator["source_digest"],
+        },
+    }
+    if _action_context_digest(immutable) != envelope.get("envelope_digest"):
+        raise SubmissionError("INVALID_FORGE_ACTION_CONTEXT")
+    return {**immutable, "envelope_digest": envelope["envelope_digest"]}
 
 
 def operator_queue_disposition(connection: sqlite3.Connection, *, project_id: str,
@@ -229,8 +311,12 @@ def _forge_provenance(request: SubmissionRequest) -> None:
     contract_version = raw.get("contract_version")
     if contract_version == "1.0":
         permitted = expected
-    elif contract_version == FORGE_PROVENANCE_CONTRACT_VERSION:
+    elif contract_version == "1.1":
         permitted = expected | {"producer_contract_version", "forge_application_version"}
+    elif contract_version == FORGE_PROVENANCE_CONTRACT_VERSION:
+        permitted = expected | {
+            "producer_contract_version", "forge_application_version", "action_context_envelope",
+        }
     else:
         permitted = set()
     if set(raw) != permitted:
@@ -249,11 +335,13 @@ def _forge_provenance(request: SubmissionRequest) -> None:
             or raw.get("action_id") != request.engineering_action_id
             or (raw.get("retry_of_correlation_id") is not None and not isinstance(raw.get("retry_of_correlation_id"), str))):
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
-    if contract_version == FORGE_PROVENANCE_CONTRACT_VERSION and (
+    if contract_version in {"1.1", FORGE_PROVENANCE_CONTRACT_VERSION} and (
             raw.get("producer_contract_version") != "1.0"
             or raw.get("forge_application_version") != request.producer_version
             or not isinstance(request.producer_version, str)):
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
+    if contract_version == FORGE_PROVENANCE_CONTRACT_VERSION:
+        _forge_action_context(request)
 
 
 def request_from_mapping(project_id: str, payload: object, *, transport: str) -> SubmissionRequest:
@@ -393,6 +481,9 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
         producer_id=request.producer_id, recorded_at=created_at,
     )
     connection.execute("INSERT INTO ep_submission_prompt_history(submission_id,prompt_digest,recorded_at) VALUES(?,?,?)", (submission_id, prompt_digest, created_at))
+    _record_forge_action_context(
+        connection, request=request, submission_id=submission_id, created_at=created_at,
+    )
     receipt = _record_forge_submission_acceptance(
         connection, request=request, submission_id=submission_id, created_at=created_at,
     ) if audit_forge_exchange else None
@@ -496,6 +587,36 @@ def _forge_submission_receipt(
     }
 
 
+def _record_forge_action_context(
+    connection: sqlite3.Connection, *, request: SubmissionRequest, submission_id: str, created_at: str,
+) -> None:
+    """Persist the safe Forge envelope as immutable CENTRAL evidence.
+
+    The migration creates no rows for historical submissions. This function
+    records only the new producer-provided envelope; it never derives a
+    summary from a stored prompt or a current Forge projection.
+    """
+    envelope = _forge_action_context(request)
+    if envelope is None:
+        return
+    generator = envelope["generator"]
+    assert isinstance(generator, Mapping)
+    connection.execute(
+        """INSERT INTO ep_forge_action_context_envelopes(
+               submission_id,project_id,action_id,envelope_version,generator_id,generator_model,
+               generator_version,source_digest,summary_digest,envelope_digest,document,recorded_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            submission_id, request.project_id, str(envelope["action_id"]),
+            str(envelope["envelope_version"]), str(generator["id"]), str(generator["model"]),
+            str(generator["version"]), str(generator["source_digest"]), str(envelope["summary_digest"]),
+            str(envelope["envelope_digest"]),
+            json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+            created_at,
+        ),
+    )
+
+
 def _record_forge_submission_acceptance(
     connection: sqlite3.Connection, *, request: SubmissionRequest, submission_id: str, created_at: str,
 ) -> dict[str, object] | None:
@@ -508,7 +629,7 @@ def _record_forge_submission_acceptance(
     if request.transport != "HTTP" or request.producer_type != "FORGE":
         return None
     raw = (request.constraints or {}).get("forge_execution")
-    if not isinstance(raw, Mapping) or raw.get("contract_version") != FORGE_PROVENANCE_CONTRACT_VERSION:
+    if not isinstance(raw, Mapping) or raw.get("contract_version") not in {"1.1", FORGE_PROVENANCE_CONTRACT_VERSION}:
         return None
     request_digest = _accepted_request_digest(
         repository_id=request.repository_id, producer_id=request.producer_id,
