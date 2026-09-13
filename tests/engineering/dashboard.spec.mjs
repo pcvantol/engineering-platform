@@ -3853,8 +3853,11 @@ test.describe("Engineering Status browser smoke", () => {
     await alternatives.locator("summary").click();
     await expect(alternatives).toHaveAttribute("open", "");
     await expect(alternatives).toContainText("Mission Borealis");
-    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(2);
-    await expect(page.locator("#promptHistoryDetailContent .execution-mode-info")).toHaveCount(1);
+    // This fixture has no immutable execution-mode evidence.  Historical
+    // detail must omit it rather than inventing a "not recorded" field and
+    // its explanatory control.
+    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryDetailContent .execution-mode-info")).toHaveCount(0);
     await expect(page.locator("#promptHistoryDetailContent .prompt-history-run-id-copy")).toHaveCount(1);
   });
 
