@@ -220,6 +220,33 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(checkpoint["phase"], "COMPLETE")
         self.assertEqual(checkpoint["terminal_state"], "COMPLETE")
 
+    def test_terminal_artifact_timing_matches_producer_readback(self) -> None:
+        """Forge receives one immutable terminal timing fact, not two values."""
+        submission = self._submission("alpha")
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=_CheckpointingRunner)
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            receipt = dispatcher.dispatch(submission)
+        artifact_id = f"terminal-evidence:{receipt.run_id}"
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            readback = submission_service.producer_readback(
+                connection, project_id="alpha", submission_id=submission,
+            )
+            raw_artifact = submission_service.producer_evidence_artifact(
+                connection, project_id="alpha", artifact_id=artifact_id,
+            )
+        self.assertIsNotNone(readback)
+        artifact = json.loads(raw_artifact or b"{}")
+        self.assertEqual(
+            {field: artifact["run"][field] for field in (
+                "execution_started_at", "execution_completed_at", "execution_duration_ms",
+            )},
+            {field: readback["run"][field] for field in (
+                "execution_started_at", "execution_completed_at", "execution_duration_ms",
+            )},
+        )
+
     def test_terminal_history_reconciliation_repairs_a_missing_producer_artifact(self) -> None:
         """A retained terminal history row cannot strand its producer readback."""
         submission = self._submission("alpha")

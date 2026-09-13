@@ -12,10 +12,17 @@ import signal
 import sqlite3
 import sys
 from collections.abc import Iterable, Iterator, Mapping
+from time import sleep
 
 from .agent_state import redact_diagnostic
 from . import central_database as central_database_module
-from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, open_storage
+from .storage import (
+    CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
+    ENGINEERING_STORAGE_SCHEMA_VERSION,
+    EngineeringStorageError,
+    _evidence_connection,
+    open_storage,
+)
 from .providers import GitProvider
 from .platform_components import PLATFORM_COMPONENT_IDS
 from .platform_version import CURRENT_PLATFORM_VERSION
@@ -25,6 +32,7 @@ SERVER_DATA_ROOT_ENVIRONMENT = "EP_SERVER_DATA_ROOT"
 DEFAULT_LOG_LEVEL = "INFO"
 COMPONENT_LOG_PAGE_SIZE = 50
 MAX_COMPONENT_LOG_PAGE_SIZE = 200
+COMPONENT_LOG_WRITE_ATTEMPTS = 3
 PLATFORM_LOG_COMPONENTS = PLATFORM_COMPONENT_IDS
 VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 LOG_LEVELS_AT_OR_ABOVE = {
@@ -137,14 +145,27 @@ class SQLiteLogHandler(logging.Handler):
             payload = self.format(record)
             parsed = json.loads(payload)
             created_at = parsed.get("timestamp")
-            connection = sqlite3.connect(self.central_database, isolation_level=None)
-            try:
-                connection.execute(
-                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
-                    (self.component, payload, created_at),
-                )
-            finally:
-                connection.close()
+            # Component events are written by the lifecycle worker alongside
+            # checkpoint and evidence transactions.  Use the exact same
+            # central connection policy as those writers; a bare SQLite
+            # connection can turn an ordinary concurrent hand-off into a
+            # dropped operational log or an opaque storage failure.
+            for attempt in range(COMPONENT_LOG_WRITE_ATTEMPTS):
+                connection: sqlite3.Connection | None = None
+                try:
+                    connection = _evidence_connection(self.root, self.central_database)
+                    connection.execute(
+                        "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                        (self.component, payload, created_at),
+                    )
+                    return
+                except sqlite3.OperationalError:
+                    if attempt + 1 == COMPONENT_LOG_WRITE_ATTEMPTS:
+                        raise
+                    sleep(0.02 * (attempt + 1))
+                finally:
+                    if connection is not None:
+                        connection.close()
         except (EngineeringStorageError, OSError, sqlite3.DatabaseError, TypeError, ValueError):
             # Falling back into an arbitrary checkout would silently create a
             # second supported component-log authority.  Keep the diagnostic
@@ -181,6 +202,18 @@ def component_logger(
             candidate = central_database_module.path(Path(configured_root))
             if candidate.is_file():
                 central_database = candidate
+        # Execution-host routines run inside the Server-owned CENTRAL
+        # lifecycle but do not receive a Server data-root argument.  They do
+        # receive the explicit database binding.  Treat that binding as the
+        # same canonical authority so a preflight log is not discarded merely
+        # because its caller owns a repository checkout rather than the
+        # Server process entrypoint.
+        if central_database is None:
+            configured_database = os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT)
+            if configured_database:
+                candidate = Path(configured_database).expanduser().resolve()
+                if candidate.is_file():
+                    central_database = candidate
     logger = logging.getLogger(f"engineering_platform.{component}")
     logger.setLevel(configured_level(level))
     logger.propagate = False

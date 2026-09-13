@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 def _qualification_module() -> object:
@@ -74,6 +75,20 @@ class DeterministicExecutionE2ETests(unittest.TestCase):
             ).stdout,
             "",
         )
+
+    def test_wheel_build_uses_the_isolated_contract_before_offline_fallback(self) -> None:
+        wheelhouse = self.root / "wheelhouse"
+        first = subprocess.CalledProcessError(2, ("pip", "wheel"))
+        with patch.object(
+            self.module.subprocess,
+            "run",
+            side_effect=(first, subprocess.CompletedProcess((), 0)),
+        ) as run:
+            self.module.build_wheel(self.root, wheelhouse)
+        first_command = run.call_args_list[0].args[0]
+        fallback_command = run.call_args_list[1].args[0]
+        self.assertNotIn("--no-build-isolation", first_command)
+        self.assertIn("--no-build-isolation", fallback_command)
 
 
 if __name__ == "__main__":

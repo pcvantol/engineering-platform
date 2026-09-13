@@ -38,6 +38,29 @@ class EngineeringStorageError(RuntimeError):
     """Raised when the local Engineering evidence database is unsafe to use."""
 
 
+def _evidence_connection(root: Path, central_database: Path | None = None) -> sqlite3.Connection:
+    """Open the one evidence authority with the shared SQLite policy.
+
+    Callers that are explicitly bound to CENTRAL must not bypass the timeout
+    and foreign-key policy used by :func:`open_storage`.  A short-lived
+    validation callback otherwise races the lifecycle writer through a bare
+    SQLite connection, which can turn an ordinary contention window into an
+    opaque storage failure.
+    """
+    if central_database is None:
+        return open_storage(root)
+    database = central_database.resolve()
+    if not database.is_file():
+        raise EngineeringStorageError("CENTRAL evidence database is unavailable.")
+    try:
+        connection = sqlite3.connect(database, timeout=10, isolation_level=None)
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=10000")
+        return connection
+    except sqlite3.DatabaseError as error:
+        raise EngineeringStorageError("CENTRAL evidence database is unavailable.") from error
+
+
 def _admitted_migration_ceiling(root: Path) -> int | None:
     """Return the watcher-admitted schema only for its canonical workspace."""
     admitted_root = os.environ.get(ADMITTED_STORAGE_ROOT_ENVIRONMENT)
@@ -1509,7 +1532,7 @@ def record_execution_dismissal(root: Path, *, run_id: str, terminal_state: str,
     """Record one immutable dismissal after its terminal history row exists."""
     if terminal_state not in {"COMPLETE", "BLOCKED", "FAILED"}:
         raise EngineeringStorageError("Dismissal requires a terminal execution outcome.")
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         connection.execute(
             "INSERT INTO execution_dismissals(run_id,terminal_state,handling_state,dismissed_at,dismissed_by) "
@@ -1536,7 +1559,7 @@ def record_emergency_recovery(root: Path, *, run_id: str, cancelled_at: str,
         raise EngineeringStorageError("Emergency recovery requires a timestamp.")
     if removed_branch is not None and (not isinstance(removed_branch, str) or not removed_branch.startswith("codex/")):
         raise EngineeringStorageError("Emergency recovery branch evidence is invalid.")
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         connection.execute(
             "INSERT INTO execution_emergency_recoveries(run_id,cancelled_at,rolled_back,removed_branch,recorded_by) VALUES(?,?,?,?,?)",
@@ -1772,7 +1795,7 @@ def record_admission_decision(
 
 def load_admission_decision(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Load one structured provider-free admission decision for rendering."""
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT submission_id,execution_mode,decision,failed_gate_ids,evidence,observed_at "
@@ -1847,7 +1870,7 @@ def load_forge_governance_handoff_snapshot(root: Path, run_id: str) -> dict[str,
 
 def load_submission_for_run(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Load immutable Producer provenance for one linked execution without prompt inspection."""
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT submission.submission_id,submission.producer_id,submission.producer_type,"
@@ -1962,7 +1985,7 @@ def record_validation_profile(
         "profile_selection_source": resolved_source,
         "control_bindings": list(control_bindings),
     }
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         profile_digest = None
         identity_payload = None
@@ -2012,7 +2035,7 @@ def record_validation_control_result(
     """Append one machine-readable validation observation for its resolved profile."""
     if not all(isinstance(value, str) and value for value in (run_id, validation_id, category, control_identity, execution_status, result, evidence_ref, observed_at)) or currentness < 0:
         raise EngineeringStorageError("Validation control result is invalid.")
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_control_results("
@@ -2032,7 +2055,7 @@ def record_validation_command_invocation(
     values = (run_id, validation_id, command_id, category, control_identity, started_at)
     if not all(isinstance(value, str) and value for value in values) or currentness < 0:
         raise EngineeringStorageError("Validation command invocation is invalid.")
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_command_invocations("
@@ -2054,7 +2077,7 @@ def record_validation_command_terminal(
     if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
         raise EngineeringStorageError("Validation command exit code is invalid.")
     result = "PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE"
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         started = connection.execute(
             "SELECT started_at FROM execution_validation_command_invocations WHERE run_id=? AND command_id=?",
@@ -2080,7 +2103,7 @@ def load_validation_context(
     central_database: Path | None = None,
 ) -> dict[str, object] | None:
     """Return the resolved profile and current control evidence without inference."""
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         profile = connection.execute(
             "SELECT selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at "
@@ -2275,7 +2298,7 @@ def load_run_qualification_snapshot(
     root: Path, run_id: str, *, central_database: Path | None = None,
 ) -> dict[str, object] | None:
     """Load a persisted snapshot without deriving or backfilling legacy runs."""
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT payload FROM execution_run_qualification_snapshots WHERE run_id=?", (run_id,)
@@ -2322,7 +2345,7 @@ def record_artifact(
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
     except (OSError, ValueError) as error:
         raise EngineeringStorageError("Artifact payload cannot be recorded safely.") from error
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         if run_id and not connection.execute("SELECT 1 FROM execution_runs WHERE run_id=?", (run_id,)).fetchone():
             run_id = None
@@ -2352,7 +2375,7 @@ def verify_artifact_integrity(
     artifact_root: Path | None = None,
 ) -> bool:
     """Verify a registered payload without making the file itself authoritative."""
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT digest_algorithm,digest,storage_location FROM execution_artifact_records WHERE artifact_id=?", (artifact_id,)
@@ -2556,6 +2579,7 @@ def open_storage(
     if journal_mode not in JOURNAL_MODES:
         raise ValueError("Unsupported SQLite journal mode.")
     path = database_path(root)
+    central = bool(os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT))
     new_store = not path.exists()
     if create:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -2576,13 +2600,27 @@ def open_storage(
     try:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")
-        connection.execute(f"PRAGMA journal_mode={journal_mode}")
+        # The Server owns journal policy for its shared CENTRAL store.  A
+        # repository-scoped runner may open that database concurrently, but
+        # must never try to switch its journal mode while a lifecycle
+        # transaction is active.  Private legacy stores retain the explicit
+        # rollback-journal policy below.
+        if not central:
+            connection.execute(f"PRAGMA journal_mode={journal_mode}")
         current = _schema_version(connection)
-        central = bool(os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT))
         if current > ENGINEERING_STORAGE_SCHEMA_VERSION and not central:
             raise EngineeringStorageError(
                 "Engineering storage schema is newer than this Engineering Platform supports."
             )
+        # A Server-owned CENTRAL database has already been migrated by the
+        # Server before a lifecycle worker can run.  Opening it from a
+        # repository-scoped runner is therefore a normal data operation, not
+        # a schema transaction.  Taking ``BEGIN IMMEDIATE`` here on every
+        # projection read competes with the worker's writes and can surface as
+        # a spurious SQLite I/O failure under a busy execution.  Never import
+        # local compatibility state into CENTRAL either.
+        if central and current >= ENGINEERING_STORAGE_SCHEMA_VERSION:
+            return connection
         admitted_ceiling = _admitted_migration_ceiling(root)
         if (
             admitted_ceiling is not None
@@ -2707,7 +2745,7 @@ def record_readiness_evaluation(root: Path, *, run_id: str, profile_id: str, pro
                                 facts: dict[str, object], evaluated_at: str, diagnostic: str | None,
                                 central_database: Path | None = None) -> None:
     """Store one deterministic readiness decision for a transaction."""
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         connection.execute(
             "INSERT INTO execution_readiness_evaluations(run_id,profile_id,profile_version,execution_mode,passed,failed_requirements,facts,evaluated_at,diagnostic) VALUES(?,?,?,?,?,?,?,?,?) "
@@ -2724,7 +2762,7 @@ def load_readiness_evaluation(
     """Read one canonical readiness projection for dashboard/report consumers."""
     if not isinstance(run_id, str):
         return None
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _evidence_connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT profile_id,profile_version,execution_mode,passed,failed_requirements,evaluated_at,diagnostic FROM execution_readiness_evaluations WHERE run_id=?", (run_id,)
