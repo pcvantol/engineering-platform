@@ -417,11 +417,11 @@ class ParityLifecycleDispatcher:
                         )
             raise ParityLifecycleDispatchError("HISTORICAL_ADMISSION_BLOCKED")
 
-    def _set_state(self, submission_id: str, run_id: str, state: str) -> None:
+    def _set_state(self, submission_id: str, run_id: str, state: str, *, occurred_at: str | None = None) -> None:
         if state not in {"CLAIMED", "RUNNING", *TERMINAL_STATES}:
             raise ParityLifecycleDispatchError("INVALID_DISPATCH_STATE")
         with sqlite3.connect(central_database.path(self.data_root)) as connection:
-            now = _utcnow()
+            now = occurred_at or _utcnow()
             connection.execute("UPDATE ep_execution_runs SET state=?,updated_at=? WHERE run_id=?", (state, now, run_id))
             resolution = OPERATOR_RESOLUTION_OPEN if state in {"BLOCKED", "FAILED"} else "NONE"
             connection.execute(
@@ -441,6 +441,26 @@ class ParityLifecycleDispatcher:
                 "operator_resolution": resolution,
             },
         )
+
+    def _record_terminal_timing_boundary(self, run_id: str) -> str:
+        """Freeze terminal timing without exposing a half-projected terminal run.
+
+        The terminal artifact consumes ``ep_execution_runs.updated_at`` as its
+        immutable completion time.  Updating the dispatch to COMPLETE first
+        makes a concurrent consumer observe a terminal run before its
+        assurance and terminal-evidence artifacts exist.  Record the one
+        timestamp while the dispatch remains RUNNING, then use that exact
+        value when publishing the completed state after all artifacts exist.
+        """
+        occurred_at = _utcnow()
+        with sqlite3.connect(central_database.path(self.data_root)) as connection:
+            updated = connection.execute(
+                "UPDATE ep_execution_runs SET updated_at=? WHERE run_id=? AND state IN ('CLAIMED','RUNNING')",
+                (occurred_at, run_id),
+            )
+        if updated.rowcount != 1:
+            raise ParityLifecycleDispatchError("TERMINAL_TIMING_BOUNDARY_UNAVAILABLE")
+        return occurred_at
 
     @staticmethod
     def _terminal_history_exists(repository_root: Path, run_id: str, data_root: Path) -> bool:
@@ -704,12 +724,33 @@ class ParityLifecycleDispatcher:
                     prompt, run_id=run_id, resume=duplicate,
                     owner_authorized=candidate.execution_mode == "MANAGED",
                 )
+                terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
+                # The terminal run record is the single timing authority for both
+                # producer readback and immutable terminal evidence.  Close the
+                # enclosing span and persist that terminal boundary before any
+                # artifact is generated; otherwise an artifact can freeze the
+                # earlier RUNNING timestamp while the later readback reports the
+                # correct terminal duration.
+                if state.terminal:
+                    complete_active_phase(
+                        repository_root,
+                        state.run_id,
+                        "TOTAL_EXECUTION",
+                        outcome="COMPLETE" if state.phase == "COMPLETE" else "FAILED",
+                        central_database=central_database.path(self.data_root),
+                    )
+                    terminal_occurred_at = self._record_terminal_timing_boundary(run_id)
                 # Report/history indexing is execution evidence too.  Keep it
                 # inside the explicit CENTRAL context; a terminal projection
                 # must never reopen the repository-local database.
-                self._project_terminal_history(repository_root, state, runner, self.data_root)
-            terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
-            self._set_state(submission_id, run_id, terminal)
+                if state.terminal:
+                    self._project_terminal_history(repository_root, state, runner, self.data_root)
+                    self._set_state(
+                        submission_id, run_id, terminal,
+                        occurred_at=terminal_occurred_at,
+                    )
+                else:
+                    self._set_state(submission_id, run_id, terminal)
             log_event(
                 self._logger,
                 logging.INFO if terminal == "COMPLETE" else logging.WARNING,

@@ -90,6 +90,24 @@ class EngineeringStorageTest(unittest.TestCase):
             with self.assertRaisesRegex(StateError, "canonical engineering storage is unavailable"):
                 missing.run_ids()
 
+    def test_explicit_central_evidence_connection_uses_shared_sqlite_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            central = root / "epdata.sqlite"
+            source = open_storage(root)
+            target = sqlite3.connect(central)
+            try:
+                source.backup(target)
+            finally:
+                source.close()
+                target.close()
+            connection = storage._evidence_connection(root, central)
+            try:
+                self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone(), (1,))
+                self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone(), (10_000,))
+            finally:
+                connection.close()
+
     def test_checkpoint_store_removes_json_shadow_and_rejects_corrupt_durable_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

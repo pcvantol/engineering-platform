@@ -108,6 +108,25 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertEqual(component, "operations_console")
             self.assertEqual(json.loads(payload)["event"], "normal_console_event")
 
+    def test_execution_host_uses_the_explicit_central_database_environment(self) -> None:
+        """A Server-owned host preflight logs to CENTRAL without a data-root alias."""
+        from engineering_platform.server import initialize
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+            data_root = Path(temporary) / "data"
+            initialize(data_root)
+            central = data_root / server.SERVER_DATABASE_FILENAME
+            with patch.dict("os.environ", {"EP_CENTRAL_OPERATIONAL_DATABASE": str(central)}):
+                logger = component_logging.component_logger(checkout, "file_inbox_ingress")
+                component_logging.log_event(logger, logging.INFO, "host_preflight_logged")
+            self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
+            with sqlite3.connect(central) as connection:
+                payload = connection.execute(
+                    "SELECT payload FROM engineering_component_logs WHERE component='file_inbox_ingress'"
+                ).fetchone()[0]
+            self.assertEqual(json.loads(payload)["event"], "host_preflight_logged")
+
     def test_retired_component_aliases_cannot_create_central_operational_logs(self) -> None:
         """A caller cannot turn a historic name into a fresh log authority."""
         from engineering_platform.server import initialize
