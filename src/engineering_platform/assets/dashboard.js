@@ -5429,7 +5429,6 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.files_modified"), metadata.modified],
       [t("detail.files_created"), metadata.created],
       [t("detail.files_deleted"), metadata.deleted],
-      [t("detail.codex_commands"), metadata.codex_commands_executed],
       ...Object.entries(context)
         .filter(([key]) => !["execution_phase", "dispatcher_state"].includes(key))
         .map(([key, value]) => [promptHistoryMarkdownLabel(key), value]),
@@ -7652,7 +7651,6 @@ function promptDetailExecutionSections(history) {
     [t("detail.files_modified"), history.execution_metadata?.modified],
     [t("detail.files_created"), history.execution_metadata?.created],
     [t("detail.files_deleted"), history.execution_metadata?.deleted],
-    [t("detail.codex_commands"), history.execution_metadata?.codex_commands_executed],
   ].filter(([, value]) => executionContextValue(value)).map(([label, value, preformatted, executionMode, folder]) =>
     executionMode ? detailExecutionModeField(value) : detailField(label, value, preformatted, folder),
   ).concat(contextFields);

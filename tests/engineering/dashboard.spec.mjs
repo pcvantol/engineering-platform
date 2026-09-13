@@ -9613,8 +9613,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Getrackte bestanden");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("1655");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Bestanden gewijzigd");
-    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Codex-opdrachten uitgevoerd");
-    await expect(page.locator("#promptHistoryDetailContent")).toContainText("17");
+    await expect(executionContext).not.toContainText("Codex-opdrachten uitgevoerd");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Uitvoeringsmodus");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("GENESIS");
     const historicalModeInfo = executionContext.locator(".execution-mode-info");
@@ -9631,6 +9630,8 @@ test.describe("Engineering Status browser smoke", () => {
     const activityCard = detailSidebar.locator(".prompt-detail-card--execution-activity");
     await expect(activityCard).toHaveCount(1);
     await expect(activityCard).toContainText("Samenvatting uitvoeringsactiviteit");
+    await expect(activityCard).toContainText(DASHBOARD_MESSAGES.nl["detail.primary_codex_commands"]);
+    await expect(activityCard).toContainText("1");
     expect(await activityCard.evaluate((card) => {
       const cards = [...card.parentElement.children];
       return cards.indexOf(card) === cards.indexOf(card.parentElement.querySelector(".prompt-detail-card")) + 1;
