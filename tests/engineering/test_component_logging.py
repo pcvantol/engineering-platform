@@ -139,6 +139,118 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertLess(keys.index("terminal_state"), keys.index("forge_application_version"))
             self.assertLess(keys.index("forge_application_version"), keys.index("component_version"))
 
+    def test_technical_diagnostic_keeps_trace_out_of_the_public_component_log(self) -> None:
+        """A Dashboard log can correlate a fault without receiving its traceback."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "central"
+            server.initialize(data_root)
+            central = data_root / server.SERVER_DATABASE_FILENAME
+            try:
+                raise RuntimeError("access_token=must-not-appear-in-public-log")
+            except RuntimeError as error:
+                reference = component_logging.record_technical_diagnostic(
+                    root, component="lifecycle_worker", level=logging.ERROR,
+                    event="terminal_lease_release_failed",
+                    diagnostic_code="TERMINAL_LEASE_RELEASE_FAILED", error=error,
+                    run_id="run-1", central_database=central,
+                )
+            self.assertIsNotNone(reference)
+            assert reference is not None
+            with sqlite3.connect(central) as connection:
+                public = json.loads(connection.execute(
+                    "SELECT payload FROM engineering_component_logs WHERE component='lifecycle_worker'"
+                ).fetchone()[0])
+                raw = connection.execute(
+                    "SELECT detail FROM ep_technical_diagnostics WHERE correlation_id=?", (reference,)
+                ).fetchone()[0]
+            self.assertEqual(public["level"], "ERROR")
+            self.assertEqual(public["diagnostic_code"], "TERMINAL_LEASE_RELEASE_FAILED")
+            self.assertEqual(public["diagnostic_reference"], reference)
+            self.assertNotIn("traceback", public)
+            self.assertNotIn("must-not-appear", json.dumps(public))
+            self.assertIn("traceback", json.loads(raw))
+            summary = component_logging.technical_diagnostic_summary(
+                root, central_database=central,
+            )
+            self.assertEqual(summary["recent"][0]["correlation_id"], reference)
+            self.assertNotIn("detail", summary["recent"][0])
+            diagnostic = component_logging.read_technical_diagnostic(
+                root, reference, central_database=central,
+            )
+            self.assertIsNotNone(diagnostic)
+            assert diagnostic is not None
+            self.assertIn("traceback", diagnostic["detail"])
+
+    def test_technical_diagnostic_store_is_immutable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "central"
+            server.initialize(data_root)
+            central = data_root / server.SERVER_DATABASE_FILENAME
+            reference = component_logging.record_technical_diagnostic(
+                root, component="lifecycle_worker", level=logging.WARNING,
+                event="execution_phase_telemetry_unavailable",
+                diagnostic_code="EXECUTION_PHASE_TELEMETRY_UNAVAILABLE",
+                central_database=central,
+            )
+            assert reference is not None
+            with sqlite3.connect(central) as connection:
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                    connection.execute(
+                        "UPDATE ep_technical_diagnostics SET detail='{}' WHERE correlation_id=?", (reference,)
+                    )
+
+    def test_database_startup_log_has_application_and_schema_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "central"
+            server.initialize(root)
+            server._record_platform_component_startups(root)
+            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+                record = json.loads(connection.execute(
+                    "SELECT payload FROM engineering_component_logs "
+                    "WHERE component='platform_database' AND json_extract(payload, '$.event')='central_log_store_ready'"
+                ).fetchone()[0])
+            self.assertEqual(record["component_version"], CURRENT_PLATFORM_VERSION)
+            self.assertEqual(record["schema_version"], str(server.SERVER_STORE_SCHEMA_VERSION))
+
+    def test_schema_62_store_upgrades_additively_to_shielded_diagnostics(self) -> None:
+        """The forward migration creates only the new diagnostic authority."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "central"
+            identity = server.initialize(root)
+            central = root / server.SERVER_DATABASE_FILENAME
+            with sqlite3.connect(central) as connection:
+                connection.execute("DROP TRIGGER ep_technical_diagnostics_immutable_update")
+                connection.execute("DROP TRIGGER ep_technical_diagnostics_immutable_delete")
+                connection.execute("DROP INDEX ep_technical_diagnostics_created_lookup")
+                connection.execute("DROP TABLE ep_technical_diagnostics")
+                connection.execute("DELETE FROM engineering_schema_migrations WHERE version=63")
+                connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(62)")
+                connection.execute("UPDATE engineering_metadata SET value='62' WHERE key='installation.schema_version'")
+                connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema63_fixture")
+                connection.execute(
+                    "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+                    "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+                    "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62)))"
+                )
+                connection.execute(
+                    "INSERT INTO ep_installations SELECT instance_id,created_at,62 "
+                    "FROM ep_installations_schema63_fixture"
+                )
+                connection.execute("DROP TABLE ep_installations_schema63_fixture")
+            server.initialize(root)
+            with sqlite3.connect(central) as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT MAX(version) FROM engineering_schema_migrations"
+                ).fetchone()[0], 63)
+                self.assertEqual(connection.execute(
+                    "SELECT schema_version FROM ep_installations WHERE instance_id=?", (identity.instance_id,)
+                ).fetchone()[0], 63)
+                self.assertIn("ep_technical_diagnostics", {
+                    row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                })
+
     def test_supported_writer_uses_server_central_sink_without_caller_selection(self) -> None:
         """A normal supported component writer cannot fall back to its checkout."""
         from engineering_platform.server import initialize

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import subprocess
@@ -38,6 +39,20 @@ class HostAdminTargetRegistryTest(unittest.TestCase):
                 self.targets.target(value)
         with self.assertRaises(host_admin.HostAdminTargetError):
             self.targets.worktree("approved", "../candidate")
+
+    @patch("engineering_platform.host_admin.log_event")
+    @patch("engineering_platform.host_admin.component_logger")
+    def test_rejected_host_admin_actions_are_warnings(self, _logger: object, audit: object) -> None:
+        host_admin._audit(
+            self.root, "host_admin_git_lock_repair_rejected",
+            target_id="approved", outcome="HOST_ADMIN_GIT_LOCK_ACTIVE",
+        )
+        self.assertEqual(audit.call_args.args[1], logging.WARNING)
+        host_admin._audit(
+            self.root, "host_admin_git_lock_repair_refused",
+            target_id="approved", outcome="UNSUPPORTED_REMOVED",
+        )
+        self.assertEqual(audit.call_args.args[1], logging.INFO)
 
     def test_registry_rejects_wrong_root_and_symlink_escape(self) -> None:
         outside = Path(self.temporary.name) / "outside"; outside.mkdir()
