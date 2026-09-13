@@ -308,7 +308,11 @@ def main(argv: list[str] | None = None) -> int:
         root, wheelhouse, venv, data = Path(temporary), Path(temporary) / "wheelhouse", Path(temporary) / "venv", Path(temporary) / "central"
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         wheelhouse.mkdir()
-        subprocess.run((sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)), check=True, capture_output=True, text=True)  # nosec B603
+        # Qualification must be reproducible in an offline build environment.
+        # Its explicitly selected interpreter already provides the declared
+        # build backend, so do not make the result depend on downloading an
+        # otherwise unused isolated build environment from a package index.
+        subprocess.run((sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", "--wheel-dir", str(wheelhouse), str(args.source_root)), check=True, capture_output=True, text=True)  # nosec B603
         subprocess.run((sys.executable, "-m", "venv", str(venv)), check=True)  # nosec B603
         wheels = tuple(wheelhouse.glob("engineering_platform-*.whl"))
         if len(wheels) != 1:
