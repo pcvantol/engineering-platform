@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from pathlib import Path
 import os
 import json
@@ -84,7 +86,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.data = Path(self.temporary.name) / "central"
         server.initialize(self.data)
         self.roots: dict[str, Path] = {}
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             now = "2026-01-01T00:00:00+00:00"
             for project in ("alpha", "beta"):
                 root = Path(self.temporary.name) / project
@@ -121,7 +123,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(json.loads(completed.stdout), False)
 
     def _submission(self, project: str, prompt: str = "Validate only.") -> str:
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(
                 project, project, "canary", "HUMAN", "1", prompt, "HTTP",
             )).submission_id
@@ -137,7 +139,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
                 "retry_of_correlation_id": None,
             },
         }
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(
                 project, project, "forge", "FORGE", "2.7.2", "Implement the bounded action.", "HTTP",
                 correlation_id=correlation_id, mission_id="MISSION-0006",
@@ -160,7 +162,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertFalse(_Runner.calls[0][2])
         self.assertTrue(_Runner.calls[1][2])
         self.assertTrue(_Runner.calls[0][3])
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute("SELECT project_id,repository_id,run_id,state FROM ep_parity_lifecycle_dispatches").fetchone()
             provenance = connection.execute("SELECT submission_id,run_id,project_id,repository_id,installation_id FROM ep_receipt_run_provenance").fetchone()
             installation = connection.execute("SELECT value FROM engineering_metadata WHERE key='installation.instance_id'").fetchone()
@@ -178,7 +180,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             rows = connection.execute(
                 "SELECT payload FROM engineering_component_logs "
                 "WHERE component='lifecycle_worker' ORDER BY id"
@@ -206,7 +208,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             payloads = connection.execute(
                 "SELECT payload FROM engineering_component_logs "
                 "WHERE component='lifecycle_worker' ORDER BY id"
@@ -229,7 +231,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
         artifact_id = f"terminal-evidence:{receipt.run_id}"
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             readback = submission_service.producer_readback(
                 connection, project_id="alpha", submission_id=submission,
             )
@@ -258,10 +260,10 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         artifact_id = f"terminal-evidence:{receipt.run_id}"
         artifact_path = self.data / "artifacts" / "projects" / "alpha" / "runs" / receipt.run_id / "terminal-evidence-v1.json"
         artifact_path.unlink(missing_ok=True)
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("DELETE FROM execution_artifact_records WHERE artifact_id=?", (artifact_id,))
         dispatcher.reconcile_terminal_history()
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             readback = submission_service.producer_readback(
                 connection, project_id="alpha", submission_id=submission,
             )
@@ -288,7 +290,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "DELETE FROM execution_artifact_records WHERE artifact_type='ADVISORY_REPORT_ANALYSIS' AND ep_run_id=?",
                 (receipt.run_id,),
@@ -305,7 +307,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
 
         with patch("engineering_platform.parity_lifecycle_dispatcher.analyze_terminal_report", side_effect=write_analysis):
             dispatcher.reconcile_report_analyses()
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             analysis = connection.execute(
                 "SELECT artifact_type,run_id,ep_run_id FROM execution_artifact_records "
                 "WHERE artifact_type='ADVISORY_REPORT_ANALYSIS' AND ep_run_id=?",
@@ -364,7 +366,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         root = self.roots["alpha"]
         self.assertFalse((root / ".engineering" / "engineering.db").exists())
         self.assertFalse((root / ".engineering" / "engineering-runs").exists())
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 "SELECT phase FROM engineering_transactions WHERE run_id=?", (receipt.run_id,)
             ).fetchone()
@@ -429,7 +431,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_dismissed_retry_descendant_releases_the_full_fifo_chain(self) -> None:
         """A dismissed terminal retry cannot leave an older retry as a ghost blocker."""
         parent, retry, later = self._submission("alpha"), self._submission("alpha"), self._submission("alpha")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("parent-run", "alpha", "FAILED", "now", "now"),
@@ -473,7 +475,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             second = succeeding.dispatch(retry.submission_id)
         self.assertEqual(second.state, "COMPLETE")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             attempts = connection.execute(
                 "SELECT submission_id,canonical_submission_id,retry_parent_submission_id "
                 "FROM execution_submission_attempts ORDER BY recorded_at,submission_id"
@@ -490,7 +492,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertIn((original, first.run_id), links)
         self.assertIn((retry.submission_id, second.run_id), links)
         self.assertEqual(lineage, (retry.submission_id, 0, first.run_id))
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             parent_readback = submission_service.producer_readback(
                 connection, project_id="alpha", submission_id=original,
             )
@@ -502,7 +504,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(retry_readback["disposition"]["retry_parent_run_id"], first.run_id)
         self.assertEqual(retry_readback["run"]["id"], second.run_id)
         database = self.data / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             submitted_at, claimed_at = connection.execute(
                 "SELECT submission.created_at,dispatch.claimed_at FROM ep_submissions AS submission "
                 "JOIN ep_parity_lifecycle_dispatches AS dispatch ON dispatch.submission_id=submission.submission_id "
@@ -528,7 +530,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             second = succeeding.dispatch(retry.submission_id)
         self.assertEqual(second.state, "COMPLETE")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             attempt = connection.execute(
                 "SELECT canonical_submission_id,retry_parent_submission_id "
                 "FROM execution_submission_attempts WHERE submission_id=?", (retry.submission_id,)
@@ -557,7 +559,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             completed = succeeding.dispatch(successor.submission_id)
         self.assertEqual(completed.state, "COMPLETE")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             attempt = connection.execute(
                 "SELECT canonical_submission_id,retry_parent_submission_id "
                 "FROM execution_submission_attempts WHERE submission_id=?", (successor.submission_id,),
@@ -578,7 +580,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
         self.assertIn("Execution Mode: Genesis", _Runner.calls[0][0].read_text(encoding="utf-8"))
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(
                 connection.execute("SELECT execution_mode FROM ep_execution_runs WHERE run_id=?", (receipt.run_id,)).fetchone(),
                 ("GENESIS",),
@@ -610,7 +612,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         analyze.assert_called_once()
         self.assertEqual(analyze.call_args.args, (self.roots["alpha"].resolve(), receipt.run_id, report.return_value))
         self.assertIsInstance(analyze.call_args.kwargs["output_directory"], Path)
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             analysis = connection.execute(
                 "SELECT artifact_type,content_type,ep_run_id FROM execution_artifact_records "
                 "WHERE artifact_type='ADVISORY_REPORT_ANALYSIS'"
@@ -618,7 +620,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(analysis, ("ADVISORY_REPORT_ANALYSIS", "text/markdown", receipt.run_id))
 
     def test_terminal_history_reconciliation_ignores_a_retained_row_without_a_local_checkpoint(self) -> None:
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("historical-missing-checkpoint", "alpha", "COMPLETE", "now", "now"),
@@ -645,11 +647,11 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("UPDATE ep_submissions SET constraints=? WHERE submission_id=?", ("[]", submission))
         with self.assertRaisesRegex(ParityLifecycleDispatchError, "RETRY_CONSTRAINTS_INVALID"):
             retry_operator_gate(self.data, project_id="alpha", run_id=receipt.run_id)
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             resolution = connection.execute(
                 "SELECT operator_resolution FROM ep_parity_lifecycle_dispatches WHERE run_id=?", (receipt.run_id,)
             ).fetchone()
@@ -664,7 +666,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             with self.assertRaisesRegex(ParityLifecycleDispatchError, "HISTORICAL_ADMISSION_BLOCKED\\|_RejectedPreflight\\|host-policy"):
                 dispatcher.dispatch(submission)
         self.assertEqual(_Runner.calls, [])
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             state = connection.execute(
                 "SELECT state,operator_resolution FROM ep_parity_lifecycle_dispatches WHERE submission_id=?", (submission,)
             ).fetchone()
@@ -702,7 +704,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             evidence = connection.execute(
                 "SELECT decision,failed_gate_ids FROM execution_admission_decisions WHERE run_id=?", (receipt.run_id,)
             ).fetchone()

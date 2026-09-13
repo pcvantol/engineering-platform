@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 import io
 import logging
@@ -32,7 +34,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 run_id="operations_console-example",
                 diagnostic="authorization: secret-value",
             )
-            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 payload = connection.execute(
                     "SELECT payload FROM engineering_component_logs WHERE component='file_inbox_ingress'"
                 ).fetchone()[0]
@@ -60,7 +62,7 @@ class ComponentLoggingTest(unittest.TestCase):
             )
             component_logging.log_event(logger, logging.INFO, "central_lifecycle_event")
             self.assertFalse((root / ".engineering" / "engineering.db").exists())
-            with sqlite3.connect(central) as connection:
+            with sqlite_connection(central) as connection:
                 self.assertEqual(
                     "central_lifecycle_event",
                     json.loads(connection.execute(
@@ -87,7 +89,7 @@ class ComponentLoggingTest(unittest.TestCase):
             ), patch.object(component_logging, "sleep") as delay:
                 component_logging.log_event(logger, logging.INFO, "central_retry_succeeded")
             delay.assert_called_once_with(0.02)
-            with sqlite3.connect(central) as connection:
+            with sqlite_connection(central) as connection:
                 self.assertEqual(
                     json.loads(connection.execute(
                         "SELECT payload FROM engineering_component_logs WHERE component='lifecycle_worker'"
@@ -108,7 +110,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 logger, logging.INFO, "component_restart_completed",
                 context={"target_component": "dashboard_relay"},
             )
-            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 record = json.loads(connection.execute(
                     "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
                 ).fetchone()[0])
@@ -132,7 +134,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 "submission_id": "sub-1", "forge_application_version": "2.7.13",
                 "failure_code": "CODEX_CLI_TIMEOUT",
             })
-            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 raw = connection.execute("SELECT payload FROM engineering_component_logs").fetchone()[0]
             keys = list(json.loads(raw))
             self.assertLess(keys.index("project_id"), keys.index("audit_action"))
@@ -159,7 +161,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 )
             self.assertIsNotNone(reference)
             assert reference is not None
-            with sqlite3.connect(central) as connection:
+            with sqlite_connection(central) as connection:
                 public = json.loads(connection.execute(
                     "SELECT payload FROM engineering_component_logs WHERE component='lifecycle_worker'"
                 ).fetchone()[0])
@@ -197,7 +199,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 central_database=central,
             )
             assert reference is not None
-            with sqlite3.connect(central) as connection:
+            with sqlite_connection(central) as connection:
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
                     connection.execute(
                         "UPDATE ep_technical_diagnostics SET detail='{}' WHERE correlation_id=?", (reference,)
@@ -208,7 +210,7 @@ class ComponentLoggingTest(unittest.TestCase):
             root = Path(temporary) / "central"
             server.initialize(root)
             server._record_platform_component_startups(root)
-            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
                 record = json.loads(connection.execute(
                     "SELECT payload FROM engineering_component_logs "
                     "WHERE component='platform_database' AND json_extract(payload, '$.event')='central_log_store_ready'"
@@ -222,7 +224,7 @@ class ComponentLoggingTest(unittest.TestCase):
             root = Path(temporary) / "central"
             identity = server.initialize(root)
             central = root / server.SERVER_DATABASE_FILENAME
-            with sqlite3.connect(central) as connection:
+            with sqlite_connection(central) as connection:
                 connection.execute("DROP TRIGGER ep_technical_diagnostics_immutable_update")
                 connection.execute("DROP TRIGGER ep_technical_diagnostics_immutable_delete")
                 connection.execute("DROP INDEX ep_technical_diagnostics_created_lookup")
@@ -242,7 +244,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 )
                 connection.execute("DROP TABLE ep_installations_schema63_fixture")
             server.initialize(root)
-            with sqlite3.connect(central) as connection:
+            with sqlite_connection(central) as connection:
                 self.assertEqual(connection.execute(
                     "SELECT MAX(version) FROM engineering_schema_migrations"
                 ).fetchone()[0], 63)
@@ -265,7 +267,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 logger = component_logging.component_logger(checkout, "operations_console")
                 component_logging.log_event(logger, logging.INFO, "normal_console_event")
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
-            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 component, payload = connection.execute(
                     "SELECT component,payload FROM engineering_component_logs"
                 ).fetchone()
@@ -285,7 +287,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 logger = component_logging.component_logger(checkout, "file_inbox_ingress")
                 component_logging.log_event(logger, logging.INFO, "host_preflight_logged")
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
-            with sqlite3.connect(central) as connection:
+            with sqlite_connection(central) as connection:
                 payload = connection.execute(
                     "SELECT payload FROM engineering_component_logs WHERE component='file_inbox_ingress'"
                 ).fetchone()[0]
@@ -301,7 +303,7 @@ class ComponentLoggingTest(unittest.TestCase):
             for alias in RETIRED_COMPONENT_ALIASES:
                 with self.subTest(alias=alias), self.assertRaisesRegex(ValueError, "Unsupported Platform component"):
                     component_logging.component_logger(root, alias, central_database=data_root / server.SERVER_DATABASE_FILENAME)
-            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM engineering_component_logs").fetchone()[0],
                     0,
@@ -350,7 +352,7 @@ class ComponentLoggingTest(unittest.TestCase):
                     "secret": "must-not-persist",
                 },
             )
-            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 payload = connection.execute(
                     "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
                 ).fetchone()[0]

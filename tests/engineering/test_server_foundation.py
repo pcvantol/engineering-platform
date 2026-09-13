@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 import inspect
 import io
@@ -495,7 +497,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
     def test_queue_operator_capability_grant_and_revoke_are_durable(self) -> None:
         server.initialize(self.root)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             server.project_topology.register_server_local_topology(connection, declaration={
                 "schema_version": "1.0", "project": {"id": "queue-project", "authority_repository_id": "queue-repository"},
                 "repository": {"id": "queue-repository", "role": "authority"}, "validation": {"kind": "none"},
@@ -506,7 +508,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(server.main(("grant-operator-capability", *arguments)), 0)
             self.assertEqual(server.main(("revoke-operator-capability", *arguments)), 0)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertIsNotNone(connection.execute("SELECT revoked_at FROM ep_operator_capabilities WHERE consumer_id='queue-operator' AND project_id='queue-project' AND capability='QUEUE_DECLINE'").fetchone()[0])
 
     def test_execution_runtime_status_preserves_the_virtual_environment_launcher(self) -> None:
@@ -859,7 +861,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def test_fresh_store_installs_only_the_current_schema_revision(self) -> None:
         identity = server.initialize(self.root)
         report = server.validate_store(self.root, identity)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute(
                 "SELECT version FROM engineering_schema_migrations ORDER BY version"
             ).fetchall(), [(server.SERVER_STORE_SCHEMA_VERSION,)])
@@ -890,7 +892,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             with self.assertRaises(sqlite3.DatabaseError):
                 server.initialize(self.root)
 
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(
                 connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),
                 [],
@@ -913,11 +915,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "instance_id": identity.instance_id,
             "created_at": identity.created_at,
         })
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             server._install_schema_41(connection, identity)
 
         self.assertEqual(server.initialize(self.root), identity)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT version FROM engineering_schema_migrations ORDER BY version"
@@ -933,7 +935,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         """An installed host gains retry lineage without a new data root."""
         identity = server.initialize(self.root)
         database = self.root / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             connection.execute(
                 "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,prompt_content,prompt_metadata,target_identity,original_envelope,received_at) VALUES(?,?,?,?,?,?,?,?)",
                 ("pre-upgrade-submission", "fixture", "FORGE", "bounded", "{}", "{}", "{}", "2026-01-01T00:00:00+00:00"),
@@ -954,7 +956,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(56)")
             connection.execute("UPDATE engineering_metadata SET value='56' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertTrue({"execution_submission_attempts", "execution_submission_attempt_links"} <= tables)
             self.assertEqual(
@@ -970,7 +972,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def test_schema_57_store_without_retry_lineage_view_fails_closed(self) -> None:
         """A structurally incomplete current store is never accepted for readback."""
         identity = server.initialize(self.root)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("DROP VIEW execution_submission_run_links")
         with self.assertRaises(server.ServerConfigurationError):
             server.validate_store(self.root, identity)
@@ -979,7 +981,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         """A Server-owned upgrade restores retained-runner validation evidence."""
         identity = server.initialize(self.root)
         database = self.root / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             connection.execute("DROP TABLE execution_validation_profile_identities")
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema58")
             connection.execute(
@@ -993,7 +995,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(57)")
             connection.execute("UPDATE engineering_metadata SET value='57' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' "
@@ -1010,7 +1012,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         """An existing EP installation gains versioned Forge admission facts."""
         identity = server.initialize(self.root)
         database = self.root / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             for trigger in (
                 "ep_forge_exchange_audit_scope_insert",
                 "ep_forge_exchange_audit_immutable_update",
@@ -1031,7 +1033,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(58)")
             connection.execute("UPDATE engineering_metadata SET value='58' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='ep_forge_exchange_audit'"
@@ -1053,7 +1055,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         """A current pre-upgrade Server gains producer-readback bindings safely."""
         identity = server.initialize(self.root)
         database = self.root / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             connection.execute("DROP INDEX execution_artifact_records_ep_run_lookup")
             connection.execute("ALTER TABLE execution_artifact_records DROP COLUMN ep_run_id")
             connection.execute("ALTER TABLE execution_artifact_records DROP COLUMN ep_submission_id")
@@ -1069,7 +1071,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(59)")
             connection.execute("UPDATE engineering_metadata SET value='59' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             artifact_columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(execution_artifact_records)")
             }
@@ -1085,7 +1087,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         """Schemas 61/62 never invent facts for already-admitted work."""
         identity = server.initialize(self.root)
         database = self.root / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             for trigger in (
                 "ep_forge_action_context_envelopes_scope_insert",
                 "ep_forge_action_context_envelopes_immutable_update",
@@ -1120,7 +1122,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(60)")
             connection.execute("UPDATE engineering_metadata SET value='60' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_forge_action_context_envelopes").fetchone(), (0,))
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_forge_planning_context_envelopes").fetchone(), (0,))
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_execution_host_evidence").fetchone(), (0,))
@@ -1243,7 +1245,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
     def test_bootstrap_does_not_use_a_legacy_database_or_identity(self) -> None:
         legacy = self.root.parent / "legacy-schema40.db"
-        with sqlite3.connect(legacy) as connection:
+        with sqlite_connection(legacy) as connection:
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(40)")
             connection.execute("CREATE TABLE engineering_transactions(run_id TEXT PRIMARY KEY)")
@@ -1251,13 +1253,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         legacy_before = legacy.read_bytes()
         identity = server.initialize(self.root)
         self.assertEqual(legacy.read_bytes(), legacy_before)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_execution_runs").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT instance_id FROM ep_installations").fetchone()[0], identity.instance_id)
 
     def test_readiness_fails_closed_for_an_outdated_store(self) -> None:
         self.root.mkdir()
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(40)")
         with self.assertRaisesRegex(
@@ -1325,7 +1327,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
         server.initialize(self.root, bind_port=port)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             for event, level, diagnostic, created_at in (
                 ("zeta", "INFO", "unrelated", "2026-02-01T10:00:00+00:00"),
                 ("alpha", "WARNING", "needle one", "2026-02-02T10:00:00+00:00"),
@@ -1504,7 +1506,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
         server._audit_dashboard_provider_action(self.root, "CODEX", "install", "COMPLETED")
 
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
             ).fetchone()
@@ -1695,9 +1697,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             with zipfile.ZipFile(file.name) as package, tempfile.NamedTemporaryFile(suffix=".db") as database:
                 with zipfile.ZipFile(io.BytesIO(package.read(server.central_data_transfer.PAYLOAD_NAME))) as archive:
                     database.write(archive.read(server.SERVER_DATABASE_FILENAME)); database.flush()
-                with sqlite3.connect(database.name) as connection:
+                with sqlite_connection(database.name) as connection:
                     self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             payload = json.loads(connection.execute(
                 "SELECT payload FROM engineering_component_logs "
                 "WHERE component='operations_console' "
@@ -1751,7 +1753,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             persisted = json.loads(response.read())
         self.assertEqual({key: persisted[key] for key in expected}, expected)
 
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             events = [
                 json.loads(row[0]) for row in connection.execute(
                     "SELECT payload FROM engineering_component_logs "
@@ -1784,7 +1786,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             with urlopen(request) as response:
                 self.assertEqual(response.status, 200)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             events = [
                 json.loads(row[0]) for row in connection.execute(
                     "SELECT payload FROM engineering_component_logs "
@@ -1902,7 +1904,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             declaration["repository"]["id"] = identifier
             declarations.append(declaration)
         roots: list[Path] = []
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_agent_registrations(agent_id,state,credential_id,credential_verifier,created_at,updated_at,last_seen_at) VALUES('console-agent','ACTIVE','console-credential',X'00','now','now','now')")
             for declaration in declarations:
                 checkout = self.root.parent / declaration["project"]["id"]
@@ -2082,7 +2084,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         # Slice B is a CENTRAL read projection: history and queue remain
         # available after the physical checkout used by the legacy shell is
         # gone, and a selected project never receives another project's run.
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("dj-run", "djconnect", "COMPLETE", "2026-01-01T00:00:00+00:00", "2026-01-01T00:01:00+00:00"),

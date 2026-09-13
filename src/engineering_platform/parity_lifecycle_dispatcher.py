@@ -43,6 +43,7 @@ from .storage import (
     record_artifact,
     record_run_qualification_context,
     record_submission,
+    sqlite_connection,
 )
 from .prompt_history import prompt_history, record_terminal_report
 from .report_analysis import analyze as analyze_terminal_report
@@ -61,7 +62,7 @@ class ParityLifecycleDispatchError(RuntimeError):
 
 def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> dict[str, str]:
     """Explicitly release a failed CENTRAL run's project FIFO gate."""
-    with sqlite3.connect(central_database.path(data_root)) as connection:
+    with sqlite_connection(central_database.path(data_root)) as connection:
         connection.execute("BEGIN IMMEDIATE")
         cursor = connection.execute(
             """UPDATE ep_parity_lifecycle_dispatches
@@ -84,7 +85,7 @@ def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> d
 
 def retry_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> submission_service.SubmissionResult:
     """Create the only FIFO-successor allowed to resolve a failed run."""
-    with sqlite3.connect(central_database.path(data_root)) as connection:
+    with sqlite_connection(central_database.path(data_root)) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
@@ -291,7 +292,7 @@ class ParityLifecycleDispatcher:
         return path
 
     def _claim(self, submission_id: str) -> tuple[ParityProjectContext, HistoricalCandidate, str, Path, bool]:
-        with sqlite3.connect(central_database.path(self.data_root)) as connection:
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -420,7 +421,7 @@ class ParityLifecycleDispatcher:
     def _set_state(self, submission_id: str, run_id: str, state: str, *, occurred_at: str | None = None) -> None:
         if state not in {"CLAIMED", "RUNNING", *TERMINAL_STATES}:
             raise ParityLifecycleDispatchError("INVALID_DISPATCH_STATE")
-        with sqlite3.connect(central_database.path(self.data_root)) as connection:
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
             now = occurred_at or _utcnow()
             connection.execute("UPDATE ep_execution_runs SET state=?,updated_at=? WHERE run_id=?", (state, now, run_id))
             resolution = OPERATOR_RESOLUTION_OPEN if state in {"BLOCKED", "FAILED"} else "NONE"
@@ -453,7 +454,7 @@ class ParityLifecycleDispatcher:
         value when publishing the completed state after all artifacts exist.
         """
         occurred_at = _utcnow()
-        with sqlite3.connect(central_database.path(self.data_root)) as connection:
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
             updated = connection.execute(
                 "UPDATE ep_execution_runs SET updated_at=? WHERE run_id=? AND state IN ('CLAIMED','RUNNING')",
                 (occurred_at, run_id),
@@ -563,7 +564,7 @@ class ParityLifecycleDispatcher:
 
     def reconcile_terminal_history(self) -> None:
         """Backfill only missing Console rows for terminal CENTRAL runs."""
-        with sqlite3.connect(central_database.path(self.data_root)) as connection:
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
             rows = connection.execute(
                 "SELECT project_id,repository_id,run_id FROM ep_parity_lifecycle_dispatches "
                 "WHERE state IN ('COMPLETE','BLOCKED','FAILED') ORDER BY claimed_at"
@@ -598,7 +599,7 @@ class ParityLifecycleDispatcher:
         installation-time gap where the analysis flow was introduced after
         earlier reports had already become immutable history.
         """
-        with sqlite3.connect(central_database.path(self.data_root)) as connection:
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
             rows = connection.execute(
                 """SELECT d.project_id,d.run_id,h.report_path
                      FROM ep_parity_lifecycle_dispatches AS d

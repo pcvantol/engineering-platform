@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -17,7 +19,7 @@ class CentralDataTransferTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "central"
         self.root.mkdir()
-        with sqlite3.connect(self.root / DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE proof (value TEXT)")
             connection.execute("INSERT INTO proof VALUES ('exported')")
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
@@ -63,7 +65,7 @@ class CentralDataTransferTest(unittest.TestCase):
         archive.write_bytes(content)
         target = Path(self.temporary.name) / "target"
         target.mkdir()
-        with sqlite3.connect(target / DATABASE_FILENAME) as connection:
+        with sqlite_connection(target / DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE stale (value TEXT)")
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
             connection.execute("INSERT INTO engineering_schema_migrations VALUES (53)")
@@ -75,7 +77,7 @@ class CentralDataTransferTest(unittest.TestCase):
         self.assertFalse((target / "obsolete.txt").exists())
         self.assertEqual((target / "runtime/installed-runtime.txt").read_text(encoding="utf-8"), "keep")
         self.assertEqual((target / "artifacts/report.md").read_text(encoding="utf-8"), "evidence")
-        with sqlite3.connect(target / DATABASE_FILENAME) as connection:
+        with sqlite_connection(target / DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "exported")
 
     def test_import_rejects_an_archive_from_a_different_schema(self) -> None:
@@ -89,7 +91,7 @@ class CentralDataTransferTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as database_directory:
             database_path = Path(database_directory) / DATABASE_FILENAME
             database_path.write_bytes(database)
-            with sqlite3.connect(database_path) as connection:
+            with sqlite_connection(database_path) as connection:
                 connection.execute("DELETE FROM engineering_schema_migrations")
                 connection.execute("INSERT INTO engineering_schema_migrations VALUES (40)")
             database = database_path.read_bytes()

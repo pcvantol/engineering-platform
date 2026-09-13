@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from pathlib import Path
 import json
 import os
@@ -29,7 +31,7 @@ class ExecutionLeaseTest(unittest.TestCase):
             release(checkout, lease, central_database=database)
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
             self.assertFalse((checkout / ".engineering" / "engineering-runs").exists())
-            with sqlite3.connect(data / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data / server.SERVER_DATABASE_FILENAME) as connection:
                 self.assertIsNotNone(connection.execute(
                     "SELECT 1 FROM execution_run_leases WHERE run_id='inbox-central-lease'"
                 ).fetchone())

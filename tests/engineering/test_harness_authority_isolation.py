@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import hashlib
 import json
 import os
@@ -24,7 +26,7 @@ def _fingerprint(path: Path) -> str:
 
 
 def _schema_version(path: Path) -> int:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+    with sqlite_connection(f"file:{path}?mode=ro", uri=True) as connection:
         return int(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0])
 
 
@@ -51,7 +53,7 @@ class EngineeringHarnessAuthorityIsolationTests(unittest.TestCase):
         source = fixture_root / storage.WORKSPACE_DIRECTORY / storage.DATABASE_FILENAME
         self.external_store.write_bytes(source.read_bytes())
         if schema != storage.ENGINEERING_STORAGE_SCHEMA_VERSION:
-            with sqlite3.connect(self.external_store) as connection:
+            with sqlite_connection(self.external_store) as connection:
                 connection.execute("DELETE FROM engineering_schema_migrations")
                 connection.execute(
                     "INSERT INTO engineering_schema_migrations(version) VALUES(?)", (schema,)
@@ -120,10 +122,10 @@ class EngineeringHarnessAuthorityIsolationTests(unittest.TestCase):
             with storage.open_storage(repository) as connection:
                 connection.execute("CREATE TABLE backup_probe (value TEXT)")
                 connection.execute("INSERT INTO backup_probe VALUES ('isolated')")
-            with sqlite3.connect(storage.database_path(repository)) as connection:
+            with sqlite_connection(storage.database_path(repository)) as connection:
                 self.assertEqual(connection.execute("SELECT value FROM backup_probe").fetchone(), ("isolated",))
         self.assertEqual(_fingerprint(self.external_store), before)
-        with sqlite3.connect(f"file:{self.external_store}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{self.external_store}?mode=ro", uri=True) as connection:
             self.assertNotIn("backup_probe", {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")})
 
     def test_migration_control_paths_resolve_under_the_isolated_installation(self) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import os
 from pathlib import Path
 import json
@@ -519,7 +521,7 @@ class PlatformProductizationTest(unittest.TestCase):
             workspace.mkdir()
             self.assertEqual(_history_count(workspace), 0)
             database = workspace / "engineering.db"
-            with sqlite3.connect(database) as connection:
+            with sqlite_connection(database) as connection:
                 connection.execute("CREATE TABLE prompt_execution_history(run_id TEXT)")
                 connection.execute("INSERT INTO prompt_execution_history VALUES('one')")
             self.assertEqual(_history_count(workspace), 1)
@@ -572,23 +574,23 @@ class PlatformProductizationTest(unittest.TestCase):
             source = root / "source.db"
             destination = root / "destination.db"
             for database in (source, destination):
-                with sqlite3.connect(database) as connection:
+                with sqlite_connection(database) as connection:
                     connection.execute("CREATE TABLE evidence(key TEXT PRIMARY KEY, value TEXT)")
-            with sqlite3.connect(source) as connection:
+            with sqlite_connection(source) as connection:
                 connection.execute("INSERT INTO evidence VALUES('source', 'preserved')")
-            with sqlite3.connect(destination) as connection:
+            with sqlite_connection(destination) as connection:
                 connection.execute("INSERT INTO evidence VALUES('destination', 'current')")
 
             _merge_databases(source, destination)
 
-            with sqlite3.connect(destination) as connection:
+            with sqlite_connection(destination) as connection:
                 self.assertEqual(
                     connection.execute("SELECT key, value FROM evidence ORDER BY key").fetchall(),
                     [("destination", "current"), ("source", "preserved")],
                 )
 
             incompatible = root / "incompatible.db"
-            with sqlite3.connect(incompatible) as connection:
+            with sqlite_connection(incompatible) as connection:
                 connection.execute("CREATE TABLE other(key TEXT PRIMARY KEY)")
             with self.assertRaisesRegex(RuntimeError, "incompatible database schemas"):
                 _merge_databases(incompatible, destination)

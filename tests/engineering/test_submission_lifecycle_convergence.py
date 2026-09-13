@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import ast
 from contextlib import redirect_stdout
 import io
@@ -25,7 +27,7 @@ class CanonicalSubmissionLifecycleTest(unittest.TestCase):
             probe.bind(("127.0.0.1", 0))
             self.port = probe.getsockname()[1]
         server.initialize(self.root, bind_port=self.port)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             now = "2026-01-01T00:00:00+00:00"
             connection.execute(
                 "INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)",
@@ -123,12 +125,12 @@ class CanonicalSubmissionLifecycleTest(unittest.TestCase):
                 self._assert_lifecycle(self._cli_submit(self._payload(f"cli-{mode}", mode), mode), "CLI")
             with self.subTest(transport="FILE_INBOX", mode=mode):
                 receipt = self._file_inbox_submit(self._payload(f"file-{mode}", mode), mode)
-                with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+                with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
                     lifecycle = submission_service.lifecycle(connection, str(receipt["submission_id"]))
                 self.assertEqual(lifecycle["transport"], "FILE_INBOX")
                 self.assertEqual(lifecycle["execution"], "NOT_DISPATCHED")
 
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM ep_execution_runs").fetchone()[0], 0,
             )
@@ -171,12 +173,12 @@ class CanonicalSubmissionLifecycleTest(unittest.TestCase):
         )
         receipt = json.loads(next((inbox_root / "quarantine").glob("*.receipt.json")).read_text(encoding="utf-8"))
         self.assertEqual(receipt["reason"], "UNKNOWN_REPOSITORY")
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_execution_runs").fetchone()[0], 0)
 
     def test_idempotency_key_cannot_alias_a_different_lifecycle_request(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             submission_service.submit(
                 connection,
                 submission_service.request_from_mapping("isolated-project", self._payload("same"), transport="HTTP"),

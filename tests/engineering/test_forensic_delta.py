@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 from contextlib import redirect_stdout
 from io import StringIO
@@ -20,7 +22,7 @@ class ForensicDeltaTests(unittest.TestCase):
         self.baseline = Path(self.temporary.name) / "baseline.db"
         self.candidate = Path(self.temporary.name) / "candidate.db"
         for path in (self.baseline, self.candidate):
-            with sqlite3.connect(path) as connection:
+            with sqlite_connection(path) as connection:
                 connection.executescript("""
                     CREATE TABLE execution_submissions (
                         submission_id TEXT PRIMARY KEY, producer_id TEXT, producer_type TEXT,
@@ -39,7 +41,7 @@ class ForensicDeltaTests(unittest.TestCase):
                     );
                     CREATE TABLE unresolved_rows (value TEXT);
                 """)
-        with sqlite3.connect(self.baseline) as connection:
+        with sqlite_connection(self.baseline) as connection:
             connection.executescript("""
                 INSERT INTO execution_submissions VALUES ('sub-1','human','HUMAN','baseline prompt','2026-01-01');
                 INSERT INTO execution_runs VALUES ('run-1','sub-1','COMPLETE');
@@ -51,7 +53,7 @@ class ForensicDeltaTests(unittest.TestCase):
                 INSERT INTO local_api_consumer_registrations VALUES ('consumer-1','project-1','ACTIVE');
                 INSERT INTO unresolved_rows VALUES ('baseline only');
             """)
-        with sqlite3.connect(self.candidate) as connection:
+        with sqlite_connection(self.candidate) as connection:
             connection.executescript("""
                 INSERT INTO execution_submissions VALUES ('sub-1','human','HUMAN','candidate prompt','2026-01-01');
                 INSERT INTO execution_submissions VALUES ('sub-2','human','HUMAN','new prompt','2026-01-02');
@@ -99,10 +101,10 @@ class ForensicDeltaTests(unittest.TestCase):
         self.assertEqual(tables["provider_invocations"]["changes"], [])
 
     def test_removed_rows_schema_columns_and_blob_digest_are_reported_without_plaintext(self) -> None:
-        with sqlite3.connect(self.baseline) as connection:
+        with sqlite_connection(self.baseline) as connection:
             connection.execute("INSERT INTO provider_invocations VALUES ('invoke-removed','run-1',?)", (b"credential plaintext",))
             connection.execute("ALTER TABLE unique_rows ADD COLUMN baseline_only TEXT")
-        with sqlite3.connect(self.candidate) as connection:
+        with sqlite_connection(self.candidate) as connection:
             connection.execute("ALTER TABLE unique_rows ADD COLUMN candidate_only TEXT")
             connection.execute("UPDATE provider_invocations SET payload=? WHERE invocation_id='invoke-1'", (b"changed blob",))
         report = export_forensic_delta(self.baseline, self.candidate, migration_id="migration-2")

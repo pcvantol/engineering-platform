@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from pathlib import Path
 import socket
 import tempfile
@@ -26,7 +28,7 @@ class AgentTrustLifecycleTests(unittest.TestCase):
 
     def _approved_pair(self) -> None:
         import sqlite3
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             code = agent_trust.create_pairing_code(connection, self.agent_id)["pairing_code"]
         project_agent.pair(self.endpoint, code, identity_path=self.identity, configuration_path=self.config)
 
@@ -37,7 +39,7 @@ class AgentTrustLifecycleTests(unittest.TestCase):
         server.stop(self.root); server.start(self.root)
         self.assertEqual(project_agent.heartbeat(configuration_path=self.config)["state"], "ONLINE")
         import sqlite3
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("UPDATE ep_agent_registrations SET last_seen_at='2000-01-01T00:00:00+00:00' WHERE agent_id=?", (self.agent_id,))
             self.assertEqual(agent_trust.registration_status(connection, self.agent_id)["liveness"], "STALE")
 
@@ -46,7 +48,7 @@ class AgentTrustLifecycleTests(unittest.TestCase):
         self._approved_pair()
         with self.assertRaises(ValueError): project_agent._post(self.endpoint, "/v1/agent/heartbeat", {"protocol_version": "999", "agent_id": self.agent_id}, "bad")
         import sqlite3
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection: agent_trust.revoke(connection, self.agent_id)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection: agent_trust.revoke(connection, self.agent_id)
         with self.assertRaises(ValueError): project_agent.heartbeat(configuration_path=self.config)
 
     def test_localhost_does_not_bypass_authentication_and_malformed_is_rejected(self) -> None:

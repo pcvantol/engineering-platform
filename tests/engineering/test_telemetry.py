@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
@@ -51,7 +53,7 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 if previous is None: os.environ.pop("EP_CENTRAL_OPERATIONAL_DATABASE", None)
                 else: os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = previous
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
-            with sqlite3.connect(data / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data / server.SERVER_DATABASE_FILENAME) as connection:
                 self.assertIsNotNone(connection.execute(
                     "SELECT 1 FROM execution_runs WHERE run_id='inbox-central-telemetry'"
                 ).fetchone())

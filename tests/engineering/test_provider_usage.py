@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 import sqlite3
 from pathlib import Path
@@ -37,7 +39,7 @@ class ProviderUsageTests(unittest.TestCase):
                 provider_usage_summary(checkout, "inbox-central-provider", central_database=database)["output_tokens"], 2
             )
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
-            with sqlite3.connect(data / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(data / server.SERVER_DATABASE_FILENAME) as connection:
                 self.assertIsNotNone(connection.execute(
                     "SELECT 1 FROM provider_invocations WHERE run_id='inbox-central-provider'"
                 ).fetchone())

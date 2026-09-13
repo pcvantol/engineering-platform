@@ -20,6 +20,7 @@ from typing import Any, Mapping
 
 from . import central_database, execution_host_evidence
 from .platform_version import CURRENT_PLATFORM_VERSION
+from .storage import sqlite_connection
 
 
 MAX_PROMPT_BYTES = 65536
@@ -890,7 +891,7 @@ def write_terminal_evidence(
     from .storage import record_artifact
 
     database = central_database.path(data_root)
-    with sqlite3.connect(database) as connection:
+    with sqlite_connection(database) as connection:
         row = connection.execute(
             """SELECT d.submission_id,d.project_id,d.repository_id,d.state,
                       s.producer_id,s.producer_type,s.producer_version,s.prompt_digest,
@@ -903,6 +904,11 @@ def write_terminal_evidence(
                  JOIN ep_execution_runs r ON r.run_id=d.run_id AND r.project_id=d.project_id
                 WHERE d.run_id=?""", (run_id,),
         ).fetchone()
+        if row is not None:
+            try:
+                host_execution = execution_host_evidence.terminal_projection(connection, run_id=run_id)
+            except ValueError:
+                raise SubmissionError("TERMINAL_HOST_EVIDENCE_INVALID", 500) from None
     if row is None:
         raise SubmissionError("TERMINAL_EVIDENCE_BINDING_UNAVAILABLE", 500)
     try:
@@ -926,10 +932,6 @@ def write_terminal_evidence(
     timing = _terminal_timing(row[14], row[15])
     if timing is None:
         raise SubmissionError("TERMINAL_TIMING_UNAVAILABLE", 500)
-    try:
-        host_execution = execution_host_evidence.terminal_projection(connection, run_id=run_id)
-    except ValueError:
-        raise SubmissionError("TERMINAL_HOST_EVIDENCE_INVALID", 500) from None
     artifact_id = _terminal_artifact_id(run_id)
     report_id = f"report:{run_id}"
     assurance_status, current_reviews, reviews = _current_assurance(checkpoint)

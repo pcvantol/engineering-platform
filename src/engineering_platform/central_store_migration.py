@@ -9,6 +9,7 @@ off an authority.
 from __future__ import annotations
 
 import argparse
+from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import fcntl
@@ -23,7 +24,7 @@ import sys
 import unicodedata
 import uuid
 
-from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, database_path, legacy_database_path
+from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, database_path, legacy_database_path, sqlite_connection
 from .providers import LaunchdProvider
 from .forensic_attribution import ForensicAttributionError, canonical_attribution_json, load_and_attribute
 from .forensic_attribution_v2 import ForensicAttributionV2Error, canonical_attribution_v2_json, load_and_enrich_v2
@@ -169,8 +170,8 @@ def central_store_path() -> Path:
     return installation_data_root() / DATABASE_FILENAME
 
 
-def _readonly(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
+def _readonly(path: Path) -> AbstractContextManager[sqlite3.Connection]:
+    return sqlite_connection(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
 
 
 def _tables(connection: sqlite3.Connection) -> set[str]:
@@ -477,7 +478,7 @@ def _now() -> str:
 
 
 def _metadata(path: Path, key: str) -> dict[str, object] | None:
-    with sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True) as connection:
+    with sqlite_connection(f"file:{path.resolve().as_posix()}?mode=ro", uri=True) as connection:
         row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (key,)).fetchone()
     if row is None:
         return None
@@ -509,7 +510,7 @@ def set_admission_freeze(repo: Path, *, migration_id: str | None = None, reason:
         raise CutoverError("ADMISSION_FREEZE_FAILED", "conflicting active migration")
     path = Path(candidates[0].resolved_path)
     payload = {"version": 1, "migration_id": migration_id, "state": "ACTIVE", "reason": reason.strip(), "operator": operator, "created_at": _now()}
-    with sqlite3.connect(path) as connection:
+    with sqlite_connection(path) as connection:
         connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CONTROL_KEY, json.dumps(payload, sort_keys=True, separators=(",", ":"))))
     # This identity documents the pre-stop source only.  Service shutdown is
     # allowed to write bounded lifecycle evidence, so it is never the copy
@@ -536,7 +537,7 @@ def thaw_admission(repo: Path, *, migration_id: str, operator: str = "operator")
         raise CutoverError("THAW_FAILED")
     path = database_path(repo)
     payload = {"version": 1, "migration_id": migration_id, "state": "INACTIVE", "operator": operator, "thawed_at": _now()}
-    with sqlite3.connect(path) as connection:
+    with sqlite_connection(path) as connection:
         connection.execute("UPDATE engineering_metadata SET value=? WHERE key=?", (json.dumps(payload, sort_keys=True, separators=(",", ":")), CONTROL_KEY))
     receipt = load_receipt(migration_id)
     if receipt is not None and receipt.get("state") == "ABORTED_PRE_HANDOFF":
@@ -1233,7 +1234,7 @@ def copy_snapshot(source: Path, destination: Path) -> None:
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        with _readonly(source) as read_connection, sqlite3.connect(temporary) as write_connection:
+        with _readonly(source) as read_connection, sqlite_connection(temporary) as write_connection:
             read_connection.backup(write_connection)
         with temporary.open("rb") as handle:
             os.fsync(handle.fileno())

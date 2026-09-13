@@ -1,6 +1,8 @@
 """Schema-44 private local execution repository binding coverage."""
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 from pathlib import Path
 import sqlite3
@@ -21,7 +23,7 @@ class LocalRepositoryBindingTests(unittest.TestCase):
         self.data_root = self.base / "central"
         server.initialize(self.data_root)
         self.declaration = json.loads(FIXTURE.read_text())
-        with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             project_topology.register_attachment(connection, agent_id=self._agent(connection), declaration=self.declaration, availability="AVAILABLE")
 
     def tearDown(self) -> None:
@@ -40,12 +42,12 @@ class LocalRepositoryBindingTests(unittest.TestCase):
         return root
 
     def _bind(self, root: Path, *, rebind: bool = False):
-        with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             return bindings.bind_local_repository(connection, project_id="acme-data", repository_id="acme-data", local_root=root, data_root=self.data_root, rebind=rebind)
 
     def test_fresh_schema_46_has_no_bindings_and_integrity_passes(self) -> None:
         identity = server.initialize(self.data_root)
-        with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_local_repository_bindings").fetchone()[0], 0)
             self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(
@@ -60,12 +62,12 @@ class LocalRepositoryBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(bindings.LocalRepositoryBindingError, "REBIND_REQUIRED"):
             self._bind(second)
         self.assertEqual(self._bind(second, rebind=True).local_root, second.resolve())
-        with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(bindings.resolve_execution_repository(connection, project_id="acme-data", repository_id="acme-data", data_root=self.data_root).local_root, second.resolve())
 
     def test_invalid_topology_path_and_declaration_fail_closed(self) -> None:
         root = self._checkout("root")
-        with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             for project_id, repository_id, path, error in (
                 ("missing", "acme-data", root, "UNKNOWN_PROJECT"),
                 ("acme-data", "missing", root, "UNKNOWN_REPOSITORY"),
@@ -83,7 +85,7 @@ class LocalRepositoryBindingTests(unittest.TestCase):
         second["project"] = {"id": "other-project", "authority_repository_id": "other-repo"}
         second["repository"] = {"id": "other-repo", "role": "authority"}
         first_root, second_root = self._checkout("first"), self._checkout("second", second)
-        with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             project_topology.register_attachment(connection, agent_id="agent-one", declaration=second, availability="AVAILABLE")
             with self.assertRaisesRegex(bindings.LocalRepositoryBindingError, "PROJECT_REPOSITORY_MISMATCH"):
                 bindings.bind_local_repository(connection, project_id="acme-data", repository_id="other-repo", local_root=second_root, data_root=self.data_root)
@@ -95,7 +97,7 @@ class LocalRepositoryBindingTests(unittest.TestCase):
     def test_unbind_preserves_topology_and_no_public_path_leak(self) -> None:
         root = self._checkout("root")
         self._bind(root)
-        with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             bindings.unbind_local_repository(connection, project_id="acme-data", repository_id="acme-data")
             self.assertEqual(len(project_topology.topology(connection)["projects"]), 1)
             with self.assertRaisesRegex(bindings.LocalRepositoryBindingError, "UNBOUND"):
@@ -106,14 +108,14 @@ class LocalRepositoryBindingTests(unittest.TestCase):
         root = self.base / "migration"; root.mkdir()
         identity = server.RuntimeIdentity("test-installation", "now")
         db = root / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(db) as connection:
+        with sqlite_connection(db) as connection:
             server._install_schema_41(connection, identity); server._migrate_schema_42(connection); server._migrate_schema_43(connection)
             connection.execute("INSERT INTO ep_agent_registrations(agent_id,state,credential_id,credential_verifier,created_at,updated_at,last_seen_at) VALUES('agent-migration','ACTIVE','credential-migration',X'00','now','now','now')")
             project_topology.register_attachment(connection, agent_id="agent-migration", declaration=self.declaration, availability="AVAILABLE")
         (root / server.SERVER_CONFIGURATION_FILENAME).write_text('{"version":1,"bind_host":"127.0.0.1","bind_port":8765}', encoding="utf-8")
         (root / server.SERVER_IDENTITY_FILENAME).write_text(json.dumps({"instance_id": identity.instance_id, "created_at": identity.created_at}), encoding="utf-8")
         server.initialize(root)
-        with sqlite3.connect(db) as connection:
+        with sqlite_connection(db) as connection:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
                 server.SERVER_STORE_SCHEMA_VERSION,
