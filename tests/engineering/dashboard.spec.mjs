@@ -2697,6 +2697,69 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#executionContext")).toHaveCSS("background-color", "rgb(255, 255, 255)");
   });
 
+  test("keeps active human producer provenance visible in the Central context", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      current_phase: "EXECUTE_AGENT",
+      run_id: "human-central-run",
+      execution_mode: "MANAGED",
+      target_repository: "engineering-platform",
+      target_branch: "main",
+      producer_id: "file-human",
+      producer_type: "HUMAN",
+      producer_version: "submission-intake-v1",
+      producer_submission_contract_version: "1.0",
+      submission_id: "sub-29e0b57be65317559da0ce51dd5bfe99",
+    }, {}));
+    const context = page.locator("#executionContext");
+    await expect(context).toContainText("file-human");
+    await expect(context).toContainText("menselijke operator");
+    await expect(context).toContainText("submission-intake-v1");
+    await expect(context).toContainText("sub-29e0b57be65317559da0ce51dd5bfe99");
+    await expect(context).toContainText("main");
+  });
+
+  test("refreshes available AI capacity with a selected project", async ({ page }) => {
+    let requests = 0;
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/provider-capacity", async (route) => {
+      requests += 1;
+      await route.fulfill({ json: {
+        rate_limits: {
+          provider: "Codex CLI", provider_version: "0.150.0", provider_path: "",
+          windows: [{ label: "5-hour window", used_percent: 24, resets_at: 1 }], reset_credits: 0,
+        }, ai_capacity_history: [],
+      } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await expect.poll(() => requests).toBeGreaterThan(0);
+    await expect(page.locator("#rateLimits")).toBeVisible();
+    await expect(page.locator("#rateLimitDetails")).toContainText("5-hour window");
+  });
+
+  test("translates a host-owned provider deadline in active and historical views", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const diagnostic = "Provider action exceeded the 15-minute host-owned deadline.";
+    await page.evaluate((reason) => {
+      r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "deadline-run", diagnostic: reason }, {});
+      renderPromptHistoryDetail({ history: {
+        run_id: "deadline-run", status: "BLOCKED", blocking_reason: reason,
+      } });
+    }, diagnostic);
+    await expect(page.locator("#diag")).toHaveText(
+      "De provideractie overschreed de host-eigen deadline van 15 minuten.",
+    );
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText(
+      "De provideractie overschreed de host-eigen deadline van 15 minuten.",
+    );
+  });
+
   test("translates execution phase in the active context and historical status", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
@@ -10772,7 +10835,7 @@ test.describe("Engineering Status browser smoke", () => {
       ({ components, component_model }) => renderPlatformHealth({ components, component_model }),
       { components: canonicalPlatformComponents(), component_model: canonicalPlatformComponentModel() },
     );
-    const card = page.locator("#platformHealth .platform-health__component").filter({ hasText: "EP-server" });
+    const card = page.locator("#platformHealth .platform-health__component[aria-label$='EP-server']");
     await expect(card).toHaveAttribute("data-health", "true");
     await expect(card).not.toContainText("Inbox-watcher");
     const names = await page.locator("#platformHealth .platform-health__component-name").allTextContents();

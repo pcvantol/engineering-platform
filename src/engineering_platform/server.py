@@ -3174,8 +3174,30 @@ def _central_console_execution_projection(
                 total_ms = observed if observed >= 1 else None
             except ValueError:
                 pass
+    # A zero aggregate can mean either a genuinely measured sub-millisecond
+    # provider turn or that the host stopped an active provider span before a
+    # terminal receipt existed.  Only the former is execution-time evidence.
+    # In particular, completed specialist reviews must not turn an unmeasured
+    # primary invocation into a misleading ``0 sec`` on the detail card.
+    try:
+        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+            measured_primary = connection.execute(
+                """SELECT 1 FROM provider_invocations
+                     WHERE run_id=? AND phase='PROVIDER_EXECUTION'
+                       AND role NOT LIKE 'reviewer:%'
+                       AND completed_at IS NOT NULL AND duration_ms IS NOT NULL
+                     LIMIT 1""",
+                (run_id,),
+            ).fetchone() is not None
+    except (sqlite3.DatabaseError, storage.EngineeringStorageError):
+        measured_primary = False
     execution = {
-        "seconds": provider_ms / 1000 if isinstance(provider_ms, int) and provider_ms >= 0 else None,
+        "seconds": (
+            provider_ms / 1000
+            if isinstance(provider_ms, int) and provider_ms >= 0
+            and (provider_ms > 0 or measured_primary)
+            else None
+        ),
         "total_seconds": total_ms / 1000 if isinstance(total_ms, int) and total_ms >= 0 else None,
     }
     with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
@@ -3343,6 +3365,97 @@ def _central_console_current_execution_diagnostic(data_root: Path, project_id: s
     return None
 
 
+def _central_console_report_reviewers(report: bytes | None) -> list[dict[str, object]]:
+    """Project bounded reviewer findings from one immutable CENTRAL report.
+
+    The report is the terminal authority for reviewers' stated rationale and
+    accepted recommendations.  This intentionally mirrors the retained
+    Console projection without consulting a repository checkout.
+    """
+    # The artifact is CENTRAL-authorized, yet terminal reports can be large.
+    # This display-only parser needs one short, structured section; bounded
+    # input prevents an oversized artifact from amplifying a history request.
+    try:
+        text = report[:131_072].decode("utf-8") if report is not None else ""
+    except UnicodeDecodeError:
+        return []
+    section = re.search(
+        r"^## Reviewer Findings\s*$\n(?P<body>.*?)(?=^##\s|\Z)",
+        text, re.MULTILINE | re.DOTALL,
+    )
+    if section is None:
+        return []
+    records: list[dict[str, object]] = []
+    for block in re.split(r"(?=^- Reviewer: )", section.group("body"), flags=re.MULTILINE):
+        reviewer = re.search(r"^- Reviewer:\s*(.+)$", block, re.MULTILINE)
+        if reviewer is None:
+            continue
+
+        def field(name: str) -> str | None:
+            match = re.search(rf"^  - {re.escape(name)}:\s*(.+)$", block, re.MULTILINE)
+            return " ".join(match.group(1).split())[:180] if match is not None else None
+
+        reviewer_name = " ".join(reviewer.group(1).split())[:80]
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", reviewer_name) is None:
+            continue
+        accepted = field("Accepted recommendations")
+        records.append({
+            "reviewer": reviewer_name,
+            "capability": field("Capability") or "engineering",
+            # Keep an omitted rationale as data absence.  The dashboard supplies
+            # the viewer's locale-specific fallback instead of leaking a Dutch
+            # server string into another locale.
+            "selected_because": field("Selected because"),
+            "accepted_recommendations": int(accepted) if accepted and accepted.isdigit() else 0,
+            "status": "completed",
+        })
+        if len(records) == 12:
+            break
+    return records
+
+
+def _central_console_invocation_reviewers(data_root: Path, run_id: str) -> list[dict[str, object]]:
+    """Project completed or still-running reviewer identities from CENTRAL.
+
+    Before a run is terminal there is no immutable report to read.  The
+    invocation ledger is the authoritative, bounded source for the reviewer
+    identities that have actually been invoked; it deliberately makes no
+    claim about their recommendations.
+    """
+    try:
+        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+            rows = connection.execute(
+                """SELECT role,completed_at FROM provider_invocations
+                     WHERE run_id=? AND phase='CAPABILITY_REVIEW'
+                       AND role LIKE 'reviewer:%'
+                     ORDER BY ordinal LIMIT 12""",
+                (run_id,),
+            ).fetchall()
+    except (sqlite3.DatabaseError, storage.EngineeringStorageError):
+        return []
+    reviewers: list[dict[str, object]] = []
+    for role, completed_at in rows:
+        name = str(role).removeprefix("reviewer:").strip()
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", name) is None:
+            continue
+        reviewers.append({
+            "reviewer": name,
+            "capability": "engineering",
+            "status": "completed" if isinstance(completed_at, str) and completed_at else "running",
+        })
+    return reviewers
+
+
+def _central_console_reviewer_agents(
+    data_root: Path, project_id: str, run_id: str,
+) -> list[dict[str, object]]:
+    """Return report findings when terminal, otherwise exact ledger identities."""
+    from_report = _central_console_report_reviewers(
+        _central_console_report(data_root, project_id, run_id),
+    )
+    return from_report or _central_console_invocation_reviewers(data_root, run_id)
+
+
 def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
     """Return the project status and terminal-history projections from CENTRAL.
 
@@ -3362,7 +3475,21 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
         # The retained dashboard renderer recognizes this established current
         # lifecycle contract. CENTRAL owns the facts, while this small shape
         # adapter keeps the active run visible without inventing history.
-        active_phase = "RUNNING" if active["state"] == "RUNNING" else "INITIALIZE"
+        lifecycle = _central_console_lifecycle(data_root, str(active["run_id"]))
+        lifecycle_phase = _central_text(lifecycle.get("current_step"))
+        # The dashboard's estimator understands lifecycle step identifiers,
+        # not the dispatch transport state.  Preserve the safe old fallback
+        # for the rare pre-lifecycle claim, but use observed CENTRAL state
+        # whenever it is available.
+        lifecycle_steps = lifecycle.get("steps")
+        active_step = next((
+            _central_text(step.get("id"))
+            for step in lifecycle_steps if isinstance(step, Mapping)
+            and str(step.get("state") or "").upper() == "ACTIVE"
+        ), None) if isinstance(lifecycle_steps, list) else None
+        active_phase = lifecycle_phase or active_step or (
+            "RUNNING" if active["state"] == "RUNNING" else "INITIALIZE"
+        )
         active_status = {
             "watcher_state": "ENGINEERING_RUN_ACTIVE",
             "run_id": active["run_id"],
@@ -3380,7 +3507,10 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
             # The current-run card is a distinct projection, but it must show
             # the same immutable Forge context as the terminal detail view.
             **active,
-            "lifecycle": _central_console_lifecycle(data_root, str(active["run_id"])),
+            "reviewer_agents": _central_console_reviewer_agents(
+                data_root, project_id, str(active["run_id"]),
+            ),
+            "lifecycle": lifecycle,
         }
     return {
         "project_id": project_id,
@@ -3468,6 +3598,7 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
         "execution": execution,
         "runtime": runtime,
         "usage": _central_console_provider_usage(data_root, run_id),
+        "reviewers": _central_console_reviewer_agents(data_root, project_id, run_id),
         "evidence": _central_console_validation_evidence(data_root, project_id, run_id),
         # The historical detail dialog uses the same read-only bubble flow as
         # the active card.  Terminal history remains separate in the table,
@@ -5334,7 +5465,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "history": detail,
                         "execution": detail.get("execution", {}),
                         "runtime": detail.get("runtime", {}),
-                        "reviewers": [],
+                        "reviewers": detail.get("reviewers", []),
                         "commits": {},
                         "commit_timeline": detail.get("commit_timeline", []),
                         "pull_requests": [],

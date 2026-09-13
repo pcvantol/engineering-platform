@@ -212,6 +212,10 @@ const OPERATIONAL_PRESENTATION_KEYS = {
 };
 function translate(value) {
   const raw = String(value || "");
+  const providerDeadline = /^Provider action exceeded the (\d+)-minute host-owned deadline\.$/.exec(raw);
+  if (providerDeadline) {
+    return t("operational.provider_deadline_exceeded", { minutes: providerDeadline[1] });
+  }
   const capabilityReview = /^Capability review:\s*(.+)$/i.exec(raw);
   if (capabilityReview) {
     return t("operational.activity_capability_review", {
@@ -1802,7 +1806,13 @@ function renderExecutionContext(context, execution = {}) {
   const hostFields = [
     [t("field.execution_mode"), execution.execution_mode, true],
     [t("field.repository"), execution.target_repository],
+    [t("detail.producer"), execution.producer_id],
+    [t("detail.producer_type"), execution.producer_type ? producerTypeLabel(execution.producer_type) : null],
+    [t("detail.producer_version"), execution.producer_version],
+    [t("detail.producer_submission_contract"), execution.producer_submission_contract_version],
+    [t("detail.submission_id"), execution.submission_id],
     [t("detail.target_checkout"), execution.checkout_path],
+    [t("detail.target_branch"), execution.target_branch],
     [t("ui.active_branch"), execution.active_branch],
   ].filter(([, value]) => executionContextValue(value));
   if (!context || typeof context !== "object") {
@@ -2529,7 +2539,25 @@ function renderHealthStatus(x, snapshot = {}) {
   latestStatus = x;
   renderDashboardHealth(x, latestPlatformHealth);
   if (latestCodexCliUpdateStatus) renderCodexCliUpdate(latestCodexCliUpdateStatus);
-  latestDashboardSnapshot = snapshot;
+  // Project snapshots intentionally omit account-wide capacity.  Do not let
+  // that omission erase the complete platform-capacity observation fetched
+  // from its dedicated CENTRAL route while a selected project is refreshing.
+  const priorCapacity = latestDashboardSnapshot?.rate_limits;
+  // An empty ``windows`` list is still an observed capacity projection (for
+  // example, an account with no rate-limit windows).  Only an omitted or
+  // malformed field is a project snapshot's intentional lack of capacity.
+  const hasSnapshotCapacity = snapshot.rate_limits
+    && typeof snapshot.rate_limits === "object"
+    && Array.isArray(snapshot.rate_limits.windows);
+  const visibleRateLimits = hasSnapshotCapacity ? snapshot.rate_limits : priorCapacity;
+  const visibleCapacityHistory = Array.isArray(snapshot.ai_capacity_history)
+    ? snapshot.ai_capacity_history
+    : latestDashboardSnapshot?.ai_capacity_history;
+  latestDashboardSnapshot = {
+    ...snapshot,
+    ...(visibleRateLimits ? { rate_limits: visibleRateLimits } : {}),
+    ...(Array.isArray(visibleCapacityHistory) ? { ai_capacity_history: visibleCapacityHistory } : {}),
+  };
   latestDurationEstimate = snapshot.duration_estimate || {};
   let active = isActiveRun(x),
     visibleStaleLifecycle = hasVisibleStaleLifecycle(x),
@@ -2568,9 +2596,9 @@ function renderHealthStatus(x, snapshot = {}) {
   if (snapshot.capacity_configuration && typeof snapshot.capacity_configuration === "object") {
     dashboardConfiguration = { ...dashboardConfiguration, ...snapshot.capacity_configuration };
   }
-  renderCodexUsageLimitBanner(x, snapshot.rate_limits);
-  renderCodexCapacityReserveBanner(snapshot.rate_limits);
-  syncCodexCapacityReserveOptions(snapshot.rate_limits);
+  renderCodexUsageLimitBanner(x, visibleRateLimits);
+  renderCodexCapacityReserveBanner(visibleRateLimits);
+  syncCodexCapacityReserveOptions(visibleRateLimits);
   indicator.className =
     "indicator indicator--" +
     statusTone +
@@ -2664,7 +2692,7 @@ function renderHealthStatus(x, snapshot = {}) {
     components.dashboard || t("format.not_available");
   $("workerVersion").textContent = components.worker || t("format.not_available");
   usage(snapshot.usage);
-  rateLimits(snapshot.rate_limits, snapshot.ai_capacity_history);
+  rateLimits(visibleRateLimits, visibleCapacityHistory);
   activeReviewerAgents(x.reviewer_agents, x);
 }
 let activePromptCategoryRun;
@@ -7710,7 +7738,7 @@ function promptDetailExecutionSections(history) {
     promptDetailStatusField(history.status),
     ...(promptHistoryIsBlocked(history.status) ? [detailField(
       t("detail.blocking_reason"),
-      history.blocking_reason || history.execution_diagnostic || t("detail.not_recorded"),
+      formatDiagnostic(history.blocking_reason || history.execution_diagnostic || t("detail.not_recorded")),
       true,
     )] : []),
     detailField(t("detail.operator_handling"), operatorHandlingLabel(history)),
@@ -7727,9 +7755,10 @@ function promptDetailExecutionSections(history) {
         : history.executed_at,
     ),
     ...(!promptHistoryIsBlocked(history.status) && executionContextValue(history.execution_diagnostic)
-      ? [detailField(t("detail.execution_diagnostic"), history.execution_diagnostic, true)]
+      ? [detailField(t("detail.execution_diagnostic"), formatDiagnostic(history.execution_diagnostic), true)]
       : []),
   ];
+  const centralHistory = history.history_source === "CENTRAL";
   const contextMetadataFields = [
     [t("detail.execution_mode"), history.execution_mode, false, true],
     [t("detail.producer"), history.producer_id],
@@ -7742,12 +7771,12 @@ function promptDetailExecutionSections(history) {
     [t("detail.engineering_action_id"), history.engineering_action_id],
     [t("detail.correlation_id"), history.correlation_id],
     [t("detail.target_repository"), history.target_repository],
-    [t("detail.target_branch"), history.target_branch, true],
+    [t(centralHistory ? "detail.execution_start_branch" : "detail.target_branch"), history.target_branch, true],
     [t("detail.target_checkout"), history.target_checkout_path, true, false, true],
     [t("detail.tracked_files"), history.tracked_file_count],
-    [t("detail.files_modified"), history.execution_metadata?.modified],
-    [t("detail.files_created"), history.execution_metadata?.created],
-    [t("detail.files_deleted"), history.execution_metadata?.deleted],
+    [t(centralHistory ? "detail.terminal_delivery_files_modified" : "detail.files_modified"), history.execution_metadata?.modified],
+    [t(centralHistory ? "detail.terminal_delivery_files_created" : "detail.files_created"), history.execution_metadata?.created],
+    [t(centralHistory ? "detail.terminal_delivery_files_deleted" : "detail.files_deleted"), history.execution_metadata?.deleted],
   ].filter(([, value]) => executionContextValue(value)).map(([label, value, preformatted, executionMode, folder]) =>
     executionMode ? detailExecutionModeField(value) : detailField(label, value, preformatted, folder),
   ).concat(contextFields);
@@ -8889,11 +8918,14 @@ if (!NO_PROJECT_SELECTED) {
 void refreshGithubRateLimit();
 if (NO_PROJECT_SELECTED) {
   void refreshComponentLogs({}, true);
-  void refreshPlatformProviderCapacity();
-  window.setInterval(() => {
-    if ($("autoRefresh")?.checked) void refreshPlatformProviderCapacity();
-  }, 60_000);
 }
+// Provider capacity belongs to the signed-in platform account, not to the
+// selected project.  Refresh it for every dashboard scope; only component
+// logs remain intentionally restricted to the no-project operations view.
+void refreshPlatformProviderCapacity();
+window.setInterval(() => {
+  if ($("autoRefresh")?.checked) void refreshPlatformProviderCapacity();
+}, 60_000);
 // The Server supplies a minimal CENTRAL-only status document for `<geen>`.
 // Hydrate that same shared shell so footer facts are factual rather than
 // permanently displaying loading placeholders; it contains no project state.
