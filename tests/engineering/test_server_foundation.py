@@ -1211,6 +1211,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(metadata, {"modified": 0, "created": 1, "deleted": 0, "renamed": 0, "codex_commands_executed": 8})
         assert activity is not None
         self.assertEqual(activity["activity"]["overall_activity_total"], 10)
+        self.assertEqual(
+            activity["terminal_delivery_diff"]["per_pr_changed_file_counts"],
+            "NOT_RECORDED_BY_EXECUTION_HOST_EVIDENCE_CONTRACT",
+        )
         self.assertNotIn("checkout_path", repr((fields, metadata, activity)))
 
         self.assertEqual(

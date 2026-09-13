@@ -1694,6 +1694,40 @@ function executionContextEngineeringSummary(context) {
   }
   return executionContextValue(context?.engineering_summary);
 }
+function executionContextPlanningFields(context) {
+  const actionSummary = executionContextEngineeringSummary(context);
+  const actionSummaryIsDynamic = context.action_summary_status !== "NOT_AVAILABLE_HISTORICAL";
+  return [
+    [t("detail.mission_id"), context.mission_id],
+    [t("execution_context.mission_title"), context.mission_title],
+    [t("execution_context.mission_lifecycle"), executionContextRuntimeStatus(context.mission_lifecycle)],
+    [t("execution_context.business_summary"), context.business_summary, true],
+    [t("execution_context.engineering_summary"), context.planning_engineering_summary || actionSummary, Boolean(context.planning_engineering_summary) || actionSummaryIsDynamic],
+    [t("execution_context.action_summary"), actionSummary, actionSummaryIsDynamic],
+    [t("execution_context.action_summary_generator"), context.action_summary_generator],
+    [t("execution_context.action_summary_digest"), context.action_summary_digest],
+    [t("execution_context.action_context_envelope_digest"), context.action_context_envelope_digest],
+    [t("execution_context.current_intent"), context.current_intent],
+    [t("execution_context.current_engineering_action"), context.current_engineering_action],
+    [t("execution_context.planning_confidence"), context.planning_confidence],
+    [t("execution_context.current_iteration"), context.current_iteration],
+    [t("execution_context.mission_progress"), context.mission_progress],
+    [t("execution_context.last_runtime_update"), executionContextTimestamp(context.last_runtime_update || context.last_updated_timestamp)],
+    [t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase)],
+    [t("execution_context.dispatcher_state"), executionContextRuntimeStatus(context.dispatcher_state)],
+    [t("execution_context.decision_evidence_reference"), context.decision_evidence_reference || context.decision_evidence],
+    [t("execution_context.decision_type"), context.decision_type],
+    [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
+    [t("execution_context.approved_mission_queue_state"), context.approved_mission_queue_state],
+    [t("execution_context.producer_host"), context.producer_host_id],
+    [t("execution_context.mission_revision"), context.mission_revision],
+    [t("execution_context.intent_id"), context.intent_id],
+    [t("execution_context.intent_revision"), context.intent_revision],
+    [t("execution_context.runtime_prompt_id"), context.runtime_prompt_id],
+    [t("execution_context.runtime_prompt_digest"), context.runtime_prompt_digest],
+    [t("execution_context.retry_of_correlation_id"), context.retry_of_correlation_id],
+  ].filter(([, value]) => executionContextValue(value));
+}
 function inheritModalAccent(modal, trigger) {
   const source = trigger?.closest(".current-run,[data-modal-accent-source],.dashboard-modal-shell");
   const sample = source && document.createElement("span");
@@ -1752,36 +1786,7 @@ function renderExecutionContext(context, execution = {}) {
     );
     return;
   }
-  const planningFields = [
-    [t("detail.mission_id"), context.mission_id],
-    [t("execution_context.mission_title"), context.mission_title],
-    [t("execution_context.mission_lifecycle"), context.mission_lifecycle],
-    [t("execution_context.business_summary"), context.business_summary],
-    [t("execution_context.engineering_summary"), context.planning_engineering_summary || executionContextEngineeringSummary(context)],
-    [t("execution_context.action_summary"), executionContextEngineeringSummary(context)],
-    [t("execution_context.action_summary_generator"), context.action_summary_generator],
-    [t("execution_context.action_summary_digest"), context.action_summary_digest],
-    [t("execution_context.action_context_envelope_digest"), context.action_context_envelope_digest],
-    [t("execution_context.current_intent"), context.current_intent],
-    [t("execution_context.current_engineering_action"), context.current_engineering_action],
-    [t("execution_context.planning_confidence"), context.planning_confidence],
-    [t("execution_context.current_iteration"), context.current_iteration],
-    [t("execution_context.mission_progress"), context.mission_progress],
-    [t("execution_context.last_runtime_update"), executionContextTimestamp(context.last_runtime_update || context.last_updated_timestamp)],
-    [t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase)],
-    [t("execution_context.dispatcher_state"), executionContextRuntimeStatus(context.dispatcher_state)],
-    [t("execution_context.decision_evidence_reference"), context.decision_evidence_reference || context.decision_evidence],
-    [t("execution_context.decision_type"), context.decision_type],
-    [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
-    [t("execution_context.approved_mission_queue_state"), context.approved_mission_queue_state],
-    [t("execution_context.producer_host"), context.producer_host_id],
-    [t("execution_context.mission_revision"), context.mission_revision],
-    [t("execution_context.intent_id"), context.intent_id],
-    [t("execution_context.intent_revision"), context.intent_revision],
-    [t("execution_context.runtime_prompt_id"), context.runtime_prompt_id],
-    [t("execution_context.runtime_prompt_digest"), context.runtime_prompt_digest],
-    [t("execution_context.retry_of_correlation_id"), context.retry_of_correlation_id],
-  ].filter(([, value]) => executionContextValue(value));
+  const planningFields = executionContextPlanningFields(context);
   const profile = context.validation_profile && typeof context.validation_profile === "object"
     ? context.validation_profile : null;
   const suppliedFields = [
@@ -1797,17 +1802,24 @@ function renderExecutionContext(context, execution = {}) {
     ]] : []),
     ...(context.context_version ? [[t("execution_context.version"), context.context_version]] : []),
   ];
+  const renderedPlanningFields = planningFields.map(([label, value]) => executionContextField(label, value));
   card.replaceChildren(
     Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
     ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value, label === t("detail.target_checkout"))),
     ...suppliedFields.map(([label, value]) => executionContextField(label, value)),
     ...(planningFields.length
-      ? planningFields.map(([label, value]) => executionContextField(label, value))
+      ? renderedPlanningFields
       : [Object.assign(document.createElement("p"), {
         className: "execution-context__planning-empty",
         textContent: t("execution_context.planning_not_supplied"),
       })]),
   );
+  const dynamicRows = planningFields.flatMap(([, value, dynamic], index) => {
+    const source = executionContextValue(value);
+    const element = renderedPlanningFields[index]?.lastElementChild;
+    return dynamic && source && element?.textContent === source ? [{ source, element }] : [];
+  });
+  void localizeDynamicEvidence(dynamicRows);
 }
 function renderOperatorMergeWait(x) {
   const card = $("operatorMergeWait"), pullRequest = Number(x.pull_request);
@@ -7585,29 +7597,19 @@ function promptDetailExecutionSections(history) {
   const timestamp = Date.parse(String(history.executed_at || ""));
   const context = history.execution_context && typeof history.execution_context === "object" ? history.execution_context : null;
   const contextMissionId = executionContextValue(context?.mission_id) || executionContextValue(history.mission_id);
-  const contextFields = context ? [
-    [t("execution_context.mission_title"), context.mission_title],
-    [t("execution_context.business_summary"), context.business_summary],
-    [t("execution_context.engineering_summary"), context.planning_engineering_summary || executionContextEngineeringSummary(context)],
-    [t("execution_context.action_summary"), executionContextEngineeringSummary(context)],
-    [t("execution_context.action_summary_generator"), context.action_summary_generator],
-    [t("execution_context.action_summary_digest"), context.action_summary_digest],
-    [t("execution_context.action_context_envelope_digest"), context.action_context_envelope_digest],
-    [t("execution_context.mission_lifecycle"), context.mission_lifecycle],
-    [t("execution_context.last_runtime_update"), executionContextTimestamp(context.last_runtime_update || context.last_updated_timestamp)],
-    [t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase)],
-    [t("execution_context.dispatcher_state"), executionContextRuntimeStatus(context.dispatcher_state)],
-    [t("execution_context.decision_evidence_reference"), context.decision_evidence_reference || context.decision_evidence],
-    [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
-    [t("execution_context.producer_host"), context.producer_host_id],
-    [t("execution_context.mission_revision"), context.mission_revision],
-    [t("execution_context.intent_id"), context.intent_id],
-    [t("execution_context.intent_revision"), context.intent_revision],
-    [t("execution_context.runtime_prompt_id"), context.runtime_prompt_id],
-    [t("execution_context.runtime_prompt_digest"), context.runtime_prompt_digest],
-    [t("execution_context.retry_of_correlation_id"), context.retry_of_correlation_id],
-  ].filter(([, value]) => executionContextValue(value)).map(([label, value]) => detailField(label, value))
-    .concat(executionContextSnapshotFields(context)) : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
+  const dynamicRows = [];
+  const contextFields = context ? (() => {
+    // The historical metadata block already renders Mission ID as immutable
+    // run provenance; retain the shared remaining context fields exactly once.
+    const fields = executionContextPlanningFields(context).slice(1);
+    const rendered = fields.map(([label, value]) => detailField(label, value));
+    fields.forEach(([, value, dynamic], index) => {
+      const source = executionContextValue(value);
+      const element = rendered[index]?.lastElementChild;
+      if (dynamic && source && element?.textContent === source) dynamicRows.push({ source, element });
+    });
+    return rendered.concat(executionContextSnapshotFields(context));
+  })() : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   const summaryFields = [
     promptDetailStatusField(history.status),
     ...(promptHistoryIsBlocked(history.status) ? [detailField(
@@ -7654,10 +7656,12 @@ function promptDetailExecutionSections(history) {
   ].filter(([, value]) => executionContextValue(value)).map(([label, value, preformatted, executionMode, folder]) =>
     executionMode ? detailExecutionModeField(value) : detailField(label, value, preformatted, folder),
   ).concat(contextFields);
-  return [
+  const sections = [
     promptDetailCard(t("detail.execution"), summaryFields, false, "prompt-detail-card--execution-summary"),
     promptDetailCard(t("ui.execution_context"), contextMetadataFields, false, "prompt-detail-card--execution-context"),
   ];
+  void localizeDynamicEvidence(dynamicRows);
+  return sections;
 }
 function promptDetailDurationSection(execution) {
   return promptDetailCard(t("detail.duration"), [
@@ -7725,6 +7729,8 @@ function promptDetailUsageSection(usage) {
 const EXECUTION_ACTIVITY_DISPLAY_KEYS = Object.freeze({
   "One persisted Codex CLI provider invocation. It is not a shell command, tool call, prompt, token count, or GitHub API request.": "detail.activity_definition_value",
   "GitHub evidence scoped to each PR; never summed into this run total.": "detail.delivery_pr_scope_value",
+  NOT_RECORDED_BY_EXECUTION_HOST_EVIDENCE_CONTRACT: "detail.delivery_pr_scope_not_recorded",
+  "Not recorded by this execution-host evidence contract.": "detail.delivery_pr_scope_not_recorded",
 });
 function executionActivityDisplayValue(value) {
   const key = EXECUTION_ACTIVITY_DISPLAY_KEYS[String(value || "")];

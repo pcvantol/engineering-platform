@@ -2650,7 +2650,7 @@ def _central_execution_host_projection(
             # not retained in the CENTRAL presentation contract.
             "total_unique_changed_paths": None,
             "renamed": None,
-            "per_pr_changed_file_counts": "Not recorded by this execution-host evidence contract.",
+            "per_pr_changed_file_counts": "NOT_RECORDED_BY_EXECUTION_HOST_EVIDENCE_CONTRACT",
         },
     }
     return (

@@ -2763,6 +2763,63 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(historyContext).not.toContainText("COMPLETE");
   });
 
+  test("translates dynamic Forge summaries in the active execution context", async ({ page }) => {
+    const business = "Prove the installed Forge-to-EP managed workflow.";
+    const engineering = "Verify the managed workflow with a bounded implementation.";
+    const action = "Record a bounded managed dashboard acceptance qualification.";
+    const translations = [
+      "Bewijs de geïnstalleerde beheerde workflow van Forge naar EP.",
+      "Verifieer de beheerde workflow met een begrensde implementatie.",
+      "Leg een begrensde beheerde dashboard-acceptatiekwalificatie vast.",
+    ];
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-translate", async (route) => {
+      expect(route.request().method()).toBe("POST");
+      expect(await route.request().postDataJSON()).toEqual({ locale: "nl", texts: [business, engineering, action] });
+      await route.fulfill({ json: { translations } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(({ business, engineering, action }) => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "forge-context-translation",
+      execution_context: {
+        mission_id: "MISSION-0006",
+        mission_title: "Forge dashboard E2E",
+        mission_lifecycle: "ACTIVE",
+        business_summary: business,
+        planning_engineering_summary: engineering,
+        engineering_summary: action,
+        action_summary_status: "AVAILABLE",
+      },
+    }, {}), { business, engineering, action });
+    const context = page.locator("#executionContext");
+    for (const translation of translations) await expect(context).toContainText(translation);
+    await expect(context).not.toContainText(business);
+    await expect(context).not.toContainText(engineering);
+    await expect(context).not.toContainText(action);
+    await expect(context).toContainText("Actief");
+    await expect(context).not.toContainText("ACTIVE");
+
+    await page.evaluate(({ business, engineering, action }) => renderPromptHistoryDetail({
+      history: {
+        run_id: "forge-context-translation", status: "COMPLETE", title: "Forge dashboard E2E",
+        execution_context: {
+          mission_id: "MISSION-0006", mission_title: "Forge dashboard E2E", mission_lifecycle: "ACTIVE",
+          business_summary: business, planning_engineering_summary: engineering, engineering_summary: action,
+          action_summary_status: "AVAILABLE",
+        },
+      },
+    }), { business, engineering, action });
+    const historicalContext = page.locator("#promptHistoryDetailContent .prompt-detail-card--execution-context");
+    for (const translation of translations) await expect(historicalContext).toContainText(translation);
+    await expect(historicalContext).not.toContainText(business);
+    await expect(historicalContext).not.toContainText(engineering);
+    await expect(historicalContext).not.toContainText(action);
+    await expect(historicalContext).toContainText("Actief");
+    await expect(historicalContext).not.toContainText("ACTIVE");
+  });
+
   test("keeps lease-lost finalization visible for safe recovery", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
