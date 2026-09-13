@@ -34,6 +34,21 @@ def command(binary: Path, *args: str) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
+def build_wheel(source_root: Path, wheelhouse: Path) -> None:
+    """Build normally first; use the installed backend only when offline."""
+    command = (sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(source_root))
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)  # nosec B603
+    except subprocess.CalledProcessError:
+        # CI verifies the ordinary isolated build. Local recovery remains
+        # possible when its selected interpreter already has the declared
+        # backend but a package index is deliberately unavailable.
+        subprocess.run(
+            (*command[:5], "--no-build-isolation", *command[5:]),
+            check=True, capture_output=True, text=True,
+        )  # nosec B603
+
+
 def git(path: Path, *args: str) -> None:
     subprocess.run(("git", "-C", str(path), *args), check=True, capture_output=True)  # nosec B603
 
@@ -308,11 +323,7 @@ def main(argv: list[str] | None = None) -> int:
         root, wheelhouse, venv, data = Path(temporary), Path(temporary) / "wheelhouse", Path(temporary) / "venv", Path(temporary) / "central"
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         wheelhouse.mkdir()
-        # Qualification must be reproducible in an offline build environment.
-        # Its explicitly selected interpreter already provides the declared
-        # build backend, so do not make the result depend on downloading an
-        # otherwise unused isolated build environment from a package index.
-        subprocess.run((sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", "--wheel-dir", str(wheelhouse), str(args.source_root)), check=True, capture_output=True, text=True)  # nosec B603
+        build_wheel(args.source_root, wheelhouse)
         subprocess.run((sys.executable, "-m", "venv", str(venv)), check=True)  # nosec B603
         wheels = tuple(wheelhouse.glob("engineering_platform-*.whl"))
         if len(wheels) != 1:
