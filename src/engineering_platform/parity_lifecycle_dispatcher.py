@@ -24,7 +24,7 @@ from . import central_database, submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
-from .execution_timing import record_queue_wait_from_submission
+from .execution_timing import complete_active_phase, record_queue_wait_from_submission
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .parity_context import HistoricalCandidate, ParityProjectContext, historical_candidate, project_context
 from .platform_bootstrap import provision_runtime_workspace
