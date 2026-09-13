@@ -2735,7 +2735,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#executionContext")).toHaveCSS("background-color", "rgb(255, 255, 255)");
   });
 
-  test("translates execution phase in active and historical execution context", async ({ page }) => {
+  test("translates execution phase in the active context and historical status", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -2757,10 +2757,14 @@ test.describe("Engineering Status browser smoke", () => {
         execution_context: { execution_phase: "COMPLETE" },
       },
     }));
+    // Runtime phase belongs to the execution/status block, not to immutable
+    // Forge context. The historical status remains localized without
+    // reintroducing the duplicate EP execution-phase field in context.
+    const historySummary = page.locator("#promptHistoryDetailContent .prompt-detail-card--execution-summary");
     const historyContext = page.locator("#promptHistoryDetailContent .prompt-detail-card--execution-context");
-    await expect(historyContext).toContainText("EP-uitvoeringsfase");
-    await expect(historyContext).toContainText("Voltooid");
-    await expect(historyContext).not.toContainText("COMPLETE");
+    await expect(historySummary).toContainText("Voltooid");
+    await expect(historySummary).not.toContainText("COMPLETE");
+    await expect(historyContext).not.toContainText("EP-uitvoeringsfase");
   });
 
   test("translates dynamic Forge summaries in the active execution context", async ({ page }) => {
