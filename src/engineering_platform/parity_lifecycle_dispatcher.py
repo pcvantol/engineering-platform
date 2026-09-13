@@ -20,7 +20,7 @@ import uuid
 from uuid import uuid4
 from typing import Callable, Protocol
 
-from . import central_database, submission_service
+from . import central_database, execution_host_evidence, submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
@@ -30,7 +30,7 @@ from .parity_context import HistoricalCandidate, ParityProjectContext, historica
 from .platform_bootstrap import provision_runtime_workspace
 from .providers import CodexCliProvider, GitProvider
 from .execution_executor import CodexCliClient
-from .execution_reporting import generate_terminal_report
+from .execution_reporting import collect_terminal_evidence, generate_terminal_report
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
@@ -589,6 +589,73 @@ class ParityLifecycleDispatcher:
                 continue
             self._project_terminal_history(context.local_repository_root, state, data_root=self.data_root)
 
+    def reconcile_report_analyses(self) -> None:
+        """Create the advisory artifact missing from an indexed CENTRAL report.
+
+        Report analysis is a derived, redacted and versioned artifact.  It is
+        safe to add for a retained terminal report because it does not change
+        the run, its submission, or its terminal evidence.  This closes the
+        installation-time gap where the analysis flow was introduced after
+        earlier reports had already become immutable history.
+        """
+        with sqlite3.connect(central_database.path(self.data_root)) as connection:
+            rows = connection.execute(
+                """SELECT d.project_id,d.run_id,h.report_path
+                     FROM ep_parity_lifecycle_dispatches AS d
+                     JOIN prompt_execution_history AS h ON h.run_id=d.run_id
+                    WHERE d.state IN ('COMPLETE','BLOCKED','FAILED')
+                      AND h.report_path LIKE 'CENTRAL:%'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM execution_artifact_records AS a
+                           WHERE a.artifact_type='ADVISORY_REPORT_ANALYSIS'
+                             AND a.content_type='text/markdown'
+                             AND a.integrity_status='VERIFIED'
+                             AND (a.run_id=d.run_id OR a.ep_run_id=d.run_id)
+                      )
+                    ORDER BY h.executed_at,d.run_id"""
+            ).fetchall()
+        artifact_root = (self.data_root / "artifacts").resolve()
+        for project_id, run_id, stored_path in rows:
+            if not isinstance(project_id, str) or not isinstance(run_id, str) or not isinstance(stored_path, str):
+                continue
+            report = (artifact_root / stored_path.removeprefix("CENTRAL:")).resolve()
+            try:
+                report.relative_to(artifact_root)
+            except ValueError:
+                continue
+            if not report.is_file():
+                log_event(
+                    _lifecycle_logger(self.data_root), logging.WARNING,
+                    "lifecycle_report_analysis_backfill_unavailable", run_id=run_id,
+                    context={"project_id": project_id, "reason_code": "REPORT_NOT_FOUND"},
+                )
+                continue
+            try:
+                analysis = analyze_terminal_report(
+                    self.data_root, run_id, report,
+                    output_directory=self.data_root / "artifacts" / "report-analysis" / run_id / uuid4().hex,
+                )
+                artifact_id = f"report-analysis:{run_id}:{uuid4().hex}"
+                record_artifact(
+                    self.data_root, analysis, artifact_id=artifact_id,
+                    artifact_type="ADVISORY_REPORT_ANALYSIS", content_type="text/markdown",
+                    created_at=_utcnow(), run_id=run_id, ep_run_id=run_id,
+                    central_database=central_database.path(self.data_root), artifact_root=artifact_root,
+                )
+            except (EngineeringStorageError, OSError, sqlite3.DatabaseError) as error:
+                log_event(
+                    _lifecycle_logger(self.data_root), logging.WARNING,
+                    "lifecycle_report_analysis_backfill_unavailable", run_id=run_id,
+                    diagnostic=type(error).__name__,
+                    context={"project_id": project_id, "reason_code": "ANALYSIS_PERSISTENCE_FAILED"},
+                )
+                continue
+            log_event(
+                _lifecycle_logger(self.data_root), logging.INFO,
+                "lifecycle_report_analysis_backfilled", run_id=run_id,
+                context={"project_id": project_id, "artifact_id": artifact_id},
+            )
+
     def _record_early_runner_failure(self, *, submission_id: str, context: ParityProjectContext,
                                      run_id: str, error: Exception, stage: str = "RUNNER_INITIALIZATION") -> None:
         """Persist only the missing pre-checkpoint explanation, never a run state."""
@@ -706,6 +773,13 @@ class ParityLifecycleDispatcher:
                             "failed_gate_ids": "",
                         },
                     )
+                # Capture the host-owned baseline immediately before the
+                # runner may invoke a provider.  The record is path-free and
+                # immutable; terminal evidence later consumes this persisted
+                # snapshot rather than a current checkout.
+                execution_host_evidence.record_start(
+                    self.data_root, run_id=run_id, repository_root=repository_root, captured_at=_utcnow(),
+                )
                 runner = self.runner_factory(repository_root)
                 log_event(
                     self._logger,
@@ -738,6 +812,14 @@ class ParityLifecycleDispatcher:
                         "TOTAL_EXECUTION",
                         outcome="COMPLETE" if state.phase == "COMPLETE" else "FAILED",
                         central_database=central_database.path(self.data_root),
+                    )
+                    bundle = collect_terminal_evidence(repository_root, state)
+                    execution_host_evidence.record_terminal(
+                        self.data_root, run_id=run_id, repository_root=Path(bundle.target_workspace),
+                        worktree_state=bundle.worktree_state,
+                        modified=len(bundle.files_modified), created=len(bundle.files_added),
+                        deleted=len(bundle.files_removed), renamed=len(bundle.files_renamed),
+                        captured_at=_utcnow(),
                     )
                     terminal_occurred_at = self._record_terminal_timing_boundary(run_id)
                 # Report/history indexing is execution evidence too.  Keep it

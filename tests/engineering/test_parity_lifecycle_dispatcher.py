@@ -280,6 +280,51 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             for (payload,) in events
         ))
 
+    def test_report_analysis_reconciliation_backfills_only_a_missing_derived_artifact(self) -> None:
+        """Installing the analysis flow repairs old reports without changing their run."""
+        submission = self._submission("alpha")
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=_CheckpointingRunner)
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            receipt = dispatcher.dispatch(submission)
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "DELETE FROM execution_artifact_records WHERE artifact_type='ADVISORY_REPORT_ANALYSIS' AND ep_run_id=?",
+                (receipt.run_id,),
+            )
+
+        def write_analysis(root: Path, run_id: str, report: Path, *, output_directory: Path | None = None) -> Path:
+            self.assertEqual(run_id, receipt.run_id)
+            self.assertTrue(report.is_file())
+            assert output_directory is not None
+            output_directory.mkdir(parents=True, exist_ok=True)
+            result = output_directory / f"{run_id}.md"
+            result.write_text("# Backfilled analysis\\n", encoding="utf-8")
+            return result
+
+        with patch("engineering_platform.parity_lifecycle_dispatcher.analyze_terminal_report", side_effect=write_analysis):
+            dispatcher.reconcile_report_analyses()
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            analysis = connection.execute(
+                "SELECT artifact_type,run_id,ep_run_id FROM execution_artifact_records "
+                "WHERE artifact_type='ADVISORY_REPORT_ANALYSIS' AND ep_run_id=?",
+                (receipt.run_id,),
+            ).fetchone()
+            state = connection.execute(
+                "SELECT state FROM ep_parity_lifecycle_dispatches WHERE submission_id=?", (submission,)
+            ).fetchone()
+            events = connection.execute(
+                "SELECT payload FROM engineering_component_logs WHERE component='lifecycle_worker'"
+            ).fetchall()
+        self.assertEqual(analysis, ("ADVISORY_REPORT_ANALYSIS", None, receipt.run_id))
+        self.assertEqual(state, ("COMPLETE",))
+        self.assertTrue(any(
+            json.loads(payload).get("event") == "lifecycle_report_analysis_backfilled"
+            and json.loads(payload).get("run_id") == receipt.run_id
+            for (payload,) in events
+        ))
+
     def test_initialize_only_dispatch_materializes_input_on_normal_resume(self) -> None:
         """A visible pre-run dispatch remains resumable after qualification pauses it."""
         submission = self._submission("alpha")

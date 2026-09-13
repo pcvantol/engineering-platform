@@ -103,7 +103,7 @@ CENTRAL migration; no schema-40 database is migrated or read.
 
 ## Post-merge installation plan
 
-1. Install the Server artifact and run its forward Server schema-61
+1. Install the Server artifact and run its forward Server schema-62
    initialization against the existing CENTRAL data root. It activates the
    additive engineering-storage schema-44 artifact bindings for an already
    current CENTRAL store; it does not rewrite a run or terminal evidence.

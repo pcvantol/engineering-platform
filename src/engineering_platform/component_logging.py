@@ -101,6 +101,26 @@ LIFECYCLE_CONTEXT_KEYS = frozenset(
     }
 )
 
+# Logs are stored as structured JSON, but their textual Dashboard and export
+# projection must still be readable across components.  This sequence is the
+# shared semantic contract; unknown approved keys retain a deterministic
+# alphabetical tail.  Existing rows are not rewritten.
+LOG_CONTEXT_FIELD_ORDER = (
+    "project_id", "repository_id", "submission_id", "run_id",
+    "audit_action", "user_action", "provider_action", "event", "audit_actor", "audit_outcome",
+    "previous_state", "new_state", "previous_phase", "phase", "dispatch_state", "terminal_state",
+    "operator_resolution", "queue_disposition", "admission_decision", "failed_gate_ids",
+    "failure_stage", "diagnostic_code", "next_action", "duplicate_claim", "retry_parent_run_id",
+    "operation_id", "operator_reference", "deleted_count", "entry_count", "configuration_scope",
+    "configuration_key", "previous_value", "new_value", "provider", "provider_action_source",
+    "execution_mode", "package_format", "previous_location", "new_location", "log_component",
+    "forge_application_version", "producer_contract_version", "forge_provenance_contract_version",
+    "producer_readback_contract_version", "receipt_contract_version", "receipt_id", "accepted_request_digest",
+    "ep_application_version", "component_version", "target_component", "target_component_version",
+    "application_version", "git_commit", "ep_instance_id", "exchange_direction", "schema_version",
+    "launchd_label", "launch_agent_path", "shutdown_signal",
+)
+
 
 def configured_level(value: str | None = None) -> int:
     """Resolve the supported local logging level without silently accepting typos."""
@@ -124,10 +144,13 @@ class RedactingJsonFormatter(logging.Formatter):
             payload["diagnostic"] = redact_diagnostic(str(diagnostic), limit=500)
         context = getattr(record, "context", {})
         if isinstance(context, Mapping):
-            for key in sorted(LIFECYCLE_CONTEXT_KEYS):
+            for key in LOG_CONTEXT_FIELD_ORDER:
                 if (value := context.get(key)) is not None:
                     payload[key] = redact_diagnostic(str(value), limit=500)
-        return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            for key in sorted(LIFECYCLE_CONTEXT_KEYS.difference(LOG_CONTEXT_FIELD_ORDER)):
+                if (value := context.get(key)) is not None:
+                    payload[key] = redact_diagnostic(str(value), limit=500)
+        return json.dumps(payload, separators=(",", ":"))
 
 
 class SQLiteLogHandler(logging.Handler):

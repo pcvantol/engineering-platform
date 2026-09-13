@@ -36,11 +36,30 @@ telemetry/log clearing and explicit audited user actions such as report, JSON,
 telemetry and log downloads. AI-chat audit entries record only
 sent/received/failed action and run identity; message content is never logged.
 An AI-chat response failure is recorded as `dashboard_action_failed` with
-`audit_outcome: FAILED` at `WARNING` level, so it is visible in the normal
-warning filter rather than being presented as an informational completion.
+`audit_outcome: FAILED` at `WARNING` level and a safe `failure_code` such as
+`CODEX_CLI_UNAVAILABLE`, `CODEX_CLI_EXIT_NONZERO`, or
+`CHAT_CONTEXT_UNAVAILABLE`. It is therefore visible in the normal warning
+filter rather than being presented as an informational completion. Stack
+traces, prompts, chat content and Codex output never enter this operator log;
+an unhandled server error remains only in the separately access-controlled
+runtime diagnostics.
 An audit record keeps bounded action, actor, outcome and canonical project/run
 identifiers, never prompt text, chat content, queue reason, local path,
 imported payload or downloaded bytes.
+
+### Detail-field order
+
+The writer and Console use one semantic order without rewriting old records:
+
+1. scope: `project_id`, `repository_id`, `submission_id`, `run_id`;
+2. event: action, actor and outcome;
+3. state: previous/new state, phase, dispatcher state and terminal state;
+4. bounded context: reason, gate, operator resolution and counters;
+5. provenance: Forge/EP/contract versions and receipt identifiers;
+6. remaining approved redacted fields in alphabetical order.
+
+The raw JSON stays an immutable event representation; the Details column and
+exports apply this same display order to new and historical records.
 
 ## Query processing
 

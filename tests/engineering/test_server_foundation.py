@@ -597,6 +597,27 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "keep_alive": True,
         })
 
+    def test_component_helpers_fail_closed_for_non_component_or_non_dictionary_plist(self) -> None:
+        plist_path = self.root / "not-a-dictionary.plist"
+        plist_path.parent.mkdir(parents=True)
+        plist_path.write_bytes(plistlib.dumps(["not", "a", "dictionary"]))
+        self.assertEqual(server._launch_agent_configuration(plist_path), {})
+        self.assertEqual(server._launch_agent_configuration(self.root / "missing.plist"), {})
+        with patch("engineering_platform.server.status", return_value={"components": {}}):
+            self.assertIsNone(server._platform_component_detail(self.root, "http_ingress"))
+
+    @patch("engineering_platform.server.LaunchdProvider")
+    def test_dashboard_relay_marks_an_inactive_owned_process_unavailable(self, launchd: object) -> None:
+        launchd.return_value.runtime_status.return_value = ProviderStatus(
+            "launchd", "configured", False, "Relay process inactive",
+        )
+        launchd.return_value.runtime_details.return_value = LaunchdRuntimeDetails(
+            "com.engineeringplatform.dashboard-relay", True, False, None, "1", 0, None,
+        )
+        component = server._dashboard_relay_component(server_running=True)
+        self.assertFalse(component["healthy"])
+        self.assertEqual(component["detail_code"], "DASHBOARD_RELAY_PROCESS_INACTIVE")
+
     def test_register_topology_cli_reads_the_versioned_json_declaration(self) -> None:
         declaration_path = Path(self.temporary.name) / "repository.json"
         declaration_path.write_text(json.dumps({
@@ -770,6 +791,40 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         (self.root / "server.json").write_text(json.dumps({"version": 2}), encoding="utf-8")
         with self.assertRaises(server.ServerConfigurationError):
             server.initialize(self.root)
+
+    def test_runtime_helpers_fail_closed_for_missing_or_malformed_observations(self) -> None:
+        """A stale runtime receipt cannot make a process appear healthy."""
+        self.root.mkdir(parents=True)
+        self.assertIsNone(server._runtime(self.root))
+        (self.root / server.SERVER_RUNTIME_FILENAME).write_text("not-json", encoding="utf-8")
+        self.assertIsNone(server._runtime(self.root))
+        (self.root / server.SERVER_RUNTIME_FILENAME).write_text("[]", encoding="utf-8")
+        self.assertIsNone(server._runtime(self.root))
+        runtime = {"pid": 123, "started_at": "2026-09-13T00:00:00+00:00"}
+        (self.root / server.SERVER_RUNTIME_FILENAME).write_text(json.dumps(runtime), encoding="utf-8")
+        self.assertEqual(server._runtime(self.root), runtime)
+        self.assertFalse(server._alive(None))
+        self.assertFalse(server._alive(0))
+        with patch("engineering_platform.server.os.kill", side_effect=ProcessLookupError):
+            self.assertFalse(server._alive(123))
+        with patch("engineering_platform.server.os.kill", side_effect=PermissionError):
+            self.assertTrue(server._alive(123))
+        with patch("engineering_platform.server.os.kill") as kill:
+            self.assertTrue(server._alive(123))
+        kill.assert_called_once_with(123, 0)
+
+    def test_initialize_rejects_an_invalid_persisted_runtime_identity(self) -> None:
+        self.root.mkdir(parents=True)
+        (self.root / server.SERVER_IDENTITY_FILENAME).write_text("[]", encoding="utf-8")
+        with self.assertRaisesRegex(server.ServerConfigurationError, "runtime identity"):
+            server.initialize(self.root)
+
+    def test_validate_store_rejects_a_corrupt_database_without_details(self) -> None:
+        self.root.mkdir(parents=True)
+        (self.root / server.SERVER_DATABASE_FILENAME).write_bytes(b"not a sqlite database")
+        identity = server.RuntimeIdentity("instance-a", "2026-09-13T00:00:00+00:00")
+        with self.assertRaisesRegex(server.ServerConfigurationError, "store is unavailable"):
+            server.validate_store(self.root, identity)
 
     def test_server_upgrades_home_derived_runtime_configuration_once(self) -> None:
         self.root.mkdir(parents=True)
@@ -1026,8 +1081,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 (server.SERVER_STORE_SCHEMA_VERSION,),
             )
 
-    def test_schema_60_upgrade_adds_only_prospective_immutable_action_context_storage(self) -> None:
-        """Schema 61 never invents a safe summary for already-admitted work."""
+    def test_schema_60_upgrade_adds_only_prospective_immutable_forge_and_host_evidence(self) -> None:
+        """Schemas 61/62 never invent facts for already-admitted work."""
         identity = server.initialize(self.root)
         database = self.root / server.SERVER_DATABASE_FILENAME
         with sqlite3.connect(database) as connection:
@@ -1039,6 +1094,17 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 connection.execute(f"DROP TRIGGER {trigger}")
             connection.execute("DROP INDEX ep_forge_action_context_envelopes_project_lookup")
             connection.execute("DROP TABLE ep_forge_action_context_envelopes")
+            for trigger in (
+                "ep_forge_planning_context_envelopes_scope_insert",
+                "ep_forge_planning_context_envelopes_immutable_update",
+                "ep_forge_planning_context_envelopes_immutable_delete",
+                "ep_execution_host_evidence_start_immutable",
+                "ep_execution_host_evidence_immutable_delete",
+            ):
+                connection.execute(f"DROP TRIGGER {trigger}")
+            connection.execute("DROP INDEX ep_forge_planning_context_envelopes_project_lookup")
+            connection.execute("DROP TABLE ep_forge_planning_context_envelopes")
+            connection.execute("DROP TABLE ep_execution_host_evidence")
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema61")
             connection.execute(
                 "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
@@ -1047,20 +1113,27 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,60 FROM ep_installations_schema61")
             connection.execute("DROP TABLE ep_installations_schema61")
-            # A clean schema-61 bootstrap records only its current marker.
-            # Recreate the historic schema-60 marker after removing it so the
-            # fixture remains an installed schema-60 authority.
+            # A clean bootstrap records only its current marker. Recreate the
+            # historic schema-60 marker so the fixture is a real installed
+            # authority that needs both prospective upgrades.
             connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=61")
             connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(60)")
             connection.execute("UPDATE engineering_metadata SET value='60' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_forge_action_context_envelopes").fetchone(), (0,))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_forge_planning_context_envelopes").fetchone(), (0,))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_execution_host_evidence").fetchone(), (0,))
             triggers = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
             self.assertTrue({
                 "ep_forge_action_context_envelopes_scope_insert",
                 "ep_forge_action_context_envelopes_immutable_update",
                 "ep_forge_action_context_envelopes_immutable_delete",
+                "ep_forge_planning_context_envelopes_scope_insert",
+                "ep_forge_planning_context_envelopes_immutable_update",
+                "ep_forge_planning_context_envelopes_immutable_delete",
+                "ep_execution_host_evidence_start_immutable",
+                "ep_execution_host_evidence_immutable_delete",
             } <= triggers)
             self.assertEqual(
                 connection.execute("SELECT schema_version FROM ep_installations").fetchone(),
@@ -1103,6 +1176,66 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         )
         self.assertEqual(historical["action_summary_status"], "NOT_AVAILABLE_HISTORICAL")
         self.assertNotIn("engineering_summary", historical)
+
+    def test_central_projects_only_verified_planning_and_host_execution_evidence(self) -> None:
+        """CENTRAL presents v1.3 facts without retaining a checkout path or prompt."""
+        planning = {
+            "envelope_version": "1.0", "mission_id": "mission-1", "mission_revision": "1",
+            "intent_id": "intent-1", "intent_revision": "2", "action_id": "action-1",
+            "mission_title": "Safe Mission", "business_summary": "Bounded business value.",
+            "engineering_summary": "Apply a bounded technical change.", "mission_lifecycle": "ACTIVE",
+            "decision_evidence_reference": "decision:opaque-1",
+            "decision_evidence_reference_digest": "sha256:" + "d" * 64,
+        }
+        planning["envelope_digest"] = submission_service._action_context_digest(planning)
+        self.assertEqual(
+            server._central_forge_planning_context(
+                json.dumps(planning, sort_keys=True), mission_id="mission-1", action_id="action-1",
+            ), planning,
+        )
+        self.assertIsNone(server._central_forge_planning_context(
+            json.dumps({**planning, "mission_title": "tampered"}), mission_id="mission-1", action_id="action-1",
+        ))
+        fields, metadata, activity = server._central_execution_host_projection(
+            json.dumps({
+                "status": "AVAILABLE", "target_branch": "main", "target_commit": "a" * 40,
+                "tracked_file_count": 4, "inventory_digest": "sha256:" + "b" * 64,
+            }),
+            json.dumps({
+                "status": "AVAILABLE", "tracked_file_count": 5, "inventory_digest": "sha256:" + "c" * 64,
+                "worktree_state": "CLEAN", "diff": {"modified": 0, "created": 1, "deleted": 0, "renamed": 0},
+                "activity": {"provider_invocations": 8, "host_validation_actions": 2},
+            }),
+        )
+        self.assertEqual(fields, {"target_branch": "main", "tracked_file_count": 4})
+        self.assertEqual(metadata, {"modified": 0, "created": 1, "deleted": 0, "renamed": 0, "codex_commands_executed": 8})
+        assert activity is not None
+        self.assertEqual(activity["activity"]["overall_activity_total"], 10)
+        self.assertNotIn("checkout_path", repr((fields, metadata, activity)))
+
+        self.assertEqual(
+            server._central_execution_host_projection("{}", "{}"), ({}, {}, None),
+        )
+        invalid_start = {
+            "status": "AVAILABLE", "target_branch": "main", "target_commit": "a" * 40,
+            "tracked_file_count": True, "inventory_digest": "sha256:" + "b" * 64,
+        }
+        self.assertEqual(
+            server._central_execution_host_projection(
+                json.dumps(invalid_start), json.dumps({"status": "AVAILABLE"}),
+            ), ({}, {}, None),
+        )
+        invalid_terminal = {
+            "status": "AVAILABLE", "diff": {"modified": 0, "created": 0, "deleted": 0, "renamed": 0},
+            "activity": {"provider_invocations": True, "host_validation_actions": 1},
+        }
+        self.assertEqual(
+            server._central_execution_host_projection(json.dumps({
+                "status": "AVAILABLE", "target_branch": "main", "target_commit": "a" * 40,
+                "tracked_file_count": 1, "inventory_digest": "sha256:" + "b" * 64,
+            }), json.dumps(invalid_terminal)),
+            ({}, {}, None),
+        )
 
     def test_bootstrap_does_not_use_a_legacy_database_or_identity(self) -> None:
         legacy = self.root.parent / "legacy-schema40.db"
@@ -1988,7 +2121,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(snapshot["status"]["project_id"], "djconnect")
         self.assertEqual([run["run_id"] for run in snapshot["runs"]], ["dj-run"])
         self.assertEqual([run["run_id"] for run in history["runs"]], ["dj-run"])
-        self.assertEqual(snapshot["telemetry"][0]["total_tokens"], 5)
+        # CENTRAL telemetry is deliberately sourced only from immutable
+        # execution evidence.  Legacy local token counters are not projected
+        # into a CENTRAL run after its checkout has gone away.
+        self.assertIsNone(snapshot["telemetry"][0]["total_tokens"])
         with urlopen(f"http://127.0.0.1:{port}/api/telemetry/2026-01-01?project=djconnect") as response:
             telemetry_detail = json.loads(response.read())
         self.assertEqual(telemetry_detail["runs"][0]["run_id"], "dj-run")

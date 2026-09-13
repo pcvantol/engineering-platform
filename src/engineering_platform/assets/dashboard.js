@@ -88,6 +88,10 @@ function enumLabel(value, fallback = t("format.not_available")) {
   const key = `enum.${enumValue}`;
   return t(key, {}, enumValue);
 }
+function producerTypeLabel(value, fallback = t("detail.not_recorded")) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized ? t(`queue.producer.${normalized}`, {}, enumLabel(String(value).toUpperCase(), fallback)) : fallback;
+}
 function reviewerKey(value) {
   return String(value || "")
     .trim()
@@ -799,8 +803,10 @@ function consumeRateLimitReset() {
   });
 }
 function processMetrics(active, x) {
-  $("processMetrics").hidden = !active;
-  if (!active) return;
+  const measured = x && typeof x === "object" &&
+    Number.isFinite(Number(x.cpu_percent)) && Number.isInteger(x.process_count);
+  $("processMetrics").hidden = !active || !measured;
+  if (!active || !measured) return;
   $("codexCpu").textContent =
     locale.number(Number(x?.cpu_percent || 0), { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
   $("codexProcesses").textContent = x?.process_count ?? 0;
@@ -1109,6 +1115,32 @@ function isUnhelpfulHttpServerDebugLog(entry) {
     String(entry?.diagnostic || "").trim() === '"%s" %s %s'
   );
 }
+const LOG_DETAIL_FIELD_ORDER = Object.freeze([
+  "project_id", "repository_id", "submission_id", "run_id",
+  "audit_action", "user_action", "provider_action", "audit_actor", "audit_outcome",
+  "previous_state", "new_state", "previous_phase", "phase", "dispatch_state", "terminal_state",
+  "operator_resolution", "queue_disposition", "admission_decision", "failed_gate_ids",
+  "failure_stage", "diagnostic_code", "next_action", "duplicate_claim", "retry_parent_run_id",
+  "operation_id", "operator_reference", "deleted_count", "entry_count", "configuration_scope",
+  "configuration_key", "previous_value", "new_value", "provider", "provider_action_source",
+  "execution_mode", "package_format", "previous_location", "new_location", "log_component",
+  "forge_application_version", "producer_contract_version", "forge_provenance_contract_version",
+  "producer_readback_contract_version", "receipt_contract_version", "receipt_id", "accepted_request_digest",
+  "ep_application_version", "component_version", "target_component", "target_component_version",
+  "application_version", "git_commit", "ep_instance_id", "exchange_direction", "schema_version",
+  "launchd_label", "launch_agent_path", "shutdown_signal",
+]);
+function canonicalLogDetailEntries(entry, known) {
+  const rank = new Map(LOG_DETAIL_FIELD_ORDER.map((key, index) => [key, index]));
+  return Object.entries(entry)
+    .filter(([key]) => !known.has(key))
+    .sort(([left], [right]) => {
+      const rankDifference = (rank.get(left) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right) ?? Number.MAX_SAFE_INTEGER);
+      if (rankDifference !== 0) return rankDifference;
+      // Technical field keys must remain stable across every UI locale.
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+}
 function structuredLogEntries(text) {
   const normalized = String(text ?? "").trim();
   if (!normalized || !normalized.startsWith("{")) return [];
@@ -1129,8 +1161,7 @@ function structuredLogEntries(text) {
             "component",
             "line",
           ]),
-          details = Object.entries(entry)
-            .filter(([key]) => !known.has(key))
+          details = canonicalLogDetailEntries(entry, known)
             .map(
               ([key, value]) =>
                 key +
@@ -1726,21 +1757,22 @@ function renderExecutionContext(context, execution = {}) {
     [t("execution_context.mission_title"), context.mission_title],
     [t("execution_context.mission_lifecycle"), context.mission_lifecycle],
     [t("execution_context.business_summary"), context.business_summary],
-    [t("execution_context.engineering_summary"), executionContextEngineeringSummary(context)],
+    [t("execution_context.engineering_summary"), context.planning_engineering_summary || executionContextEngineeringSummary(context)],
+    [t("execution_context.action_summary"), executionContextEngineeringSummary(context)],
     [t("execution_context.action_summary_generator"), context.action_summary_generator],
     [t("execution_context.action_summary_digest"), context.action_summary_digest],
     [t("execution_context.action_context_envelope_digest"), context.action_context_envelope_digest],
     [t("execution_context.current_intent"), context.current_intent],
     [t("execution_context.current_engineering_action"), context.current_engineering_action],
-    [t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase)],
     [t("execution_context.planning_confidence"), context.planning_confidence],
     [t("execution_context.current_iteration"), context.current_iteration],
     [t("execution_context.mission_progress"), context.mission_progress],
     [t("execution_context.last_runtime_update"), executionContextTimestamp(context.last_runtime_update || context.last_updated_timestamp)],
+    [t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase)],
+    [t("execution_context.dispatcher_state"), executionContextRuntimeStatus(context.dispatcher_state)],
     [t("execution_context.decision_evidence_reference"), context.decision_evidence_reference || context.decision_evidence],
     [t("execution_context.decision_type"), context.decision_type],
     [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
-    [t("execution_context.dispatcher_state"), executionContextRuntimeStatus(context.dispatcher_state)],
     [t("execution_context.approved_mission_queue_state"), context.approved_mission_queue_state],
     [t("execution_context.producer_host"), context.producer_host_id],
     [t("execution_context.mission_revision"), context.mission_revision],
@@ -2483,6 +2515,9 @@ function renderHealthStatus(x, snapshot = {}) {
   $("watcher").textContent = translate(
     x.watcher_state || fallback.watcher_state,
   );
+  const centralSyntheticRuntime = x.central_synthetic_runtime_fields === true;
+  $("phase").closest(".field").hidden = centralSyntheticRuntime;
+  $("action").closest(".field").hidden = centralSyntheticRuntime;
   $("phase").textContent = translate(
     x.current_phase || "idle",
   );
@@ -2534,6 +2569,8 @@ function renderHealthStatus(x, snapshot = {}) {
   if (!precedingExecutionOnly) promptStarted(snapshot.prompt_started);
   renderEstimate(x, latestDurationEstimate);
   processMetrics(active, snapshot.process_metrics);
+  $("currentPrompt").closest(".field").hidden = !x.prompt_title || x.prompt_title === x.run_id;
+  $("currentFile").closest(".field").hidden = !x.submitted_filename;
   $("currentPrompt").textContent = precedingExecutionOnly
     ? (x.blocking_predecessor_title || x.blocking_predecessor_filename || t("format.not_available"))
     : (x.prompt_title || t("format.not_available"));
@@ -3571,19 +3608,9 @@ function healthComponentLabel(component) {
   return definition?.name_key ? t(definition.name_key) : component;
 }
 function componentLogDetails(entry) {
-  const details = String(entry?.details || ""),
-    component = typeof entry?.target_component === "string" && entry.target_component
-      ? entry.target_component
-      : entry?.component,
-    version = latestPlatformHealth?.components?.[component]?.version;
-  // Old records did not persist a component version.  The display therefore
-  // identifies the observed current version, without rewriting historical
-  // evidence or inventing one when health has no version.
-  if (
-    typeof version !== "string" || !version ||
-    /(?:^| · )(?:target_)?component_version:/.test(details)
-  ) return details || "—";
-  return (details ? details + " · " : "") + "component_version: " + version;
+  // Do not append a present-day version to a historical event.  The Details
+  // column is an exact, semantically ordered projection of retained evidence.
+  return String(entry?.details || "") || "—";
 }
 const LEGACY_TRANSPORT_STATUS_CODES = Object.freeze({
   HEALTHY: "HTTP_INGRESS_HEALTHY", DOWN: "HTTP_INGRESS_DOWN", AVAILABLE: "CLI_INGRESS_AVAILABLE",
@@ -5381,7 +5408,7 @@ function promptHistoryDetailMarkdown(payload, title) {
     ]),
     promptHistoryMarkdownSection(t("ui.execution_context"), [
       [t("detail.producer"), history.producer_id],
-      [t("detail.producer_type"), history.producer_type ? t(`enum.${history.producer_type}`) : null],
+      [t("detail.producer_type"), history.producer_type ? producerTypeLabel(history.producer_type) : null],
       [t("detail.producer_version"), history.producer_version],
       [t("detail.target_repository"), history.target_repository],
       [t("detail.target_branch"), history.target_branch],
@@ -5391,7 +5418,9 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.files_created"), metadata.created],
       [t("detail.files_deleted"), metadata.deleted],
       [t("detail.codex_commands"), metadata.codex_commands_executed],
-      ...Object.entries(context).map(([key, value]) => [promptHistoryMarkdownLabel(key), value]),
+      ...Object.entries(context)
+        .filter(([key]) => !["execution_phase", "dispatcher_state"].includes(key))
+        .map(([key, value]) => [promptHistoryMarkdownLabel(key), value]),
     ]),
     promptHistoryMarkdownSection(t("detail.runtime"), [
       [t("detail.runtime_provider"), runtimeProviderLabel(runtime.runtime_provider)],
@@ -5406,7 +5435,7 @@ function promptHistoryDetailMarkdown(payload, title) {
       .map(([key, value]) => [promptHistoryMarkdownLabel(key), value])),
     promptHistoryMarkdownSection(t("detail.execution_activity"), activity ? [
       [t("detail.activity_definition"), executionActivityDisplayValue(activity.activity?.codex_command_definition)],
-      [t("detail.primary_codex_commands"), activity.activity?.primary_codex_commands_total],
+      [t("detail.primary_codex_commands"), activity.activity?.provider_invocations_total ?? activity.activity?.primary_codex_commands_total],
       [t("detail.reviewer_codex_commands"), activity.activity?.reviewer_codex_commands_total],
       [t("detail.host_validation_commands"), activity.activity?.host_validation_commands_total],
       [t("detail.activity_total"), activity.activity?.overall_activity_total],
@@ -7557,24 +7586,28 @@ function promptDetailExecutionSections(history) {
   const context = history.execution_context && typeof history.execution_context === "object" ? history.execution_context : null;
   const contextMissionId = executionContextValue(context?.mission_id) || executionContextValue(history.mission_id);
   const contextFields = context ? [
-    detailField(t("execution_context.business_summary"), executionContextValue(context.business_summary) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.engineering_summary"), executionContextEngineeringSummary(context) || t("execution_context.not_supplied")),
-    ...(context.action_summary_generator ? [detailField(t("execution_context.action_summary_generator"), executionContextValue(context.action_summary_generator))] : []),
-    ...(context.action_summary_digest ? [detailField(t("execution_context.action_summary_digest"), executionContextValue(context.action_summary_digest))] : []),
-    ...(context.action_context_envelope_digest ? [detailField(t("execution_context.action_context_envelope_digest"), executionContextValue(context.action_context_envelope_digest))] : []),
-    detailField(t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.mission_lifecycle"), executionContextValue(context.mission_lifecycle) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.decision_evidence_reference"), executionContextValue(context.decision_evidence_reference || context.decision_evidence) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.execution_receipt_reference"), executionContextValue(context.execution_receipt_reference || context.last_execution_receipt) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.producer_host"), executionContextValue(context.producer_host_id) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.mission_revision"), executionContextValue(context.mission_revision) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.intent_id"), executionContextValue(context.intent_id) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.intent_revision"), executionContextValue(context.intent_revision) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.runtime_prompt_id"), executionContextValue(context.runtime_prompt_id) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.runtime_prompt_digest"), executionContextValue(context.runtime_prompt_digest) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.retry_of_correlation_id"), executionContextValue(context.retry_of_correlation_id) || t("execution_context.not_supplied")),
-    ...executionContextSnapshotFields(context),
-  ] : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
+    [t("execution_context.mission_title"), context.mission_title],
+    [t("execution_context.business_summary"), context.business_summary],
+    [t("execution_context.engineering_summary"), context.planning_engineering_summary || executionContextEngineeringSummary(context)],
+    [t("execution_context.action_summary"), executionContextEngineeringSummary(context)],
+    [t("execution_context.action_summary_generator"), context.action_summary_generator],
+    [t("execution_context.action_summary_digest"), context.action_summary_digest],
+    [t("execution_context.action_context_envelope_digest"), context.action_context_envelope_digest],
+    [t("execution_context.mission_lifecycle"), context.mission_lifecycle],
+    [t("execution_context.last_runtime_update"), executionContextTimestamp(context.last_runtime_update || context.last_updated_timestamp)],
+    [t("execution_context.execution_phase"), executionContextExecutionPhase(context.execution_phase)],
+    [t("execution_context.dispatcher_state"), executionContextRuntimeStatus(context.dispatcher_state)],
+    [t("execution_context.decision_evidence_reference"), context.decision_evidence_reference || context.decision_evidence],
+    [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
+    [t("execution_context.producer_host"), context.producer_host_id],
+    [t("execution_context.mission_revision"), context.mission_revision],
+    [t("execution_context.intent_id"), context.intent_id],
+    [t("execution_context.intent_revision"), context.intent_revision],
+    [t("execution_context.runtime_prompt_id"), context.runtime_prompt_id],
+    [t("execution_context.runtime_prompt_digest"), context.runtime_prompt_digest],
+    [t("execution_context.retry_of_correlation_id"), context.retry_of_correlation_id],
+  ].filter(([, value]) => executionContextValue(value)).map(([label, value]) => detailField(label, value))
+    .concat(executionContextSnapshotFields(context)) : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   const summaryFields = [
     promptDetailStatusField(history.status),
     ...(promptHistoryIsBlocked(history.status) ? [detailField(
@@ -7587,7 +7620,7 @@ function promptDetailExecutionSections(history) {
       t("detail.dismissed_at"),
       formatTimestamp(history.dismissed_at, String(history.dismissed_at)),
     )] : []),
-    detailField(t("detail.prompt_title"), history.title),
+    ...(history.title && history.title !== history.run_id ? [detailField(t("detail.prompt_title"), history.title)] : []),
     promptHistoryRunIdField(history.run_id),
     detailField(
       t("detail.executed_at"),
@@ -7600,26 +7633,27 @@ function promptDetailExecutionSections(history) {
       : []),
   ];
   const contextMetadataFields = [
-    detailExecutionModeField(history.execution_mode || t("detail.not_recorded")),
-    detailField(t("detail.producer"), history.producer_id || t("detail.not_recorded")),
-    detailField(t("detail.producer_type"), history.producer_type ? t(`enum.${history.producer_type}`) : t("detail.not_recorded")),
-    detailField(t("detail.producer_version"), history.producer_version || t("detail.not_recorded")),
-    detailField(t("detail.producer_submission_contract"), history.producer_submission_contract_version || t("execution_context.not_supplied")),
-    detailField(t("detail.submission_id"), history.submission_id || t("execution_context.not_supplied"), true),
-    detailField(t("execution_context.version"), history.execution_context_version || t("execution_context.not_supplied")),
-    detailField(t("detail.mission_id"), contextMissionId || t("detail.not_recorded")),
-    detailField(t("detail.engineering_action_id"), history.engineering_action_id || t("detail.not_recorded")),
-    detailField(t("detail.correlation_id"), history.correlation_id || t("detail.not_recorded")),
-    detailField(t("detail.target_repository"), history.target_repository || t("detail.not_recorded")),
-    detailField(t("detail.target_branch"), history.target_branch || t("detail.not_recorded"), true),
-    detailField(t("detail.target_checkout"), history.target_checkout_path || t("detail.not_recorded"), true, true),
-    detailField(t("detail.tracked_files"), history.tracked_file_count ?? t("detail.not_recorded")),
-    detailField(t("detail.files_modified"), history.execution_metadata?.modified ?? t("detail.not_recorded")),
-    detailField(t("detail.files_created"), history.execution_metadata?.created ?? t("detail.not_recorded")),
-    detailField(t("detail.files_deleted"), history.execution_metadata?.deleted ?? t("detail.not_recorded")),
-    detailField(t("detail.codex_commands"), history.execution_metadata?.codex_commands_executed ?? t("detail.not_recorded")),
-    ...contextFields,
-  ];
+    [t("detail.execution_mode"), history.execution_mode, false, true],
+    [t("detail.producer"), history.producer_id],
+    [t("detail.producer_type"), history.producer_type ? producerTypeLabel(history.producer_type) : null],
+    [t("detail.producer_version"), history.producer_version],
+    [t("detail.producer_submission_contract"), history.producer_submission_contract_version],
+    [t("detail.submission_id"), history.submission_id, true],
+    [t("execution_context.version"), history.execution_context_version],
+    [t("detail.mission_id"), contextMissionId],
+    [t("detail.engineering_action_id"), history.engineering_action_id],
+    [t("detail.correlation_id"), history.correlation_id],
+    [t("detail.target_repository"), history.target_repository],
+    [t("detail.target_branch"), history.target_branch, true],
+    [t("detail.target_checkout"), history.target_checkout_path, true, false, true],
+    [t("detail.tracked_files"), history.tracked_file_count],
+    [t("detail.files_modified"), history.execution_metadata?.modified],
+    [t("detail.files_created"), history.execution_metadata?.created],
+    [t("detail.files_deleted"), history.execution_metadata?.deleted],
+    [t("detail.codex_commands"), history.execution_metadata?.codex_commands_executed],
+  ].filter(([, value]) => executionContextValue(value)).map(([label, value, preformatted, executionMode, folder]) =>
+    executionMode ? detailExecutionModeField(value) : detailField(label, value, preformatted, folder),
+  ).concat(contextFields);
   return [
     promptDetailCard(t("detail.execution"), summaryFields, false, "prompt-detail-card--execution-summary"),
     promptDetailCard(t("ui.execution_context"), contextMetadataFields, false, "prompt-detail-card--execution-context"),
@@ -7704,8 +7738,9 @@ function promptDetailExecutionActivitySection(activity) {
   const diff = activity.terminal_delivery_diff || {};
   return promptDetailCard(t("detail.execution_activity"), [
     detailField(t("detail.activity_definition"), executionActivityDisplayValue(counters.codex_command_definition)),
-    detailField(t("detail.primary_codex_commands"), counters.primary_codex_commands_total),
-    detailField(t("detail.reviewer_codex_commands"), counters.reviewer_codex_commands_total),
+    detailField(t("detail.primary_codex_commands"), counters.provider_invocations_total ?? counters.primary_codex_commands_total),
+    ...(Number.isInteger(counters.reviewer_codex_commands_total)
+      ? [detailField(t("detail.reviewer_codex_commands"), counters.reviewer_codex_commands_total)] : []),
     detailField(t("detail.host_validation_commands"), counters.host_validation_commands_total),
     detailField(t("detail.activity_total"), counters.overall_activity_total),
     detailField(t("detail.delivery_baseline"), diff.transaction_baseline_sha),

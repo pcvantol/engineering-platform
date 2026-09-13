@@ -116,6 +116,29 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertEqual(record["target_component"], "dashboard_relay")
             self.assertEqual(record["target_component_version"], CURRENT_PLATFORM_VERSION)
 
+    def test_context_fields_use_the_shared_semantic_log_order(self) -> None:
+        """Dashboard and exports receive scope, event, state and provenance consistently."""
+        from engineering_platform.server import initialize
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "central"
+            initialize(data_root)
+            logger = component_logging.component_logger(
+                root, "operations_console", central_database=data_root / server.SERVER_DATABASE_FILENAME,
+            )
+            component_logging.log_event(logger, logging.INFO, "submission_accepted", run_id="run-1", context={
+                "component_version": "2.3.29", "audit_outcome": "COMPLETED", "audit_action": "submission_accepted",
+                "terminal_state": "COMPLETE", "project_id": "forge", "repository_id": "forge",
+                "submission_id": "sub-1", "forge_application_version": "2.7.13",
+            })
+            with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+                raw = connection.execute("SELECT payload FROM engineering_component_logs").fetchone()[0]
+            keys = list(json.loads(raw))
+            self.assertLess(keys.index("project_id"), keys.index("audit_action"))
+            self.assertLess(keys.index("audit_action"), keys.index("terminal_state"))
+            self.assertLess(keys.index("terminal_state"), keys.index("forge_application_version"))
+            self.assertLess(keys.index("forge_application_version"), keys.index("component_version"))
+
     def test_supported_writer_uses_server_central_sink_without_caller_selection(self) -> None:
         """A normal supported component writer cannot fall back to its checkout."""
         from engineering_platform.server import initialize

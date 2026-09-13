@@ -3853,8 +3853,11 @@ test.describe("Engineering Status browser smoke", () => {
     await alternatives.locator("summary").click();
     await expect(alternatives).toHaveAttribute("open", "");
     await expect(alternatives).toContainText("Mission Borealis");
-    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(2);
-    await expect(page.locator("#promptHistoryDetailContent .execution-mode-info")).toHaveCount(1);
+    // This fixture has no immutable execution-mode evidence.  Historical
+    // detail must omit it rather than inventing a "not recorded" field and
+    // its explanatory control.
+    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryDetailContent .execution-mode-info")).toHaveCount(0);
     await expect(page.locator("#promptHistoryDetailContent .prompt-history-run-id-copy")).toHaveCount(1);
   });
 
@@ -7842,7 +7845,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(gap).toBeGreaterThanOrEqual(10);
   });
 
-  test("shows the current version beside a logged component reference", async ({ page }) => {
+  test("does not append a current version to historical component evidence", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
       renderPlatformHealth({ components: {
@@ -7857,6 +7860,9 @@ test.describe("Engineering Status browser smoke", () => {
       renderComponentLogs();
     });
     await expect(page.locator("#platformComponentLog tr")).toContainText(
+      "target_component: dashboard_relay",
+    );
+    await expect(page.locator("#platformComponentLog tr")).not.toContainText(
       "component_version: 2.3.0",
     );
   });
