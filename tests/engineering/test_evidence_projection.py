@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 # This test invokes only its temporary controlled fixture.
+import shlex
 import subprocess  # nosec B404
 import sys
 from tempfile import TemporaryDirectory
@@ -15,6 +16,16 @@ from engineering_platform.evidence_projection import (
     deterministic_fixture,
     project_output,
 )
+
+
+def _write_fixture_launcher(path: Path, program: str) -> None:
+    """Write a portable temporary executable for the proxy boundary tests."""
+    path.write_text(
+        "#!/bin/sh\n"
+        f"exec {shlex.quote(sys.executable)} -c {shlex.quote(program)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o700)
 
 
 class EvidenceProjectionTests(unittest.TestCase):
@@ -50,17 +61,15 @@ class EvidenceProjectionTests(unittest.TestCase):
             executable_directory = Path(temporary) / "bin"
             executable_directory.mkdir()
             executable = executable_directory / "rg"
-            executable.write_text(
-                f"#!{sys.executable}\n"
+            _write_fixture_launcher(
+                executable,
                 "from pathlib import Path\n"
                 "import sys\n"
                 "needle, source = sys.argv[1:]\n"
                 "for line in Path(source).read_text(encoding='utf-8').splitlines():\n"
                 "    if needle in line:\n"
                 "        print(line)\n",
-                encoding="utf-8",
             )
-            executable.chmod(0o700)
             source.write_text("".join(f"needle {item}\n" for item in range(80)), encoding="utf-8")
             expected = "".join(f"needle {item}\n" for item in range(80))
             with ToolProxyEnvironment() as environment:
@@ -93,14 +102,12 @@ class EvidenceProjectionTests(unittest.TestCase):
             executable_directory.mkdir()
             expected = "FAILED test_name\nAssertionError: expected\n" + "trace\n" * 4000
             executable = executable_directory / "pytest"
-            executable.write_text(
-                f"#!{sys.executable}\n"
+            _write_fixture_launcher(
+                executable,
                 "import sys\n"
                 f"sys.stdout.write({expected!r})\n"
                 "raise SystemExit(1)\n",
-                encoding="utf-8",
             )
-            executable.chmod(0o700)
             with ToolProxyEnvironment() as environment:
                 environment["ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
                 bounded = subprocess.run(  # nosec B603

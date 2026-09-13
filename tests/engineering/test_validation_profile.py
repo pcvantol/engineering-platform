@@ -89,3 +89,25 @@ class ValidationProfileTests(unittest.TestCase):
             )[-1]
         self.assertEqual(binding["control_identity"], "python3 -m unittest discover -s tests")
         self.assertEqual(binding["command"][-2:], ["-s", "tests"])
+
+    def test_external_documentation_profile_uses_checkout_owned_test_suite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            binding = profile_control_bindings(
+                classify(["docs/managed-e2e-qualification.md"]), repository_root=root,
+            )[-1]
+        self.assertEqual(binding["validation_id"], "documentation_contract")
+        self.assertEqual(binding["control_identity"], "python3 -m unittest discover -s tests")
+        self.assertEqual(binding["command"][-2:], ["-s", "tests"])
+
+    def test_ep_documentation_profile_retains_ep_owned_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src" / "engineering_platform"
+            source.mkdir(parents=True)
+            (source / "validation_profile.py").write_text("# marker\n", encoding="utf-8")
+            binding = profile_control_bindings(
+                classify(["docs/engineering/operations.md"]), repository_root=root,
+            )[-1]
+        self.assertIn("test_engineering_operational_documentation", binding["control_identity"])

@@ -470,6 +470,11 @@ class ClientContractTest(unittest.TestCase):
             first_host = EngineeringRunner(
                 checkout, store, repository, github, agent, lambda _: None
             )
+            # This test exercises durable PR hand-off across process restarts,
+            # not subprocess discovery in the deliberately minimal fixture.
+            # Required controls are host-owned now, so keep that unrelated
+            # boundary deterministic for this recovery scenario.
+            first_host.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
 
             with patch(
                 "engineering_platform.execution_host.provider_readiness_failures", return_value=()
@@ -2798,6 +2803,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ])
         github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch=branch, base_branch="main")])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), github, agent, lambda _: None)
+        runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
         state = TransactionState("repair-rereview", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
                                  branch=branch, pull_request=71, owner_authorized=True)
         advanced = runner._repair(state, "quality review findings failed. Repair these bounded findings: finding-1")
@@ -2807,6 +2813,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(advanced.repair_audit[0]["repair_id"], "repair:repair-rereview:1")
         self.assertEqual([item["status"] for item in advanced.assurance_reviews], ["PASS", "PASS"])
         self.assertIn("Local repository validation gate", agent.prompts[1])
+        context = load_validation_context(self.root, "repair-rereview", currentness=1)
+        assert context is not None
+        self.assertEqual(context["controls"]["git_diff_check"]["result"], "PASS")
+        self.assertEqual(context["controls"]["repository_suite"]["result"], "PASS")
+        self.assertIn("provider_observed_validation_format_or_diff", context["controls"])
 
     def test_fourth_shared_repair_dispatch_is_refused_before_provider_invocation(self) -> None:
         agent = FakeAgent(AgentResult("COMPLETE"))
@@ -2834,9 +2845,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "local-validation-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
             branch="codex/implementation", owner_authorized=True,
         )
-        validated, result = runner._run_local_repository_validation(
-            state, AgentResult("COMPLETE", "codex/implementation")
-        )
+        with patch.object(
+            runner, "_execute_required_validation_controls", side_effect=lambda current: current,
+        ) as controls:
+            validated, result = runner._run_local_repository_validation(
+                state, AgentResult("COMPLETE", "codex/implementation")
+            )
+        controls.assert_called_once()
         self.assertEqual(validated.phase, "LOCAL_REPOSITORY_VALIDATION")
         self.assertEqual(validated.local_validation_iterations, 1)
         self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed"])

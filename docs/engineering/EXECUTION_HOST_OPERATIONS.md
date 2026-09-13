@@ -282,6 +282,12 @@ unittest discover -s tests`; other repository layouts retain their registered
 root discovery command. The persisted control identity and executed command
 are the same, so neither layout is silently misrepresented in run evidence.
 
+The `documentation_contract` control follows the same checkout boundary. The
+EP-specific documentation-contract test is only valid for an EP checkout; a
+producer checkout with `tests/` instead runs its own conventional unittest
+suite. Read-only provider commands are retained only as observed telemetry and
+cannot qualify a candidate or collide with host-owned terminal receipts.
+
 For a Managed implementation, the Execution Host first creates and pushes the
 bounded branch without creating a pull request. The visible **Local repository
 validation** step discovers and runs the target repository's canonical required
