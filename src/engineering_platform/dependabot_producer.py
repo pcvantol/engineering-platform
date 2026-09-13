@@ -296,6 +296,7 @@ class DependabotService:
                 external_resource_type=external_producer_binding.GITHUB_REPOSITORY,
             )
         admitted = 0
+        admitted_events: list[dict[str, object]] = []
         for identity in identities:
             pull_requests = discover_open_pull_requests(identity, self.provider)
             with sqlite3.connect(database) as connection:
@@ -308,12 +309,18 @@ class DependabotService:
                     if not result.duplicate:
                         admitted += 1
                         self._last_submission = result.submission_id
-                        self._emit("dependabot_submission_admitted", {
+                        # The Server audit sink is another CENTRAL writer.
+                        # Do not invoke it while this admission transaction
+                        # still owns the write lock; doing so self-deadlocks
+                        # the producer and can hide the readiness heartbeat.
+                        admitted_events.append({
                             "submission_id": result.submission_id,
                             "external_resource_identity": identity,
                             "project_id": result.project_id,
                             "repository_id": result.repository_id,
                         })
+        for context in admitted_events:
+            self._emit("dependabot_submission_admitted", context)
         self._last_discovery = datetime.now(timezone.utc).isoformat()
         return admitted
 

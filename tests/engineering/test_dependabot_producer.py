@@ -225,6 +225,28 @@ class DependabotProducerTests(unittest.TestCase):
                 ("project-a", "repository-a", "DEPENDABOT"),
             )
 
+    def test_admission_event_is_emitted_after_its_central_transaction_commits(self) -> None:
+        payload = [{
+            "number": 24,
+            "title": "Bump example",
+            "html_url": "https://github.com/pcvantol/repository-a/pull/24",
+            "user": {"login": "dependabot[bot]"},
+            "head": {"ref": "dependabot/pip/example", "sha": "d" * 40},
+        }]
+        visible_submission_counts: list[int] = []
+
+        def event(_name: str, _context: dict[str, object]) -> None:
+            with sqlite3.connect(self.database) as connection:
+                visible_submission_counts.append(int(connection.execute(
+                    "SELECT COUNT(*) FROM ep_submissions WHERE transport='DEPENDABOT'"
+                ).fetchone()[0]))
+
+        service = dependabot_producer.DependabotService(
+            self.root, provider=_Provider(payload), event=event,
+        )
+        self.assertEqual(service.tick(), 1)
+        self.assertEqual(visible_submission_counts, [1])
+
     def test_transient_central_lock_retries_before_the_normal_scan_interval(self) -> None:
         service = dependabot_producer.DependabotService(self.root, interval_seconds=300)
         waits: list[float] = []
