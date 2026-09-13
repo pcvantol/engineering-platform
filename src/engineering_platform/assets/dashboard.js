@@ -1134,7 +1134,12 @@ function canonicalLogDetailEntries(entry, known) {
   const rank = new Map(LOG_DETAIL_FIELD_ORDER.map((key, index) => [key, index]));
   return Object.entries(entry)
     .filter(([key]) => !known.has(key))
-    .sort(([left], [right]) => (rank.get(left) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right) ?? Number.MAX_SAFE_INTEGER) || left.localeCompare(right));
+    .sort(([left], [right]) => {
+      const rankDifference = (rank.get(left) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right) ?? Number.MAX_SAFE_INTEGER);
+      if (rankDifference !== 0) return rankDifference;
+      // Technical field keys must remain stable across every UI locale.
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
 }
 function structuredLogEntries(text) {
   const normalized = String(text ?? "").trim();
