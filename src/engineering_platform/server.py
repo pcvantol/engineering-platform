@@ -84,6 +84,7 @@ from .codex_chat import (
 from .ep_consumer_credentials import verifier
 from .execution_lifecycle import projection as lifecycle_projection
 from .execution_timing import timing_summary
+from .provider_usage import provider_usage_summary
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import CURRENT_PLATFORM_VERSION, EngineeringPlatformManifest
 from .providers import (
@@ -2342,6 +2343,10 @@ def _audit_configuration_change(
         logging.INFO,
         "configuration_changed",
         context={
+            "audit_action": "configuration_changed",
+            "audit_actor": DASHBOARD_AUDIT_ACTOR,
+            "audit_outcome": "COMPLETED",
+            "user_action": "configuration_changed",
             "configuration_scope": scope,
             "configuration_key": key,
             "previous_value": previous,
@@ -2362,13 +2367,15 @@ def _audit_platform_data_action(
         "audit_action": action,
         "audit_actor": DASHBOARD_AUDIT_ACTOR,
         "audit_outcome": outcome,
+        "user_action": f"platform_data_{action.lower()}",
     }
     if details:
         context.update(details)
+    failed = outcome == "FAILED"
     log_event(
         _operations_console_logger(data_root),
-        logging.INFO,
-        f"platform_data_{action.lower()}",
+        logging.WARNING if failed else logging.INFO,
+        f"platform_data_{action.lower()}_failed" if failed else f"platform_data_{action.lower()}",
         context=context,
     )
 
@@ -2409,6 +2416,72 @@ def _audit_dashboard_action(
         run_id=run_id,
         context=context,
     )
+
+
+def _audit_dashboard_action_rejected(
+    data_root: Path,
+    *,
+    action: str,
+    diagnostic_code: str,
+    project_id: str | None = None,
+    run_id: str | None = None,
+) -> None:
+    """Persist a safe failure fact for a Console action button.
+
+    A rejected click is still operationally relevant: it explains why the UI
+    did not advance.  Only the stable, public error code is retained; request
+    bodies and exception strings may contain user or provider material.
+    """
+    _audit_dashboard_action(
+        data_root,
+        action=action,
+        project_id=project_id,
+        run_id=run_id,
+        details={"diagnostic_code": diagnostic_code},
+        outcome="FAILED",
+    )
+
+
+def _retired_console_action_contract(path: str) -> tuple[str, str]:
+    """Return the stable audit action and public error for a retired route.
+
+    The installed Console used to retain controls from the checkout dashboard.
+    A stale page must get an explicit, auditable response rather than a
+    project-selection error or a compatibility mutation.  Route paths are not
+    logged: they are implementation detail and needlessly expand the audit
+    payload.
+    """
+    exact = {
+        "/api/codex-cli-update": ("codex_cli_updated", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/rate-limit-reset": ("rate_limit_reset_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/telemetry/clear": ("telemetry_cleared", "TELEMETRY_CLEAR_RETIRED"),
+        "/api/queue-defer": ("queue_deferred", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/status-reconciliation-preview": ("execution_status_reconciled", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/status-reconciliation": ("execution_status_reconciled", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/execution-emergency-rollback": ("execution_emergency_rollback_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/execution-merge-wait-abort": ("execution_merge_wait_aborted", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/execution-merge-status-check": ("execution_merge_status_checked", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/managed-branch-recovery": ("managed_branch_recovery_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/managed-branch-synchronization": ("managed_branch_synchronization_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/stale-git-lock-recovery": ("stale_git_lock_recovery_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/workspace-switch-to-main": ("workspace_switch_to_main_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/workspace-switch-to-worktree": ("workspace_switch_to_worktree_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"),
+        "/api/runtime-directory/open": ("runtime_directory_opened", "RUNTIME_DIRECTORY_RETIRED"),
+        "/api/central-database/download": ("central_database_downloaded", "CENTRAL_DATABASE_DOWNLOAD_RETIRED"),
+    }
+    if path in exact:
+        return exact[path]
+    if re.fullmatch(r"/api/configuration/file-inbox/relocate(?:/browse)?", path):
+        return "inbox_location_changed", "FILE_INBOX_PARTIAL_RELOCATION_RETIRED"
+    if re.fullmatch(r"/api/configuration/inbox-location(?:/browse)?", path):
+        return "inbox_location_changed", "INBOX_WATCHER_CONFIGURATION_RETIRED"
+    if re.fullmatch(r"/api/logs/(?:inbox|dashboard)", path):
+        return "component_logs_cleared", "LEGACY_COMPONENT_LOG_ROUTE_RETIRED"
+    if re.fullmatch(rf"/api/components/{RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN}/(?:details|restart)", path):
+        return "component_restart_requested", "LEGACY_COMPONENT_AUTHORITY_RETIRED"
+    if re.fullmatch(r"/api/open-pull-requests(?:/[0-9]+/(?:owner-authorization|repair-failed-checks))?", path):
+        return "pull_request_action_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"
+    return "legacy_dashboard_action_requested", "LEGACY_DASHBOARD_ACTION_RETIRED"
 
 
 def status(data_root: Path) -> dict[str, object]:
@@ -2738,6 +2811,67 @@ def _central_execution_host_projection(
     )
 
 
+def _central_persisted_activity_summary(value: object, run_id: str) -> dict[str, object] | None:
+    """Return the safe, immutable activity summary recorded for one run.
+
+    Host evidence is a compatibility fallback only.  It cannot distinguish
+    primary provider calls from assurance reviews and it does not carry the
+    terminal delivery proof.  The versioned activity record is therefore the
+    presentation authority whenever it is available.
+    """
+    document = _central_json_object(value)
+    activity = document.get("activity")
+    delivery = document.get("terminal_delivery_diff")
+    required_counts = (
+        "primary_codex_commands_total", "reviewer_codex_commands_total",
+        "host_validation_commands_total", "overall_activity_total",
+    )
+    if (
+        document.get("run_id") != run_id
+        or not isinstance(document.get("summary_version"), int)
+        or isinstance(document.get("summary_version"), bool)
+        or not isinstance(activity, Mapping)
+        or not isinstance(delivery, Mapping)
+        or any(
+            not isinstance(activity.get(key), int)
+            or isinstance(activity.get(key), bool)
+            or activity[key] < 0
+            for key in required_counts
+        )
+    ):
+        return None
+    definition = _central_text(activity.get("codex_command_definition"))
+    if definition is None:
+        return None
+    def revision(key: str) -> str | None:
+        candidate = delivery.get(key)
+        return candidate if isinstance(candidate, str) and re.fullmatch(r"[0-9a-f]{40}", candidate) else None
+
+    renamed = delivery.get("renamed")
+    if not isinstance(renamed, list):
+        renamed = None
+    changed = delivery.get("total_unique_changed_paths")
+    if not isinstance(changed, int) or isinstance(changed, bool) or changed < 0:
+        changed = None
+    return {
+        "summary_version": document["summary_version"],
+        "activity": {
+            "metric_definition_version": activity.get("metric_definition_version", 1),
+            "codex_command_definition": definition,
+            **{key: activity[key] for key in required_counts},
+        },
+        "terminal_delivery_diff": {
+            "authority": _central_text(delivery.get("authority")),
+            "transaction_baseline_sha": revision("transaction_baseline_sha"),
+            "terminal_target_sha": revision("terminal_target_sha"),
+            "total_unique_changed_paths": changed,
+            # The renderer intentionally presents only the count, never paths.
+            "renamed": renamed,
+            "per_pr_changed_file_counts": _central_text(delivery.get("per_pr_changed_file_counts")),
+        },
+    }
+
+
 @dataclass(frozen=True)
 class _CentralForgeProvenance:
     """The safe, displayable subset of one admitted Forge provenance record."""
@@ -2872,6 +3006,20 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
     host_fields, execution_metadata, activity_summary = _central_execution_host_projection(
         row["host_start_document"], row["host_terminal_document"],
     )
+    activity_summary = _central_persisted_activity_summary(
+        row["activity_summary_document"], str(row["run_id"]),
+    ) or activity_summary
+    operator_resolution = _central_text(row["operator_resolution"]) or "NONE"
+    awaiting_operator = (
+        dispatch_state in {"BLOCKED", "FAILED"}
+        and operator_resolution == "OPEN"
+    )
+    retry_child_run_id = _central_text(row["retry_child_run_id"])
+    retry_dispatch_state = _central_text(row["retry_dispatch_state"])
+    retry_status = (
+        "ACTIVE" if retry_dispatch_state in {"CLAIMED", "RUNNING"}
+        else retry_dispatch_state
+    )
     execution_context = forge.execution_context(
         mission_id=mission_id,
         action_id=action_id,
@@ -2921,7 +3069,30 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
         "execution_activity_summary": activity_summary,
         "report_available": bool(row["report_available"]),
         "analysis_available": bool(row["analysis_available"]),
-        "operator_resolution": _central_text(row["operator_resolution"]) or "NONE",
+        # Historical operator controls are capabilities, not client-side
+        # guesses based on a terminal outcome.  CENTRAL persists the mutable
+        # handling decision separately from the immutable outcome, so a
+        # refresh after a successful action cannot offer that action again.
+        "history_source": "CENTRAL",
+        "can_retry": awaiting_operator,
+        "can_dismiss": awaiting_operator,
+        "retry_child_run_id": retry_child_run_id,
+        "retry_status": retry_status,
+        "retry_timestamp": _central_text(row["retry_updated_at"]),
+        "retry_pending": (
+            operator_resolution == "RETRIED"
+            and _central_text(row["resolution_submission_id"]) is not None
+            and retry_child_run_id is None
+        ),
+        # A dismissal is mutable operator-handling metadata, deliberately
+        # separate from the immutable BLOCKED/FAILED outcome.  The history
+        # table needs it as well as the queue projection: otherwise a
+        # successful dismissal is persisted but the stale action remains
+        # visible and a second click correctly (but confusingly) fails.
+        "operator_resolution": operator_resolution,
+        "handling_state": operator_resolution,
+        "dismissed": operator_resolution == "DISMISSED",
+        "dismissed_at": updated_at if operator_resolution == "DISMISSED" else None,
     }
 
 
@@ -2932,11 +3103,15 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
         rows = connection.execute(
             """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,r.execution_mode,
                       d.submission_id,d.state AS dispatch_state,d.operator_resolution,
+                      d.resolution_submission_id,
+                      retry.run_id AS retry_child_run_id,
+                      retry.state AS retry_dispatch_state,retry.updated_at AS retry_updated_at,
                       s.repository_id,s.producer_id,s.producer_type,s.producer_version,
                       s.constraints,s.correlation_id,s.mission_id,s.engineering_action_id,
                       s.transport_receipt_id,a.document AS action_context_document,
                       p.document AS planning_context_document,
                       h.start_document AS host_start_document,h.terminal_document AS host_terminal_document,
+                      activity_summary.payload AS activity_summary_document,
                       EXISTS (
                         SELECT 1 FROM prompt_execution_history AS history
                          WHERE history.run_id=r.run_id AND history.report_path LIKE 'CENTRAL:%'
@@ -2950,10 +3125,13 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
                       ) AS analysis_available
                  FROM ep_execution_runs AS r
                  LEFT JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
+                 LEFT JOIN ep_parity_lifecycle_dispatches AS retry
+                   ON retry.submission_id=d.resolution_submission_id
                  LEFT JOIN ep_submissions AS s ON s.submission_id=d.submission_id
                  LEFT JOIN ep_forge_action_context_envelopes AS a ON a.submission_id=s.submission_id
                  LEFT JOIN ep_forge_planning_context_envelopes AS p ON p.submission_id=s.submission_id
                  LEFT JOIN ep_execution_host_evidence AS h ON h.run_id=r.run_id
+                 LEFT JOIN execution_activity_summaries AS activity_summary ON activity_summary.run_id=r.run_id
                 WHERE r.project_id=?
                 ORDER BY r.created_at DESC,r.run_id DESC LIMIT 1000""",
             (project_id,),
@@ -3010,6 +3188,63 @@ def _central_console_execution_projection(
         "model": invocation[1] if invocation and isinstance(invocation[1], str) else None,
     }
     return execution, runtime
+
+
+def _central_console_provider_usage(data_root: Path, run_id: str) -> dict[str, object]:
+    """Project persisted provider-use snapshots without manufacturing usage."""
+    try:
+        summary = provider_usage_summary(
+            data_root, run_id, central_database=data_root / SERVER_DATABASE_FILENAME,
+        )
+    except (OSError, sqlite3.DatabaseError, storage.EngineeringStorageError):
+        return {}
+    count = summary.get("provider_invocation_count") if isinstance(summary, Mapping) else None
+    return dict(summary) if isinstance(count, int) and not isinstance(count, bool) and count > 0 else {}
+
+
+def _central_console_validation_evidence(
+    data_root: Path, project_id: str, run_id: str,
+) -> list[dict[str, str]]:
+    """Expose only redacted terminal validation results, never commands or paths."""
+    try:
+        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+            row = connection.execute(
+                """SELECT a.artifact_id FROM execution_artifact_records AS a
+                     JOIN ep_parity_lifecycle_dispatches AS d
+                       ON a.ep_run_id=d.run_id OR a.run_id=d.run_id
+                    WHERE d.project_id=? AND d.run_id=?
+                      AND a.artifact_type='EP_TERMINAL_EVIDENCE'
+                      AND a.integrity_status='VERIFIED'
+                    ORDER BY a.created_at DESC,a.artifact_id DESC LIMIT 1""",
+                (project_id, run_id),
+            ).fetchone()
+            payload = submission_service.producer_evidence_artifact(
+                connection, project_id=project_id, artifact_id=str(row[0]),
+            ) if row else None
+    except sqlite3.Error:
+        return []
+    try:
+        document = json.loads(payload) if payload else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(document, Mapping) or document.get("artifact_type") != "EP_TERMINAL_EVIDENCE":
+        return []
+    submission, terminal = document.get("submission"), document.get("run")
+    if (
+        not isinstance(submission, Mapping) or not isinstance(terminal, Mapping)
+        or submission.get("project_id") != project_id or terminal.get("id") != run_id
+    ):
+        return []
+    references = document.get("references")
+    validations = references.get("validation") if isinstance(references, Mapping) else None
+    if not isinstance(validations, list):
+        return []
+    projected: list[dict[str, str]] = []
+    for entry in validations[:20]:
+        result = _central_text(entry.get("result")) if isinstance(entry, Mapping) else None
+        if result:
+            projected.append({"kind": "VALIDATION", "result": redact_diagnostic(result, limit=500)})
+    return projected
 
 
 def _central_console_terminal_revision_timeline(
@@ -3156,6 +3391,7 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
             "queue_depth": queue["queue_depth"],
             "queue_items": queue["queue_items"],
             "active_run": active["run_id"] if active else None,
+            "active_execution_count": 1 if active else 0,
             "last_executed_run": terminal_records[0]["run_id"] if terminal_records else None,
             "lifecycle_source": "CENTRAL",
             **active_status,
@@ -3175,13 +3411,31 @@ def _no_project_console_snapshot(data_root: Path) -> dict[str, object]:
     minimal platform projection prevents it from remaining behind the loading
     overlay while preserving the fail-closed boundary for all project routes.
     """
-    # Aggregate the canonical CENTRAL submission state only. File Inbox files,
-    # watcher backlogs and transport retry diagnostics never affect this count.
+    # This view intentionally exposes only aggregate operational counts, never
+    # a project or run identity.  A submission remains ADMITTED after its
+    # dispatch has been claimed, so counting submissions alone would render a
+    # live run as queued in the platform pop-out.  A dispatch is the canonical
+    # ownership fact: unclaimed submissions are queued; CLAIMED/RUNNING
+    # dispatches are active; terminal dispatches are neither.
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
-        queue_depth = int(connection.execute(
-            "SELECT COUNT(*) FROM ep_submissions WHERE state IN ('QUEUED','ADMITTED')"
+        active_execution_count = int(connection.execute(
+            "SELECT COUNT(*) FROM ep_parity_lifecycle_dispatches WHERE state IN ('CLAIMED','RUNNING')"
         ).fetchone()[0])
-    queue = {"operator_handling": {}, "queue_depth": queue_depth, "queue_items": [], "scope": "ALL_PROJECTS"}
+        queue_depth = int(connection.execute(
+            """SELECT COUNT(*) FROM ep_submissions AS submission
+                 WHERE submission.state IN ('QUEUED','ADMITTED')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ep_parity_lifecycle_dispatches AS dispatch
+                        WHERE dispatch.submission_id=submission.submission_id
+                   )"""
+        ).fetchone()[0])
+    queue = {
+        "operator_handling": {},
+        "queue_depth": queue_depth,
+        "queue_items": [],
+        "active_execution_count": active_execution_count,
+        "scope": "ALL_PROJECTS",
+    }
     return {
         "scope": "PLATFORM",
         "queue": queue,
@@ -3213,6 +3467,8 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
         **record,
         "execution": execution,
         "runtime": runtime,
+        "usage": _central_console_provider_usage(data_root, run_id),
+        "evidence": _central_console_validation_evidence(data_root, project_id, run_id),
         # The historical detail dialog uses the same read-only bubble flow as
         # the active card.  Terminal history remains separate in the table,
         # while its exact step evidence stays available on demand.
@@ -3785,10 +4041,13 @@ def _audit_dashboard_provider_action(
         level,
         f"provider_action_{outcome.lower()}",
         context={
+            "audit_action": f"provider_{action}",
             "provider": provider,
             "provider_action": action,
             "provider_action_source": "DASHBOARD",
+            "audit_actor": DASHBOARD_AUDIT_ACTOR,
             "audit_outcome": outcome,
+            "user_action": f"provider_{action}",
         },
     )
 
@@ -3974,6 +4233,7 @@ def _console_project_boundary(project_id: str, options: str) -> str:
     """
     return '''<script>
 (() => {
+  window.ENGINEERING_PLATFORM_CENTRAL_CONSOLE = true;
   const project = $PROJECT;
   const options = $OPTIONS;
   const nativeFetch = window.fetch.bind(window);
@@ -4019,7 +4279,7 @@ def _no_project_console_document(projects: list[dict[str, str]], data_root: Path
     )
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
-    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;window.addEventListener('DOMContentLoaded',()=>{const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT});</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
+    boundary = '''<script>window.ENGINEERING_PLATFORM_CENTRAL_CONSOLE=true;window.ENGINEERING_PLATFORM_NO_PROJECT=true;window.addEventListener('DOMContentLoaded',()=>{const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT});</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
     empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong data-i18n="central.no_project_selected_title"></strong><span data-i18n="central.no_project_selected_body"></span><button class="no-project-selected__dismiss" id="noProjectSelectedDismiss" type="button" data-i18n-aria-label="action.close" data-i18n-title="action.close"><span aria-hidden="true">×</span></button></aside>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
@@ -4377,6 +4637,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _send_central_data_export(self) -> None:
         """Export one quiesced, portable snapshot of all durable CENTRAL data."""
         if _central_execution_active(self.server.data_root):  # type: ignore[attr-defined]
+            _audit_platform_data_action(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="EXPORT", outcome="FAILED",
+                details={"diagnostic_code": "CENTRAL_DATA_TRANSFER_BLOCKED"},
+            )
             self._send(409, {"error": "CENTRAL_DATA_TRANSFER_BLOCKED"})
             return
         with self.server.central_data_transfer_lock:  # type: ignore[attr-defined]
@@ -4395,6 +4660,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     details={"package_format": "EPDATA"},
                 )
             except (OSError, sqlite3.DatabaseError, central_data_transfer.CentralDataTransferError) as error:
+                _audit_platform_data_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="EXPORT", outcome="FAILED",
+                    details={"diagnostic_code": "CENTRAL_DATA_EXPORT_FAILED"},
+                )
                 self._send(409, {"error": str(error)})
                 return
             finally:
@@ -4421,6 +4691,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 directory = _choose_local_directory(self.server.data_root)  # type: ignore[attr-defined]
                 prepared = installation_relocation.prepare(self.server.data_root, directory)  # type: ignore[attr-defined]
             except (ValueError, OSError) as error:
+                _audit_platform_data_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="RELOCATE_PREPARED", outcome="FAILED",
+                    details={"diagnostic_code": "PLATFORM_DATA_RELOCATION_PREPARE_FAILED"},
+                )
                 self._send(400, {"error": str(error)})
             else:
                 _audit_platform_data_action(
@@ -4437,6 +4712,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("PLATFORM_DATA_RELOCATION_BLOCKED")
                 installation_relocation.discard_prepared(self.server.data_root, payload["directory"])  # type: ignore[attr-defined]
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
+                _audit_platform_data_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="RELOCATE_PREPARATION_DISCARDED", outcome="FAILED",
+                    details={"diagnostic_code": "PLATFORM_DATA_RELOCATION_DISCARD_FAILED"},
+                )
                 self._send(409, {"error": str(error)})
                 return True
             _audit_platform_data_action(
@@ -4453,6 +4733,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("PLATFORM_DATA_RELOCATION_BLOCKED")
                 result = installation_relocation.request(self.server.data_root, "PLATFORM_DATA", payload["directory"])  # type: ignore[attr-defined]
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
+                _audit_platform_data_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="RELOCATE", outcome="FAILED",
+                    details={"diagnostic_code": "PLATFORM_DATA_RELOCATION_REQUEST_FAILED"},
+                )
                 self._send(409, {"error": str(error)})
                 return True
             _audit_platform_data_action(
@@ -4481,6 +4766,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 result = central_data_transfer.stage_import(self.server.data_root, upload)  # type: ignore[attr-defined]
                 upload.unlink(missing_ok=True)
             except (ValueError, OSError, central_data_transfer.CentralDataTransferError) as error:
+                _audit_platform_data_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="IMPORT", outcome="FAILED",
+                    details={"diagnostic_code": "CENTRAL_DATA_IMPORT_FAILED"},
+                )
                 self._send(409, {"error": str(error)})
                 return True
             _audit_platform_data_action(
@@ -4510,6 +4800,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self.server.data_root, payload.get("interval_seconds"),  # type: ignore[attr-defined]
             )
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            _audit_dashboard_action_rejected(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="central_database_maintenance_configuration_changed",
+                diagnostic_code="CENTRAL_DATABASE_MAINTENANCE_INTERVAL_INVALID",
+            )
             self._send(400, {"error": "CENTRAL_DATABASE_MAINTENANCE_INTERVAL_INVALID"})
             return True
         _audit_configuration_change(
@@ -4638,35 +4933,32 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # header makes the runtime contract observable to browser/integration
         # coverage without granting a selected project any authority.
         self._console_route = console_route_ownership.route_owner(method.removeprefix("do_"), request.path)
+        if (
+            self._console_route is not None
+            and self._console_route.owner == console_route_ownership.HISTORICAL_UNREACHABLE
+        ):
+            action, diagnostic_code = _retired_console_action_contract(request.path)
+            if method == "do_POST":
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action,
+                    diagnostic_code=diagnostic_code,
+                )
+            self._send(410, {"error": diagnostic_code})
+            return
         # The export boundary stops all installed writer services. Refuse a
         # concurrent Console mutation as well, rather than claiming a ZIP is
         # a point-in-time snapshot while an HTTP request can still alter it.
         if method == "do_POST" and getattr(self.server, "central_data_transfer_active", False):
+            route_component = getattr(self._console_route, "component", "operations")
+            _audit_dashboard_action_rejected(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action=f"{route_component}_action_requested",
+                diagnostic_code="CENTRAL_DATA_TRANSFER_IN_PROGRESS",
+            )
             self._send(423, {"error": "CENTRAL_DATA_TRANSFER_IN_PROGRESS"})
             return
         if method == "do_GET" and self._send_console_asset(request):
-            return
-        if request.path.startswith("/api/configuration/file-inbox/relocate"):
-            self._send(410, {"error": "FILE_INBOX_PARTIAL_RELOCATION_RETIRED"})
-            return
-        if method == "do_POST" and re.fullmatch(r"/api/configuration/inbox-location(?:/browse)?", request.path):
-            self._send(410, {"error": "INBOX_WATCHER_CONFIGURATION_RETIRED"})
-            return
-        if re.fullmatch(r"/api/logs/(?:inbox|dashboard)", request.path):
-            # These former dashboard-owned streams are deliberately absent
-            # from the canonical CENTRAL component model.  Handle them before
-            # scope resolution so a stale caller cannot turn a retired route
-            # into a project-delegation failure.
-            self._send(410, {"error": "LEGACY_COMPONENT_LOG_ROUTE_RETIRED"})
-            return
-        if re.fullmatch(
-            rf"/api/components/{RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN}/(?:details|restart)",
-            request.path,
-        ):
-            # A retired name is never normalized to a supported component.
-            # Reject it before project resolution so it cannot acquire a
-            # project, lifecycle or repair interpretation as a side effect.
-            self._send(410, {"error": "LEGACY_COMPONENT_AUTHORITY_RETIRED"})
             return
         log_match = re.fullmatch(rf"/api/logs/(all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path)
         if log_match and method == "do_GET":
@@ -4697,6 +4989,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if result is None:
                     raise ValueError
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="component_logs_cleared",
+                    diagnostic_code="LOG_COMPONENT_INVALID",
+                )
                 self._send(400, {"error": "LOG_COMPONENT_INVALID"})
             else:
                 _audit_dashboard_action(
@@ -4734,8 +5031,18 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError
                 result = _restart_platform_component(self.server.data_root, restart_match.group(1))  # type: ignore[attr-defined]
             except (ValueError, OSError):
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="component_restart_requested",
+                    diagnostic_code="COMPONENT_RESTART_UNAVAILABLE",
+                )
                 self._send(409, {"error": "COMPONENT_RESTART_UNAVAILABLE"})
             else:
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="component_restart_requested",
+                    details={"target_component": restart_match.group(1)},
+                )
                 self._send(202, result)
             return
         if self._central_database_configuration(method):
@@ -4764,8 +5071,17 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if runtime["state"] != "READY":
                     raise ValueError
             except (ValueError, OSError):
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="execution_runtime_rechecked",
+                    diagnostic_code="EXECUTION_RUNTIME_UNAVAILABLE",
+                )
                 self._send(409, {"error": "EXECUTION_RUNTIME_UNAVAILABLE"})
                 return
+            _audit_dashboard_action(
+                self.server.data_root,  # type: ignore[attr-defined]
+                action="execution_runtime_rechecked",
+            )
             self._send(200, {"rechecked": True, "runtime": runtime, "scope": "PLATFORM"})
             return
         if request.path == "/api/provider-login/repair" and method == "do_POST":
@@ -4828,6 +5144,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 )
                 self._send(200, result)
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="provider_capacity_configuration_changed",
+                    diagnostic_code="CODEX_CAPACITY_RESERVE_INVALID",
+                )
                 self._send(409, {"error": "CODEX_CAPACITY_RESERVE_INVALID"})
             return
         if request.path == "/api/configuration" and method == "do_POST":
@@ -4849,13 +5170,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 )
                 self._send(200, result)
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="console_configuration_changed",
+                    diagnostic_code="CONSOLE_CONFIGURATION_INVALID",
+                )
                 self._send(409, {"error": "CONSOLE_CONFIGURATION_INVALID"})
-            return
-        if method == "do_POST" and request.path == "/api/runtime-directory/open":
-            # This action historically resolved the first bound checkout.
-            # The installed CENTRAL Console deliberately has no root-bound
-            # runtime action; runtime paths remain display-only diagnostics.
-            self._send(410, {"error": "RUNTIME_DIRECTORY_RETIRED"})
             return
         selected = self.headers.get("X-Engineering-Platform-Project")
         if not selected:
@@ -4865,32 +5185,6 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # project route below.
         projects = _console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
-        if method == "do_POST" and request.path == "/api/telemetry/clear":
-            if not _same_origin(self.headers):
-                self._send(403, {"error": "INVALID_ORIGIN"})
-                return
-            if not isinstance(selected, str) or selected not in project_ids:
-                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
-                return
-            try:
-                if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
-                    raise ValueError
-                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
-                    deleted = connection.execute(
-                        "DELETE FROM execution_runs WHERE run_id IN "
-                        "(SELECT run_id FROM ep_parity_lifecycle_dispatches WHERE project_id=?)",
-                        (selected,),
-                    ).rowcount
-            except (ValueError, OSError, sqlite3.DatabaseError):
-                self._send(400, {"error": "TELEMETRY_CLEAR_INVALID"})
-                return
-            _audit_dashboard_action(
-                self.server.data_root,  # type: ignore[attr-defined]
-                action="telemetry_cleared", project_id=selected,
-                details={"deleted_count": max(0, int(deleted or 0))},
-            )
-            self._send(200, {"cleared": True, "execution_runs": max(0, int(deleted or 0))})
-            return
         if method == "do_POST" and request.path == "/api/audit/user-action":
             if not _same_origin(self.headers):
                 self._send(403, {"error": "INVALID_ORIGIN"})
@@ -4900,13 +5194,19 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if not 2 <= length <= 512:
                     raise ValueError
                 payload = _strict_json_object(self.rfile.read(length))
-                if set(payload) not in ({"action"}, {"action", "run_id"}):
+                if set(payload) not in (
+                    {"action"}, {"action", "run_id"}, {"action", "target_component"},
+                    {"action", "run_id", "target_component"},
+                ):
                     raise ValueError
                 action = payload.get("action")
                 run_id = payload.get("run_id")
+                target_component = payload.get("target_component")
                 if not isinstance(action, str) or not _DASHBOARD_AUDIT_ACTION_PATTERN.fullmatch(action):
                     raise ValueError
                 if run_id is not None and (not isinstance(run_id, str) or not _SAFE_REPORT_ID.fullmatch(run_id)):
+                    raise ValueError
+                if target_component is not None and target_component not in PLATFORM_COMPONENT_IDS:
                     raise ValueError
                 if run_id is not None:
                     with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
@@ -4925,6 +5225,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self.server.data_root,  # type: ignore[attr-defined]
                     action=action, project_id=canonical_project,
                     run_id=run_id,
+                    details={"target_component": target_component} if target_component is not None else None,
                 )
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send(400, {"error": "AUDIT_ACTION_INVALID"})
@@ -5037,8 +5338,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "commits": {},
                         "commit_timeline": detail.get("commit_timeline", []),
                         "pull_requests": [],
-                        "usage": {},
-                        "evidence": [],
+                        "usage": detail.get("usage", {}),
+                        "evidence": detail.get("evidence", []),
                         "lifecycle": detail.get("lifecycle", {}),
                         "source": "CENTRAL",
                     })
@@ -5056,19 +5357,16 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if request.path == "/api/events":
                 self._stream_project_console_events(selected)
                 return
-        if method == "do_POST" and isinstance(selected, str) and selected in project_ids and (
-            request.path == "/api/configuration" or request.path.startswith("/api/logs/")
-        ):
-            # The local dashboard's mutable metadata/log controls have no
-            # CENTRAL contract yet.  Fail closed rather than mutating a
-            # checkout-local store for compatibility.
-            self._send(405, {"error": "CONSOLE_CONFIGURATION_MUTATION_UNAVAILABLE"})
-            return
         if method == "do_POST" and request.path in {"/api/execution-dismiss", "/api/execution-retry"}:
+            action_name = "execution_dismissed" if request.path == "/api/execution-dismiss" else "execution_retry_submitted"
             if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
                 self._send(403, {"error": "INVALID_ORIGIN"})
                 return
             if not isinstance(selected, str) or selected not in project_ids:
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action_name, diagnostic_code="CONSOLE_PROJECT_UNAVAILABLE",
+                )
                 self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
                 return
             # The preserved execution lifecycle is loaded only when its
@@ -5079,6 +5377,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 dismiss_operator_gate,
                 retry_operator_gate,
             )
+            run_id: str | None = None
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 2 <= length <= 256:
@@ -5096,24 +5395,43 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         self.server.data_root, project_id=selected, run_id=run_id,  # type: ignore[attr-defined]
                     ).to_dict()
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action_name, diagnostic_code="INVALID_REQUEST",
+                    project_id=selected, run_id=run_id,
+                )
                 self._send(400, {"error": "INVALID_REQUEST"})
                 return
             except ParityLifecycleDispatchError as error:
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action_name, diagnostic_code=str(error),
+                    project_id=selected, run_id=run_id,
+                )
                 self._send(409, {"error": str(error)})
                 return
             _audit_dashboard_action(
                 self.server.data_root,  # type: ignore[attr-defined]
-                action="execution_dismissed" if request.path == "/api/execution-dismiss" else "execution_retry_submitted",
+                action=action_name,
                 project_id=selected,
                 run_id=run_id,
             )
             self._send(200, result)
             return
         if method == "do_POST" and request.path in {"/api/codex-chat", "/api/codex-chat/clear"}:
+            action_name = (
+                "ai_chat_transcript_cleared"
+                if request.path == "/api/codex-chat/clear"
+                else "ai_chat_message_submitted"
+            )
             if not _same_origin(self.headers):
                 self._send(403, {"error": "INVALID_ORIGIN"})
                 return
             if not isinstance(selected, str) or selected not in project_ids:
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action_name, diagnostic_code="CONSOLE_PROJECT_UNAVAILABLE",
+                )
                 self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
                 return
             run_id: str | None = None
@@ -5129,6 +5447,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     if not isinstance(run_id, str) or not _SAFE_REPORT_ID.fullmatch(run_id):
                         raise ValueError
                     if not _central_console_clear_chat_history(self.server.data_root, selected, run_id):  # type: ignore[attr-defined]
+                        _audit_dashboard_action_rejected(
+                            self.server.data_root,  # type: ignore[attr-defined]
+                            action=action_name, diagnostic_code="CHAT_CONTEXT_UNAVAILABLE",
+                            project_id=selected, run_id=run_id,
+                        )
                         self._send(404, {"error": "CHAT_CONTEXT_UNAVAILABLE"})
                         return
                     _audit_dashboard_action(
@@ -5183,6 +5506,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     )
                     self._send(404, {"error": "CHAT_CONTEXT_UNAVAILABLE"})
                     return
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action_name, diagnostic_code="INVALID_CHAT_REQUEST",
+                    project_id=selected, run_id=run_id,
+                )
                 self._send(400, {"error": "INVALID_CHAT_REQUEST"})
                 return
             _audit_dashboard_action(
@@ -5197,6 +5525,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(403, {"error": "INVALID_ORIGIN"})
                 return
             if not isinstance(selected, str) or selected not in project_ids:
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="queue_disposition_changed", diagnostic_code="CONSOLE_PROJECT_UNAVAILABLE",
+                )
                 self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
                 return
             try:
@@ -5238,8 +5570,18 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 )
                 self._send(200, result)
             except submission_service.SubmissionError as error:
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="queue_disposition_changed", diagnostic_code=error.code,
+                    project_id=selected,
+                )
                 self._send(error.status, {"error": error.code})
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                _audit_dashboard_action_rejected(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action="queue_disposition_changed", diagnostic_code="INVALID_REQUEST",
+                    project_id=selected,
+                )
                 self._send(400, {"error": "INVALID_REQUEST"})
             return
         if isinstance(selected, str) and selected in project_ids:
@@ -5260,9 +5602,21 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         analysis_retry_match.group(1),
                     )
                 except ValueError:
+                    _audit_dashboard_action_rejected(
+                        self.server.data_root,  # type: ignore[attr-defined]
+                        action="prompt_history_analysis_regenerated",
+                        diagnostic_code="ANALYSIS_RETRY_UNAVAILABLE",
+                        project_id=selected, run_id=analysis_retry_match.group(1),
+                    )
                     self._send(409, {"error": "ANALYSIS_RETRY_UNAVAILABLE"})
                     return
                 except (OSError, sqlite3.DatabaseError, storage.EngineeringStorageError):
+                    _audit_dashboard_action_rejected(
+                        self.server.data_root,  # type: ignore[attr-defined]
+                        action="prompt_history_analysis_regenerated",
+                        diagnostic_code="ANALYSIS_RETRY_FAILED",
+                        project_id=selected, run_id=analysis_retry_match.group(1),
+                    )
                     self._send(503, {"error": "ANALYSIS_RETRY_FAILED"})
                     return
                 _audit_dashboard_action(

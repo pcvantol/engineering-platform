@@ -44,6 +44,60 @@ class ConsoleRouteOwnershipTest(unittest.TestCase):
                     f"{method} {alias}",
                 )
 
+    def test_retired_checkout_actions_are_explicitly_unreachable(self) -> None:
+        for method, path in (
+            ("GET", "/api/codex-cli-update"),
+            ("POST", "/api/codex-cli-update"),
+            ("POST", "/api/rate-limit-reset"),
+            ("POST", "/api/telemetry/clear"),
+            ("POST", "/api/status-reconciliation"),
+            ("POST", "/api/execution-emergency-rollback"),
+            ("POST", "/api/execution-merge-wait-abort"),
+            ("POST", "/api/managed-branch-recovery"),
+            ("POST", "/api/stale-git-lock-recovery"),
+            ("POST", "/api/workspace-switch-to-main"),
+            ("POST", "/api/configuration/file-inbox/relocate"),
+            ("POST", "/api/open-pull-requests/123/repair-failed-checks"),
+        ):
+            self.assertEqual(route_owner(method, path).owner, HISTORICAL_UNREACHABLE, path)
+
+    def test_complete_central_data_transfer_family_is_platform_owned(self) -> None:
+        for path in (
+            "/api/central-data/relocate",
+            "/api/central-data/relocate/browse",
+            "/api/central-data/relocate/discard",
+            "/api/central-data/import",
+        ):
+            self.assertEqual(route_owner("POST", path).owner, PLATFORM, path)
+
+    def test_dashboard_mutation_endpoints_all_have_a_central_owner(self) -> None:
+        """Every browser action is either owned or deliberately retired."""
+        routes = (
+            ("POST", "/api/audit/user-action", PLATFORM),
+            ("GET", "/api/central-data/export", PLATFORM),
+            ("POST", "/api/central-data/relocate/browse", PLATFORM),
+            ("POST", "/api/central-data/relocate/discard", PLATFORM),
+            ("POST", "/api/central-data/relocate", PLATFORM),
+            ("POST", "/api/central-data/import", PLATFORM),
+            ("POST", "/api/logs/all", PLATFORM),
+            ("POST", "/api/components/dashboard_relay/restart", PLATFORM),
+            ("POST", "/api/provider-login/repair", PLATFORM),
+            ("POST", "/api/provider-login/logout", PLATFORM),
+            ("POST", "/api/execution-runtime/repair", PLATFORM),
+            ("POST", "/api/provider-capacity/configuration", PLATFORM),
+            ("POST", "/api/configuration", PLATFORM),
+            ("POST", "/api/central-database/configuration", PLATFORM),
+            ("POST", "/api/execution-dismiss", PROJECT),
+            ("POST", "/api/execution-retry", PROJECT),
+            ("POST", "/api/queue-disposition", PROJECT),
+            ("POST", "/api/codex-chat", PROJECT),
+            ("POST", "/api/codex-chat/clear", PROJECT),
+            ("POST", "/api/prompt-history/run-a/analysis-retry", PROJECT),
+            ("POST", "/api/dashboard-translate", PROJECT),
+        )
+        for method, path, owner in routes:
+            self.assertEqual(route_owner(method, path).owner, owner, path)
+
     def test_qualification_guard_passes_for_installed_console_source(self) -> None:
         self.assertEqual(guard.violations(SOURCE_ROOT), [])
 

@@ -3504,6 +3504,33 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toContainText(source);
   });
 
+  test("translates dynamic assurance and repair evidence through the shared route", async ({ page }) => {
+    const evidence = ["Security observation in English.", "Failed validation in English.", "Repair action in English.", "Repair summary in English."];
+    const translations = Object.fromEntries(evidence.map((source, index) => [source, `Nederlandse vertaling ${index + 1}`]));
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-translate", async (route) => {
+      const { texts } = await route.request().postDataJSON();
+      await route.fulfill({ json: { translations: texts.map((text) => translations[text]) } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(({ evidence: values }) => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "dynamic-evidence-translation",
+      lifecycle: { available: true, run_id: "dynamic-evidence-translation", steps: [{
+        id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
+        assurance_reviews: [{ reviewer: "security", status: "PASS", findings: [{ observation: values[0] }] }],
+        repair_audit: [{ iteration: 1, failed_checks: values[1], proposed_action: values[2], agent_summary: values[3], outcome: "FAILED" }],
+      }] },
+    }, {}), { evidence });
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator(".execution-lifecycle__node"));
+    const modal = page.locator("#lifecycleDetailModal");
+    for (const [index, source] of evidence.entries()) {
+      await expect(modal).toContainText(`Nederlandse vertaling ${index + 1}`);
+      await expect(modal).not.toContainText(source);
+    }
+  });
+
   test("retains dynamic quality evidence when translation is unavailable", async ({ page }) => {
     const source = "No documented behavior changed; documentation remained unchanged.";
     await page.route("**/api/events", (route) => route.abort());
@@ -5732,6 +5759,25 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryRows tr").nth(4)).toContainText("Vervangen door: child");
   });
 
+  test("uses CENTRAL operator capabilities instead of inferring history actions from BLOCKED", async ({ page }) => {
+    const history = [
+      { run_id: "inbox-central-open", title: "Central open", status: "BLOCKED", history_source: "CENTRAL", can_retry: true, can_dismiss: true },
+      { run_id: "inbox-central-retried", title: "Central retried", status: "BLOCKED", history_source: "CENTRAL", handling_state: "RETRIED", can_retry: false, can_dismiss: false, retry_child_run_id: "inbox-child", retry_status: "ACTIVE" },
+      { run_id: "inbox-central-incomplete", title: "Central safe default", status: "FAILED", history_source: "CENTRAL" },
+    ];
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: history } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; renderPromptHistory(); });
+    await expect(page.locator("#promptHistoryRows tr").nth(0)).toContainText("Uitvoering opnieuw proberen");
+    await expect(page.locator("#promptHistoryRows tr").nth(0)).toContainText("Uitvoering afsluiten");
+    await expect(page.locator("#promptHistoryRows tr").nth(1)).toContainText("Geblokkeerd · Opnieuw ingediend");
+    await expect(page.locator("#promptHistoryRows tr").nth(1).locator(".execution-history-action")).toHaveCount(0);
+    await expect(page.locator("#promptHistoryRows tr").nth(2).locator(".execution-history-action")).toHaveCount(0);
+  });
+
   test("keeps prompt history horizontally scrollable only on an iPhone-sized viewport", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -6336,6 +6382,50 @@ test.describe("Engineering Status browser smoke", () => {
 
   test.describe("iPhone direct touch", () => {
     test.use({ hasTouch: true, isMobile: true });
+
+    test("keeps simultaneous status and options above the active execution", async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await waitForDashboardReady(page);
+      await page.evaluate(() => {
+        const run = document.querySelector("#currentRun");
+        run.hidden = false;
+        run.open = true;
+        document.querySelector("#currentPrompt").textContent = "Actieve uitvoeringskaart";
+        const checks = document.querySelector("#dashboardHealthChecks");
+        checks.replaceChildren(...Array.from({ length: 12 }, (_, index) => {
+          const item = document.createElement("li");
+          item.dataset.health = "good";
+          item.append(
+            Object.assign(document.createElement("span"), { textContent: `Statuscontrole ${index + 1}` }),
+            Object.assign(document.createElement("span"), { textContent: "Gezond" }),
+          );
+          return item;
+        }));
+      });
+      await openTitlebarOptions(page);
+      await page.getByTestId("dashboard-health-indicator").click();
+      await expect(page.getByTestId("dashboard-health-indicator")).toHaveAttribute("aria-expanded", "true");
+
+      const layout = await page.evaluate(() => {
+        const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+        const header = document.querySelector(".dashboard-sticky-header");
+        const status = rect("#dashboardHealthTooltip");
+        const options = rect("#dashboardTitlebarOptionsContent");
+        const run = rect("#currentRun");
+        return {
+          headerBottom: Math.round(header.getBoundingClientRect().bottom),
+          headerMaxHeight: getComputedStyle(header).maxHeight,
+          headerOverflowY: getComputedStyle(header).overflowY,
+          lowestPanelBottom: Math.round(Math.max(status.bottom, options.bottom)),
+          runTop: Math.round(run.top),
+        };
+      });
+      expect(layout.headerMaxHeight).toBe("none");
+      expect(layout.headerOverflowY).toBe("visible");
+      expect(layout.headerBottom).toBeGreaterThanOrEqual(layout.lowestPanelBottom);
+      expect(layout.runTop).toBeGreaterThanOrEqual(layout.lowestPanelBottom);
+    });
 
     test("persists every iPhone title-bar toggle after one direct touch at a time", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -10920,6 +11010,9 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => r({ runs: [{ state: "RUNNING" }], queue_depth: 0 }, {}));
     await expect(page.locator("#dashboardHealthChecks")).toContainText("1 uitvoering actief");
     await expect(indicator).toHaveAttribute("data-health-state", "ready");
+    await page.evaluate(() => r({ runs: [], active_execution_count: 1, queue_depth: 0 }, {}));
+    await expect(page.locator("#dashboardHealthChecks")).toContainText("1 uitvoering actief");
+    await expect(page.locator("#dashboardHealthChecks")).not.toContainText("opdrachten in wachtrij");
     await page.evaluate(() => r({ runs: [], queue_depth: 2 }, {}));
     await expect(page.locator("#dashboardHealthChecks")).toContainText("2 opdrachten in wachtrij");
     await page.evaluate((component_model) => renderPlatformHealth({

@@ -130,6 +130,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 "component_version": "2.3.29", "audit_outcome": "COMPLETED", "audit_action": "submission_accepted",
                 "terminal_state": "COMPLETE", "project_id": "forge", "repository_id": "forge",
                 "submission_id": "sub-1", "forge_application_version": "2.7.13",
+                "failure_code": "CODEX_CLI_TIMEOUT",
             })
             with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
                 raw = connection.execute("SELECT payload FROM engineering_component_logs").fetchone()[0]
@@ -138,6 +139,7 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertLess(keys.index("audit_action"), keys.index("terminal_state"))
             self.assertLess(keys.index("terminal_state"), keys.index("forge_application_version"))
             self.assertLess(keys.index("forge_application_version"), keys.index("component_version"))
+            self.assertIn("failure_code", keys)
 
     def test_technical_diagnostic_keeps_trace_out_of_the_public_component_log(self) -> None:
         """A Dashboard log can correlate a fault without receiving its traceback."""
