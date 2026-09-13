@@ -109,7 +109,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 62
+SERVER_STORE_SCHEMA_VERSION = 63
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -555,6 +555,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_forge_action_context_envelopes",
         "ep_forge_planning_context_envelopes",
         "ep_execution_host_evidence",
+        "ep_technical_diagnostics",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -575,6 +576,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_forge_exchange_audit_project_lookup",
         "ep_forge_action_context_envelopes_project_lookup",
         "ep_forge_planning_context_envelopes_project_lookup",
+        "ep_technical_diagnostics_created_lookup",
     }
 )
 SERVER_REQUIRED_VIEWS = frozenset({"execution_submission_run_links"})
@@ -772,6 +774,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     _install_forge_action_context_schema(connection)
     _install_forge_planning_context_schema(connection)
     _install_execution_host_evidence_schema(connection)
+    _install_technical_diagnostics_schema(connection)
 
     connection.execute(
         "INSERT INTO engineering_schema_migrations(version) VALUES(?)",
@@ -904,6 +907,35 @@ def _install_execution_host_evidence_schema(connection: sqlite3.Connection) -> N
         CREATE TRIGGER IF NOT EXISTS ep_execution_host_evidence_immutable_delete
         BEFORE DELETE ON ep_execution_host_evidence
         BEGIN SELECT RAISE(ABORT, 'Execution Host evidence is immutable'); END;
+    """)
+
+
+def _install_technical_diagnostics_schema(connection: sqlite3.Connection) -> None:
+    """Install the private, append-only Server technical-diagnostic store.
+
+    Component logs expose only a diagnostic code and opaque reference. This
+    table is intentionally not joined by Console projections: it retains the
+    bounded exception detail for on-host, authorized diagnosis.
+    """
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS ep_technical_diagnostics (
+            correlation_id TEXT PRIMARY KEY,
+            component TEXT NOT NULL,
+            run_id TEXT,
+            event TEXT NOT NULL,
+            level TEXT NOT NULL CHECK(level IN ('WARNING','ERROR')),
+            diagnostic_code TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ep_technical_diagnostics_created_lookup
+            ON ep_technical_diagnostics(created_at DESC,correlation_id);
+        CREATE TRIGGER IF NOT EXISTS ep_technical_diagnostics_immutable_update
+        BEFORE UPDATE ON ep_technical_diagnostics
+        BEGIN SELECT RAISE(ABORT, 'Technical diagnostics are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_technical_diagnostics_immutable_delete
+        BEFORE DELETE ON ep_technical_diagnostics
+        BEGIN SELECT RAISE(ABORT, 'Technical diagnostics are immutable'); END;
     """)
 
 
@@ -1784,6 +1816,26 @@ def _migrate_schema_62(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=62")
 
 
+def _migrate_schema_63(connection: sqlite3.Connection) -> None:
+    """Persist shielded, correlation-bound host and recovery diagnostics.
+
+    Existing public logs stay immutable and are not backfilled: they do not
+    have a trustworthy historical relation to a previously omitted traceback.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema62")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+        "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63)))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,63 FROM ep_installations_schema62")
+    connection.execute("DROP TABLE ep_installations_schema62")
+    _install_technical_diagnostics_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(63)")
+    connection.execute("UPDATE engineering_metadata SET value='63' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=63")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -1806,6 +1858,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (60, _migrate_schema_60),
     (61, _migrate_schema_61),
     (62, _migrate_schema_62),
+    (63, _migrate_schema_63),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -1844,6 +1897,8 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         "ep_forge_planning_context_envelopes_immutable_delete",
         "ep_execution_host_evidence_start_immutable",
         "ep_execution_host_evidence_immutable_delete",
+        "ep_technical_diagnostics_immutable_update",
+        "ep_technical_diagnostics_immutable_delete",
     } <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
         raise ServerConfigurationError(
@@ -2248,6 +2303,29 @@ def _operations_console_logger(data_root: Path) -> logging.Logger:
         "operations_console",
         central_database=data_root / SERVER_DATABASE_FILENAME,
     )
+
+
+def _record_platform_component_startups(data_root: Path) -> None:
+    """Write the one Server-owned startup fact for every canonical component."""
+    for definition in PLATFORM_COMPONENTS:
+        context: dict[str, object] = {
+            "target_component": definition.id,
+            # ``component_version`` is always the installed EP application.
+            # Storage revisions are separate provenance and must never make
+            # the database component appear to run an obsolete application.
+            "component_version": _console_platform_version(),
+        }
+        if definition.id == "platform_database":
+            context["schema_version"] = SERVER_STORE_SCHEMA_VERSION
+        log_event(
+            component_logger(
+                data_root, definition.id,
+                central_database=data_root / SERVER_DATABASE_FILENAME,
+            ),
+            logging.INFO,
+            definition.startup_event,
+            context=context,
+        )
 
 
 def _audit_configuration_change(
@@ -5506,18 +5584,9 @@ def serve(data_root: Path, *, development: development_profile.DevelopmentProfil
     inbox_service.start()
     dependabot_service.start()
     # A fresh installation must have operational evidence before its first
-    # submission.  These are genuine Server lifecycle events, persisted in
-    # the same CENTRAL store that backs the Console's combined log table.
-    for definition in PLATFORM_COMPONENTS:
-        log_event(
-            component_logger(
-                data_root, definition.id,
-                central_database=data_root / SERVER_DATABASE_FILENAME,
-            ),
-            logging.INFO,
-            definition.startup_event,
-            context={"target_component": definition.id},
-        )
+    # submission. These Server lifecycle events share the Console's one
+    # CENTRAL component-log authority.
+    _record_platform_component_startups(data_root)
     restart_after_shutdown = False
     try:
         server.serve_forever()

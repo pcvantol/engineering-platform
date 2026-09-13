@@ -11,6 +11,8 @@ from pathlib import Path
 import signal
 import sqlite3
 import sys
+import traceback
+from uuid import uuid4
 from collections.abc import Iterable, Iterator, Mapping
 from time import sleep
 
@@ -18,7 +20,6 @@ from .agent_state import redact_diagnostic
 from . import central_database as central_database_module
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
-    ENGINEERING_STORAGE_SCHEMA_VERSION,
     EngineeringStorageError,
     _evidence_connection,
     open_storage,
@@ -81,6 +82,7 @@ LIFECYCLE_CONTEXT_KEYS = frozenset(
         "failed_gate_ids",
         "failure_stage",
         "diagnostic_code",
+        "diagnostic_reference",
         "operator_resolution",
         "queue_disposition",
         "operation_id",
@@ -110,7 +112,7 @@ LOG_CONTEXT_FIELD_ORDER = (
     "audit_action", "user_action", "provider_action", "event", "audit_actor", "audit_outcome",
     "previous_state", "new_state", "previous_phase", "phase", "dispatch_state", "terminal_state",
     "operator_resolution", "queue_disposition", "admission_decision", "failed_gate_ids",
-    "failure_stage", "diagnostic_code", "next_action", "duplicate_claim", "retry_parent_run_id",
+    "failure_stage", "diagnostic_code", "diagnostic_reference", "next_action", "duplicate_claim", "retry_parent_run_id",
     "operation_id", "operator_reference", "deleted_count", "entry_count", "configuration_scope",
     "configuration_key", "previous_value", "new_value", "provider", "provider_action_source",
     "execution_mode", "package_format", "previous_location", "new_location", "log_component",
@@ -477,10 +479,168 @@ def log_event(
     )
 
 
+def record_technical_diagnostic(
+    root: Path,
+    *,
+    component: str,
+    level: int,
+    event: str,
+    diagnostic_code: str,
+    error: BaseException | None = None,
+    run_id: str | None = None,
+    central_database: Path | None = None,
+) -> str | None:
+    """Persist one shielded diagnostic and its safe CENTRAL log reference.
+
+    The public component log deliberately contains only a stable code and an
+    opaque correlation ID.  Exception type, message and traceback are kept in
+    the Server-owned diagnostic table, never in dashboard ``raw_json`` or a
+    component-log export.  A missing CENTRAL binding remains non-fatal: the
+    original workflow failure must not be replaced by failed diagnostics.
+    """
+    if component not in PLATFORM_COMPONENT_IDS:
+        raise ValueError("Unsupported Platform component.")
+    if level not in {logging.WARNING, logging.ERROR}:
+        raise ValueError("Technical diagnostics require WARNING or ERROR.")
+    if not diagnostic_code or len(diagnostic_code) > 120:
+        raise ValueError("Technical diagnostic code is invalid.")
+    correlation_id = f"diag-{uuid4().hex}"
+    destination = central_database.resolve() if central_database is not None else _configured_central_database()
+    persisted = False
+    if destination is not None:
+        detail: dict[str, str] = {}
+        if error is not None:
+            detail["exception_type"] = type(error).__name__
+            detail["exception_message"] = redact_diagnostic(str(error), limit=1_000)
+            if error.__traceback__ is not None:
+                detail["traceback"] = redact_diagnostic(
+                    "".join(traceback.format_exception(type(error), error, error.__traceback__)), limit=4_000,
+                )
+        try:
+            connection = _evidence_connection(root, destination)
+            try:
+                connection.execute(
+                    "INSERT INTO ep_technical_diagnostics("
+                    "correlation_id,component,run_id,event,level,diagnostic_code,detail,created_at"
+                    ") VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        correlation_id, component, run_id, event, logging.getLevelName(level),
+                        diagnostic_code, json.dumps(detail, separators=(",", ":")),
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                persisted = True
+            finally:
+                connection.close()
+        except (EngineeringStorageError, OSError, sqlite3.DatabaseError, TypeError, ValueError):
+            # No fallback file or second log authority is allowed.  The safe
+            # component event below still signals that the workflow concern
+            # occurred, but it does not claim a diagnostic reference exists.
+            persisted = False
+    logger = component_logger(root, component, central_database=destination)
+    context: dict[str, object] = {"diagnostic_code": diagnostic_code}
+    if persisted:
+        context["diagnostic_reference"] = correlation_id
+    log_event(logger, level, event, run_id=run_id, context=context)
+    return correlation_id if persisted else None
+
+
+def technical_diagnostic_summary(
+    root: Path, *, central_database: Path | None = None, limit: int = 10,
+) -> dict[str, object]:
+    """Return safe references for Host Admin without exposing technical detail.
+
+    The traceback itself intentionally has no HTTP/dashboard projection.  It
+    remains readable only by an on-host, database-authorized diagnostic tool.
+    """
+    if not isinstance(limit, int) or not 1 <= limit <= 50:
+        raise ValueError("Technical diagnostic limit is invalid.")
+    destination = central_database.resolve() if central_database is not None else _configured_central_database()
+    if destination is None:
+        return {"available": False, "recent": []}
+    try:
+        connection = _evidence_connection(root, destination)
+        try:
+            rows = connection.execute(
+                "SELECT correlation_id,component,run_id,event,level,diagnostic_code,created_at "
+                "FROM ep_technical_diagnostics ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        finally:
+            connection.close()
+    except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
+        return {"available": False, "recent": []}
+    return {
+        "available": True,
+        "recent": [
+            {
+                "correlation_id": str(row[0]), "component": str(row[1]),
+                "run_id": str(row[2]) if row[2] is not None else None,
+                "event": str(row[3]), "level": str(row[4]),
+                "diagnostic_code": str(row[5]), "created_at": str(row[6]),
+            }
+            for row in rows
+        ],
+    }
+
+
+def read_technical_diagnostic(
+    root: Path, correlation_id: str, *, central_database: Path | None = None,
+) -> dict[str, object] | None:
+    """Read a shielded diagnostic for an on-host authorized caller only.
+
+    This deliberately has no Console HTTP route.  The Server data root and its
+    mode-0600 database remain the access control boundary for raw exception
+    material; callers must already be authorized to read that installation.
+    """
+    if not isinstance(correlation_id, str) or not correlation_id.startswith("diag-") or len(correlation_id) != 37:
+        raise ValueError("Technical diagnostic reference is invalid.")
+    destination = central_database.resolve() if central_database is not None else _configured_central_database()
+    if destination is None:
+        return None
+    try:
+        connection = _evidence_connection(root, destination)
+        try:
+            row = connection.execute(
+                "SELECT correlation_id,component,run_id,event,level,diagnostic_code,detail,created_at "
+                "FROM ep_technical_diagnostics WHERE correlation_id=?",
+                (correlation_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
+        return None
+    if row is None:
+        return None
+    try:
+        detail = json.loads(str(row[6]))
+    except (TypeError, json.JSONDecodeError):
+        detail = {}
+    return {
+        "correlation_id": str(row[0]), "component": str(row[1]),
+        "run_id": str(row[2]) if row[2] is not None else None,
+        "event": str(row[3]), "level": str(row[4]),
+        "diagnostic_code": str(row[5]), "detail": detail if isinstance(detail, dict) else {},
+        "created_at": str(row[7]),
+    }
+
+
+def _configured_central_database() -> Path | None:
+    configured_root = os.environ.get(SERVER_DATA_ROOT_ENVIRONMENT)
+    if configured_root:
+        candidate = central_database_module.path(Path(configured_root))
+        if candidate.is_file():
+            return candidate
+    configured_database = os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT)
+    if configured_database:
+        candidate = Path(configured_database).expanduser().resolve()
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _component_version(component: str) -> str:
     """Return the bounded version identity recorded beside a component name."""
-    if component == "platform_database":
-        return str(ENGINEERING_STORAGE_SCHEMA_VERSION)
     if component in {"http_ingress", "cli_ingress", "file_inbox_ingress"}:
         return "1"
     return CURRENT_PLATFORM_VERSION

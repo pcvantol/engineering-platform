@@ -7,6 +7,7 @@ module resolves opaque identifiers from that registry only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import re
 import shutil
@@ -14,7 +15,7 @@ import subprocess
 from typing import Iterable
 
 from . import managed_codex_runtime
-from .component_logging import component_logger, log_event
+from .component_logging import component_logger, log_event, technical_diagnostic_summary
 
 _TARGET_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
 
@@ -98,7 +99,8 @@ def registry(_data_root: Path) -> HostAdminTargetRegistry:
 
 
 def _audit(data_root: Path, event: str, *, target_id: object, outcome: str) -> None:
-    log_event(component_logger(data_root, "ep_server"), 20, event,
+    log_event(component_logger(data_root, "ep_server"),
+              logging.WARNING if event.endswith("_rejected") else logging.INFO, event,
               diagnostic=f"target_id={target_id!r}; outcome={outcome}")
 
 
@@ -196,4 +198,7 @@ def diagnostics(data_root: Path) -> dict[str, object]:
             "disk": {"total_bytes": usage.total, "used_bytes": usage.used, "free_bytes": usage.free},
             "managed_codex_runtime": {"state": state}, "registered_targets": 0,
             "mutations_supported": False, "project_authority": False,
-            "execution_authority": False, "queue_authority": False}
+            "execution_authority": False, "queue_authority": False,
+            "technical_diagnostics": technical_diagnostic_summary(
+                data_root, central_database=data_root / "epdata.sqlite",
+            )}

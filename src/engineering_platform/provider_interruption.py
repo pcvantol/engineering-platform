@@ -14,15 +14,13 @@ from .execution_timing import reconcile_interrupted_phases
 from .live_status import write_live_status
 from .storage import open_storage
 from .provider_recovery import create_recovery_available, load_recovery_state
+from .component_logging import record_technical_diagnostic
 
 
 INTERRUPTION_CLASSIFICATION = "provider_turn_interrupted"
 TERMINAL_DIAGNOSTIC = (
     "Provider turn interrupted before returning the required structured AgentResult."
 )
-LOGGER = logging.getLogger(__name__)
-
-
 def _latest_interrupted_invocation(
     root: Path, run_id: str, *, central_database: Path | None = None,
 ) -> tuple[str, str] | None:
@@ -122,11 +120,16 @@ def terminalize_after_host_exit(
     # cannot overwrite the proven failure outcome.
     try:
         release_terminal_lease(root, run_id, central_database=central_database)
-    except Exception:
+    except Exception as error:
         # Lease cleanup is secondary evidence.  The durable checkpoint stays
         # authoritative and normal stale-lease reconciliation can record the
         # separate cleanup concern on a later cycle.
-        LOGGER.exception("Terminal provider-interruption lease release failed for run %s", run_id)
+        record_technical_diagnostic(
+            root, component="lifecycle_worker", level=logging.ERROR,
+            event="terminal_provider_interruption_lease_release_failed",
+            diagnostic_code="TERMINAL_PROVIDER_INTERRUPTION_LEASE_RELEASE_FAILED",
+            error=error, run_id=run_id, central_database=central_database,
+        )
     write_live_status(root, terminal, terminal.next_action)
     return terminal
 
@@ -158,8 +161,13 @@ def prepare_same_run_recovery_after_host_exit(
             worktree_identity=str(root.resolve()), lease_id=None,
             central_database=central_database,
         )
-    except Exception:
-        LOGGER.exception("Provider recovery evidence could not be persisted for %s", run_id)
+    except Exception as error:
+        record_technical_diagnostic(
+            root, component="lifecycle_worker", level=logging.ERROR,
+            event="provider_recovery_evidence_persistence_failed",
+            diagnostic_code="PROVIDER_RECOVERY_EVIDENCE_PERSISTENCE_FAILED",
+            error=error, run_id=run_id, central_database=central_database,
+        )
         return None
     # This compact projection has no authority over recovery. It merely keeps
     # existing status readers coherent until they read the durable row.

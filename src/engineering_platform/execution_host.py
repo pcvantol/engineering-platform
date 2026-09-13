@@ -119,10 +119,9 @@ from .managed_autonomy import (
     append_validation_observation as record_managed_validation,
     record_gate as record_managed_gate,
 )
-from .component_logging import component_logger, shutdown_signal_logging
+from .component_logging import component_logger, record_technical_diagnostic, shutdown_signal_logging
 
 
-LOGGER = logging.getLogger(__name__)
 # Compatibility exports for integrations that already import these names.
 FINALIZATION_PR_HANDOFF_MAX_SECONDS = FINALIZATION.seconds
 REPAIR_AGENT_MAX_SECONDS = REPAIR.seconds
@@ -137,16 +136,29 @@ MAX_PR_CHECK_REPAIR_ATTEMPTS = MAX_TOTAL_REPAIR_ROUNDS_PER_RUN
 MAX_LOCAL_REPOSITORY_VALIDATION_ATTEMPTS = 3
 
 
-def _timing_unavailable(error: EngineeringStorageError) -> None:
+def _timing_unavailable(
+    root: Path, run_id: str, error: EngineeringStorageError, *, central_database: Path | None = None,
+) -> None:
     """Keep optional phase telemetry from changing the run outcome."""
-    LOGGER.warning("Execution phase telemetry is unavailable: %s", error)
+    record_technical_diagnostic(
+        root, component="lifecycle_worker", level=logging.WARNING,
+        event="execution_phase_telemetry_unavailable",
+        diagnostic_code="EXECUTION_PHASE_TELEMETRY_UNAVAILABLE", error=error,
+        run_id=run_id, central_database=central_database,
+    )
+
+
+def _central_database_from_kwargs(kwargs: dict[str, object]) -> Path | None:
+    """Keep optional timing compatibility arguments from widening the log API."""
+    candidate = kwargs.get("central_database")
+    return candidate if isinstance(candidate, Path) else None
 
 
 def start_phase(root: Path, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase | None:
     try:
         return _start_phase(root, run_id, phase_name, **kwargs)
     except EngineeringStorageError as error:
-        _timing_unavailable(error)
+        _timing_unavailable(root, run_id, error, central_database=_central_database_from_kwargs(kwargs))
         return None
 
 
@@ -154,7 +166,7 @@ def start_or_resume_phase(root: Path, run_id: str, phase_name: str, **kwargs: ob
     try:
         return _start_or_resume_phase(root, run_id, phase_name, **kwargs)
     except EngineeringStorageError as error:
-        _timing_unavailable(error)
+        _timing_unavailable(root, run_id, error, central_database=_central_database_from_kwargs(kwargs))
         return None
 
 
@@ -164,14 +176,22 @@ def complete_phase(root: Path, active: ActivePhase | None, **kwargs: object) -> 
     try:
         _complete_phase(root, active, **kwargs)
     except EngineeringStorageError as error:
-        _timing_unavailable(error)
+        active_run_id = getattr(active, "run_id", None)
+        if not isinstance(active_run_id, str):
+            # Compatibility callers can supply an opaque timing token. Its
+            # missing run scope must not turn an optional telemetry failure
+            # into a new workflow failure.
+            return
+        _timing_unavailable(
+            root, active_run_id, error, central_database=_central_database_from_kwargs(kwargs),
+        )
 
 
 def complete_active_phase(root: Path, run_id: str, phase_name: str, **kwargs: object) -> bool:
     try:
         return _complete_active_phase(root, run_id, phase_name, **kwargs)
     except EngineeringStorageError as error:
-        _timing_unavailable(error)
+        _timing_unavailable(root, run_id, error, central_database=_central_database_from_kwargs(kwargs))
         return False
 
 # Compatibility exports remain at this façade while implementation resides in
@@ -424,6 +444,17 @@ class EngineeringRunner:
         self._provider_dispatch_telemetry: dict[str, int] = {}
         self._dispatch_guard_enforced = False
         self._last_provider_invocation_id: str | None = None
+
+    def _record_technical_diagnostic(
+        self, state: TransactionState, *, event: str, diagnostic_code: str,
+        error: BaseException | None = None, level: int = logging.WARNING,
+    ) -> None:
+        """Record supplementary host failures without changing lifecycle authority."""
+        record_technical_diagnostic(
+            self.root, component="lifecycle_worker", level=level, event=event,
+            diagnostic_code=diagnostic_code, error=error, run_id=state.run_id,
+            central_database=self.store.central_database,
+        )
 
     def _start_phase(self, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase | None:
         return start_phase(self.root, run_id, phase_name, central_database=self.store.central_database, **kwargs)
@@ -752,8 +783,11 @@ class EngineeringRunner:
             ), central_database=self.store.central_database)
             self._last_provider_invocation_id = identifier
             return identifier
-        except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
-            LOGGER.warning("Provider invocation telemetry is unavailable for run %s", state.run_id)
+        except (EngineeringStorageError, OSError, sqlite3.DatabaseError) as error:
+            self._record_technical_diagnostic(
+                state, event="provider_invocation_telemetry_unavailable",
+                diagnostic_code="PROVIDER_INVOCATION_TELEMETRY_UNAVAILABLE", error=error,
+            )
             return None
 
     def _record_agent_execution_time(self, state: TransactionState) -> TransactionState:
@@ -814,8 +848,11 @@ class EngineeringRunner:
                     currentness=state.repair_iterations,
                     central_database=self.store.central_database,
                 )
-            except EngineeringStorageError:
-                LOGGER.warning("Managed validation evidence is unavailable for run %s", state.run_id)
+            except EngineeringStorageError as error:
+                self._record_technical_diagnostic(
+                    state, event="managed_validation_evidence_unavailable",
+                    diagnostic_code="MANAGED_VALIDATION_EVIDENCE_UNAVAILABLE", error=error,
+                )
         return replace(state, validation_evidence=result.validation_evidence)
 
     @staticmethod
@@ -985,10 +1022,13 @@ class EngineeringRunner:
                         central_database=self.store.central_database,
                         artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
                     )
-                except (EngineeringStorageError, OSError):
+                except (EngineeringStorageError, OSError) as error:
                     # Diagnostics are supplementary.  A capture failure must
                     # never erase or weaken the authoritative terminal exit.
-                    LOGGER.warning("Required validation diagnostic capture unavailable for %s", command_id)
+                    self._record_technical_diagnostic(
+                        validation, event="validation_diagnostic_capture_unavailable",
+                        diagnostic_code="VALIDATION_DIAGNOSTIC_CAPTURE_UNAVAILABLE", error=error,
+                    )
             complete_phase(self.root, span, outcome="COMPLETE" if exit_code == 0 else "FAILED")
         return validation
 
@@ -1004,8 +1044,11 @@ class EngineeringRunner:
                 actor=actor, evidence_ref=evidence_ref,
                 central_database=self.store.central_database,
             )
-        except EngineeringStorageError:
-            LOGGER.warning("Managed-autonomy evidence is unavailable for run %s", state.run_id)
+        except EngineeringStorageError as error:
+            self._record_technical_diagnostic(
+                state, event="managed_autonomy_evidence_unavailable",
+                diagnostic_code="MANAGED_AUTONOMY_EVIDENCE_UNAVAILABLE", error=error,
+            )
 
     def _managed_gate(self, state: TransactionState, gate_type: str, status: str, pr: int, *, resolved: bool = False) -> None:
         try:
@@ -1016,8 +1059,11 @@ class EngineeringRunner:
                 resolved_at=datetime.now(timezone.utc).isoformat() if resolved else None,
                 central_database=self.store.central_database,
             )
-        except EngineeringStorageError:
-            LOGGER.warning("Managed governance-gate evidence is unavailable for run %s", state.run_id)
+        except EngineeringStorageError as error:
+            self._record_technical_diagnostic(
+                state, event="managed_governance_gate_evidence_unavailable",
+                diagnostic_code="MANAGED_GOVERNANCE_GATE_EVIDENCE_UNAVAILABLE", error=error,
+            )
 
     def _managed_pr_check(self, state: TransactionState, pr: PullRequestEvidence) -> None:
         """Persist current GitHub required-check evidence separately from historical waits."""
@@ -1033,8 +1079,11 @@ class EngineeringRunner:
                 currentness=state.repair_iterations,
                 central_database=self.store.central_database,
             )
-        except EngineeringStorageError:
-            LOGGER.warning("Managed PR check evidence is unavailable for run %s", state.run_id)
+        except EngineeringStorageError as error:
+            self._record_technical_diagnostic(
+                state, event="managed_pr_check_evidence_unavailable",
+                diagnostic_code="MANAGED_PR_CHECK_EVIDENCE_UNAVAILABLE", error=error,
+            )
 
     @staticmethod
     def _audit_record(
@@ -1372,8 +1421,11 @@ class EngineeringRunner:
                             central_database=self.store.central_database,
                         )
                         validation_commands[command_id] = (validation_id, started_at)
-                    except EngineeringStorageError:
-                        LOGGER.warning("Validation command start evidence is unavailable for run %s", state.run_id)
+                    except EngineeringStorageError as error:
+                        self._record_technical_diagnostic(
+                            state, event="validation_command_start_evidence_unavailable",
+                            diagnostic_code="VALIDATION_COMMAND_START_EVIDENCE_UNAVAILABLE", error=error,
+                        )
                     validation_spans[command_id] = self._start_phase(
                         state.run_id,
                         "VALIDATION",
@@ -1410,8 +1462,11 @@ class EngineeringRunner:
                             evidence_ref=evidence_ref,
                             central_database=self.store.central_database,
                         )
-                    except EngineeringStorageError:
-                        LOGGER.warning("Validation command terminal evidence is unavailable for run %s", state.run_id)
+                    except EngineeringStorageError as error:
+                        self._record_technical_diagnostic(
+                            state, event="validation_command_terminal_evidence_unavailable",
+                            diagnostic_code="VALIDATION_COMMAND_TERMINAL_EVIDENCE_UNAVAILABLE", error=error,
+                        )
                 active = validation_spans.pop(command_id, None)
                 complete_phase(self.root, active)
 
@@ -3507,11 +3562,15 @@ First implementation pull-request publication gate:
                     lease = self.lease_heartbeat.stop()
                     self.lease_heartbeat = None
                 release_lease(self.root, lease, central_database=self.store.central_database)
-            except Exception:
+            except Exception as error:
                 # A durable terminal checkpoint is authoritative even when
                 # post-terminal lease cleanup is unavailable.  Stale lease
                 # reconciliation records that separate cleanup concern.
-                LOGGER.exception("Terminal lease release failed for run %s", terminal.run_id)
+                self._record_technical_diagnostic(
+                    terminal, event="terminal_lease_release_failed",
+                    diagnostic_code="TERMINAL_LEASE_RELEASE_FAILED", error=error,
+                    level=logging.ERROR,
+                )
             finally:
                 self.active_lease = None
         if phase == "COMPLETE":

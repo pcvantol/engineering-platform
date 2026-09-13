@@ -47,6 +47,22 @@ An audit record keeps bounded action, actor, outcome and canonical project/run
 identifiers, never prompt text, chat content, queue reason, local path,
 imported payload or downloaded bytes.
 
+### Shielded host and recovery diagnostics
+
+Schema 63 adds an append-only `ep_technical_diagnostics` store for the
+Execution Host and provider-recovery paths. When a caught host/recovery error
+needs technical follow-up, the normal component log records its `WARNING` or
+`ERROR` level, stable `diagnostic_code`, and an opaque
+`diagnostic_reference`. It never records the exception message, traceback,
+prompt, chat content, CLI output, or environment values.
+
+The correlation reference can be inspected in the installation-scoped Host
+Admin diagnostic summary. The technical detail itself has no Console HTTP
+route, component-log export, or `raw_json` projection; it remains in the
+mode-0600 Server-owned CENTRAL store for an on-host, authorized diagnostic
+caller. Diagnostic rows are immutable. Existing component-log rows are not
+rewritten or retrospectively assigned a reference.
+
 ### Detail-field order
 
 The writer and Console use one semantic order without rewriting old records:
@@ -54,7 +70,8 @@ The writer and Console use one semantic order without rewriting old records:
 1. scope: `project_id`, `repository_id`, `submission_id`, `run_id`;
 2. event: action, actor and outcome;
 3. state: previous/new state, phase, dispatcher state and terminal state;
-4. bounded context: reason, gate, operator resolution and counters;
+4. bounded context: reason, gate, operator resolution, counters and safe
+   diagnostic code/reference;
 5. provenance: Forge/EP/contract versions and receipt identifiers;
 6. remaining approved redacted fields in alphabetical order.
 
