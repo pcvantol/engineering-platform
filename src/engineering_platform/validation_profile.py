@@ -188,15 +188,26 @@ CONTROL_LAUNCHERS = {
     ),
 }
 
+_TESTS_ROOT_REPOSITORY_SUITE = ValidationControlLauncher(
+    "repository_suite", "repository", "python3 -m unittest discover -s tests",
+    _python_command("-m", "unittest", "discover", "-s", "tests"),
+)
 
-def control_launcher(validation_id: str) -> ValidationControlLauncher | None:
-    """Resolve a persisted required-control identity to its canonical launcher."""
+
+def control_launcher(
+    validation_id: str, *, repository_root: Path | None = None,
+) -> ValidationControlLauncher | None:
+    """Resolve the canonical launcher for the exact checkout being validated."""
+    if validation_id == "repository_suite" and repository_root is not None and (repository_root / "tests").is_dir():
+        return _TESTS_ROOT_REPOSITORY_SUITE
     return CONTROL_LAUNCHERS.get(validation_id)
 
 
-def control_binding(validation_id: str) -> dict[str, object] | None:
+def control_binding(
+    validation_id: str, *, repository_root: Path | None = None,
+) -> dict[str, object] | None:
     """Return the immutable launcher snapshot for one registry control."""
-    launcher = control_launcher(validation_id)
+    launcher = control_launcher(validation_id, repository_root=repository_root)
     if launcher is None:
         return None
     return {
@@ -246,9 +257,14 @@ def producer_profile_payload(tier: object) -> dict[str, object]:
     return payload
 
 
-def profile_control_bindings(profile: "ValidationProfile") -> tuple[dict[str, object], ...]:
-    """Snapshot every launcher selected by a profile before execution."""
-    bindings = tuple(control_binding(validation_id) for validation_id in profile.required_controls)
+def profile_control_bindings(
+    profile: "ValidationProfile", *, repository_root: Path | None = None,
+) -> tuple[dict[str, object], ...]:
+    """Snapshot every profile launcher for the checkout before execution."""
+    bindings = tuple(
+        control_binding(validation_id, repository_root=repository_root)
+        for validation_id in profile.required_controls
+    )
     if any(binding is None for binding in bindings):
         raise ValidationProfileResolutionError("Selected validation profile launcher is unavailable.")
     return tuple(binding for binding in bindings if binding is not None)

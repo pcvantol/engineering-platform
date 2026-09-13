@@ -276,6 +276,12 @@ separately records the executed command summaries. GitHub keeps the required
 validation check; only its costly browser work is skipped for an unambiguous
 documentation tier.
 
+The versioned `repository_suite` control is resolved against the host-owned
+checkout before execution. A checkout with a `tests/` root runs `python3 -m
+unittest discover -s tests`; other repository layouts retain their registered
+root discovery command. The persisted control identity and executed command
+are the same, so neither layout is silently misrepresented in run evidence.
+
 For a Managed implementation, the Execution Host first creates and pushes the
 bounded branch without creating a pull request. The visible **Local repository
 validation** step discovers and runs the target repository's canonical required

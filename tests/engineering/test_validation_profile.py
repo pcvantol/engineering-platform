@@ -1,4 +1,6 @@
 from __future__ import annotations
+from pathlib import Path
+import tempfile
 import unittest
 from engineering_platform.validation_profile import (
     ValidationProfileResolutionError, browser_dashboard_required, classify, localization_required, matching_control_binding, phase_for_branch, profile_control_bindings,
@@ -69,6 +71,7 @@ class ValidationProfileTests(unittest.TestCase):
             matching_control_binding("python3 -m unittest discover", bindings), full,
         )
         for command in (
+            "python3 -m unittest discover -s tests",
             "python3 -m unittest tests.engineering.test_storage",
             "PYTHONPATH=src python3 -m unittest discover",
             "python3 -m unittest discover && true",
@@ -76,3 +79,13 @@ class ValidationProfileTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(matching_control_binding(command, bindings))
+
+    def test_repository_suite_snapshots_tests_root_discovery_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            binding = profile_control_bindings(
+                classify(["custom/mixed-scope.txt"]), repository_root=root,
+            )[-1]
+        self.assertEqual(binding["control_identity"], "python3 -m unittest discover -s tests")
+        self.assertEqual(binding["command"][-2:], ["-s", "tests"])

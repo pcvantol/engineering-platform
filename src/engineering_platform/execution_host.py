@@ -850,7 +850,7 @@ class EngineeringRunner:
         profile_payload = producer_context.get("validation_profile") if isinstance(producer_context, dict) else None
         try:
             profile, reference = resolve_producer_profile(profile_payload)
-            bindings = profile_control_bindings(profile)
+            bindings = profile_control_bindings(profile, repository_root=self.root)
             record_validation_profile(
                 self.root, run_id=state.run_id, selected_validation_tier=profile.tier,
                 validation_profile_version=VALIDATION_PROFILE_VERSION,
@@ -1803,7 +1803,7 @@ class EngineeringRunner:
                     required_validation_controls=profile.required_controls,
                     profile_reference=f"validation-profile-registry:{profile.tier}@{VALIDATION_PROFILE_VERSION}",
                     profile_selection_source="diff_classification",
-                    control_bindings=profile_control_bindings(profile),
+                    control_bindings=profile_control_bindings(profile, repository_root=self.root),
                     candidate_sha=candidate.head_sha,
                     currentness=validation.repair_iterations,
                     recorded_at=datetime.now(timezone.utc).isoformat(),

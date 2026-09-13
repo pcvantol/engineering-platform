@@ -86,7 +86,9 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
         agent = DeterministicQualificationAgent()
         events = []
         agent.set_command_callback(lambda *event: events.append(event))
-        (self.root / "test_qualification_fixture.py").write_text(
+        tests = self.root / "tests"
+        tests.mkdir()
+        (tests / "test_qualification_fixture.py").write_text(
             "import unittest\n\n"
             "class FixtureTest(unittest.TestCase):\n"
             "    def test_fixture(self): self.assertTrue(True)\n",
@@ -106,6 +108,7 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
             ],
         )
         self.assertEqual([event[3] for event in events if event[0] == "completed"], [0, 0])
+        self.assertEqual(events[2][2], "python3 -m unittest discover -s tests")
 
     def test_external_handoff_writes_only_the_explicit_fixture_contract(self) -> None:
         agent = DeterministicQualificationAgent()

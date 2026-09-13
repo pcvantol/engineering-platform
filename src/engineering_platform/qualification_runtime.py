@@ -10,11 +10,11 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 
 from .capability_review import MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION, ReviewerResult
 from .execution_models import AgentResult, PullRequestEvidence
+from .validation_profile import control_launcher
 
 
 class DeterministicQualificationAgent:
@@ -173,9 +173,14 @@ class DeterministicQualificationAgent:
         branch = subprocess.run(("git", "-C", str(root), "branch", "--show-current"), check=True, text=True, capture_output=True).stdout.strip()
         sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
         outcomes = []
-        commands = (
-            ("git diff --check", ("git", "diff", "--check")),
-            ("python3 -m unittest discover", (sys.executable, "-m", "unittest", "discover")),
+        # Reuse the versioned registry rather than maintaining a second,
+        # subtly different test-discovery command in the deterministic seam.
+        # The identity stored in terminal evidence is therefore exactly the
+        # identity the validation profile requires.
+        commands = tuple(
+            (launcher.control_identity, launcher.command)
+            for validation_id in ("git_diff_check", "repository_suite")
+            if (launcher := control_launcher(validation_id, repository_root=root)) is not None
         )
         for ordinal, (identity, command) in enumerate(commands, start=1):
             command_id = f"deterministic-validation-{ordinal}"
