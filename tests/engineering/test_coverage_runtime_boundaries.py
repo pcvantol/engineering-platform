@@ -1737,6 +1737,8 @@ class InstallationBoundaryTests(unittest.TestCase):
         detail = {
             "run_id": "run-terminal", "status": "BLOCKED", "lifecycle": lifecycle,
             "commit_timeline": timeline,
+            "execution": {"seconds": 12.5, "total_seconds": 34.5},
+            "runtime": {"runtime_provider": "codex_cli", "model": "gpt-5.6-terra"},
         }
         with patch("engineering_platform.server._console_projects", return_value=projects), patch(
             "engineering_platform.server._central_console_run_detail", return_value=detail
@@ -1749,9 +1751,53 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(responses[-1][0], 200)
         payload = responses[-1][1]
         self.assertEqual(payload["history"], detail)
+        self.assertEqual(payload["execution"], detail["execution"])
+        self.assertEqual(payload["runtime"], detail["runtime"])
         self.assertEqual(payload["lifecycle"], lifecycle)
         self.assertEqual(payload["commit_timeline"], timeline)
         self.assertNotIn("run", payload)
+
+    def test_central_console_detail_projects_terminal_checkpoint_diagnostic(self) -> None:
+        """Terminal blocking evidence is visible without consulting a log fallback."""
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("project-terminal", "DECLARATION", "ACTIVE", "now", "now"),
+            )
+            connection.execute(
+                "INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("repo-terminal", "project-terminal", "repo-terminal", "authority", "DECLARATION", "now", "now"),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)",
+                ("run-terminal-diagnostic", "project-terminal", "BLOCKED", "started", "finished", "MANAGED"),
+            )
+            connection.execute(
+                """INSERT INTO ep_submissions(
+                    submission_id,project_id,repository_id,producer_id,producer_type,producer_version,
+                    transport,prompt,prompt_digest,constraints,state,admission,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("submission-terminal", "project-terminal", "repo-terminal", "forge", "FORGE", "1.0",
+                 "HTTP", "bounded", "sha256:prompt", "{}", "QUEUED", "ADMITTED", "started"),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                ("submission-terminal", "project-terminal", "repo-terminal", "run-terminal-diagnostic", "BLOCKED", "CENTRAL:prompt", "started", "finished"),
+            )
+            connection.execute(
+                "INSERT INTO execution_lifecycle_events(run_id,phase,checkpoint,recorded_at) VALUES(?,?,?,?)",
+                ("run-terminal-diagnostic", "BLOCKED", json.dumps({
+                    "diagnostic": "Required validation controls did not produce current terminal evidence.",
+                }), "finished"),
+            )
+        detail = server._central_console_run_detail(self.root, "project-terminal", "run-terminal-diagnostic")
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(
+            detail["blocking_reason"],
+            "Required validation controls did not produce current terminal evidence.",
+        )
+        self.assertEqual(detail["execution_diagnostic"], detail["blocking_reason"])
 
     def test_central_chat_routes_generate_and_store_only_project_scoped_redacted_transcripts(self) -> None:
         """The installed Console owns both chat mutations without checkout fallback."""

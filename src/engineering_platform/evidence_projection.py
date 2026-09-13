@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import json
+import shlex
 import shutil
 import subprocess  # nosec B404
 import sys
@@ -118,12 +119,29 @@ class ToolProxyEnvironment:
     def __enter__(self) -> Mapping[str, str]:
         self._temporary = TemporaryDirectory(prefix="engineering-platform-evidence-")
         directory = Path(self._temporary.name)
-        repository_root = Path(__file__).resolve().parents[2]
+        # The proxy must import the same package that created it.  For source
+        # execution that is ``src/``; for an installed wheel it is
+        # ``site-packages/``.  The repository root is not importable itself
+        # and previously allowed a stale installed wheel to shadow the source
+        # under test.
+        package_parent = Path(__file__).resolve().parent.parent
         for name in PROXIED_TOOLS:
             launcher = directory / name
             target = "context_escalation_main" if name == "engineering-platform-context-escalate" else "proxy_main"
+            program = (
+                "import sys\n"
+                f"sys.path.insert(0, {str(package_parent)!r})\n"
+                f"from engineering_platform.evidence_projection import {target}\n"
+                f"{target}({name!r})\n"
+            )
+            # The installed runtime can live under an application-support
+            # path containing spaces.  A direct shebang to that interpreter
+            # is not executable on POSIX, which silently let PATH fall
+            # through to the unproxied tool.  A tiny shell launcher preserves
+            # exact argv while safely quoting the interpreter and program.
             launcher.write_text(
-                f"#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(repository_root)!r})\nfrom engineering_platform.evidence_projection import {target}\n{target}({name!r})\n",
+                "#!/bin/sh\n"
+                f"exec {shlex.quote(sys.executable)} -c {shlex.quote(program)} \"$@\"\n",
                 encoding="utf-8",
             )
             launcher.chmod(0o700)

@@ -193,11 +193,38 @@ _TESTS_ROOT_REPOSITORY_SUITE = ValidationControlLauncher(
     _python_command("-m", "unittest", "discover", "-s", "tests"),
 )
 
+_TESTS_ROOT_DOCUMENTATION_CONTRACT = ValidationControlLauncher(
+    "documentation_contract", "documentation", "python3 -m unittest discover -s tests",
+    _python_command("-m", "unittest", "discover", "-s", "tests"),
+)
+
+
+def _is_engineering_platform_checkout(repository_root: Path) -> bool:
+    """Identify the one checkout that owns EP's specialised controls.
+
+    The registry is executed by the host but can validate producer checkouts.
+    EP-only documentation tests must therefore never be projected as a
+    canonical control for another product repository.
+    """
+    return (repository_root / "src" / "engineering_platform" / "validation_profile.py").is_file()
+
 
 def control_launcher(
     validation_id: str, *, repository_root: Path | None = None,
 ) -> ValidationControlLauncher | None:
     """Resolve the canonical launcher for the exact checkout being validated."""
+    if (
+        validation_id == "documentation_contract"
+        and repository_root is not None
+        and not _is_engineering_platform_checkout(repository_root)
+        and (repository_root / "tests").is_dir()
+    ):
+        # A producer checkout owns its documentation contract.  Its standard
+        # repository suite is the only generic, executable proof available to
+        # the host; the EP-specific documentation test would test the wrong
+        # repository and turn an otherwise valid managed run into a false
+        # blockade.
+        return _TESTS_ROOT_DOCUMENTATION_CONTRACT
     if validation_id == "repository_suite" and repository_root is not None and (repository_root / "tests").is_dir():
         return _TESTS_ROOT_REPOSITORY_SUITE
     return CONTROL_LAUNCHERS.get(validation_id)

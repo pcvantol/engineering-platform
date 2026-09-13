@@ -3202,6 +3202,13 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
     if record is None:
         return None
     execution, runtime = _central_console_execution_projection(data_root, record)
+    lifecycle = _central_console_lifecycle(data_root, run_id)
+    terminal = str(record.get("status") or lifecycle.get("terminal_state") or "").upper()
+    if terminal in {"BLOCKED", "FAILED"}:
+        diagnostic = _central_console_terminal_execution_diagnostic(data_root, run_id)
+        if diagnostic is not None:
+            record["execution_diagnostic"] = diagnostic
+            record["blocking_reason"] = diagnostic
     return {
         **record,
         "execution": execution,
@@ -3209,11 +3216,24 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
         # The historical detail dialog uses the same read-only bubble flow as
         # the active card.  Terminal history remains separate in the table,
         # while its exact step evidence stays available on demand.
-        "lifecycle": _central_console_lifecycle(data_root, run_id),
+        "lifecycle": lifecycle,
         "commit_timeline": _central_console_terminal_revision_timeline(
             data_root, project_id, run_id,
         ),
     }
+
+
+def _central_console_terminal_execution_diagnostic(data_root: Path, run_id: str) -> str | None:
+    """Return one redacted terminal checkpoint diagnostic for a history row."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        row = connection.execute(
+            """SELECT checkpoint FROM execution_lifecycle_events
+                 WHERE run_id=? AND phase IN ('BLOCKED', 'FAILED')
+                 ORDER BY id DESC LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+    diagnostic = _central_text(_central_json_object(row[0]).get("diagnostic")) if row else None
+    return redact_diagnostic(diagnostic, limit=500) if diagnostic else None
 
 
 def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[str, object]]:
@@ -5011,8 +5031,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self._send(200, {
                         "project_id": selected,
                         "history": detail,
-                        "execution": {},
-                        "runtime": {},
+                        "execution": detail.get("execution", {}),
+                        "runtime": detail.get("runtime", {}),
                         "reviewers": [],
                         "commits": {},
                         "commit_timeline": detail.get("commit_timeline", []),

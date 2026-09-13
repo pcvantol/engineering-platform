@@ -50,6 +50,23 @@ required control is `FAIL`; missing, conflicting, or unexecuted mandatory
 evidence is `UNRESOLVED`. Optional controls do not affect required-validation
 pass status.
 
+The Execution Host, not the read-only provider, produces those authoritative
+terminal receipts. Provider-reported commands remain optional observational
+telemetry under a distinct identity and can never satisfy, replace, or
+conflict with a required control. For a non-EP checkout with a conventional
+`tests/` root, the documentation profile binds its documentation-contract
+control to that checkout's `python3 -m unittest discover -s tests` suite;
+EP's specialised documentation-contract test is used only for an EP checkout.
+
+## Historical dashboard projection
+
+For a terminal blocked or failed run, the detail projection exposes the safe,
+persisted terminal diagnostic as `execution_diagnostic` and
+`blocking_reason`. Duration and runtime fields are projected from the same
+immutable execution snapshot used by run history, rather than returned as
+empty placeholders. This is presentation only: it never creates a diagnostic
+or timing fact for a historical run that did not record one.
+
 ## Evidence audit matrix
 
 | Evidence area | Current classification | Qualification role |

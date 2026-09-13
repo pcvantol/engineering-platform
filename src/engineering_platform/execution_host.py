@@ -1397,22 +1397,34 @@ class EngineeringRunner:
                 if kind is not None:
                     validation_id = self._validation_id(command, kind)
                     try:
-                        profile = load_validation_context(
-                            self.root, state.run_id, currentness=state.repair_iterations,
-                            central_database=self.store.central_database,
-                        )
-                        binding = matching_control_binding(
-                            command, profile.get("control_bindings", ()),
-                        ) if profile else None
-                        if isinstance(binding, dict):
-                            validation_id = str(binding["validation_id"])
-                            required = validation_id in set(profile["required_validation_controls"])
-                            category = str(binding["category"])
-                            identity = str(binding["control_identity"])
-                        else:
+                        if local_validation:
+                            # Read-only provider command telemetry is useful
+                            # observability, but it is not host-owned terminal
+                            # evidence.  Keeping it under a distinct identity
+                            # prevents a provider's similarly named command
+                            # from conflicting with the deterministic control
+                            # that qualifies the same candidate.
+                            validation_id = f"provider_observed_{validation_id}"
                             required = False
                             category = "agent"
                             identity = command[:160]
+                        else:
+                            profile = load_validation_context(
+                                self.root, state.run_id, currentness=state.repair_iterations,
+                                central_database=self.store.central_database,
+                            )
+                            binding = matching_control_binding(
+                                command, profile.get("control_bindings", ()),
+                            ) if profile else None
+                            if isinstance(binding, dict):
+                                validation_id = str(binding["validation_id"])
+                                required = validation_id in set(profile["required_validation_controls"])
+                                category = str(binding["category"])
+                                identity = str(binding["control_identity"])
+                            else:
+                                required = False
+                                category = "agent"
+                                identity = command[:160]
                         started_at = datetime.now(timezone.utc).isoformat()
                         record_validation_command_invocation(
                             self.root, run_id=state.run_id, validation_id=validation_id, command_id=command_id,
@@ -1869,6 +1881,15 @@ class EngineeringRunner:
                     validation, "BLOCKED", "validation_profile_persistence",
                     "Required validation profile evidence could not be persisted."
                 ), implementation
+            # The profile is candidate-bound evidence, not a suggestion for
+            # the read-only provider.  Execute its exact host-owned controls
+            # before asking the provider for its bounded validation summary.
+            # Without these receipts, a provider can truthfully describe a
+            # passing check while strict qualification correctly rejects it
+            # because no current canonical control evidence exists.
+            validation = self._execute_required_validation_controls(validation)
+            if validation.terminal:
+                return validation, implementation
             validation = replace(validation, local_validation_iterations=iteration)
             self.store.save(validation)
             write_live_status(self.root, validation, validation.next_action)
