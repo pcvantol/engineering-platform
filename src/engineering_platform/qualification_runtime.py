@@ -135,17 +135,24 @@ class DeterministicQualificationAgent:
         existing = run("git", "-C", str(root), "branch", "--show-current")
         if existing != branch:
             run("git", "-C", str(root), "switch", "-c", branch)
-        if not publication:
-            proof = root / ".engineering-platform" / ("managed-github-e2e-finalization-proof.json" if finalization else "managed-github-e2e-proof.json")
-            proof.write_text(json.dumps({
-                "branch": branch,
-                "kind": "EP_MANAGED_GITHUB_E2E",
-                "stage": "FINALIZATION" if finalization else "IMPLEMENTATION",
-                "version": 1,
-            }, sort_keys=True) + "\n", encoding="utf-8")
-            run("git", "-C", str(root), "add", str(proof.relative_to(root)))
-            run("git", "-C", str(root), "commit", "-m", "test: record managed GitHub qualification handoff")
-            run("git", "-C", str(root), "push", "--set-upstream", "origin", branch)
+        # Both remote hand-off gates need an actual, bounded proof commit.
+        # In particular, the first-publication path otherwise creates a PR for
+        # a branch identical to main, which GitHub correctly rejects.
+        proof_name = (
+            "managed-github-e2e-finalization-proof.json"
+            if finalization
+            else "managed-github-e2e-proof.json"
+        )
+        proof = root / ".engineering-platform" / proof_name
+        proof.write_text(json.dumps({
+            "branch": branch,
+            "kind": "EP_MANAGED_GITHUB_E2E",
+            "stage": "FINALIZATION" if finalization else "IMPLEMENTATION",
+            "version": 1,
+        }, sort_keys=True) + "\n", encoding="utf-8")
+        run("git", "-C", str(root), "add", str(proof.relative_to(root)))
+        run("git", "-C", str(root), "commit", "-m", "test: record managed GitHub qualification handoff")
+        run("git", "-C", str(root), "push", "--set-upstream", "origin", branch)
         title = "test: managed GitHub qualification finalization" if finalization else "test: managed GitHub qualification"
         run("gh", "pr", "create", "--repo", repository, "--head", branch, "--base", "main", "--title", title, "--body", "Explicitly authorized Engineering Platform dummy-repository qualification.")
         number = int(run("gh", "pr", "view", branch, "--repo", repository, "--json", "number", "--jq", ".number"))
