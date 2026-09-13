@@ -1658,7 +1658,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(openPullRequestStatus).toHaveCSS("color", "rgb(24, 120, 67)");
   });
 
-  test("manually refreshes every open pull request, including a previously green one", async ({ page }) => {
+  test("does not refresh checkout-bound pull requests from CENTRAL", async ({ page }) => {
     let refreshes = 0;
     await page.route("**/api/open-pull-requests", async (route) => {
       refreshes += 1;
@@ -1683,11 +1683,12 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(refresh).toHaveText("↻");
     const refreshesBeforeClick = refreshes;
     await refresh.click();
-    await expect.poll(() => refreshes).toBe(refreshesBeforeClick + 1);
-    await expect(page.locator("#workspaceOpenPullRequests .open-pr-status")).toHaveClass(/open-pr-status--waiting_for_checks/);
+    await expect.poll(() => refreshes).toBe(refreshesBeforeClick);
+    await expect(page.locator("#copyToast")).toHaveText("");
+    await expect(page.locator("#workspaceOpenPullRequests .open-pr-status")).toHaveClass(/open-pr-status--ready_to_merge/);
   });
 
-  test("dispatches owner authorization only after an explicit confirmation", async ({ page }) => {
+  test("does not expose or dispatch checkout-bound owner authorization from CENTRAL", async ({ page }) => {
     let dispatched = null;
     let refreshes = 0;
     await page.route("**/api/open-pull-requests/940/owner-authorization", async (route) => {
@@ -1716,30 +1717,16 @@ test.describe("Engineering Status browser smoke", () => {
       }]);
     });
 
-    const authorize = page.locator("[data-open-pull-request-owner-authorization='940']");
-    await expect(authorize).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.authorize_owner"]);
-    await expect(authorize).toHaveCSS("border-top-color", "rgb(243, 211, 106)");
-    await expect(authorize).toHaveCSS("min-height", "46px");
-    expect(await authorize.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"✓"');
-    await authorize.click();
-    await expect(page.locator("#confirmationModal")).toBeVisible();
-    await expect(page.locator("#confirmationModal")).toHaveClass(/dashboard-modal-shell--owner-authorization/);
-    await expect(page.locator("#confirmationModal .confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(243, 211, 106)");
-    await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("border-top-color", "rgb(243, 211, 106)");
+    await expect(page.locator("[data-open-pull-request-owner-authorization='940']")).toHaveCount(0);
     expect(dispatched).toBeNull();
-    const refreshesBeforeAuthorization = refreshes;
-    await page.locator("#confirmationModalConfirm").click();
-    await expect.poll(() => dispatched).toEqual({ method: "POST", body: "{}" });
-    await expect.poll(() => refreshes).toBeGreaterThan(refreshesBeforeAuthorization);
-    expect(readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8"))
-      .toContain("for (const delay of [900, 2500, 6000, 12000])");
+    expect(refreshes).toBe(0);
   });
 
-  test("queues one explicit repair for terminal failed pull-request checks", async ({ page }) => {
-    let dispatched = null;
+  test("does not expose checkout-bound repair for terminal failed pull-request checks in CENTRAL", async ({ page }) => {
+    let repairRequests = 0;
     await page.route("**/api/open-pull-requests/941/repair-failed-checks", async (route) => {
-      dispatched = { method: route.request().method(), body: route.request().postData() };
-      await route.fulfill({ status: 202, json: { queued: true, pull_request: 941 } });
+      repairRequests += 1;
+      await route.fulfill({ status: 410, json: { error: "historical route" } });
     });
     await page.route("**/api/open-pull-requests", (route) => route.fulfill({ json: { pull_requests: [] } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -1757,27 +1744,11 @@ test.describe("Engineering Status browser smoke", () => {
         failed_checks: ["Engineering Platform validation / validate", "Validate Home Assistant custom integration / validate / tests"],
       }]);
     });
-    const repair = page.locator("[data-open-pull-request-check-repair='941']");
-    await expect(repair).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.repair_failed_checks"]);
-    await expect(repair).toHaveCSS("border-top-color", "rgb(243, 211, 106)");
-    await expect(repair).toHaveCSS("padding-top", "9px");
-    await expect(repair).toHaveCSS("font-size", "13px");
+    await expect(page.locator("[data-open-pull-request-check-repair='941']")).toHaveCount(0);
     await expect(page.locator("#workspaceOpenPullRequests ul")).toHaveCSS("overflow-y", "auto");
     await expect(page.locator("#workspaceOpenPullRequests li")).toHaveCSS("padding-bottom", "16px");
     await expect(page.locator("#workspaceOpenPullRequests li")).toHaveCSS("border-bottom-style", "solid");
-    await repair.click();
-    await expect(page.locator("#confirmationModal")).toBeVisible();
-    await expect(page.locator("#confirmationModal")).toHaveClass(/dashboard-modal-shell--check-repair/);
-    await expect(page.locator("#confirmationModal")).not.toHaveClass(/dashboard-modal-shell--destructive/);
-    await expect(page.locator(".confirmation-modal__list-label")).toHaveText(
-      DASHBOARD_MESSAGES.nl["workspace.open_pull_request.repair_failed_checks_list"],
-    );
-    await expect(page.locator(".confirmation-modal__list li")).toHaveCount(2);
-    await expect(page.locator(".confirmation-modal__list")).toContainText("Engineering Platform validation / validate");
-    await expect(page.locator(".confirmation-modal__list")).toContainText("Validate Home Assistant custom integration / validate / tests");
-    expect(dispatched).toBeNull();
-    await page.locator("#confirmationModalConfirm").click();
-    await expect.poll(() => dispatched).toEqual({ method: "POST", body: "{}" });
+    expect(repairRequests).toBe(0);
   });
 
   test("shows persisted repair progress and a link to the active GitHub checks", async ({ page }) => {
@@ -1800,7 +1771,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(progress.locator(".open-pr-check-repair-progress__spinner")).toBeVisible();
   });
 
-  test("keeps the repair button visible but disabled after its one focused repair", async ({ page }) => {
+  test("does not retain checkout-bound repair controls after a historical repair", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
       const section = document.createElement("section");
@@ -1814,13 +1785,10 @@ test.describe("Engineering Status browser smoke", () => {
         check_repair_available: false, check_repair_completed_for_head: true,
       }]);
     });
-    const repair = page.locator(".open-pr-check-repair");
-    await expect(repair).toBeDisabled();
-    await expect(repair).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.repair_completed"]);
-    await expect(repair).toHaveAttribute("title", DASHBOARD_MESSAGES.nl["workspace.open_pull_request.repair_completed_explanation"]);
+    await expect(page.locator(".open-pr-check-repair")).toHaveCount(0);
   });
 
-  test("keeps the last known open pull requests visible when GitHub refresh is unavailable", async ({ page }) => {
+  test("keeps checkout-bound pull-request rows inert in CENTRAL", async ({ page }) => {
     await page.route("**/api/open-pull-requests", (route) => route.fulfill({ status: 503, json: { error: "temporarily unavailable" } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
@@ -1835,9 +1803,7 @@ test.describe("Engineering Status browser smoke", () => {
       }]);
     });
     await page.locator("#workspaceOpenPullRequestsRefresh").click();
-    await expect(page.locator("#copyToast")).toHaveText(
-      DASHBOARD_MESSAGES.nl["workspace.open_pull_requests_refreshing"],
-    );
+    await expect(page.locator("#copyToast")).toHaveText("");
     await expect(page.locator("#workspaceOpenPullRequests a")).toHaveText("PR #940 — Last known pull request ↗");
   });
 
@@ -2515,7 +2481,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(content).toContainText("b".repeat(40));
   });
 
-  test("renders terminal status recovery as a historical detail card", async ({ page }) => {
+  test("omits terminal status recovery controls from historical CENTRAL details", async ({ page }) => {
     const runId = "inbox-status-recovery";
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
       run_id: runId, status: "BLOCKED", title: "Status recovery", executed_at: "2026-08-17T05:42:00Z",
@@ -2536,11 +2502,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
     await dispatchDashboardPointerClick(page.locator("#promptHistoryRows .prompt-history-row"));
 
-    const card = page.locator("#promptHistoryDetailContent .status-reconciliation-card");
-    await expect(card).toBeVisible();
-    await expect(card).toHaveClass(/prompt-detail-card/);
-    await expect(card).not.toHaveClass(/operator-merge-wait/);
-    await expect(card.locator("h3")).toHaveText(DASHBOARD_MESSAGES.nl["status_reconciliation.title"]);
+    await expect(page.locator("#promptHistoryDetailContent .status-reconciliation-card")).toHaveCount(0);
     const lifecycle = page.locator("#promptHistoryDetailContent .execution-lifecycle--historical");
     await expect(lifecycle).toHaveCSS("background-color", "rgb(36, 36, 45)");
     await expect(lifecycle.locator("h3")).toHaveCSS("font-size", "18px");
@@ -3642,144 +3604,33 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(scroll).toHaveJSProperty("scrollLeft", 80);
   });
 
-  test("keeps a green pull request visible until the operator merges or aborts it", async ({ page }) => {
+  test("hides checkout-bound merge hand-off controls from CENTRAL", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/open-pull-requests", (route) => route.fulfill({ json: { pull_requests: [{
-      number: 832, title: "Merge wait fixture", url: "https://github.com/pcvantol/djconnect/pull/832",
-      branch: "codex/merge-wait", status: "ready_to_merge",
-      owner_approval: "approved",
-    }] } }));
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: {
-        watcher_state: "WAITING_FOR_OPERATOR_MERGE",
-        current_phase: "WAIT_FOR_OPERATOR_MERGE",
-        run_id: "inbox-merge-wait",
-        pull_request: 832,
-        target_repository: "pcvantol/djconnect",
-        prompt_title: "Merge wait fixture",
-        lifecycle: {
-          available: true, run_id: "inbox-merge-wait", terminal_state: "ACTIVE",
-          steps: [
-            { id: "start", presentation_key: "lifecycle.step.start", state: "COMPLETED" },
-            { id: "merge", presentation_key: "lifecycle.step.wait_for_operator_merge", state: "ACTIVE" },
-          ],
-        },
-      } },
-    }));
-    let abortRequested = false;
-    await page.route("**/api/execution-merge-wait-abort", async (route) => {
-      abortRequested = route.request().method() === "POST" &&
-        (await route.request().postDataJSON()).run_id === "inbox-merge-wait";
-      await route.fulfill({ json: { run_id: "inbox-merge-wait", dismissed: true } });
-    });
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {
+      watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
+      run_id: "inbox-merge-wait", pull_request: 832, target_repository: "pcvantol/djconnect",
+    } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
-    const wait = page.locator("#operatorMergeWait");
-    await expect(wait).toBeVisible();
-    await expect(wait.locator("#operatorMergeWaitTitle")).toHaveText(DASHBOARD_MESSAGES.nl["merge_wait.title.implementation"]);
-    await expect(wait.locator("#operatorMergeWaitPullRequestStatus")).toHaveClass(/open-pr-status--ready_to_merge/);
-    await expect(wait.locator("#operatorMergeWaitPullRequestStatus")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.ready_to_merge"]);
-    await expect(wait.locator("#operatorMergeWaitOwnerApproval")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.owner_approval_approved"]);
-    await expect(page.locator(".execution-lifecycle + #operatorMergeWait")).toBeVisible();
-    const mergeLink = wait.locator("a");
-    const abort = wait.getByRole("button", { name: DASHBOARD_MESSAGES.nl["action.abort_execution"] });
-    await expect(mergeLink).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/832");
-    await expect(mergeLink).toHaveCSS("border-top-left-radius", "10px");
-    await expect(abort).toHaveCSS("border-top-left-radius", "10px");
-    const actionLayout = await wait.locator(".operator-merge-wait__actions").evaluate((container) => {
-      const [first, second] = Array.from(container.children).map((action) => action.getBoundingClientRect());
-      return { first: { right: first.right, bottom: first.bottom }, second: { left: second.left, top: second.top } };
-    });
-    await expect(mergeLink).toHaveCSS("min-height", "40px");
-    await expect(page.locator("#operatorMergeStatusCheck")).toHaveCSS("background-color", "rgb(32, 42, 54)");
-    await expect(page.locator("#operatorMergeStatusCheck")).toHaveCSS("border-top-color", "rgb(141, 199, 255)");
-    expect(
-      actionLayout.first.bottom <= actionLayout.second.top || actionLayout.first.right <= actionLayout.second.left,
-    ).toBe(true);
-    expect(await mergeLink.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"↗"');
-    expect(await abort.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"⊘"');
-    await expect(page.locator("#operatorMergeWaitModal")).toBeVisible();
-    const mergeModal = page.locator("#operatorMergeWaitModal");
-    const modalPullRequest = page.locator("#operatorMergeWaitModalPullRequest");
-    const modalAbort = page.locator("#operatorMergeWaitModalAbort");
-    const modalStatusCheck = page.locator("#operatorMergeWaitModalStatusCheck");
-    await expect(modalPullRequest).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/832");
-    await expect(mergeModal.locator("#operatorMergeWaitModalContextIntro")).toHaveText(
-      `Deze hand-off is de ${DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_operator_merge"]} voor pull request #832.`,
-    );
-    await expect(mergeModal.locator("#operatorMergeWaitModalRunId")).toHaveText("inbox-merge-wait");
-    await expect(mergeModal.locator("#operatorMergeWaitModalPrompt")).toHaveText("Merge wait fixture");
-    await expect(mergeModal.locator("#operatorMergeWaitModalPullRequestStatus")).toHaveClass(/open-pr-status--ready_to_merge/);
-    await expect(mergeModal.locator("#operatorMergeWaitModalPullRequestStatus")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.ready_to_merge"]);
-    await expect(mergeModal.locator("#operatorMergeWaitModalOwnerApproval")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.owner_approval_approved"]);
-    await expect(modalPullRequest).toHaveCSS("text-decoration-line", "none");
-    await expect(modalPullRequest).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
-    await expect(modalAbort).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
-    await expect(modalPullRequest).toHaveCSS("background-color", "rgb(59, 40, 27)");
-    await expect(modalAbort).toHaveCSS("background-color", "rgb(58, 32, 40)");
-    await expect(modalAbort).toHaveCSS("color", "rgb(255, 217, 225)");
-    await expect(modalPullRequest).toHaveCSS("display", "flex");
-    await expect(modalPullRequest).toHaveCSS("align-items", "center");
-    await expect(modalPullRequest).toHaveCSS("justify-content", "center");
-    await expect(modalPullRequest).toHaveCSS("font-weight", "400");
-    await expect(modalAbort).toHaveCSS("font-weight", "400");
-    await expect(modalStatusCheck).toHaveText(DASHBOARD_MESSAGES.nl["merge_wait.check_status"]);
-    await expect(modalStatusCheck).toHaveCSS("display", "flex");
-    await expect(modalStatusCheck).toHaveCSS("justify-content", "center");
-    expect(await modalStatusCheck.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"↻"');
-    const mergeActionHeights = await mergeModal.locator(".dashboard-modal-shell__action").evaluateAll(
-      (actions) => actions.map((action) => action.getBoundingClientRect().height),
-    );
-    expect(mergeActionHeights).toEqual([44, 44, 44]);
-    expect(await modalPullRequest.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"↗"');
-    expect(await modalAbort.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"⊘"');
-    expect(await modalAbort.evaluate((element) => getComputedStyle(element, "::before").fontWeight)).toBe("700");
-    expect(await modalAbort.evaluate((element) => getComputedStyle(element, "::before").textShadow)).not.toBe("none");
-    await page.locator("#operatorMergeWaitModalClose").click();
-    await abort.click();
-    await expect(page.locator("#confirmationModal")).toBeVisible();
-    const confirmationActionHeights = await page.locator("#confirmationModal .dashboard-modal-shell__action").evaluateAll(
-      (actions) => actions.map((action) => action.getBoundingClientRect().height),
-    );
-    expect(confirmationActionHeights).toEqual([44, 44]);
-    await page.locator("#confirmationModalConfirm").click();
-    await expect.poll(() => abortRequested).toBe(true);
+    await expect(page.locator("#operatorMergeWait")).toBeHidden();
+    await expect(page.locator("#operatorMergeWaitModal")).toBeHidden();
   });
 
-  test("explains a merge-check category, retains its successful check time, and retries from the error dialog", async ({ page }) => {
+  test("does not call the checkout-bound merge-status route from CENTRAL", async ({ page }) => {
     let checkCount = 0;
-    await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: checkCount >= 2 ? {
-      watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "FINALIZE_AGENT", run_id: "inbox-merge-check",
-    } : {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {
       watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
       run_id: "inbox-merge-check", pull_request: 832, target_repository: "pcvantol/djconnect",
-      merge_status_check: { last_successful_github_check_at: "2026-08-24T12:00:00Z" },
     } } }));
     await page.route("**/api/execution-merge-status-check", (route) => {
       checkCount += 1;
-      return route.fulfill({ status: checkCount === 1 ? 409 : 202, json: checkCount === 1
-        ? { verified: false, reason: "github_network_unavailable" }
-        : { verified: true, continuation: "scheduled" } });
+      return route.fulfill({ json: { verified: true } });
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await expect(page.locator("#operatorMergeWaitModalLastCheck")).toContainText(
-      DASHBOARD_MESSAGES.nl["merge_wait.last_successful_check"].split(":")[0],
-    );
-    await page.locator("#operatorMergeWaitModalStatusCheck").click();
-    await expect(page.locator("#dashboardErrorModal")).toBeVisible();
-    await expect(page.locator("#dashboardErrorModalText")).toContainText(
-      DASHBOARD_MESSAGES.nl["merge_wait.reason.github_network_unavailable"],
-    );
-    await expect(page.locator("#dashboardErrorModalRecover")).toHaveText(
-      DASHBOARD_MESSAGES.nl["merge_wait.check_again"],
-    );
-    await page.locator("#dashboardErrorModalRecover").click();
-    await expect.poll(() => checkCount).toBe(2);
-    await expect(page.getByText(DASHBOARD_MESSAGES.nl["merge_wait.continuation_scheduled"])).toBeVisible();
+    expect(checkCount).toBe(0);
+    await expect(page.locator("#operatorMergeWaitModal")).toBeHidden();
   });
 
-  test("opens a new handoff modal for the finalization pull request in the same run", async ({ page }) => {
+  test("does not open a checkout-bound finalization hand-off from CENTRAL", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/open-pull-requests", (route) => route.fulfill({ json: { pull_requests: [{
       number: 841, title: "Finalization merge", url: "https://github.com/pcvantol/djconnect/pull/841",
@@ -3792,8 +3643,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: "inbox-two-merges", pull_request: 840, target_repository: "pcvantol/djconnect",
     }, {}));
     const modal = page.locator("#operatorMergeWaitModal");
-    await expect(modal).toBeVisible();
-    await page.locator("#operatorMergeWaitModalClose").click();
+    await expect(modal).toBeHidden();
     await page.evaluate(() => r({
       watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
       run_id: "inbox-two-merges", pull_request: 841, finalization_pr: 841,
@@ -3807,19 +3657,8 @@ test.describe("Engineering Status browser smoke", () => {
         ],
       },
     }, {}));
-    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
-    await expect(modal).toBeVisible();
-    await expect(page.locator("#operatorMergeWaitModalPullRequest"))
-      .toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/841");
-    await expect(page.locator("#operatorMergeWaitModalContextIntro")).toHaveText(
-      `Deze hand-off is de ${DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"]} voor pull request #841.`,
-    );
-    await expect(page.locator("#operatorMergeWaitTitle")).toHaveText(DASHBOARD_MESSAGES.nl["merge_wait.title.finalization"]);
-    await expect(page.locator("#operatorMergeWaitPullRequestStatus")).toHaveClass(/open-pr-status--ready_for_review/);
-    await expect(page.locator("#operatorMergeWaitModalPullRequestStatus")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.ready_for_review"]);
-    await expect(page.locator(".execution-lifecycle__item")).toHaveCount(3);
-    await expect(page.locator(".execution-lifecycle__item--active .execution-lifecycle__node"))
-      .toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"]);
+    await expect(modal).toBeHidden();
+    await expect(page.locator("#operatorMergeWait")).toBeHidden();
   });
 
   test("renders automatic reconciliation without an operator handoff", async ({ page }) => {
@@ -4186,7 +4025,7 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
-  test("offers a safe branch synchronization recovery in a preflight error", async ({ page }) => {
+  test("keeps managed-branch synchronization read-only in a CENTRAL preflight error", async ({ page }) => {
     let recoveryRequested = false;
     await page.route("**/api/managed-branch-synchronization", async (route) => {
       recoveryRequested = true;
@@ -4199,13 +4038,8 @@ test.describe("Engineering Status browser smoke", () => {
     const modal = page.locator("#dashboardErrorModal");
     await expect(modal).toBeVisible();
     await expect(page.locator("#dashboardErrorModalText")).toContainText("gesynchroniseerd met de upstream");
-    await expect(page.locator("#dashboardErrorModalRecover")).toBeVisible();
-    await expect(page.locator("#dashboardErrorModalRecover")).toHaveText(DASHBOARD_MESSAGES.nl["action.recover"]);
-    await page.locator("#dashboardErrorModalRecover").hover();
-    await expect(page.locator("#dashboardErrorModalRecover")).toHaveCSS("background-color", "rgb(240, 182, 106)");
-    await page.locator("#dashboardErrorModalRecover").click();
-    await expect.poll(() => recoveryRequested).toBe(true);
-    await expect(modal).not.toBeVisible();
+    await expect(page.locator("#dashboardErrorModalRecover")).toBeHidden();
+    expect(recoveryRequested).toBeFalsy();
   });
 
   test("keeps the site-wide scrollbar and action-size tokens explicit", () => {
@@ -4941,8 +4775,12 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(pagination).toHaveText(/Pagina 2 van 2 · 8 dagen/);
   });
 
-  test("offers download, copy and confirmed clear actions for telemetry", async ({ page }) => {
-    await page.route("**/api/telemetry/clear", (route) => route.fulfill({ json: { cleared: true, execution_runs: 1, daily_statistics: 1 } }));
+  test("offers read-only download and copy actions for telemetry in CENTRAL", async ({ page }) => {
+    let clearRequests = 0;
+    await page.route("**/api/telemetry/clear", (route) => {
+      clearRequests += 1;
+      return route.fulfill({ status: 410, json: { error: "historical route" } });
+    });
     await page.route("**/api/events", (route) => route.fulfill({ json: {} }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await waitForDashboardReady(page);
@@ -4955,11 +4793,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(actions).toHaveCSS("justify-content", "flex-end");
     await expect(actions.getByRole("button", { name: "Telemetrie downloaden" })).toBeEnabled();
     await expect(actions.getByRole("button", { name: "Telemetrie kopiëren" })).toBeEnabled();
-    await actions.getByRole("button", { name: "Telemetrie wissen" }).click();
-    await expect(page.locator("#confirmationModal")).toBeVisible();
-    await page.locator("#confirmationModalConfirm").click();
-    await expect(page.locator("#executionTelemetryRows .telemetry-empty")).toBeVisible();
-    await expect(actions.getByRole("button", { name: "Telemetrie wissen" })).toBeDisabled();
+    await expect(actions.getByRole("button", { name: "Telemetrie wissen" })).toHaveCount(0);
+    expect(clearRequests).toBe(0);
   });
 
   test("sorts telemetry detail tables with the same header treatment as logs", async ({ page }) => {
@@ -6805,79 +6640,16 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#rateLimitDetails")).toHaveCSS("font-size", "14px");
   });
 
-  test("offers an explicit, version-pinned Codex CLI update only when one is available", async ({ page }) => {
-    await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] }, rate_limits: { provider: "Codex CLI", provider_version: "0.149.0", windows: [], reset_credits: 0 } },
-    }));
-    await page.route("**/api/codex-cli-update", async (route) => {
-      if (route.request().method() === "POST") {
-        await route.fulfill({ json: { updated: true, current_version: "0.150.0" } });
-        return;
-      }
-      await route.fulfill({ json: { state: "update_available", update_available: true, current_version: "0.149.0", latest_version: "0.150.0" } });
+  test("does not expose a checkout-bound Codex CLI update from CENTRAL", async ({ page }) => {
+    let updateChecks = 0;
+    await page.route("**/api/codex-cli-update", (route) => {
+      updateChecks += 1;
+      return route.fulfill({ json: { update_available: true } });
     });
-    const updateCheck = page.waitForResponse("**/api/codex-cli-update");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await waitForDashboardReady(page);
     await page.locator("#rateLimits").evaluate((element) => { element.open = true; });
-    await updateCheck;
-    await expect(page.locator("#codexCliUpdateStatus")).toHaveText("Update beschikbaar: 0.150.0");
-    await expect(page.locator("#codexCliUpdate")).toBeVisible();
-    await expect(page.locator("#codexCliUpdate")).toHaveCSS("background-color", "rgb(31, 91, 66)");
-    await expect(page.locator("#codexCliUpdate")).toContainText("Update");
-    expect(await page.evaluate(() => {
-      const provider = document.querySelector("#rateLimitProvider");
-      const status = document.querySelector("#codexCliUpdateStatus");
-      return Boolean(provider?.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING);
-    })).toBe(true);
-    expect(await page.locator("#codexCliUpdate").evaluate(
-      (button) => button.nextElementSibling?.classList.contains("rate-limit-provider-path"),
-    )).toBe(true);
-    expect(await page.locator("#codexCliUpdate").evaluate(
-      (button) => getComputedStyle(button, "::before").content,
-    )).toBe('"↓"');
-    await page.locator("#codexCliUpdate").click();
-    await expect(page.locator("#confirmationModalText")).toContainText("deze machine");
-    await expect(page.locator("#confirmationModalText")).not.toContainText("deze Mac");
-    await page.locator("#confirmationModalConfirm").click();
-    await expect(page.locator("#rateLimitProvider")).toHaveText("Codex CLI · 0.150.0");
     await expect(page.locator("#codexCliUpdate")).toBeHidden();
-    await expect(page.locator("#codexCliUpdateStatus")).toHaveText("Codex CLI is bijgewerkt naar 0.150.0.");
-  });
-
-  test("keeps an available Codex CLI update visible but disabled during an active execution", async ({ page }) => {
-    await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-active", queue_depth: 0, queue_items: [] }, rate_limits: { provider: "Codex CLI", provider_version: "0.149.0", windows: [], reset_credits: 0 } },
-    }));
-    await page.route("**/api/codex-cli-update", (route) => route.fulfill({
-      json: { state: "update_available", update_available: true, current_version: "0.149.0", latest_version: "0.150.0" },
-    }));
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    const updateCheck = page.waitForResponse("**/api/codex-cli-update");
-    await page.locator("#rateLimits").evaluate((element) => { element.open = true; });
-    await updateCheck;
-    await expect(page.locator("#codexCliUpdate")).toBeVisible();
-    await expect(page.locator("#codexCliUpdate")).toBeDisabled();
-    await expect(page.locator("#codexCliUpdateStatus")).toHaveText("De Codex CLI-update is beschikbaar, maar kan pas worden geïnstalleerd wanneer geen uitvoering actief is.");
-  });
-
-  test("never renders a stale Codex CLI update response for the installed version", async ({ page }) => {
-    await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] }, rate_limits: { provider: "Codex CLI", provider_version: "0.150.0", windows: [], reset_credits: 0 } },
-    }));
-    await page.route("**/api/codex-cli-update", (route) => route.fulfill({
-      // This is the old poll response that may arrive just after an install.
-      json: { state: "update_available", update_available: true, current_version: "0.150.0", latest_version: "0.150.0" },
-    }));
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    const updateCheck = page.waitForResponse("**/api/codex-cli-update");
-    await page.locator("#rateLimits").evaluate((element) => { element.open = true; });
-    await updateCheck;
-    await expect(page.locator("#codexCliUpdate")).toBeHidden();
-    await expect(page.locator("#codexCliUpdateStatus")).toHaveText("Codex CLI is actueel (0.150.0).");
+    expect(updateChecks).toBe(0);
   });
 
   test("exposes the structured Engineering Platform health projection", async ({ request }) => {
@@ -10309,24 +10081,18 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   });
 
-  test("fills the reset action with a brighter green on hover", async ({ page }) => {
+  test("hides the checkout-bound rate-limit reset from CENTRAL", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#rateLimits").evaluate((element) => { element.open = true; });
     await page.evaluate(() => rateLimits({ provider: "Codex CLI", provider_version: "0.146.0", windows: [], reset_credits: 1 }));
-    const reset = page.locator("#rateLimitReset");
-
-    // Keep the actual pointer over the target. This verifies the browser's
-    // hover treatment without racing the initial asynchronous dashboard load.
-    await reset.scrollIntoViewIfNeeded();
-    await reset.hover();
-    await expect(reset).toHaveCSS("background-color", "rgb(81, 216, 138)");
-    await expect(reset).toHaveCSS("color", "rgb(17, 42, 32)");
+    await expect(page.locator("#rateLimitReset")).toBeHidden();
   });
 
-  test("shows the reset outcome instead of a generic failure for a valid conflict response", async ({ page }) => {
+  test("does not call the checkout-bound rate-limit reset from CENTRAL", async ({ page }) => {
+    let resetRequests = 0;
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: {
@@ -10338,14 +10104,12 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#rateLimits").evaluate((element) => { element.open = true; });
     await page.evaluate(() => rateLimits({ provider: "Codex CLI", provider_version: "0.146.0", windows: [], reset_credits: 1 }));
-    await page.route("**/api/rate-limit-reset", (route) => route.fulfill({
-      status: 409,
-      json: { outcome: "nothingToReset", rate_limits: { reset_credits: 1 } },
-    }));
-
-    await page.locator("#rateLimitReset").click();
-    await page.locator("#confirmationModalConfirm").click();
-    await expect(page.locator("#rateLimitResetStatus")).toHaveText("Er is op dit moment niets om te resetten.");
+    await page.route("**/api/rate-limit-reset", (route) => {
+      resetRequests += 1;
+      return route.fulfill({ json: { outcome: "nothingToReset" } });
+    });
+    expect(resetRequests).toBe(0);
+    await expect(page.locator("#rateLimitReset")).toBeHidden();
   });
 
   test("parses each newline-delimited JSON log entry separately", async ({ page }) => {
@@ -10440,41 +10204,23 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueSummary")).toHaveText("2 uitvoeringen in de wachtrij.");
   });
 
-  test("defers one waiting Inbox item through a confirmed reversible action", async ({ page }) => {
-    let deferred = false;
+  test("keeps checkout-bound Inbox items display-only in CENTRAL", async ({ page }) => {
     const queued = [
       { filename: "defer-me.md", title: "Later uitvoeren", modified_at: "2026-08-02T10:01:00Z" },
       { filename: "keep-waiting.md", title: "Blijft wachten", modified_at: "2026-08-02T10:02:00Z" },
     ];
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
-      status: { watcher_state: "WATCHER_IDLE", queue_depth: deferred ? 1 : 2, queue_items: deferred ? queued.slice(1) : queued },
+      status: { watcher_state: "WATCHER_IDLE", queue_depth: 2, queue_items: queued },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
-    await page.route("**/api/queue-defer", async (route) => {
-      expect(JSON.parse(route.request().postData() || "{}")).toEqual({ filename: "defer-me.md" });
-      deferred = true;
-      await route.fulfill({ status: 202, json: { filename: "defer-me.md", deferred_filename: "defer-me.md" } });
-    });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#queueItems").evaluate((element) => { element.open = true; });
 
-    const deferButton = page.getByRole("button", { name: "Stel uit" }).first();
-    await deferButton.hover();
-    await expect(deferButton).toHaveCSS("background-color", "rgb(240, 182, 106)");
-    await expect(deferButton).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
-
-    await deferButton.click();
-    await expect(page.locator("#confirmationModalTitle")).toHaveText("Uitvoering uitstellen");
-    await expect(page.locator("#confirmationModalText")).toHaveText(
-      DASHBOARD_MESSAGES.nl["queue.defer_description"].replace("{title}", "Later uitvoeren"),
-    );
-    await page.locator("#confirmationModalConfirm").click();
-
-    await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
-    await expect(page.locator("#queueList")).toContainText("Blijft wachten");
-    await expect(page.locator("#queueList")).not.toContainText("Later uitvoeren");
+    await expect(page.locator("#queueList .queue-item")).toHaveCount(2);
+    await expect(page.locator("#queueList button")).toHaveCount(0);
+    await expect(page.locator("#queueList")).toContainText("Later uitvoeren");
   });
 
   test("maps CENTRAL queue actions to their matching confirmation modal", async ({ page }) => {
@@ -10543,7 +10289,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(await page.locator("#queueList button").allTextContents()).toEqual([messages["queue.resume_action"], messages["queue.decline_action"]]);
   });
 
-  test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {
+  test("keeps legacy Inbox items display-only in CENTRAL", async ({ page }) => {
     let deferRequests = 0;
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
@@ -10562,15 +10308,13 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#queueItems").evaluate((element) => { element.open = true; });
 
-    await page.getByRole("button", { name: "Stel uit" }).click();
-    await page.locator("#confirmationModalCancel").click();
-
     await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
     await expect(page.locator("#queueList")).toContainText("Blijf actief");
+    await expect(page.getByRole("button", { name: "Stel uit" })).toHaveCount(0);
     expect(deferRequests).toBe(0);
   });
 
-  test("shows the Codex CLI blocker in the Inbox queue", async ({ page }) => {
+  test("keeps the checkout-bound Codex CLI blocker out of the CENTRAL Inbox", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
@@ -10585,13 +10329,13 @@ test.describe("Engineering Status browser smoke", () => {
     }, {}));
 
     await dispatchDashboardPointerClick(page.getByTestId("engineering-inbox-queue").locator("summary"));
-    await expect(page.locator("#inboxBlocker")).toBeVisible();
-    await expect(page.locator("#inboxBlocker")).toHaveText(
-      DASHBOARD_MESSAGES.nl["queue.runtime_invocation_blocked"],
+    await expect(page.locator("#inboxBlocker")).toBeHidden();
+    await expect(page.locator("#technicalDetails")).toContainText(
+      "Execution Host Preflight blocked by runtime_invocation.",
     );
   });
 
-  test("offers a confirmed repair for a queue blocked on a working branch", async ({ page }) => {
+  test("hides checkout preflight repair for a queue blocked on a working branch in CENTRAL", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     let repairRequested = false;
     await page.route("**/api/managed-branch-recovery", async (route) => {
@@ -10612,32 +10356,11 @@ test.describe("Engineering Status browser smoke", () => {
     }, {}));
 
     await dispatchDashboardPointerClick(page.getByTestId("engineering-inbox-queue").locator("summary"));
-    const blocker = page.locator("#inboxBlocker");
-    await expect(blocker).toHaveClass(/queue-blocker--error/);
-    await expect(blocker).toContainText("Execution Host mag alleen werk vanaf main claimen.");
-    const repair = blocker.getByRole("button", { name: "Herstel" });
-    await expect(repair).toHaveCSS("background-color", "rgb(59, 40, 27)");
-    await expect(repair).toHaveCSS("border-color", "rgb(240, 182, 106)");
-    await expect(repair).toHaveCSS("border-radius", "8px");
-    // The sticky readiness banner deliberately sits above page content and
-    // makes native pointer hover non-deterministic in headless Chromium.
-    // Verify the exact design-system rule while retaining the real recovery
-    // interaction below as a separate behavioral assertion.
-    const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
-    expect(stylesheet).toContain(
-      ".queue-blocker__repair:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}",
-    );
-    await dispatchDashboardPointerClick(repair);
-    await expect(page.locator("#confirmationModal")).toBeVisible();
-    await expect(page.locator("#confirmationModalText")).toHaveText(
-      DASHBOARD_MESSAGES.nl["queue.managed_branch_recovery"],
-    );
-    await page.locator("#confirmationModalConfirm").click();
-    await expect(blocker).toHaveText(DASHBOARD_MESSAGES.nl["queue.managed_branch_recovery_ready"]);
-    expect(repairRequested).toBeTruthy();
+    await expect(page.locator("#inboxBlocker")).toBeHidden();
+    expect(repairRequested).toBeFalsy();
   });
 
-  test("shows and safely recovers a confirmed stale Git workspace lock", async ({ page }) => {
+  test("shows a stale Git workspace lock without checkout recovery in CENTRAL", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     let recoveryRequested = false;
     await page.route("**/api/stale-git-lock-recovery", async (route) => {
@@ -10662,13 +10385,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#technicalGitLockInfo")).toHaveAttribute("aria-label", DASHBOARD_MESSAGES.nl["technical.git_lock_help"]);
     await expect(lock).toContainText("Actief");
     await expect(lock).toContainText("Git voert een andere actie uit; nieuwe uitvoeringen wachten.");
-    await lock.getByRole("button", { name: "Herstel vergrendeling" }).click();
-    await expect(page.locator("#confirmationModal")).toBeVisible();
-    await expect(page.locator("#confirmationModalText")).toContainText("uitsluitend de verouderde Git-indexvergrendeling");
-    await page.locator("#confirmationModalConfirm").click();
-    await expect(lock).toContainText("Vrij");
-    await expect(lock).toContainText("De verouderde Git-vergrendeling is verwijderd.");
-    expect(recoveryRequested).toBeTruthy();
+    await expect(page.locator("#technicalGitLockRecover")).toBeHidden();
+    expect(recoveryRequested).toBeFalsy();
   });
 
   test("does not present a project-local engineering database", async ({ page }) => {

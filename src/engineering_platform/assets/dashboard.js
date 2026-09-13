@@ -707,7 +707,7 @@ function renderCodexCliUpdate(status) {
   // A pre-install polling response can arrive after the verified install response.
   // Never present an update unless its version is strictly newer than the active CLI.
   latestCodexCliUpdateStatus = { ...status, update_available: updateAvailable };
-  button.hidden = !updateAvailable;
+  button.hidden = CENTRAL_CONSOLE || !updateAvailable;
   button.disabled = Boolean(updateAvailable && executionActive);
   button.title = button.disabled ? t("ui.codex_cli_update_execution_active") : "";
   if (updateAvailable && executionActive) {
@@ -972,7 +972,13 @@ function queueItems(x, queueDepth) {
         : t("format.timestamp_unavailable"),
     });
     const central = item.queue_source === "CENTRAL";
-    const mutable = !central || ["QUEUED", "DEFERRED", "QUARANTINED"].includes(item.queue_state);
+    // A CENTRAL Console may only offer CENTRAL submission controls.  A
+    // compatibility row without CENTRAL provenance is display-only: letting
+    // it retain a checkout-era defer button would advertise a route the
+    // installed Server deliberately rejects.
+    const mutable = CENTRAL_CONSOLE
+      ? central && ["QUEUED", "DEFERRED", "QUARANTINED"].includes(item.queue_state)
+      : !central || ["QUEUED", "DEFERRED", "QUARANTINED"].includes(item.queue_state);
     const defer = mutable ? document.createElement("button") : null;
     if (defer) {
       defer.className = "queue-defer";
@@ -1080,7 +1086,11 @@ function renderInboxBlocker(status) {
       String(status?.diagnostic || "").includes("runtime_invocation"),
     managedBranchBlocked = String(status?.diagnostic || "").includes("managed_expected_branch");
   blocker.replaceChildren();
-  blocker.hidden = !(runtimeInvocationFailed || managedBranchBlocked);
+  // Both preflight diagnostics are checkout-owned.  CENTRAL cannot repair or
+  // safely reinterpret them, so a stale projection must not surface the
+  // historical recovery controls in the installed Console.
+  blocker.hidden = CENTRAL_CONSOLE || !(runtimeInvocationFailed || managedBranchBlocked);
+  if (CENTRAL_CONSOLE) return;
   blocker.classList.toggle("queue-blocker--error", managedBranchBlocked);
   if (runtimeInvocationFailed) blocker.textContent = t("queue.runtime_invocation_blocked");
   if (!managedBranchBlocked) return;
@@ -1104,8 +1114,8 @@ function renderWorkspaceGitLock(lock) {
       ? " " + t("technical.git_lock_since", { value: `${Math.max(1, Math.floor(lock.age_seconds / 60))} min` })
       : "") + (stale ? " " + t("technical.git_lock_stale") : "")
     : "";
-  recover.hidden = !stale;
-  recover.onclick = stale ? submitStaleGitLockRecovery : null;
+  recover.hidden = CENTRAL_CONSOLE || !stale;
+  recover.onclick = !CENTRAL_CONSOLE && stale ? submitStaleGitLockRecovery : null;
   if (!stale) recoveryStatus.textContent = "";
 }
 function promptStarted(x) {
@@ -2862,7 +2872,7 @@ function renderOpenPullRequests(pullRequests) {
     setOpenPullRequestOwnerApproval(approval, pullRequest.owner_approval);
     branch.textContent = String(pullRequest.branch || "");
     item.append(link, branch, status, approval);
-    if (pullRequest.owner_authorization_requested === true) {
+    if (!CENTRAL_CONSOLE && pullRequest.owner_authorization_requested === true) {
       const authorize = document.createElement("button");
       authorize.className = "open-pr-owner-authorization";
       authorize.dataset.openPullRequestOwnerAuthorization = String(pullRequest.number || "");
@@ -2871,7 +2881,7 @@ function renderOpenPullRequests(pullRequests) {
       authorize.title = t("workspace.open_pull_request.authorize_owner");
       item.append(authorize);
     }
-    if (pullRequest.check_repair_available === true || pullRequest.check_repair_completed_for_head === true) {
+    if (!CENTRAL_CONSOLE && (pullRequest.check_repair_available === true || pullRequest.check_repair_completed_for_head === true)) {
       const repair = document.createElement("button");
       repair.className = "open-pr-check-repair";
       repair.type = "button";
@@ -2955,6 +2965,7 @@ function refreshOpenPullRequestsAfterAction() {
   }
 }
 async function requestOpenPullRequestOwnerAuthorization(button) {
+  if (CENTRAL_CONSOLE) return;
   const number = Number(button?.dataset.openPullRequestOwnerAuthorization);
   if (!Number.isInteger(number) || number < 1) return;
   const confirmed = await confirmDashboardAction(
@@ -2990,6 +3001,7 @@ function failedCheckNamesFromButton(button) {
   }
 }
 async function requestOpenPullRequestCheckRepair(button) {
+  if (CENTRAL_CONSOLE) return;
   const number = Number(button?.dataset.openPullRequestCheckRepair);
   if (!Number.isInteger(number) || number < 1) return;
   const failedChecks = failedCheckNamesFromButton(button);
@@ -8631,7 +8643,9 @@ function showDashboardError(message, fallback, action = null) {
     close = $("dashboardErrorModalClose"),
     dismiss = $("dashboardErrorModalDismiss"),
     recover = $("dashboardErrorModalRecover"),
-    recovery = dashboardErrorRecovery(message),
+    // Managed-branch synchronization mutates an execution checkout.  It has
+    // no CENTRAL owner, so it remains a read-only diagnostic in this Console.
+    recovery = CENTRAL_CONSOLE ? null : dashboardErrorRecovery(message),
     followUp = action || (recovery ? { label: t("action.recover") } : null);
   $("dashboardErrorModalTitle").textContent = t("ui.action_failed");
   $("dashboardErrorModalText").textContent = localizedDashboardError(message, fallback);
