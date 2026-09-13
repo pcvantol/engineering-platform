@@ -1047,7 +1047,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,60 FROM ep_installations_schema61")
             connection.execute("DROP TABLE ep_installations_schema61")
+            # A clean schema-61 bootstrap records only its current marker.
+            # Recreate the historic schema-60 marker after removing it so the
+            # fixture remains an installed schema-60 authority.
             connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=61")
+            connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(60)")
             connection.execute("UPDATE engineering_metadata SET value='60' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
