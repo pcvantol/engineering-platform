@@ -801,14 +801,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(request.agent_id, "future-agent")
         self.assertFalse(hasattr(request, "credential"))
 
-    def test_fresh_store_is_official_schema_47_with_empty_operational_state(self) -> None:
+    def test_fresh_store_installs_only_the_current_schema_revision(self) -> None:
         identity = server.initialize(self.root)
         report = server.validate_store(self.root, identity)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
-            self.assertEqual(
-                connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
-                server.SERVER_STORE_SCHEMA_VERSION,
-            )
+            self.assertEqual(connection.execute(
+                "SELECT version FROM engineering_schema_migrations ORDER BY version"
+            ).fetchall(), [(server.SERVER_STORE_SCHEMA_VERSION,)])
+            self.assertEqual(connection.execute(
+                "SELECT value FROM engineering_metadata WHERE key='installation.schema_version'"
+            ).fetchone(), (str(server.SERVER_STORE_SCHEMA_VERSION),))
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_installations").fetchone()[0], 1)
             for table in (
                 "ep_agent_registrations",
@@ -823,6 +825,54 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
             self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(report["integrity"], "PASS")
+
+    def test_current_schema_bootstrap_rolls_back_on_ddl_failure(self) -> None:
+        """A failed fresh bootstrap never leaves an operational partial store."""
+        with patch(
+            "engineering_platform.server._install_current_submission_schema",
+            side_effect=sqlite3.DatabaseError("injected bootstrap failure"),
+        ):
+            with self.assertRaises(sqlite3.DatabaseError):
+                server.initialize(self.root)
+
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(
+                connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),
+                [],
+            )
+
+        identity = server.initialize(self.root)
+        self.assertEqual(server.validate_store(self.root, identity)["integrity"], "PASS")
+
+    def test_ordered_upgrade_steps_cover_every_historical_server_schema(self) -> None:
+        self.assertEqual(
+            [target_schema for target_schema, _upgrade in server._SERVER_SCHEMA_UPGRADE_STEPS],
+            list(range(42, server.SERVER_STORE_SCHEMA_VERSION + 1)),
+        )
+
+    def test_schema_41_installation_upgrades_through_the_ordered_current_path(self) -> None:
+        """Retained first-generation CENTRAL stores remain forward-compatible."""
+        self.root.mkdir()
+        identity = server.RuntimeIdentity("schema-41-fixture", "2026-01-01T00:00:00+00:00")
+        server._write_json(self.root / server.SERVER_IDENTITY_FILENAME, {
+            "instance_id": identity.instance_id,
+            "created_at": identity.created_at,
+        })
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            server._install_schema_41(connection, identity)
+
+        self.assertEqual(server.initialize(self.root), identity)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT version FROM engineering_schema_migrations ORDER BY version"
+                ).fetchall(),
+                [(version,) for version in range(41, server.SERVER_STORE_SCHEMA_VERSION + 1)],
+            )
+            self.assertEqual(
+                connection.execute("SELECT schema_version FROM ep_installations").fetchone(),
+                (server.SERVER_STORE_SCHEMA_VERSION,),
+            )
 
     def test_schema_56_upgrade_activates_retry_attempt_lineage(self) -> None:
         """An installed host gains retry lineage without a new data root."""
@@ -845,7 +895,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56)))")
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,56 FROM ep_installations_schema57")
             connection.execute("DROP TABLE ep_installations_schema57")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=57")
+            connection.execute("DELETE FROM engineering_schema_migrations")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(56)")
             connection.execute("UPDATE engineering_metadata SET value='56' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
@@ -883,7 +934,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,57 FROM ep_installations_schema58")
             connection.execute("DROP TABLE ep_installations_schema58")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=58")
+            connection.execute("DELETE FROM engineering_schema_migrations")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(57)")
             connection.execute("UPDATE engineering_metadata SET value='57' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
@@ -920,7 +972,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,58 FROM ep_installations_schema59")
             connection.execute("DROP TABLE ep_installations_schema59")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=59")
+            connection.execute("DELETE FROM engineering_schema_migrations")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(58)")
             connection.execute("UPDATE engineering_metadata SET value='58' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:
@@ -957,7 +1010,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,59 FROM ep_installations_schema60")
             connection.execute("DROP TABLE ep_installations_schema60")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=60")
+            connection.execute("DELETE FROM engineering_schema_migrations")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(59)")
             connection.execute("UPDATE engineering_metadata SET value='59' WHERE key='installation.schema_version'")
         self.assertEqual(server.initialize(self.root), identity)
         with sqlite3.connect(database) as connection:

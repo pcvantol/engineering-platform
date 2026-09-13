@@ -244,6 +244,26 @@ artifact/submission bindings on existing installations, so producer readback
 can locate that immutable artifact without crossing the historical-run foreign
 keys.
 
+## Current-schema bootstrap
+
+A new, empty EP data root is initialized atomically at the current Server
+schema revision (currently **60**).  It records that single revision in
+`engineering_schema_migrations`; it does not replay the historical 41–59
+migration sequence.  The resulting store contains the same current tables,
+constraints, indexes, immutable-audit triggers and CENTRAL compatibility
+structures as a fully upgraded installation.  A DDL failure rolls the whole
+clean-store transaction back: it must never leave a partially initialized
+operational database behind.
+
+The historical migrations remain forward-only compatibility code for an
+existing installation that actually records an older revision.  They must not
+be deleted or used as the bootstrap path for a clean store: that would either
+make a fresh installation needlessly traverse obsolete intermediate states or
+remove the safe upgrade route for retained operational evidence.  An installed
+schema 41–59 store follows each required step in ascending order and retains
+its truthful migration history; a clean schema-60 store has no such history to
+reconstruct.
+
 ## Local repository validation gate
 
 Validation is selected from the actual bounded-branch diff. Documentation and

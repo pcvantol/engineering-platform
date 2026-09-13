@@ -721,6 +721,263 @@ def _install_schema_41(connection: sqlite3.Connection, identity: RuntimeIdentity
             connection.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_immutable_{operation.casefold()} BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT, '{table} evidence is immutable.'); END")
 
 
+def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIdentity) -> None:
+    """Install the current clean-store shape in one Server schema revision.
+
+    A fresh, installation-owned database has no historical rows to preserve.
+    It must therefore never replay the old 41--59 upgrade chain, including
+    its temporary table rebuilds and intermediate migration markers.  Those
+    forward migrations remain the sole compatibility path for an existing
+    installation.  This bootstrap records only the current Server schema
+    revision after all current tables, indexes, views and triggers exist.
+    """
+    for statement in (
+        "CREATE TABLE engineering_schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE engineering_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        f"CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version={SERVER_STORE_SCHEMA_VERSION}))",
+        "CREATE TABLE ep_control_provenance (event_id INTEGER PRIMARY KEY, event_kind TEXT NOT NULL CHECK(event_kind IN ('INSTALLATION_CREATED','CREDENTIAL_LIFECYCLE','CONSUMER_REGISTRATION','PROJECT_SCOPE_MUTATION')), subject_kind TEXT NOT NULL, subject_id TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)",
+        "CREATE INDEX ep_control_provenance_subject_lookup ON ep_control_provenance(subject_kind,subject_id,event_id DESC)",
+        "CREATE TABLE ep_consumer_credentials (credential_id TEXT PRIMARY KEY CHECK(length(credential_id) BETWEEN 1 AND 128), consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128), project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128), verifier BLOB NOT NULL UNIQUE CHECK(length(verifier)=32), fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint)=32), issued_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT, replaced_by_credential_id TEXT REFERENCES ep_consumer_credentials(credential_id))",
+        "CREATE INDEX ep_consumer_credentials_scope_lookup ON ep_consumer_credentials(consumer_id,project_id,revoked_at)",
+        "CREATE TABLE ep_consumer_registrations (consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128), project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128), status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, disabled_at TEXT, revoked_at TEXT, audit_metadata TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(consumer_id,project_id))",
+        "CREATE INDEX ep_consumer_registrations_status_lookup ON ep_consumer_registrations(consumer_id,project_id,status)",
+        "CREATE TABLE ep_project_registrations (project_id TEXT PRIMARY KEY CHECK(length(project_id) BETWEEN 1 AND 128), attachment_contract TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE INDEX ep_project_registrations_status_lookup ON ep_project_registrations(status,project_id)",
+        "CREATE TABLE ep_execution_runs (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id), state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, execution_mode TEXT CHECK(execution_mode IN ('MANAGED','GENESIS')))",
+        "CREATE INDEX ep_execution_runs_project_lookup ON ep_execution_runs(project_id,state,created_at DESC)",
+        "CREATE TABLE ep_execution_leases (lease_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES ep_execution_runs(run_id), holder_id TEXT NOT NULL, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, released_at TEXT)",
+    ):
+        connection.execute(statement)
+    for operation in ("UPDATE", "DELETE"):
+        connection.execute(
+            f"CREATE TRIGGER ep_control_provenance_immutable_{operation.casefold()} "
+            f"BEFORE {operation} ON ep_control_provenance BEGIN "
+            f"SELECT RAISE(ABORT, 'ep_control_provenance evidence is immutable.'); END"
+        )
+    agent_trust.install_schema(connection)
+    project_topology.install_schema(connection)
+    local_repository_binding.install_schema(connection)
+
+    # The retained execution evidence schema remains a shared implementation
+    # surface, but this installer creates its current shape without recording
+    # a second, checkout-local migration history.
+    storage.install_central_operational_compatibility_schema(connection)
+    _install_current_submission_schema(connection)
+
+    connection.execute(
+        "INSERT INTO engineering_schema_migrations(version) VALUES(?)",
+        (SERVER_STORE_SCHEMA_VERSION,),
+    )
+    connection.execute(
+        "INSERT INTO engineering_metadata(key,value) VALUES('installation.instance_id',?)",
+        (identity.instance_id,),
+    )
+    connection.execute(
+        "INSERT INTO engineering_metadata(key,value) VALUES('installation.schema_version',?)",
+        (str(SERVER_STORE_SCHEMA_VERSION),),
+    )
+    connection.execute(
+        "INSERT INTO ep_installations(instance_id,created_at,schema_version) VALUES(?,?,?)",
+        (identity.instance_id, identity.created_at, SERVER_STORE_SCHEMA_VERSION),
+    )
+    connection.execute(
+        "INSERT INTO ep_control_provenance(event_kind,subject_kind,subject_id,payload,recorded_at) VALUES('INSTALLATION_CREATED','installation',?,?,?)",
+        (
+            identity.instance_id,
+            json.dumps({"schema_version": SERVER_STORE_SCHEMA_VERSION}, sort_keys=True),
+            identity.created_at,
+        ),
+    )
+
+
+def _execute_schema_script(connection: sqlite3.Connection, script: str) -> None:
+    """Execute complete DDL statements without committing the caller's transaction."""
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            connection.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise ServerConfigurationError("EP Server schema definition is incomplete.")
+
+
+def _install_current_submission_schema(connection: sqlite3.Connection) -> None:
+    """Install current CENTRAL submission and exchange evidence for a new store."""
+    _execute_schema_script(connection, """
+        CREATE TABLE ep_submissions (
+            submission_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+            producer_id TEXT NOT NULL,
+            producer_type TEXT NOT NULL,
+            producer_version TEXT,
+            transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','FILE_INBOX','DEPENDABOT','LEGACY_FILE')),
+            prompt TEXT NOT NULL,
+            prompt_digest TEXT NOT NULL,
+            constraints TEXT NOT NULL,
+            idempotency_key TEXT,
+            correlation_id TEXT,
+            mission_id TEXT,
+            engineering_action_id TEXT,
+            transport_receipt_id TEXT,
+            transport_received_at TEXT,
+            state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED','DEFERRED','QUARANTINED','DECLINED')),
+            admission TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            disposition_revision INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX ep_submissions_project_lookup ON ep_submissions(project_id,state,created_at DESC);
+        CREATE UNIQUE INDEX ep_submissions_idempotency_lookup ON ep_submissions(project_id,idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
+        CREATE TABLE ep_submission_events (
+            event_id INTEGER PRIMARY KEY,
+            submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id),
+            event_kind TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE TABLE ep_submission_prompt_history (
+            submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+            prompt_digest TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE TABLE ep_parity_lifecycle_dispatches (
+            submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+            run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+            state TEXT NOT NULL CHECK(state IN ('CLAIMED','RUNNING','COMPLETE','BLOCKED','FAILED')),
+            prompt_path TEXT NOT NULL,
+            claimed_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            operator_resolution TEXT NOT NULL DEFAULT 'NONE' CHECK(operator_resolution IN ('NONE','OPEN','DISMISSED','RETRIED')),
+            resolution_submission_id TEXT REFERENCES ep_submissions(submission_id)
+        );
+        CREATE INDEX ep_parity_lifecycle_dispatches_run_lookup ON ep_parity_lifecycle_dispatches(run_id,state);
+        CREATE TABLE ep_queue_disposition_operations (
+            operation_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id),
+            actor_reference TEXT NOT NULL,
+            command_digest TEXT NOT NULL,
+            from_state TEXT NOT NULL,
+            to_state TEXT NOT NULL,
+            previous_revision INTEGER NOT NULL,
+            resulting_revision INTEGER NOT NULL,
+            event_id INTEGER NOT NULL REFERENCES ep_submission_events(event_id),
+            recorded_at TEXT NOT NULL
+        );
+        CREATE TABLE ep_operator_capabilities (
+            consumer_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            capability TEXT NOT NULL CHECK(capability IN ('QUEUE_HOLD_RESUME','QUEUE_DECLINE')),
+            granted_at TEXT NOT NULL,
+            revoked_at TEXT,
+            PRIMARY KEY(consumer_id,project_id,capability)
+        );
+        CREATE TABLE ep_external_producer_bindings (
+            binding_id TEXT PRIMARY KEY,
+            producer_type TEXT NOT NULL,
+            external_resource_type TEXT NOT NULL,
+            external_resource_identity TEXT NOT NULL,
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+            status TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            provenance TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX ep_external_producer_bindings_active_key
+            ON ep_external_producer_bindings(producer_type,external_resource_type,external_resource_identity)
+            WHERE status='ACTIVE';
+        CREATE TABLE ep_external_producer_binding_audit (
+            audit_id INTEGER PRIMARY KEY,
+            binding_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE TABLE ep_receipt_run_provenance (
+            submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+            run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+            installation_id TEXT NOT NULL REFERENCES ep_installations(instance_id),
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX ep_receipt_run_provenance_project_lookup
+            ON ep_receipt_run_provenance(project_id,created_at DESC);
+        CREATE TRIGGER ep_receipt_run_provenance_scope_insert
+            BEFORE INSERT ON ep_receipt_run_provenance BEGIN
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM ep_submissions s
+                WHERE s.submission_id=NEW.submission_id
+                  AND s.project_id=NEW.project_id
+                  AND s.repository_id=NEW.repository_id
+            ) THEN RAISE(ABORT,'PROVENANCE_SUBMISSION_SCOPE_MISMATCH') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM ep_execution_runs r
+                WHERE r.run_id=NEW.run_id AND r.project_id=NEW.project_id
+            ) THEN RAISE(ABORT,'PROVENANCE_RUN_PROJECT_MISMATCH') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM ep_parity_lifecycle_dispatches d
+                WHERE d.run_id=NEW.run_id
+                  AND d.submission_id=NEW.submission_id
+                  AND d.project_id=NEW.project_id
+                  AND d.repository_id=NEW.repository_id
+            ) THEN RAISE(ABORT,'PROVENANCE_DISPATCH_SCOPE_MISMATCH') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM engineering_metadata
+                WHERE key='installation.instance_id' AND value=NEW.installation_id
+            ) THEN RAISE(ABORT,'PROVENANCE_INSTALLATION_MISMATCH') END;
+        END;
+        CREATE TRIGGER ep_receipt_run_provenance_immutable_update
+            BEFORE UPDATE ON ep_receipt_run_provenance BEGIN
+            SELECT RAISE(ABORT,'PROVENANCE_IMMUTABLE');
+        END;
+        CREATE TRIGGER ep_receipt_run_provenance_immutable_delete
+            BEFORE DELETE ON ep_receipt_run_provenance BEGIN
+            SELECT RAISE(ABORT,'PROVENANCE_IMMUTABLE');
+        END;
+        CREATE TABLE ep_forge_exchange_audit (
+            audit_id TEXT PRIMARY KEY,
+            submission_id TEXT NOT NULL UNIQUE REFERENCES ep_submissions(submission_id),
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            direction TEXT NOT NULL CHECK(direction='FORGE_TO_EP'),
+            event_kind TEXT NOT NULL CHECK(event_kind='FORGE_SUBMISSION_ACCEPTED'),
+            receipt_id TEXT NOT NULL UNIQUE,
+            producer_contract_version TEXT NOT NULL,
+            forge_provenance_contract_version TEXT NOT NULL,
+            forge_application_version TEXT NOT NULL,
+            ep_application_version TEXT NOT NULL,
+            producer_readback_contract_version TEXT NOT NULL,
+            accepted_request_digest TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE INDEX ep_forge_exchange_audit_project_lookup
+            ON ep_forge_exchange_audit(project_id,recorded_at DESC,submission_id);
+        CREATE TRIGGER ep_forge_exchange_audit_scope_insert
+            BEFORE INSERT ON ep_forge_exchange_audit
+            WHEN NOT EXISTS (
+                SELECT 1 FROM ep_submissions AS submission
+                WHERE submission.submission_id=NEW.submission_id
+                  AND submission.project_id=NEW.project_id
+            )
+            BEGIN SELECT RAISE(ABORT, 'FORGE_EXCHANGE_SUBMISSION_SCOPE_MISMATCH'); END;
+        CREATE TRIGGER ep_forge_exchange_audit_immutable_update
+            BEFORE UPDATE ON ep_forge_exchange_audit
+            BEGIN SELECT RAISE(ABORT, 'Forge exchange audit is immutable'); END;
+        CREATE TRIGGER ep_forge_exchange_audit_immutable_delete
+            BEFORE DELETE ON ep_forge_exchange_audit
+            BEGIN SELECT RAISE(ABORT, 'Forge exchange audit is immutable'); END;
+    """)
+
+
 def _migrate_schema_42(connection: sqlite3.Connection) -> None:
     """Forward-only topology extension; schema-41 structures remain intact."""
     # Schema 41 deliberately constrained the bootstrap record to 41.  Preserve
@@ -1379,6 +1636,39 @@ def _migrate_schema_60(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=60")
 
 
+_SERVER_SCHEMA_UPGRADE_STEPS = (
+    (42, _migrate_schema_42),
+    (43, _migrate_schema_43),
+    (44, _migrate_schema_44),
+    (45, _migrate_schema_45),
+    (46, _migrate_schema_46),
+    (47, _migrate_schema_47),
+    (48, _migrate_schema_48),
+    (49, _migrate_schema_49),
+    (50, _migrate_schema_50),
+    (51, _migrate_schema_51),
+    (52, _migrate_schema_52),
+    (53, _migrate_schema_53),
+    (54, _migrate_schema_54),
+    (55, _migrate_schema_55),
+    (56, _migrate_schema_56),
+    (57, _migrate_schema_57),
+    (58, _migrate_schema_58),
+    (59, _migrate_schema_59),
+    (60, _migrate_schema_60),
+)
+_SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
+    range(41, SERVER_STORE_SCHEMA_VERSION + 1)
+)
+
+
+def _upgrade_existing_schema(connection: sqlite3.Connection, current_schema: int) -> None:
+    """Apply every required forward-only step to one retained installation."""
+    for target_schema, upgrade in _SERVER_SCHEMA_UPGRADE_STEPS:
+        if current_schema < target_schema:
+            upgrade(connection)
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -1449,56 +1739,21 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in _SUPPORTED_SERVER_SCHEMA_VERSIONS:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59}:
+                    if current_schema < SERVER_STORE_SCHEMA_VERSION:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
                             connection.execute("PRAGMA foreign_keys=OFF")
                             connection.execute("PRAGMA legacy_alter_table=ON")
                             connection.execute("BEGIN IMMEDIATE")
-                            if current_schema == 42:
-                                _migrate_schema_43(connection)
-                            if current_schema in {42, 43}:
-                                _migrate_schema_44(connection)
-                            if current_schema in {42, 43, 44}:
-                                _migrate_schema_45(connection)
-                            if current_schema in {42, 43, 44, 45}:
-                                _migrate_schema_46(connection)
-                            if current_schema in {42, 43, 44, 45, 46}:
-                                _migrate_schema_47(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47}:
-                                _migrate_schema_48(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48}:
-                                _migrate_schema_49(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49}:
-                                _migrate_schema_50(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50}:
-                                _migrate_schema_51(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51}:
-                                _migrate_schema_52(connection)
-                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52}:
-                                _migrate_schema_53(connection)
-                            if current_schema < 54:
-                                _migrate_schema_54(connection)
-                            if current_schema < 55:
-                                _migrate_schema_55(connection)
-                            if current_schema < 56:
-                                _migrate_schema_56(connection)
-                            if current_schema < 57:
-                                _migrate_schema_57(connection)
-                            if current_schema < 58:
-                                _migrate_schema_58(connection)
-                            if current_schema < 59:
-                                _migrate_schema_59(connection)
-                            if current_schema < 60:
-                                _migrate_schema_60(connection)
+                            _upgrade_existing_schema(connection, current_schema)
                             connection.execute("COMMIT")
                             connection.execute("PRAGMA legacy_alter_table=OFF")
                         validate_store(data_root, identity)
@@ -1512,26 +1767,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("PRAGMA legacy_alter_table=ON")
         connection.execute("BEGIN IMMEDIATE")
-        _install_schema_41(connection, identity)
-        _migrate_schema_42(connection)
-        _migrate_schema_43(connection)
-        _migrate_schema_44(connection)
-        _migrate_schema_45(connection)
-        _migrate_schema_46(connection)
-        _migrate_schema_47(connection)
-        _migrate_schema_48(connection)
-        _migrate_schema_49(connection)
-        _migrate_schema_50(connection)
-        _migrate_schema_51(connection)
-        _migrate_schema_52(connection)
-        _migrate_schema_53(connection)
-        _migrate_schema_54(connection)
-        _migrate_schema_55(connection)
-        _migrate_schema_56(connection)
-        _migrate_schema_57(connection)
-        _migrate_schema_58(connection)
-        _migrate_schema_59(connection)
-        _migrate_schema_60(connection)
+        _install_current_schema(connection, identity)
         connection.execute("COMMIT")
         connection.execute("PRAGMA legacy_alter_table=OFF")
         connection.execute("PRAGMA foreign_keys=ON")

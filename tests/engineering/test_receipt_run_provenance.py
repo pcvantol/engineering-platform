@@ -69,10 +69,13 @@ class ReceiptRunProvenancePersistenceTest(unittest.TestCase):
             db.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,51 FROM ep_installations_schema52")
             db.execute("DROP TABLE ep_installations_schema52")
             # Keep the canary a genuine schema-51 installation.  Newer Server
-            # migrations may already have been applied by setUp; retaining one
-            # would make `_schema_version` report the current schema and skip
-            # the provenance upgrade this fixture is meant to exercise.
+            # migrations may already have been applied by setUp.  A clean
+            # schema-60 install records only its current marker, whereas a
+            # historic store retained every marker; reintroduce the sole
+            # schema-51 marker after removing the newer history so this
+            # fixture remains a genuine pre-52 installation.
             db.execute("DELETE FROM engineering_schema_migrations WHERE version >= 52")
+            db.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(51)")
             db.execute("UPDATE engineering_metadata SET value='51' WHERE key='installation.schema_version'")
             db.execute("PRAGMA legacy_alter_table=OFF")
 
