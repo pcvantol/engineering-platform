@@ -2512,7 +2512,7 @@ class _CentralForgeProvenance:
         dispatch_state: str | None,
         updated_at: str | None,
         transport_receipt_id: str | None,
-        action_context: Mapping[str, str] | None,
+        action_context: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         """Build the explicit CENTRAL projection of admitted Forge facts."""
         context: dict[str, object] = {
