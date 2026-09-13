@@ -190,8 +190,9 @@ python3 tools/qualification/p_deterministic_execution_e2e.py --source-root . \
 ```
 
 The command rejects a dirty checkout, a non-matching `origin`, unavailable
-GitHub access, or a missing explicit write flag. It commits and pushes an
-implementation branch, creates and verifies its PR, then acts as the explicit
+GitHub access, or a missing explicit write flag. At each of the implementation
+and Finalization hand-off gates it commits and pushes exactly one bounded proof
+file, creates and verifies the corresponding PR, then acts as the explicit
 operator only for that named disposable fixture: it merges the implementation
 PR, verifies the host-created `codex/finalize-<run-id>` Finalization PR,
 merges it, and requires the canonical run to reach `COMPLETE`. It repeats the

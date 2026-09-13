@@ -119,16 +119,18 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
             "engineering_platform.qualification_runtime.subprocess.run", return_value=completed
         ) as run:
             handoff = agent._create_github_managed_handoff(self.root)
+            publication = agent._create_github_managed_handoff(self.root, publication=True)
             recovery = agent._create_github_managed_handoff(self.root, prompt="controlled recovery qualification")
             finalization = agent._create_github_managed_handoff(
                 self.root, finalization=True, prompt="Finalization PR on exactly `qualification-finalize`."
             )
         self.assertEqual((handoff.branch, handoff.pull_request), ("qualification-managed", 17))
+        self.assertEqual((publication.branch, publication.pull_request), ("qualification-managed", 17))
         self.assertEqual(recovery.branch, "qualification-managed-recovery")
         self.assertEqual(finalization.branch, "qualification-finalize")
         self.assertTrue((self.root / ".engineering-platform" / "managed-github-e2e-proof.json").is_file())
         self.assertTrue((self.root / ".engineering-platform" / "managed-github-e2e-finalization-proof.json").is_file())
-        self.assertGreaterEqual(run.call_count, 21)
+        self.assertGreaterEqual(run.call_count, 28)
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "QUALIFICATION_GITHUB_WRITE_CONFIGURATION_INVALID"):
                 agent._create_github_managed_handoff(self.root)
