@@ -423,6 +423,21 @@ def projection(
             for phase_id, parent_phase_id, phase_name, attempt, started_at, completed_at, duration_ms, outcome, _ in phase_spans
             if belongs_to_step(step_id, phase_id, parent_phase_id, phase_name)
         ]
+        # A terminal BLOCKED/FAILED state does not erase earlier completed
+        # phases, but a directly observed interrupted provider span means the
+        # visible phase itself never completed.  Project that distinction so
+        # the lifecycle cannot show a success checkmark for a timed-out
+        # implementation or review invocation.
+        interrupted = any(
+            span["outcome"] in {"INTERRUPTED", "STALE"}
+            for span in spans
+        )
+        if (
+            terminal_state in {"BLOCKED", "FAILED"}
+            and step["state"] in {"ACTIVE", "COMPLETED"}
+            and interrupted
+        ):
+            step["state"] = terminal_state
         # Timing is supporting evidence, not lifecycle authority.  In
         # particular, admission can record a short reconciliation span before
         # the end-reconciliation lifecycle step is ever reached.  Do not let

@@ -3605,6 +3605,7 @@ export const OPERATIONAL_TRANSLATION_KEYS = Object.freeze([
   "operational.stale_run",
   "operational.waiting_for_operator_merge",
   "operational.stale_host_ownership",
+  "operational.provider_deadline_exceeded",
   "operational.run_local_repository_validation",
   "operational.execute_required_validation_controls",
   "operational.poll_required_checks",
@@ -4181,3 +4182,8 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"execution_context.action_summary":"Acties
 Object.assign(DASHBOARD_MESSAGES.de, {"execution_context.action_summary":"Aktionszusammenfassung"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"execution_context.action_summary":"Résumé de l’action"});
 Object.assign(DASHBOARD_MESSAGES.es, {"execution_context.action_summary":"Resumen de la acción"});
+Object.assign(DASHBOARD_MESSAGES.en, {"detail.execution_start_branch":"Branch at execution start","detail.terminal_delivery_files_modified":"Terminal delivery files changed","detail.terminal_delivery_files_created":"Terminal delivery files created","detail.terminal_delivery_files_deleted":"Terminal delivery files deleted","operational.provider_deadline_exceeded":"The provider action exceeded the host-owned {minutes}-minute deadline."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"detail.execution_start_branch":"Branch bij uitvoeringsstart","detail.terminal_delivery_files_modified":"Gewijzigde bestanden in terminale levering","detail.terminal_delivery_files_created":"Aangemaakte bestanden in terminale levering","detail.terminal_delivery_files_deleted":"Verwijderde bestanden in terminale levering","operational.provider_deadline_exceeded":"De provideractie overschreed de host-eigen deadline van {minutes} minuten."});
+Object.assign(DASHBOARD_MESSAGES.de, {"detail.execution_start_branch":"Branch beim Ausführungsstart","detail.terminal_delivery_files_modified":"Geänderte Dateien der terminalen Bereitstellung","detail.terminal_delivery_files_created":"Erstellte Dateien der terminalen Bereitstellung","detail.terminal_delivery_files_deleted":"Gelöschte Dateien der terminalen Bereitstellung","operational.provider_deadline_exceeded":"Die Provideraktion hat die hosteigene Frist von {minutes} Minuten überschritten."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"detail.execution_start_branch":"Branche au démarrage de l’exécution","detail.terminal_delivery_files_modified":"Fichiers modifiés dans la livraison terminale","detail.terminal_delivery_files_created":"Fichiers créés dans la livraison terminale","detail.terminal_delivery_files_deleted":"Fichiers supprimés dans la livraison terminale","operational.provider_deadline_exceeded":"L’action du fournisseur a dépassé le délai de {minutes} minutes détenu par l’hôte."});
+Object.assign(DASHBOARD_MESSAGES.es, {"detail.execution_start_branch":"Rama al inicio de la ejecución","detail.terminal_delivery_files_modified":"Archivos modificados en la entrega terminal","detail.terminal_delivery_files_created":"Archivos creados en la entrega terminal","detail.terminal_delivery_files_deleted":"Archivos eliminados en la entrega terminal","operational.provider_deadline_exceeded":"La acción del proveedor superó el plazo de {minutes} minutos gestionado por el host."});

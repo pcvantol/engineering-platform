@@ -1760,10 +1760,54 @@ class InstallationBoundaryTests(unittest.TestCase):
             snapshot = server._central_console_project_snapshot(self.root, "project-a")
         self.assertEqual(snapshot["status"]["watcher_state"], "ENGINEERING_RUN_ACTIVE")
         self.assertEqual(snapshot["status"]["run_id"], "run-active")
+        self.assertEqual(snapshot["status"]["current_phase"], "EXECUTE_AGENT")
         self.assertEqual(snapshot["prompt_started"], "active-created")
         self.assertTrue(snapshot["status"]["lifecycle"]["available"])
         self.assertEqual(snapshot["status"]["lifecycle"]["steps"][1]["state"], "ACTIVE")
         self.assertEqual([entry["run_id"] for entry in snapshot["runs"]], ["run-terminal"])
+
+    def test_central_console_projects_reviewer_evidence_without_a_checkout(self) -> None:
+        """Central reviewer identities are ledger facts; terminal findings use the report."""
+        run_id = "run-central-reviewers"
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        for ordinal, reviewer in enumerate(("repository_governance", "validation"), 1):
+            persist_provider_invocation(self.root, ProviderInvocation(
+                run_id, ordinal, "codex_cli", "gpt-5.6-terra", "CAPABILITY_REVIEW",
+                f"reviewer:{reviewer}", "started", "finished", 10, {}, AUTHORITATIVE,
+            ), central_database=database)
+        self.assertEqual(
+            server._central_console_invocation_reviewers(self.root, run_id),
+            [
+                {"reviewer": "repository_governance", "capability": "engineering", "status": "completed"},
+                {"reviewer": "validation", "capability": "engineering", "status": "completed"},
+            ],
+        )
+        report = b"""# Engineering report
+## Reviewer Findings
+- Reviewer: validation
+  - Capability: engineering
+  - Selected because: Required validation evidence.
+  - Accepted recommendations: 2
+## Next section
+"""
+        self.assertEqual(server._central_console_report_reviewers(report), [{
+            "reviewer": "validation", "capability": "engineering",
+            "selected_because": "Required validation evidence.",
+            "accepted_recommendations": 2, "status": "completed",
+        }])
+
+    def test_central_console_does_not_render_unmeasured_primary_execution_as_zero(self) -> None:
+        """Reviewer timing cannot manufacture a primary Codex CLI duration."""
+        with patch("engineering_platform.server.timing_summary", return_value={
+            "total_wall_time_ms": 60_000, "provider_execution_time_ms": 0,
+        }):
+            execution, _runtime = server._central_console_execution_projection(self.root, {
+                "run_id": "run-unmeasured-primary",
+                "created_at": "2026-09-13T12:00:00+00:00",
+                "updated_at": "2026-09-13T12:01:00+00:00",
+            })
+        self.assertIsNone(execution["seconds"])
+        self.assertEqual(execution["total_seconds"], 60)
 
     def test_central_active_diagnostic_is_run_scoped_plain_text_and_never_json(self) -> None:
         """An active diagnostic is a redacted display string, not an API body."""
@@ -1918,6 +1962,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             "runtime": {"runtime_provider": "codex_cli", "model": "gpt-5.6-terra"},
             "usage": {"provider_invocation_count": 5, "usage_snapshot_count": 5},
             "evidence": [{"kind": "VALIDATION", "result": "PASSED: immutable validation result"}],
+            "reviewers": [{"reviewer": "validation", "capability": "engineering", "status": "completed"}],
         }
         with patch("engineering_platform.server._console_projects", return_value=projects), patch(
             "engineering_platform.server._central_console_run_detail", return_value=detail
@@ -1936,6 +1981,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["commit_timeline"], timeline)
         self.assertEqual(payload["usage"], detail["usage"])
         self.assertEqual(payload["evidence"], detail["evidence"])
+        self.assertEqual(payload["reviewers"], detail["reviewers"])
         self.assertNotIn("run", payload)
 
     def test_central_console_detail_projects_terminal_checkpoint_diagnostic(self) -> None:

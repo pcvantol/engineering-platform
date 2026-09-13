@@ -68,6 +68,26 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(by_id["WAIT_FOR_OPERATOR_MERGE"]["state"], "PENDING")
         self.assertEqual(by_id["TERMINAL"]["state"], "BLOCKED")
 
+    def test_interrupted_provider_span_marks_its_terminal_phase_blocked(self) -> None:
+        """A provider deadline must not leave a completed checkmark behind."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 9, 13, 17, 26, tzinfo=timezone.utc)
+            self._state(root, "EXECUTE_AGENT")
+            provider = start_phase(
+                root, "inbox-flow", "PROVIDER_EXECUTION",
+                started_at=started, monotonic_clock=10.0,
+            )
+            complete_phase(
+                root, provider, outcome="INTERRUPTED",
+                completed_at=started + timedelta(minutes=15), monotonic_clock=910.0,
+            )
+            self._state(root, "BLOCKED")
+            value = projection(root, "inbox-flow")
+        by_id = {step["id"]: step for step in value["steps"]}
+        self.assertEqual(by_id["EXECUTE_AGENT"]["state"], "BLOCKED")
+        self.assertEqual(by_id["TERMINAL"]["state"], "BLOCKED")
+
     def test_local_validation_is_a_managed_step_with_its_own_iteration_evidence(self) -> None:
         audit = ({
             "iteration": "2", "observed_at": "2026-08-26T08:10:00+00:00",
