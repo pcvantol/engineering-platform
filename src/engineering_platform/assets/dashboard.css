@@ -433,7 +433,7 @@ html[data-theme="light"] :is(.dashboard-locale,.dashboard-project){color:#415168
 @media (max-width:620px) and (orientation:portrait) and (hover:none) and (pointer:coarse){
   /* iOS handles a document scroll more reliably than a nested flex scroller.
      It also lets the title naturally leave the viewport with the content. */
-  .dashboard-sticky-header{position:static}.dashboard-titlebar{position:static}
+  .dashboard-sticky-header{max-height:none;overflow:visible;overscroll-behavior:auto;position:static}.dashboard-titlebar{position:static}
   body{display:block;height:auto;min-height:100dvh;overflow-x:hidden;overflow-y:auto;padding-inline:max(12px,env(safe-area-inset-left)) max(12px,env(safe-area-inset-right))}
   .dashboard-scroll-region{min-height:auto;overflow:visible;padding-inline:6px;scrollbar-gutter:stable both-edges}
   .footer{box-sizing:border-box;display:flex;flex-wrap:wrap;gap:4px 10px;justify-content:center;overflow:visible;padding-inline:6px;text-align:center;white-space:normal}

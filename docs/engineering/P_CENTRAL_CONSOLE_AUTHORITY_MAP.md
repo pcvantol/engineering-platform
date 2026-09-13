@@ -17,7 +17,7 @@ physical execution binding only; it is not Console authority.
 | Active execution, history, lifecycle | CENTRAL_NATIVE (read projection) | Snapshot, prompt history and run detail resolve `(project_id, run_id)` from CENTRAL; both the active card and terminal detail receive the complete persisted step flow. Terminal detail may also show an integrity-verified final repository revision for that exact run, without treating it as a phase commit. |
 | Active execution diagnostic | CENTRAL_NATIVE (read projection) | `/api/execution-diagnostic/current` reads the active run's redacted component-log diagnostic and returns only `text/plain`; JSON is never a Console display contract. |
 | Telemetry and timing detail | CENTRAL_NATIVE (read projection) | Daily telemetry and day detail join CENTRAL telemetry to canonical project/run lineage. |
-| Provider usage | SERVER_PLATFORM_NATIVE | Current single-runtime Codex capacity is a Server/CENTRAL projection. |
+| Provider usage | CENTRAL_NATIVE (read projection) | Run detail projects immutable provider-invocation and usage snapshots for that exact run; platform capacity remains a separate Server/CENTRAL projection. |
 | Evidence report downloads | CENTRAL_NATIVE | Report index and artifact path are authorized by `(project_id, run_id)` in CENTRAL. |
 | Prompt chat history | CENTRAL_NATIVE (read projection) | Immutable transcript lookup is scoped by CENTRAL project/run lineage. |
 | Advisory report analysis and retry | CENTRAL_NATIVE (bounded project mutation) | An exact-run, integrity-verified Markdown artifact is read from CENTRAL. Retry is allowed only for a controlled transient analysis status and uses the matching CENTRAL report; it is audited and cannot change the execution. |
@@ -35,6 +35,12 @@ project endpoints fail closed with `CONSOLE_PROJECT_UNAVAILABLE`; the Server
 does not select a first project or call `_console_root`.  This is covered by
 `test_no_project_console_never_resolves_a_checkout_for_shell_assets_or_platform_data`.
 
+The platform health pop-out may expose aggregate counts, but never a project or
+run identity.  It derives active work from `CLAIMED`/`RUNNING` lifecycle
+dispatches and queue depth only from submissions without a dispatch.  An
+admitted submission that has already been claimed is therefore shown as active,
+never as a duplicate queued item.
+
 ## Slice B project rule
 
 `/api/dashboard-snapshot`, `/api/status`, `/api/prompt-history`, run detail,
@@ -47,12 +53,46 @@ The selected-project document is package presentation plus CENTRAL identity;
 it contains no checkout path. Unclassified selected-project requests fail
 closed before the retained dashboard delegate can run.
 
+For terminal `BLOCKED` and `FAILED` runs, operator dismissal is retained as
+mutable handling metadata separate from the immutable terminal outcome.  The
+history index and detail projection return that persisted dismissal state, so a
+successful **Uitvoering afsluiten** action becomes `Geblokkeerd · Afgesloten`
+or `Mislukt · Afgesloten` after refresh and cannot be offered a second time.
+
+The detail payload explicitly projects persisted provider usage, the
+role-aware immutable execution-activity summary, and redacted terminal
+validation results. It does not reconstruct primary work from host counters,
+expose commands or paths, or manufacture evidence that a blocked run never
+produced. Dynamic validation, repair and assurance text uses the same bounded
+translation route as quality evidence, retaining safe source text if a
+translation is unavailable.
+
+The same projection supplies `can_dismiss` and `can_retry`.  The browser must
+not infer either control from `BLOCKED` or `FAILED`: a retry writes
+`operator_resolution=RETRIED` plus its successor submission, and the parent is
+then shown as **Opnieuw ingediend** without another action control.  Missing
+CENTRAL capabilities fail closed in presentation.
+
+Checkout-era actions that have no CENTRAL owner (workspace switches,
+checkout recovery, legacy pull-request controls and mutable telemetry clear)
+are absent from the CENTRAL UI.  A stale page receives an explicit `410` and a
+safe `WARNING` audit record instead of a misleading project-selection failure.
+Every supported Console mutation records a durable action, actor, scoped run or
+project where applicable, outcome and stable diagnostic code on rejection.
+Prompt text, credentials, stack traces and provider output are not audit data.
+Read-only action controls that open a run, report, analysis, chat, telemetry
+detail or component detail also record the same bounded audit identity. Modal
+close, pagination, sorting and filtering are presentation-only and deliberately
+are not operator actions.
+
 ## Slice C telemetry rule
 
-The telemetry trend and day-detail route read `execution_runs` only through
+The telemetry trend and day-detail route read CENTRAL `ep_execution_runs` and
+immutable `execution_phase_spans`, scoped through
 `ep_parity_lifecycle_dispatches.project_id`.  Thus a project cannot read,
 clear, or discover another project's telemetry through these read routes, and
-checkout deletion does not alter the projected history.
+checkout deletion does not alter the projected history. Missing measurements
+remain unavailable; the Console never manufactures token or host metrics.
 
 ## Slice D evidence rule
 

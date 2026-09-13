@@ -34,6 +34,7 @@ document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
   NO_PROJECT_SELECTED = document.body.dataset.projectId === "none",
+  CENTRAL_CONSOLE = window.ENGINEERING_PLATFORM_CENTRAL_CONSOLE === true,
   DASHBOARD_BUILD = window.ENGINEERING_PLATFORM_DASHBOARD_BUILD || "",
   DASHBOARD_BUILD_KEY = "engineering-platform-dashboard-build",
   fallback = {
@@ -386,7 +387,13 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
     const component = components[id];
     return [healthComponentLabel(id), String(component?.status_code || "unknown"), component?.healthy === true ? "good" : "bad", {}, { component: id, transport: true, section: t("dashboard.health.section." + group) }];
   });
-  const queueDepth = Math.max(0, Number(current.queue_depth) || 0), active = Array.isArray(current.runs) ? current.runs.filter((run) => ["CLAIMED", "RUNNING"].includes(run?.state)).length : Number(Boolean(current.active_run));
+  const queueDepth = Math.max(0, Number(current.queue_depth) || 0);
+  const projectedActiveCount = Number(current.active_execution_count);
+  const active = Number.isFinite(projectedActiveCount) && projectedActiveCount >= 0
+    ? projectedActiveCount
+    : Array.isArray(current.runs)
+      ? current.runs.filter((run) => ["CLAIMED", "RUNNING"].includes(run?.state)).length
+      : Number(Boolean(current.active_run));
   checks.push(["execution", active ? "active" : "none_active", "good", { count: active }, { section: t("dashboard.health.section.execution") }]);
   checks.push(["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }, { section: t("dashboard.health.section.execution") }]);
   return { state, checks };
@@ -650,7 +657,9 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
   if (credits !== null) lines.push(t("ui.available_resets", { count: credits }));
   $("rateLimitDetails").textContent = lines.join(String.fromCharCode(10));
   renderCapacityTrend(history);
-  button.hidden = !(credits > 0);
+  // Capacity credits are observable in CENTRAL, but the legacy direct-reset
+  // control is not CENTRAL-owned.  Do not invite a stale checkout mutation.
+  button.hidden = CENTRAL_CONSOLE || !(credits > 0);
   button.disabled = false;
 }
 async function refreshPlatformProviderCapacity() {
@@ -698,7 +707,7 @@ function renderCodexCliUpdate(status) {
   // A pre-install polling response can arrive after the verified install response.
   // Never present an update unless its version is strictly newer than the active CLI.
   latestCodexCliUpdateStatus = { ...status, update_available: updateAvailable };
-  button.hidden = !updateAvailable;
+  button.hidden = CENTRAL_CONSOLE || !updateAvailable;
   button.disabled = Boolean(updateAvailable && executionActive);
   button.title = button.disabled ? t("ui.codex_cli_update_execution_active") : "";
   if (updateAvailable && executionActive) {
@@ -712,6 +721,10 @@ function renderCodexCliUpdate(status) {
   }
 }
 async function checkCodexCliUpdate() {
+  if (CENTRAL_CONSOLE) {
+    renderCodexCliUpdate({ state: "unavailable", update_available: false });
+    return;
+  }
   try {
     const response = await fetch("/api/codex-cli-update", { cache: "no-store" });
     if (!response.ok) throw Error();
@@ -721,6 +734,7 @@ async function checkCodexCliUpdate() {
   }
 }
 function installCodexCliUpdate() {
+  if (CENTRAL_CONSOLE) return;
   const button = $("codexCliUpdate"), message = $("codexCliUpdateStatus");
   if (!button || button.hidden || button.disabled) return;
   confirmDashboardAction(
@@ -757,6 +771,7 @@ function installCodexCliUpdate() {
   });
 }
 function consumeRateLimitReset() {
+  if (CENTRAL_CONSOLE) return;
   const button = $("rateLimitReset"),
     status = $("rateLimitResetStatus");
   if (button.hidden || button.disabled) return;
@@ -957,7 +972,13 @@ function queueItems(x, queueDepth) {
         : t("format.timestamp_unavailable"),
     });
     const central = item.queue_source === "CENTRAL";
-    const mutable = !central || ["QUEUED", "DEFERRED", "QUARANTINED"].includes(item.queue_state);
+    // A CENTRAL Console may only offer CENTRAL submission controls.  A
+    // compatibility row without CENTRAL provenance is display-only: letting
+    // it retain a checkout-era defer button would advertise a route the
+    // installed Server deliberately rejects.
+    const mutable = CENTRAL_CONSOLE
+      ? central && ["QUEUED", "DEFERRED", "QUARANTINED"].includes(item.queue_state)
+      : !central || ["QUEUED", "DEFERRED", "QUARANTINED"].includes(item.queue_state);
     const defer = mutable ? document.createElement("button") : null;
     if (defer) {
       defer.className = "queue-defer";
@@ -1024,6 +1045,7 @@ function queueDisposition(item, disposition, reason, button) {
     });
 }
 function deferQueueItem(item, button) {
+  if (CENTRAL_CONSOLE) return;
   const filename = String(item?.filename || "");
   if (!filename) return;
   const displayTitle = item.title_kind === "producer_submission"
@@ -1064,7 +1086,11 @@ function renderInboxBlocker(status) {
       String(status?.diagnostic || "").includes("runtime_invocation"),
     managedBranchBlocked = String(status?.diagnostic || "").includes("managed_expected_branch");
   blocker.replaceChildren();
-  blocker.hidden = !(runtimeInvocationFailed || managedBranchBlocked);
+  // Both preflight diagnostics are checkout-owned.  CENTRAL cannot repair or
+  // safely reinterpret them, so a stale projection must not surface the
+  // historical recovery controls in the installed Console.
+  blocker.hidden = CENTRAL_CONSOLE || !(runtimeInvocationFailed || managedBranchBlocked);
+  if (CENTRAL_CONSOLE) return;
   blocker.classList.toggle("queue-blocker--error", managedBranchBlocked);
   if (runtimeInvocationFailed) blocker.textContent = t("queue.runtime_invocation_blocked");
   if (!managedBranchBlocked) return;
@@ -1088,8 +1114,8 @@ function renderWorkspaceGitLock(lock) {
       ? " " + t("technical.git_lock_since", { value: `${Math.max(1, Math.floor(lock.age_seconds / 60))} min` })
       : "") + (stale ? " " + t("technical.git_lock_stale") : "")
     : "";
-  recover.hidden = !stale;
-  recover.onclick = stale ? submitStaleGitLockRecovery : null;
+  recover.hidden = CENTRAL_CONSOLE || !stale;
+  recover.onclick = !CENTRAL_CONSOLE && stale ? submitStaleGitLockRecovery : null;
   if (!stale) recoveryStatus.textContent = "";
 }
 function promptStarted(x) {
@@ -1120,7 +1146,7 @@ const LOG_DETAIL_FIELD_ORDER = Object.freeze([
   "audit_action", "user_action", "provider_action", "audit_actor", "audit_outcome",
   "previous_state", "new_state", "previous_phase", "phase", "dispatch_state", "terminal_state",
   "operator_resolution", "queue_disposition", "admission_decision", "failed_gate_ids",
-  "failure_stage", "diagnostic_code", "next_action", "duplicate_claim", "retry_parent_run_id",
+  "failure_stage", "failure_code", "diagnostic_code", "next_action", "duplicate_claim", "retry_parent_run_id",
   "operation_id", "operator_reference", "deleted_count", "entry_count", "configuration_scope",
   "configuration_key", "previous_value", "new_value", "provider", "provider_action_source",
   "execution_mode", "package_format", "previous_location", "new_location", "log_component",
@@ -1429,6 +1455,7 @@ function closePromptHistoryChat() {
 function openPromptHistoryChat(entry) {
   if (!entry?.run_id) return;
   chatContextRun = String(entry.run_id);
+  void recordUserAction("ai_chat_opened", chatContextRun);
   chatContextEntry = { ...entry, run_id: chatContextRun };
   chatHistory = [];
   $("promptHistoryChatTitle").textContent = t("history.execution_chat_title");
@@ -1824,6 +1851,14 @@ function renderExecutionContext(context, execution = {}) {
 function renderOperatorMergeWait(x) {
   const card = $("operatorMergeWait"), pullRequest = Number(x.pull_request);
   if (!card) return;
+  // Merge-wait recovery belongs to the retired checkout-bound workflow.  A
+  // selected CENTRAL project must never offer controls for routes it does not
+  // own; its supported terminal controls are projected explicitly below.
+  if (CENTRAL_CONSOLE) {
+    card.hidden = true;
+    if ($("operatorMergeWaitModal")?.open) $("operatorMergeWaitModal").close();
+    return;
+  }
   const waiting = x.current_phase === "WAIT_FOR_OPERATOR_MERGE" && Number.isInteger(pullRequest) && pullRequest > 0;
   card.hidden = !waiting;
   if (!waiting) return;
@@ -2127,6 +2162,7 @@ function lifecycleAssuranceEvidence(step) {
     className: "estimate-meta", textContent: t("lifecycle.repair_rounds", { used: rounds.used, maximum: rounds.maximum || 3 }),
   }));
   const list = document.createElement("ol"); list.className = "lifecycle-detail-modal__phase-list";
+  const dynamicRows = [];
   for (const review of reviews) {
     if (!review || typeof review !== "object") continue;
     const findings = Array.isArray(review.findings) ? review.findings : [];
@@ -2134,11 +2170,15 @@ function lifecycleAssuranceEvidence(step) {
     const role = String(review.reviewer || ""); const status = String(review.status || "UNRESOLVED");
     item.append(Object.assign(document.createElement("strong"), { textContent: `${reviewerLabel(role, role)} · ${assuranceStatusLabel(status, status)}` }));
     const summary = findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean).join("; ");
-    item.append(Object.assign(document.createElement("span"), { textContent: summary || t("lifecycle.assurance_no_findings") }));
+    const summaryElement = Object.assign(document.createElement("span"), { textContent: summary || t("lifecycle.assurance_no_findings") });
+    item.append(summaryElement);
+    if (summary) dynamicRows.push({ source: summary, element: summaryElement });
     list.append(item);
   }
   if (!list.childElementCount) return null;
-  section.append(list); return section;
+  section.append(list);
+  void localizeDynamicEvidence(dynamicRows);
+  return section;
 }
 function lifecycleRepairEvidence(step) {
   const audit = Array.isArray(step?.repair_audit) ? step.repair_audit : [];
@@ -2148,6 +2188,7 @@ function lifecycleRepairEvidence(step) {
   section.append(Object.assign(document.createElement("h3"), {
     textContent: t(step?.id === "LOCAL_REPOSITORY_VALIDATION" ? "lifecycle.detail_local_validation_evidence" : step?.repair_evidence_key || "lifecycle.detail_repair_evidence"),
   }));
+  const dynamicRows = [];
   for (const item of audit) {
     if (!item || typeof item !== "object") continue;
     const iteration = String(item.iteration || "").trim();
@@ -2157,16 +2198,24 @@ function lifecycleRepairEvidence(step) {
     const grid = document.createElement("div");
     grid.className = "technical-grid";
     const outcome = String(item.outcome || "").trim();
+    const dynamicField = (label, source) => {
+      const value = String(source || t("detail.not_recorded"));
+      const field = lifecycleDetailField(label, value);
+      if (source) dynamicRows.push({ source: value, element: field.lastElementChild });
+      return field;
+    };
     grid.append(
-      lifecycleDetailField(t("detail.failed_checks"), String(item.failed_checks || t("detail.not_recorded"))),
-      lifecycleDetailField(t("detail.proposed_action"), String(item.proposed_action || t("detail.not_recorded"))),
-      lifecycleDetailField(t("detail.ai_repair_summary"), String(item.agent_summary || t("detail.not_recorded"))),
+      dynamicField(t("detail.failed_checks"), item.failed_checks),
+      dynamicField(t("detail.proposed_action"), item.proposed_action),
+      dynamicField(t("detail.ai_repair_summary"), item.agent_summary),
       lifecycleDetailField(t("detail.commit"), String(item.commit_sha || t("detail.not_recorded"))),
       lifecycleDetailField(t("detail.outcome"), t("lifecycle.repair_outcome." + outcome, {}, outcome || t("detail.not_recorded"))),
     );
     section.append(heading, grid);
   }
-  return section.childElementCount > 1 ? section : null;
+  if (section.childElementCount <= 1) return null;
+  void localizeDynamicEvidence(dynamicRows);
+  return section;
 }
 let lifecycleDetailTrigger = null;
 function closeLifecycleDetail() {
@@ -2385,6 +2434,7 @@ function renderActiveLifecycle(projection, execution = {}) {
   }
 }
 function statusReconciliationCard(recovery) {
+  if (CENTRAL_CONSOLE) return null;
   if (recovery?.kind !== "status_reconciliation" || !recovery.run_id) return null;
   const card = document.createElement("section"), title = document.createElement("h3"), description = document.createElement("p"), actions = document.createElement("div"), button = document.createElement("button"), result = document.createElement("p");
   card.className = "prompt-detail-card prompt-detail-card--wide status-reconciliation-card";
@@ -2399,6 +2449,7 @@ function statusReconciliationCard(recovery) {
   return card;
 }
 async function requestStatusReconciliation(recovery = latestStatus?.lifecycle?.recovery, button = $("statusReconciliationStart"), result = $("statusReconciliationResult")) {
+  if (CENTRAL_CONSOLE) return;
   if (recovery?.kind !== "status_reconciliation" || !recovery.run_id) return;
   button.disabled = true;
   try {
@@ -2442,11 +2493,12 @@ function placeOperatorMergeWait() {
 function renderEmergencyRecovery(recovery, status) {
   const card = $("emergencyRecovery"), button = $("emergencyRecoveryStart");
   if (!card || !button) return;
-  const available = Boolean(recovery?.available && status?.run_id === recovery?.run_id);
+  const available = !CENTRAL_CONSOLE && Boolean(recovery?.available && status?.run_id === recovery?.run_id);
   card.hidden = !available;
   button.disabled = !available;
 }
 async function startEmergencyRecovery() {
+  if (CENTRAL_CONSOLE) return;
   const recovery = latestDashboardSnapshot?.emergency_recovery;
   if (!recovery?.available || !latestStatus?.run_id || recovery.run_id !== latestStatus.run_id) return;
   const confirmed = await confirmDashboardAction(
@@ -2820,7 +2872,7 @@ function renderOpenPullRequests(pullRequests) {
     setOpenPullRequestOwnerApproval(approval, pullRequest.owner_approval);
     branch.textContent = String(pullRequest.branch || "");
     item.append(link, branch, status, approval);
-    if (pullRequest.owner_authorization_requested === true) {
+    if (!CENTRAL_CONSOLE && pullRequest.owner_authorization_requested === true) {
       const authorize = document.createElement("button");
       authorize.className = "open-pr-owner-authorization";
       authorize.dataset.openPullRequestOwnerAuthorization = String(pullRequest.number || "");
@@ -2829,7 +2881,7 @@ function renderOpenPullRequests(pullRequests) {
       authorize.title = t("workspace.open_pull_request.authorize_owner");
       item.append(authorize);
     }
-    if (pullRequest.check_repair_available === true || pullRequest.check_repair_completed_for_head === true) {
+    if (!CENTRAL_CONSOLE && (pullRequest.check_repair_available === true || pullRequest.check_repair_completed_for_head === true)) {
       const repair = document.createElement("button");
       repair.className = "open-pr-check-repair";
       repair.type = "button";
@@ -2873,6 +2925,10 @@ function scheduleOpenPullRequestMonitor(pullRequests) {
   }
 }
 async function refreshOpenPullRequests({ announce = false } = {}) {
+  // Pull-request repair/authorization is a retired checkout-bound workflow.
+  // CENTRAL does not project the requisite mutable GitHub state, so avoid a
+  // deceptive failed request from an otherwise healthy selected project.
+  if (CENTRAL_CONSOLE) return;
   if (openPullRequestMonitorInFlight) return;
   if (announce) showDashboardToast(t("workspace.open_pull_requests_refreshing"), DASHBOARD_TOAST_GLYPHS.refresh);
   openPullRequestMonitorInFlight = true;
@@ -2909,6 +2965,7 @@ function refreshOpenPullRequestsAfterAction() {
   }
 }
 async function requestOpenPullRequestOwnerAuthorization(button) {
+  if (CENTRAL_CONSOLE) return;
   const number = Number(button?.dataset.openPullRequestOwnerAuthorization);
   if (!Number.isInteger(number) || number < 1) return;
   const confirmed = await confirmDashboardAction(
@@ -2944,6 +3001,7 @@ function failedCheckNamesFromButton(button) {
   }
 }
 async function requestOpenPullRequestCheckRepair(button) {
+  if (CENTRAL_CONSOLE) return;
   const number = Number(button?.dataset.openPullRequestCheckRepair);
   if (!Number.isInteger(number) || number < 1) return;
   const failedChecks = failedCheckNamesFromButton(button);
@@ -3893,7 +3951,10 @@ async function refreshOpenComponentDetails() {
 }
 async function showComponentDetails(component) {
   const shown = await requestComponentDetails(component);
-  if (shown) startComponentDetailsRefresh(component);
+  if (shown) {
+    void recordUserAction("component_details_opened", null, component);
+    startComponentDetailsRefresh(component);
+  }
 }
 async function restartDashboardComponent() {
   const restart = $("componentModalRestart"),
@@ -4257,6 +4318,10 @@ async function copyExecutionTelemetry() {
   void recordUserAction("telemetry_copied");
 }
 async function clearExecutionTelemetry() {
+  // CENTRAL phase spans are immutable execution evidence.  The former clear
+  // action wrote only to the retired local `execution_runs` projection and
+  // could not clear what the table actually shows.
+  if (CENTRAL_CONSOLE) return;
   if (!executionTelemetryRows.length) return;
   const confirmed = await confirmDashboardAction(
     t("telemetry.clear_title"), t("telemetry.clear_description"), t("telemetry.clear_title"),
@@ -4355,7 +4420,7 @@ function executionTelemetry(rows) {
     for (const [button, className, glyph, label, handler] of [
       [download, "dashboard-action dashboard-action--download telemetry-download", "↓", "telemetry.download", downloadExecutionTelemetry],
       [copy, "dashboard-action dashboard-action--copy telemetry-copy", "⧉", "telemetry.copy", copyExecutionTelemetry],
-      [clear, "dashboard-action dashboard-action--destructive telemetry-clear", "⊠", "telemetry.clear_title", clearExecutionTelemetry],
+      ...(!CENTRAL_CONSOLE ? [[clear, "dashboard-action dashboard-action--destructive telemetry-clear", "⊠", "telemetry.clear_title", clearExecutionTelemetry]] : []),
     ]) {
       button.type = "button";
       button.className = className;
@@ -4607,6 +4672,7 @@ function telemetryDetailTableScroll(table, label) {
 }
 function openTelemetryDetail(date, trigger) {
   if (!date) return;
+  void recordUserAction("telemetry_detail_opened");
   const requestId = ++telemetryDetailRequestId;
   telemetryDetailTrigger = trigger || document.activeElement;
   const modal = $("telemetryDetailModal"), content = $("telemetryDetailContent");
@@ -5409,7 +5475,7 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.prompt_status"), promptHistoryStatus(history.status)],
       [t("detail.executed_at"), Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : history.executed_at],
       [t("detail.execution_mode"), history.execution_mode],
-      [t("detail.operator_handling"), history.emergency_cancelled_at ? t("handling.cancelled") : history.dismissed ? t("handling.dismissed") : t("handling.open")],
+      [t("detail.operator_handling"), operatorHandlingLabel(history)],
       ...(promptHistoryIsBlocked(history.status)
         ? [[t("detail.blocking_reason"), history.blocking_reason || history.execution_diagnostic]]
         : [[t("detail.execution_diagnostic"), history.execution_diagnostic]]),
@@ -5543,10 +5609,27 @@ function filteredPromptHistory() {
 function promptHistoryStatus(value) {
   return t("status." + String(value || "unknown").toLowerCase());
 }
+function operatorHandlingLabel(entry) {
+  if (entry?.emergency_cancelled_at) return t("handling.cancelled");
+  const state = String(entry?.handling_state || entry?.operator_resolution || "").toUpperCase();
+  if (state === "DISMISSED" || entry?.dismissed) return t("handling.dismissed");
+  if (state === "RETRIED") return t("handling.retried");
+  return t("handling.open");
+}
 function promptHistoryDisplayStatus(entry) {
   const outcome = promptHistoryStatus(entry?.status);
   if (entry?.emergency_cancelled_at) return outcome;
-  return entry?.dismissed ? `${outcome} · ${t("handling.dismissed")}` : outcome;
+  const handling = String(entry?.handling_state || entry?.operator_resolution || "").toUpperCase();
+  return ["DISMISSED", "RETRIED"].includes(handling) || entry?.dismissed
+    ? `${outcome} · ${operatorHandlingLabel(entry)}`
+    : outcome;
+}
+function centralHistoryActionAllowed(entry, action) {
+  const capability = `can_${action}`;
+  if (entry?.history_source === "CENTRAL") return entry?.[capability] === true;
+  if (action === "retry") return entry?.can_retry === true && !entry?.dismissed;
+  return ["BLOCKED", "FAILED"].includes(entry?.status) && !entry?.dismissed &&
+    !entry?.retry_child_run_id && Boolean(entry?.run_id) && !isActiveRun(latestStatus);
 }
 function updatePromptHistoryColumnWidths(entries) {
   const table = document.querySelector("#promptHistory .log-table");
@@ -5756,7 +5839,7 @@ function renderPromptHistory() {
         button.addEventListener("click", () => openPromptHistoryChat(entry));
         chat.append(button);
       } else chat.textContent = "—";
-      if (entry.can_retry === true && !entry.dismissed && entry.run_id) {
+      if (centralHistoryActionAllowed(entry, "retry") && entry.run_id) {
         const retry = document.createElement("button");
         retry.type = "button";
         retry.className = "predecessor-retry execution-history-action";
@@ -5764,7 +5847,7 @@ function renderPromptHistory() {
         retry.addEventListener("click", () => submitExecutionRetry(entry));
         actionControls.append(retry);
       }
-      if (["BLOCKED", "FAILED"].includes(entry.status) && !entry.dismissed && !entry.retry_child_run_id && entry.run_id && !isActiveRun(latestStatus)) {
+      if (centralHistoryActionAllowed(entry, "dismiss") && entry.run_id) {
         const dismiss = document.createElement("button");
         dismiss.type = "button";
         dismiss.className = "predecessor-retry execution-history-action execution-dismiss";
@@ -5858,7 +5941,9 @@ async function refreshAfterOperatorAction({ dismissedRunId = null } = {}) {
   // a slow status snapshot from leaving a stale dismiss action on screen.
   if (dismissedRunId) {
     promptHistoryEntries = promptHistoryEntries.map((entry) =>
-      entry.run_id === dismissedRunId ? { ...entry, dismissed: true } : entry,
+      entry.run_id === dismissedRunId
+        ? { ...entry, dismissed: true, handling_state: "DISMISSED", can_dismiss: false, can_retry: false }
+        : entry,
     );
     renderPromptHistory();
   }
@@ -7296,10 +7381,12 @@ formatComponentUptime = (value) => {
     ? formatComponentUptimeForMeasuredValues(value)
     : "";
 };
-function recordUserAction(action, runId = null) {
+function recordUserAction(action, runId = null, targetComponent = null) {
   const payload = { action: action };
   if (typeof runId === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(runId))
     payload.run_id = runId;
+  if (typeof targetComponent === "string" && /^[a-z][a-z0-9_]{2,63}$/.test(targetComponent))
+    payload.target_component = targetComponent;
   return fetch("/api/audit/user-action", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -7427,6 +7514,12 @@ function openPromptHistoryDocument(runId, kind = "report") {
   const modal = $("promptHistoryReportModal");
   promptHistoryReportRun = String(runId || "");
   promptHistoryDocumentKind = kind === "analysis" ? "analysis" : "report";
+  void recordUserAction(
+    promptHistoryDocumentKind === "analysis"
+      ? "prompt_history_analysis_opened"
+      : "prompt_history_report_opened",
+    promptHistoryReportRun,
+  );
   promptHistoryReportText = "";
   $("promptHistoryReportModalTitle").dataset.modalGlyph = promptHistoryDocumentKind;
   $("promptHistoryReportModalTitle").textContent =
@@ -7439,6 +7532,7 @@ function openPromptHistoryDocument(runId, kind = "report") {
 }
 async function reloadPromptHistoryReport() {
   if (promptHistoryDocumentKind !== "report" || !promptHistoryReportRun) return;
+  void recordUserAction("prompt_history_report_reloaded", promptHistoryReportRun);
   loadPromptHistoryDocument();
 }
 async function retryPromptHistoryAnalysis() {
@@ -7459,6 +7553,9 @@ async function retryPromptHistoryAnalysis() {
     promptHistoryReportText = text;
     renderMarkdownDocument(content, text);
     button.hidden = !reportAnalysisCanRetry(text);
+    // The regenerated artifact is durable CENTRAL evidence. Re-read the
+    // history index so its table state is not left on a legacy stale view.
+    await refreshPromptHistory();
   } catch (error) {
     renderMarkdownDocument(content, promptHistoryReportText);
     showDashboardError(t("history.analysis_retry_failed"), t("history.analysis_retry_failed"));
@@ -7616,7 +7713,7 @@ function promptDetailExecutionSections(history) {
       history.blocking_reason || history.execution_diagnostic || t("detail.not_recorded"),
       true,
     )] : []),
-    detailField(t("detail.operator_handling"), history.emergency_cancelled_at ? t("handling.cancelled") : history.dismissed ? t("handling.dismissed") : t("handling.open")),
+    detailField(t("detail.operator_handling"), operatorHandlingLabel(history)),
     ...(history.dismissed_at ? [detailField(
       t("detail.dismissed_at"),
       formatTimestamp(history.dismissed_at, String(history.dismissed_at)),
@@ -7892,11 +7989,20 @@ function promptDetailPullRequestsSection(pullRequests) {
   return promptDetailCard(t("detail.pull_requests"), fields, false, "prompt-detail-card--pull-requests");
 }
 function promptDetailEvidenceSection(evidence) {
-  if (!evidence.length) return null;
-  return promptDetailCard(
-    t("detail.execution_evidence"),
-    [detailField(t("detail.evidence"), evidence.join("\n"), true)],
-  );
+  if (!Array.isArray(evidence) || !evidence.length) return null;
+  const dynamicRows = [];
+  const fields = evidence.map((item, index) => {
+    const value = typeof item === "string" ? item : String(item?.result || "").trim();
+    if (!value) return null;
+    const label = item && typeof item === "object" && item.kind === "VALIDATION"
+      ? `${t("detail.evidence")} ${index + 1}` : t("detail.evidence");
+    const field = detailField(label, value, true);
+    dynamicRows.push({ source: value, element: field.lastElementChild });
+    return field;
+  }).filter(Boolean);
+  if (!fields.length) return null;
+  void localizeDynamicEvidence(dynamicRows);
+  return promptDetailCard(t("detail.execution_evidence"), fields);
 }
 function promptDetailRecommendationHandoff(handoff) {
   if (!handoff || typeof handoff !== "object") return null;
@@ -8017,6 +8123,7 @@ function closePromptHistoryDetail() {
 function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   if (!entry?.run_id) return;
   const runId = String(entry.run_id);
+  void recordUserAction("prompt_history_detail_opened", runId);
   if (updateUrl) updatePromptHistoryDetailUrl(runId);
   promptHistoryDetailRunId = runId;
   const modal = $("promptHistoryDetailModal"), content = $("promptHistoryDetailContent");
@@ -8144,8 +8251,9 @@ function submitPredecessorRetry() {
           throw Error(
             result.body.error || t("recovery.failed"),
           );
-        status.textContent =
-          t("recovery.ready");
+        return refreshAfterOperatorAction().then(() => {
+          status.textContent = t("recovery.ready");
+        });
       })
       .catch((error) => {
         status.textContent =
@@ -8157,6 +8265,7 @@ function submitPredecessorRetry() {
   });
 }
 function submitManagedBranchRecovery() {
+  if (CENTRAL_CONSOLE) return;
   confirmDashboardAction(
     t("queue.managed_branch_recovery_title"),
     t("queue.managed_branch_recovery"),
@@ -8183,6 +8292,7 @@ function submitManagedBranchRecovery() {
   });
 }
 function submitStaleGitLockRecovery() {
+  if (CENTRAL_CONSOLE) return;
   confirmDashboardAction(
     t("technical.git_lock_recovery_title"),
     t("technical.git_lock_recovery"),
@@ -8228,6 +8338,7 @@ function showWorkspaceBranchMainResult(message, titleKey = "workspace.branch_mai
   resetDashboardModalInitialFocus(modal);
 }
 async function switchToFastForwardMain() {
+  if (CENTRAL_CONSOLE) return;
   const button = $("workspaceBranchMain");
   if (!button || button.disabled) return;
   const confirmed = await confirmDashboardAction(
@@ -8260,6 +8371,7 @@ async function switchToFastForwardMain() {
   }
 }
 async function switchEngineeringPlatformToWorktree(worktree) {
+  if (CENTRAL_CONSOLE) return;
   const path = String(worktree?.path || ""), branch = String(worktree?.branch || "");
   if (!path || !branch || branch === "main") return;
   const confirmed = await confirmDashboardAction(
@@ -8330,6 +8442,7 @@ function dismissExecution(entry) {
   });
 }
 function abortOperatorMergeWait() {
+  if (CENTRAL_CONSOLE) return;
   const runId = latestStatus?.run_id;
   if (!runId) return;
   if ($("operatorMergeWaitModal").open) $("operatorMergeWaitModal").close();
@@ -8350,6 +8463,7 @@ function abortOperatorMergeWait() {
   });
 }
 function checkOperatorMergeStatus(button) {
+  if (CENTRAL_CONSOLE) return;
   const runId = latestStatus?.run_id;
   if (!runId) return;
   button.disabled = true;
@@ -8529,7 +8643,9 @@ function showDashboardError(message, fallback, action = null) {
     close = $("dashboardErrorModalClose"),
     dismiss = $("dashboardErrorModalDismiss"),
     recover = $("dashboardErrorModalRecover"),
-    recovery = dashboardErrorRecovery(message),
+    // Managed-branch synchronization mutates an execution checkout.  It has
+    // no CENTRAL owner, so it remains a read-only diagnostic in this Console.
+    recovery = CENTRAL_CONSOLE ? null : dashboardErrorRecovery(message),
     followUp = action || (recovery ? { label: t("action.recover") } : null);
   $("dashboardErrorModalTitle").textContent = t("ui.action_failed");
   $("dashboardErrorModalText").textContent = localizedDashboardError(message, fallback);

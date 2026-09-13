@@ -32,6 +32,7 @@ from engineering_platform import local_api_keychain
 from engineering_platform import dependabot_producer
 from engineering_platform import provider_recovery
 from engineering_platform import prompt_history
+from engineering_platform.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
 from engineering_platform import investigation_ledger, legacy_inbox_migration, provider_process_identity, provider_readiness, resources, validation_identity, worktree_tooling
 from engineering_platform.local_api import valid_port
 from engineering_platform.ep_consumer_credentials import (
@@ -142,6 +143,119 @@ class CentralAuthorityBoundaryTests(unittest.TestCase):
             connection.execute("INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("sub-a", "project-a", "repo-a", "test", "TEST", "HTTP", "p", "d", "{}", "QUEUED", "ADMITTED", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", ("sub-a", "project-a", "repo-a", "run-a", "RUNNING", "CENTRAL:p", "now", "now"))
         self.assertEqual(central_database.run_periodic_maintenance(self.root)["state"], "SKIPPED_ACTIVE_RUN")
+
+    def test_no_project_snapshot_counts_claimed_work_as_active_not_queued(self) -> None:
+        """The platform pop-out must not recast an admitted live run as queued."""
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("run-active", "project-a", "RUNNING", "started", "updated"),
+            )
+            connection.execute(
+                """INSERT INTO ep_submissions(
+                       submission_id,project_id,repository_id,producer_id,producer_type,transport,
+                       prompt,prompt_digest,constraints,state,admission,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("submission-active", "project-a", "repo-a", "test", "TEST", "HTTP",
+                 "prompt", "digest", "{}", "QUEUED", "ADMITTED", "started"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                       submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                ("submission-active", "project-a", "repo-a", "run-active", "RUNNING",
+                 "CENTRAL:prompt", "started", "updated"),
+            )
+        snapshot = server._no_project_console_snapshot(self.root)
+        self.assertEqual(snapshot["scope"], "PLATFORM")
+        self.assertEqual(snapshot["status"]["active_execution_count"], 1)
+        self.assertEqual(snapshot["status"]["queue_depth"], 0)
+        self.assertEqual(snapshot["runs"], [])
+
+    def test_central_history_projects_persisted_dismissal_and_hides_repeat_action(self) -> None:
+        """A first successful dismissal remains visible after a history refresh."""
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("run-dismissed", "project-a", "BLOCKED", "started", "closed-at"),
+            )
+            connection.execute(
+                """INSERT INTO ep_submissions(
+                       submission_id,project_id,repository_id,producer_id,producer_type,transport,
+                       prompt,prompt_digest,constraints,state,admission,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("submission-dismissed", "project-a", "repo-a", "test", "TEST", "HTTP",
+                 "prompt", "digest", "{}", "QUEUED", "ADMITTED", "started"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                       submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,
+                       operator_resolution
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                ("submission-dismissed", "project-a", "repo-a", "run-dismissed", "BLOCKED",
+                 "CENTRAL:prompt", "started", "closed-at", "DISMISSED"),
+            )
+        (record,) = server._central_console_run_records(self.root, "project-a")
+        self.assertEqual(record["status"], "BLOCKED")
+        self.assertTrue(record["dismissed"])
+        self.assertEqual(record["handling_state"], "DISMISSED")
+        self.assertEqual(record["dismissed_at"], "closed-at")
+        self.assertEqual(record["history_source"], "CENTRAL")
+        self.assertFalse(record["can_retry"])
+        self.assertFalse(record["can_dismiss"])
+
+    def test_central_history_projects_operator_capabilities_and_retry_successor(self) -> None:
+        """History controls come from durable dispatcher state, not a terminal label."""
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            for run_id, state, updated_at in (
+                ("run-open", "BLOCKED", "open-at"),
+                ("run-parent", "BLOCKED", "parent-at"),
+                ("run-child", "RUNNING", "child-at"),
+            ):
+                connection.execute(
+                    "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    (run_id, "project-a", state, "started", updated_at),
+                )
+            for submission_id in ("submission-open", "submission-parent", "submission-child"):
+                connection.execute(
+                    """INSERT INTO ep_submissions(
+                           submission_id,project_id,repository_id,producer_id,producer_type,transport,
+                           prompt,prompt_digest,constraints,state,admission,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (submission_id, "project-a", "repo-a", "test", "TEST", "HTTP",
+                     "prompt", "digest", "{}", "QUEUED", "ADMITTED", "started"),
+                )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                       submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,
+                       operator_resolution
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                ("submission-open", "project-a", "repo-a", "run-open", "BLOCKED",
+                 "CENTRAL:prompt", "started", "open-at", "OPEN"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                       submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,
+                       operator_resolution,resolution_submission_id
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                ("submission-parent", "project-a", "repo-a", "run-parent", "BLOCKED",
+                 "CENTRAL:prompt", "started", "parent-at", "RETRIED", "submission-child"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                       submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                ("submission-child", "project-a", "repo-a", "run-child", "RUNNING",
+                 "CENTRAL:prompt", "started", "child-at"),
+            )
+        records = {record["run_id"]: record for record in server._central_console_run_records(self.root, "project-a")}
+        self.assertTrue(records["run-open"]["can_retry"])
+        self.assertTrue(records["run-open"]["can_dismiss"])
+        self.assertEqual(records["run-parent"]["handling_state"], "RETRIED")
+        self.assertFalse(records["run-parent"]["can_retry"])
+        self.assertFalse(records["run-parent"]["can_dismiss"])
+        self.assertEqual(records["run-parent"]["retry_child_run_id"], "run-child")
+        self.assertEqual(records["run-parent"]["retry_status"], "ACTIVE")
 
 
 class InstallationBoundaryTests(unittest.TestCase):
@@ -318,6 +432,18 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertTrue(responses, path)
             self.assertGreaterEqual(responses[-1][0], 400)
 
+    def test_retired_dashboard_actions_are_rejected_and_audited_before_project_selection(self) -> None:
+        """A stale action never falls through to a checkout or a project error."""
+        handler, responses = self._in_process_console_handler(
+            "/api/execution-merge-wait-abort", body=b"{}", headers={"Content-Length": "2"},
+        )
+        with patch("engineering_platform.server._audit_dashboard_action") as audit:
+            handler._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (410, {"error": "LEGACY_DASHBOARD_ACTION_RETIRED"}))
+        self.assertEqual(audit.call_args.kwargs["action"], "execution_merge_wait_aborted")
+        self.assertEqual(audit.call_args.kwargs["outcome"], "FAILED")
+        self.assertEqual(audit.call_args.kwargs["details"], {"diagnostic_code": "LEGACY_DASHBOARD_ACTION_RETIRED"})
+
     def test_selected_project_dispatch_never_delegates_to_checkout_runtime(self) -> None:
         """Project read routes retain CENTRAL data and unavailable mutations fail closed."""
         projects = [{"project_id": "project-a"}]
@@ -347,6 +473,18 @@ class InstallationBoundaryTests(unittest.TestCase):
             handler, responses = self._in_process_console_handler("/api/configuration", body=b"{}", headers={**headers, "Content-Length": "2"})
             handler._delegate_dashboard("do_POST")
             self.assertEqual(responses[-1], (409, {"error": "CONSOLE_CONFIGURATION_INVALID"}))
+            body = b'{"key":"log_level","value":"DEBUG","previous":"INFO"}'
+            configured, responses = self._in_process_console_handler(
+                "/api/configuration", body=body,
+                headers={**headers, "Content-Length": str(len(body))},
+            )
+            with patch(
+                "engineering_platform.server.central_database.update_console_interval_configuration",
+                return_value={"key": "log_level", "previous": "INFO", "value": "DEBUG"},
+            ) as update:
+                configured._delegate_dashboard("do_POST")
+            update.assert_called_once_with(self.root, "log_level", "DEBUG")
+            self.assertEqual(responses[-1][0], 200)
 
     def test_console_dispatch_success_paths_require_server_services_not_checkout_state(self) -> None:
         """Successes are explicit Server service calls, not legacy fallthrough."""
@@ -599,7 +737,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_dashboard_user_actions_are_audited_centrally_without_user_content(self) -> None:
         """Downloads and UI actions have a durable audit event, not a browser-only hook."""
-        body = b'{"action":"telemetry_downloaded"}'
+        body = b'{"action":"component_details_opened","target_component":"operations_console"}'
         handler, responses = self._in_process_console_handler(
             "/api/audit/user-action", body=body, headers={"Content-Length": str(len(body))},
         )
@@ -613,11 +751,12 @@ class InstallationBoundaryTests(unittest.TestCase):
             ).fetchone()[0]
         record = json.loads(payload)
         self.assertEqual(record["event"], "dashboard_action_completed")
-        self.assertEqual(record["audit_action"], "telemetry_downloaded")
+        self.assertEqual(record["audit_action"], "component_details_opened")
         self.assertEqual(record["audit_actor"], "DASHBOARD_USER")
+        self.assertEqual(record["target_component"], "operations_console")
 
-    def test_project_telemetry_clear_is_central_and_audited(self) -> None:
-        """The destructive telemetry control clears only its selected project."""
+    def test_retired_telemetry_clear_is_rejected_and_audited(self) -> None:
+        """A legacy destructive control cannot mutate CENTRAL telemetry."""
         body = b"{}"
         handler, responses = self._in_process_console_handler(
             "/api/telemetry/clear", body=body,
@@ -625,7 +764,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         )
         with patch("engineering_platform.server._console_projects", return_value=[{"project_id": "project-a"}]):
             handler._delegate_dashboard("do_POST")
-        self.assertEqual(responses[-1], (200, {"cleared": True, "execution_runs": 0}))
+        self.assertEqual(responses[-1], (410, {"error": "TELEMETRY_CLEAR_RETIRED"}))
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             payload = connection.execute(
                 "SELECT payload FROM engineering_component_logs "
@@ -633,7 +772,24 @@ class InstallationBoundaryTests(unittest.TestCase):
             ).fetchone()[0]
         record = json.loads(payload)
         self.assertEqual(record["audit_action"], "telemetry_cleared")
-        self.assertEqual(record["project_id"], "project-a")
+        self.assertEqual(record["audit_outcome"], "FAILED")
+        self.assertEqual(record["diagnostic_code"], "TELEMETRY_CLEAR_RETIRED")
+
+    def test_central_transfer_lock_rejects_and_audits_every_mutation(self) -> None:
+        """A click during a snapshot transfer remains visible in the audit trail."""
+        handler, responses = self._in_process_console_handler("/api/central-data/export")
+        handler.server.central_data_transfer_active = True
+        handler._delegate_dashboard("do_POST")
+        self.assertEqual(responses[-1], (423, {"error": "CENTRAL_DATA_TRANSFER_IN_PROGRESS"}))
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            payload = connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='operations_console' ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        record = json.loads(payload)
+        self.assertEqual(record["audit_action"], "operations_action_requested")
+        self.assertEqual(record["audit_outcome"], "FAILED")
+        self.assertEqual(record["diagnostic_code"], "CENTRAL_DATA_TRANSFER_IN_PROGRESS")
 
     def test_central_data_transfer_routes_require_confirmation_and_quiesce_writers(self) -> None:
         """The Console exposes one guarded, whole-state transfer boundary."""
@@ -1690,6 +1846,25 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(snapshot["status"]["execution_context"], detail["execution_context"])
         self.assertEqual(snapshot["runs"], [])
 
+    def test_central_detail_uses_persisted_usage_and_activity_not_host_reconstruction(self) -> None:
+        """Role-aware activity and usage survive CENTRAL's detail projection."""
+        run_id = "run-persisted-activity"
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("project-activity", "DECLARATION", "ACTIVE", "now", "now"))
+            connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("repo-activity", "project-activity", "repo-activity", "authority", "DECLARATION", "now", "now"))
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", (run_id, "project-activity", "COMPLETE", "now", "later"))
+            connection.execute("INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("submission-activity", "project-activity", "repo-activity", "forge", "FORGE", "HTTP", "bounded", "sha256:prompt", "{}", "QUEUED", "ADMITTED", "now"))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", ("submission-activity", "project-activity", "repo-activity", run_id, "COMPLETE", "CENTRAL:prompt", "now", "later"))
+            connection.execute("INSERT INTO execution_activity_summaries(run_id,summary_version,payload,persisted_at) VALUES(?,?,?,?)", (run_id, 1, json.dumps({"run_id": run_id, "summary_version": 1, "activity": {"metric_definition_version": 1, "codex_command_definition": "one provider invocation", "primary_codex_commands_total": 2, "reviewer_codex_commands_total": 3, "host_validation_commands_total": 2, "overall_activity_total": 7}, "terminal_delivery_diff": {"authority": "AUTHORITATIVE_REPOSITORY_EVIDENCE", "transaction_baseline_sha": "a" * 40, "terminal_target_sha": "b" * 40, "total_unique_changed_paths": 4, "renamed": [], "per_pr_changed_file_counts": "recorded"}}), "later"))
+        for ordinal, role in enumerate(("IMPLEMENTATION", "QUALITY_REVIEW", "SECURITY_REVIEW"), 1):
+            persist_provider_invocation(self.root, ProviderInvocation(run_id, ordinal, "codex_cli", "gpt-5.6-terra", "PROVIDER_EXECUTION", role, "now", "later", 1000, {"input_tokens": ordinal}, AUTHORITATIVE), central_database=self.root / server.SERVER_DATABASE_FILENAME)
+        detail = server._central_console_run_detail(self.root, "project-activity", run_id)
+        assert detail is not None
+        activity = detail["execution_activity_summary"]["activity"]
+        self.assertEqual(activity["primary_codex_commands_total"], 2)
+        self.assertEqual(activity["reviewer_codex_commands_total"], 3)
+        self.assertEqual(detail["usage"]["provider_invocation_count"], 3)
+
     def test_central_forge_console_adapter_never_exposes_raw_constraints(self) -> None:
         """The shared provenance adapter whitelists only displayable Forge facts."""
         provenance = server._CentralForgeProvenance.from_constraints(json.dumps({
@@ -1739,6 +1914,8 @@ class InstallationBoundaryTests(unittest.TestCase):
             "commit_timeline": timeline,
             "execution": {"seconds": 12.5, "total_seconds": 34.5},
             "runtime": {"runtime_provider": "codex_cli", "model": "gpt-5.6-terra"},
+            "usage": {"provider_invocation_count": 5, "usage_snapshot_count": 5},
+            "evidence": [{"kind": "VALIDATION", "result": "PASSED: immutable validation result"}],
         }
         with patch("engineering_platform.server._console_projects", return_value=projects), patch(
             "engineering_platform.server._central_console_run_detail", return_value=detail
@@ -1755,6 +1932,8 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["runtime"], detail["runtime"])
         self.assertEqual(payload["lifecycle"], lifecycle)
         self.assertEqual(payload["commit_timeline"], timeline)
+        self.assertEqual(payload["usage"], detail["usage"])
+        self.assertEqual(payload["evidence"], detail["evidence"])
         self.assertNotIn("run", payload)
 
     def test_central_console_detail_projects_terminal_checkpoint_diagnostic(self) -> None:
@@ -2020,6 +2199,9 @@ class InstallationBoundaryTests(unittest.TestCase):
             "submission": {"id": submission_id, "project_id": project_id, "repository_id": "repo-a"},
             "run": {"id": run_id, "outcome": "COMPLETE"},
             "repository": {"id": "repo-a", "revision": "b" * 40, "revision_required": True},
+            "references": {"validation": [
+                {"command": "must never be projected", "result": "PASSED: repository validation"},
+            ]},
         }
 
         def record_terminal_evidence(payload: object) -> None:
@@ -2039,6 +2221,10 @@ class InstallationBoundaryTests(unittest.TestCase):
             "commit_sha": "b" * 40,
             "description": "terminal_repository_revision_verified",
         }])
+        self.assertEqual(
+            server._central_console_validation_evidence(self.root, project_id, run_id),
+            [{"kind": "VALIDATION", "result": "PASSED: repository validation"}],
+        )
 
         artifact.write_text("tampered", encoding="utf-8")
         self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])

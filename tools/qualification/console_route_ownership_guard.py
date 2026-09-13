@@ -6,7 +6,7 @@ from pathlib import Path
 
 from engineering_platform.console_route_ownership import OWNERS, PLATFORM, ROUTE_OWNERSHIP_MATRIX, route_owners
 
-_REPRESENTATIVE_PATHS = (
+_DASHBOARD_REQUEST_CONTRACTS = (
     ("GET", "/"), ("GET", "/assets/dashboard.js"), ("GET", "/health"),
     ("GET", "/api/platform-status"), ("GET", "/api/dashboard-snapshot"), ("GET", "/api/events"),
     ("GET", "/api/components/ep_server/details"), ("GET", "/api/components/platform_database/details"),
@@ -18,6 +18,32 @@ _REPRESENTATIVE_PATHS = (
     ("GET", "/api/configuration"), ("POST", "/api/configuration"),
     ("GET", "/api/prompt-history"), ("GET", "/api/prompt-history/example-run/analysis"),
     ("POST", "/api/prompt-history/example-run/analysis-retry"), ("POST", "/api/execution-retry"),
+    ("GET", "/api/prompt-history/example-run/report"),
+    ("GET", "/api/prompt-history/example-run/chat"),
+    ("GET", "/api/prompt-history/example-run/details"),
+    ("GET", "/api/execution-diagnostic/current"),
+    ("GET", "/api/telemetry/2026-01-01"),
+    ("GET", "/api/provider-capacity"), ("GET", "/api/github-rate-limit"),
+    ("POST", "/api/dashboard-translate"), ("POST", "/api/audit/user-action"),
+    ("POST", "/api/queue-disposition"), ("POST", "/api/codex-chat"),
+    ("POST", "/api/codex-chat/clear"), ("POST", "/api/telemetry/clear"),
+    ("POST", "/api/rate-limit-reset"), ("POST", "/api/queue-defer"),
+    ("POST", "/api/status-reconciliation-preview"), ("POST", "/api/status-reconciliation"),
+    ("POST", "/api/execution-emergency-rollback"),
+    ("GET", "/api/open-pull-requests"),
+    ("POST", "/api/open-pull-requests/1/owner-authorization"),
+    ("POST", "/api/open-pull-requests/1/repair-failed-checks"),
+    ("POST", "/api/execution-dismiss"), ("POST", "/api/execution-retry"), ("POST", "/api/managed-branch-recovery"),
+    ("POST", "/api/stale-git-lock-recovery"), ("POST", "/api/workspace-switch-to-main"),
+    ("POST", "/api/workspace-switch-to-worktree"),
+    ("POST", "/api/execution-merge-wait-abort"), ("POST", "/api/execution-merge-status-check"),
+    ("POST", "/api/managed-branch-synchronization"),
+    ("GET", "/api/provider-login-status"), ("GET", "/api/execution-runtime-status"),
+    ("POST", "/api/provider-login/repair"), ("POST", "/api/provider-login/logout"),
+    ("POST", "/api/execution-runtime/repair"), ("GET", "/api/configuration"),
+    ("POST", "/api/configuration"), ("POST", "/api/provider-capacity/configuration"),
+    ("GET", "/api/logs/all"), ("POST", "/api/logs/all"),
+    ("GET", "/api/components/ep_server/details"), ("POST", "/api/components/ep_server/restart"),
     ("GET", "/healthz"), ("POST", "/api/runtime-directory/open"),
 )
 _PLATFORM_DISPATCH_MARKERS = (
@@ -32,7 +58,7 @@ def violations(source_root: Path) -> list[str]:
     for route in ROUTE_OWNERSHIP_MATRIX:
         if route.owner not in OWNERS or not route.component:
             findings.append("AMBIGUOUS_ROUTE_OWNERSHIP")
-    if any(len(route_owners(method, path)) != 1 for method, path in _REPRESENTATIVE_PATHS):
+    if any(len(route_owners(method, path)) != 1 for method, path in _DASHBOARD_REQUEST_CONTRACTS):
         findings.append("AMBIGUOUS_ROUTE_OWNERSHIP")
     families = {"provider_login", "execution_runtime", "platform_components", "server_settings", "provider_capacity"}
     scopes: dict[str, set[str]] = {}
@@ -42,6 +68,24 @@ def violations(source_root: Path) -> list[str]:
     if any(owners != {PLATFORM} for owners in scopes.values()):
         findings.append("COMPONENT_ROUTE_SCOPE_INCONSISTENT")
     server = (source_root / "engineering_platform" / "server.py").read_text(encoding="utf-8")
+    dashboard_path = source_root / "engineering_platform" / "assets" / "dashboard.js"
+    dashboard = dashboard_path.read_text(encoding="utf-8") if dashboard_path.exists() else None
+    # The list above is deliberately the dashboard's complete HTTP surface,
+    # including explicitly refused legacy clicks.  These anchors make a newly
+    # added fetch fail qualification until it has both an owner and a test.
+    required_anchors = (
+        "/api/provider-capacity", "/api/codex-cli-update", "/api/rate-limit-reset",
+        "/api/queue-disposition", "/api/queue-defer", "/api/codex-chat",
+        "/api/prompt-history/", "/api/github-rate-limit", "/api/dashboard-translate",
+        "/api/status-reconciliation", "/api/execution-emergency-rollback",
+        "/api/open-pull-requests", "/api/dashboard-snapshot", "/api/events",
+        "/api/logs/", "/api/components/", "/api/telemetry/", "/api/provider-login",
+        "/api/execution-runtime", "/api/configuration", "/api/audit/user-action",
+        "/api/execution-dismiss", "/api/managed-branch", "/api/stale-git-lock",
+        "/api/workspace-switch", "/api/execution-merge", "/health",
+    )
+    if dashboard is not None and any(anchor not in dashboard for anchor in required_anchors):
+        findings.append("DASHBOARD_FETCH_CONTRACT_INCOMPLETE")
     selected_position = server.find('selected = self.headers.get("X-Engineering-Platform-Project")')
     if selected_position < 0 or any((position := server.find(marker)) < 0 or position > selected_position for marker in _PLATFORM_DISPATCH_MARKERS):
         findings.append("PLATFORM_ROUTE_PROJECT_DELEGATION")

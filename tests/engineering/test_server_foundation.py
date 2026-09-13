@@ -1410,9 +1410,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ])
         for call in logged.call_args_list:
             self.assertEqual(call.kwargs["context"], {
+                "audit_action": "provider_login", "audit_actor": "DASHBOARD_USER",
                 "provider": "CODEX", "provider_action": "login",
                 "provider_action_source": "DASHBOARD",
                 "audit_outcome": "REQUESTED" if call.args[2].endswith("requested") else "STARTED",
+                "user_action": "provider_login",
             })
         start_login.assert_called_once_with(self.root, "CODEX")
         self.assertEqual(logger.call_count, 2)
@@ -1446,7 +1448,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ])
         self.assertEqual(logged.call_args_list[0].kwargs["context"], {
             "audit_action": "EXPORT", "audit_actor": "DASHBOARD_USER",
-            "audit_outcome": "COMPLETED", "package_format": "EPDATA",
+            "audit_outcome": "COMPLETED", "user_action": "platform_data_export",
+            "package_format": "EPDATA",
         })
         self.assertEqual(logged.call_args_list[1].kwargs["context"]["entry_count"], 3)
         self.assertEqual(logged.call_args_list[2].kwargs["context"]["new_location"], "/new/central")

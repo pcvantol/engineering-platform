@@ -50,10 +50,11 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("GET", "POST"), r"/api/provider-capacity/configuration", PLATFORM, "provider_capacity", "Provider capacity settings", True),
     ConsoleRoute(("GET",), r"/api/github-rate-limit", PLATFORM, "provider_capacity", "Provider rate-limit diagnostics", True),
     ConsoleRoute(("GET", "POST"), r"/api/configuration", PLATFORM, "server_settings", "Server settings", True),
+    ConsoleRoute(("POST",), r"/api/audit/user-action", PLATFORM, "operations", "Safe Console user-action audit", True),
     ConsoleRoute(("GET",), r"/api/(?:process-metrics|usage)", PLATFORM, "platform_components", "Platform diagnostics", True),
     ConsoleRoute(("GET",), r"/api/host-admin/diagnostics", HOST_ADMIN, "host_admin", "Bounded installation diagnostics", True),
     ConsoleRoute(("GET",), r"/api/central-data/export", PLATFORM, "server_settings", "Central data export", True),
-    ConsoleRoute(("POST",), r"/api/central-data/(?:relocate(?:/browse)?|import)", PLATFORM, "server_settings", "Central data transfer", True),
+    ConsoleRoute(("POST",), r"/api/central-data/(?:relocate(?:/(?:browse|discard))?|import)", PLATFORM, "server_settings", "Central data transfer", True),
     ConsoleRoute(("GET", "POST"), r"/api/central-database/configuration", PLATFORM, "server_settings", "Central database maintenance settings", True),
     ConsoleRoute(("GET",), r"/v1/operations/projects", PLATFORM, "operations", "Operations project listing"),
     ConsoleRoute(("GET",), r"/api/prompt-history", PROJECT, "project_history", "Project run history"),
@@ -70,9 +71,14 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("POST",), r"/v1/projects/[A-Za-z0-9._-]+/submissions", TRANSPORT_INTERNAL, "transport", "Authenticated submission ingress"),
     ConsoleRoute(("POST",), r"/v1/agent/(?:pair|register|heartbeat|attachment)", TRANSPORT_INTERNAL, "transport", "Agent transport control"),
     ConsoleRoute(("POST",), r"/api/runtime-directory/open", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired checkout runtime action"),
+    ConsoleRoute(("GET",), r"/api/central-database/download", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired legacy central-database download"),
+    ConsoleRoute(("POST",), r"/api/configuration/file-inbox/relocate(?:/browse)?", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired partial File Inbox relocation"),
     ConsoleRoute(("POST",), r"/api/configuration/inbox-location(?:/browse)?", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired local Inbox-watcher configuration"),
     ConsoleRoute(("GET", "POST"), r"/api/logs/(?:inbox|dashboard)", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired legacy component-log routes"),
     ConsoleRoute(("GET", "POST"), rf"/api/components/{RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN}/(?:details|restart)", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired legacy component authority"),
+    ConsoleRoute(("GET", "POST"), r"/api/codex-cli-update", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired checkout-bound Codex update"),
+    ConsoleRoute(("POST",), r"/api/(?:rate-limit-reset|telemetry/clear|queue-defer|status-reconciliation(?:-preview)?|execution-emergency-rollback|execution-merge-wait-abort|execution-merge-status-check|managed-branch-recovery|managed-branch-synchronization|stale-git-lock-recovery|workspace-switch-to-main|workspace-switch-to-worktree)", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired checkout-bound execution action"),
+    ConsoleRoute(("GET", "POST"), r"/api/open-pull-requests(?:/[0-9]+/(?:owner-authorization|repair-failed-checks))?", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired checkout-bound pull-request action"),
 )
 
 
