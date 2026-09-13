@@ -19,6 +19,7 @@ from pathlib import Path
 from . import central_database, external_producer_binding
 from . import submission_service
 from .providers import GitHubProvider
+from .storage import sqlite_connection
 
 
 PRODUCER_ID = "github-dependabot"
@@ -289,7 +290,7 @@ class DependabotService:
     def tick(self) -> int:
         """Discover all active bindings without retaining a local cursor/store."""
         database = central_database.path(self.data_root)
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             identities = external_producer_binding.active_external_identities(
                 connection,
                 producer_type=external_producer_binding.DEPENDABOT,
@@ -299,7 +300,7 @@ class DependabotService:
         admitted_events: list[dict[str, object]] = []
         for identity in identities:
             pull_requests = discover_open_pull_requests(identity, self.provider)
-            with sqlite3.connect(database) as connection:
+            with sqlite_connection(database) as connection:
                 for pull_request in pull_requests:
                     result = admit(
                         connection,

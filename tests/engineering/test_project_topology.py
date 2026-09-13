@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 from pathlib import Path
 import socket
@@ -19,7 +21,7 @@ class ProjectTopologyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / server.SERVER_DATABASE_FILENAME
             server.initialize(Path(temporary))
-            with sqlite3.connect(database) as connection:
+            with sqlite_connection(database) as connection:
                 result = project_topology.register_server_local_topology(connection, declaration=declaration)
                 self.assertEqual(result["result"], "REGISTERED")
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_agent_repository_attachments").fetchone()[0], 0)
@@ -30,7 +32,7 @@ class ProjectTopologyTests(unittest.TestCase):
         declaration = json.loads(FIXTURE.read_text())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); server.initialize(root)
-            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "MALFORMED"):
                     project_topology.register_server_local_topology(connection, declaration={"project": {}})
                 project_topology.register_server_local_topology(connection, declaration=declaration)
@@ -48,7 +50,7 @@ class ProjectTopologyTests(unittest.TestCase):
         declaration = json.loads(FIXTURE.read_text())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); server.initialize(root)
-            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "INVALID_ATTACHMENT_AVAILABILITY"):
                     project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="UNAVAILABLE")
                 registered = project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
@@ -61,12 +63,12 @@ class ProjectTopologyTests(unittest.TestCase):
         declaration = json.loads(FIXTURE.read_text())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); server.initialize(root)
-            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
                 project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
                 connection.execute("UPDATE ep_repository_registrations SET authority_repository_id='other-authority'")
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "REPOSITORY_IDENTITY_CONFLICT"):
                     project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
-            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
                 connection.execute("DELETE FROM ep_repository_registrations")
                 connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("acme-data", "different-project", "acme-data", "authority", "{}", "now", "now"))
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "REPOSITORY_IDENTITY_CONFLICT"):
@@ -86,7 +88,7 @@ class ProjectTopologyTests(unittest.TestCase):
         folder = Path(self.temp.name) / name
         identity, config = folder / "identity.json", folder / "server.json"
         agent_id = project_agent.load_or_create_identity(project_agent.observe_host_identity(), identity).agent_id
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             code = agent_trust.create_pairing_code(connection, agent_id)["pairing_code"]
         project_agent.pair(self.endpoint, code, identity_path=identity, configuration_path=config)
         return identity, config, agent_id
@@ -103,7 +105,7 @@ class ProjectTopologyTests(unittest.TestCase):
         first = project_agent.attach(repository, identity_path=identity, configuration_path=config)
         second = project_agent.attach(repository, identity_path=identity, configuration_path=config)
         self.assertEqual(first, second)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             report = project_topology.topology(connection)
             self.assertEqual(len(report["projects"]), 1)
             self.assertEqual(report["projects"][0]["repositories"][0]["attachments"][0]["agent_id"], agent_id)
@@ -112,7 +114,7 @@ class ProjectTopologyTests(unittest.TestCase):
     def test_unpaired_revoked_and_conflicting_attachment_fail_closed(self) -> None:
         identity, config, agent_id = self._agent("agent-one")
         repository = self._repository("a")
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             agent_trust.revoke(connection, agent_id)
         with self.assertRaises(ValueError): project_agent.attach(repository, identity_path=identity, configuration_path=config)
         one_identity, one_config, _ = self._agent("agent-two")
@@ -126,7 +128,7 @@ class ProjectTopologyTests(unittest.TestCase):
         second_identity, second_config, second = self._agent("agent-two")
         project_agent.attach(repository, identity_path=first_identity, configuration_path=first_config)
         project_agent.attach(repository, identity_path=second_identity, configuration_path=second_config)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             agent_trust.revoke(connection, first)
             attachments = project_topology.topology(connection)["projects"][0]["repositories"][0]["attachments"]
         self.assertEqual({item["agent_id"] for item in attachments}, {first, second})

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -26,7 +28,7 @@ class LifecycleWorkerTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.data = Path(self.temporary.name) / "central"
         server.initialize(self.data)
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             for project in ("alpha", "beta"):
                 connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", (project, "{}", "ACTIVE", "now", "now"))
                 connection.execute("INSERT INTO ep_repository_registrations VALUES(?,?,?,?,?,?,?)", (project, project, project, "authority", "{}", "now", "now"))
@@ -36,7 +38,7 @@ class LifecycleWorkerTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def _submit(self, project: str) -> str:
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(project, project, "test", "HUMAN", None, "Do the bounded thing.", "HTTP")).submission_id
 
     def _wait_for_dispatches(self, expected: list[str], timeout_seconds: float = 1.0) -> None:
@@ -74,7 +76,7 @@ class LifecycleWorkerTests(unittest.TestCase):
         self.assertEqual(set(_Dispatcher.calls), {alpha, beta})
         self.assertEqual(worker.eligible_submission_ids(), [alpha, beta])
         # A dispatcher claim, not the worker, removes a candidate from future observation.
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("run-alpha", "alpha", "COMPLETE", "now", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (alpha, "alpha", "alpha", "run-alpha", "COMPLETE", "prompt", "now", "now"))
         self.assertEqual(worker.eligible_submission_ids(), [beta])
@@ -88,7 +90,7 @@ class LifecycleWorkerTests(unittest.TestCase):
 
     def test_unresolved_failed_run_holds_its_project_fifo_lane(self) -> None:
         first, later = self._submit("alpha"), self._submit("alpha")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("failed-run", "alpha", "FAILED", "now", "now"))
             connection.execute(
                 """INSERT INTO ep_parity_lifecycle_dispatches(
@@ -100,7 +102,7 @@ class LifecycleWorkerTests(unittest.TestCase):
 
     def test_dismissed_retry_descendant_does_not_ghost_block_later_work(self) -> None:
         parent, retry, later = self._submit("alpha"), self._submit("alpha"), self._submit("alpha")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("parent-run", "alpha", "FAILED", "now", "now"),
@@ -127,7 +129,7 @@ class LifecycleWorkerTests(unittest.TestCase):
 
     def test_operator_merge_wait_failed_resume_is_the_only_eligible_blocked_run(self) -> None:
         submission = self._submit("alpha")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("merge-wait", "alpha", "RUNNING", "now", "now"))
             connection.execute(
                 "INSERT INTO engineering_transactions(run_id,phase,payload,updated_at) VALUES(?,?,?,?)",
@@ -174,7 +176,7 @@ class LifecycleWorkerTests(unittest.TestCase):
 
     def test_claimed_run_is_revisited_for_dispatcher_owned_restart_recovery(self) -> None:
         submission = self._submit("alpha")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("stable-run", "alpha", "RUNNING", "now", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (submission, "alpha", "alpha", "stable-run", "RUNNING", "prompt", "now", "now"))
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
@@ -190,7 +192,7 @@ class LifecycleWorkerTests(unittest.TestCase):
         deadline = time.monotonic() + 1.0
         record = {}
         while time.monotonic() < deadline:
-            with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
                 payloads = connection.execute(
                     "SELECT payload FROM engineering_component_logs "
                     "WHERE component='lifecycle_worker' ORDER BY id"

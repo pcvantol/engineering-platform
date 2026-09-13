@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -137,7 +139,7 @@ class ConsumerCredentialNamespaceMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             identity = server.initialize(root)
-            with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
                 tables = server._table_names(connection)
                 self.assertTrue({"ep_consumer_credentials", "ep_consumer_registrations"} <= tables)
                 self.assertFalse({"local_api_credentials", "local_api_consumer_registrations"} & tables)
@@ -148,7 +150,7 @@ class ConsumerCredentialNamespaceMigrationTests(unittest.TestCase):
             root = Path(temporary)
             path = storage.database_path(root)
             path.parent.mkdir(parents=True)
-            with sqlite3.connect(path) as connection:
+            with sqlite_connection(path) as connection:
                 for version in range(1, 39):
                     storage.MIGRATIONS[version](connection)
                     connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(?)", (version,))

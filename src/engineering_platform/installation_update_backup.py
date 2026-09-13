@@ -9,6 +9,7 @@ import tempfile
 
 from . import central_database
 from .installation_update_plan import InstallationUpdatePlan
+from .storage import sqlite_connection
 
 
 class InstallationUpdateBackupError(ValueError):
@@ -18,7 +19,7 @@ class InstallationUpdateBackupError(ValueError):
 def _evidence(destination: Path) -> dict[str, object]:
     """Return durable evidence only for a readable, consistent SQLite backup."""
     try:
-        with sqlite3.connect(f"file:{destination}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{destination}?mode=ro", uri=True) as connection:
             integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
         payload = destination.read_bytes()
     except (OSError, sqlite3.DatabaseError):

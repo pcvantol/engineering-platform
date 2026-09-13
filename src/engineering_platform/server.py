@@ -463,7 +463,7 @@ def _logout_provider(data_root: Path, provider: str) -> None:
 
 def _central_execution_active(data_root: Path) -> bool:
     """Read active lifecycle state from CENTRAL, never a checkout status file."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE "
             "state IN ('CLAIMED','RUNNING') OR (state IN ('BLOCKED','FAILED') "
@@ -1877,7 +1877,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        with storage.sqlite_connection(f"file:{path}?mode=ro", uri=True) as connection:
             tables = _table_names(connection)
             indexes = _index_names(connection)
             views = _view_names(connection)
@@ -1951,7 +1951,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
     database_path = data_root / SERVER_DATABASE_FILENAME
     if database_path.exists():
         try:
-            with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True) as existing:
+            with storage.sqlite_connection(f"file:{database_path}?mode=ro", uri=True) as existing:
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
@@ -1963,7 +1963,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                         validate_store(data_root, identity)
                         return identity
                     if current_schema < SERVER_STORE_SCHEMA_VERSION:
-                        with sqlite3.connect(database_path) as connection:
+                        with storage.sqlite_connection(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
                             connection.execute("PRAGMA foreign_keys=OFF")
@@ -1976,7 +1976,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                         return identity
         except sqlite3.DatabaseError as error:
             raise ServerConfigurationError("EP Server store is unavailable.") from error
-    with sqlite3.connect(database_path) as connection:
+    with storage.sqlite_connection(database_path) as connection:
         # Schema-53 widens ep_installations while schema-52 provenance already
         # references it.  SQLite must retain those declarations at the
         # canonical name during the enclosing rebuild transaction.
@@ -2019,7 +2019,7 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
     execution semantics and intentionally retain no credential or raw prompt.
     """
     latest: dict[str, str] = {}
-    with sqlite3.connect(f"file:{data_root / SERVER_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
+    with storage.sqlite_connection(f"file:{data_root / SERVER_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
         for transport, created_at in connection.execute(
             "SELECT transport,MAX(created_at) FROM ep_submissions GROUP BY transport"
         ):
@@ -2584,7 +2584,7 @@ def operations_projection(data_root: Path) -> dict[str, object]:
     credential, or execution capability is exposed here.
     """
     identity = initialize(data_root)
-    with sqlite3.connect(f"file:{data_root / SERVER_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
+    with storage.sqlite_connection(f"file:{data_root / SERVER_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
         topology = project_topology.topology(connection)
     return {
         "installation_id": identity.instance_id,
@@ -2601,7 +2601,7 @@ def _console_projects(data_root: Path) -> list[dict[str, str]]:
     only later, when a user explicitly selects that project for a transitional
     root-bound route.
     """
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         rows = connection.execute("""SELECT p.project_id, r.repository_id
             FROM ep_project_registrations AS p
             JOIN ep_repository_registrations AS r
@@ -2617,7 +2617,7 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
     for project in _console_projects(data_root):
         if project["project_id"] != project_id:
             continue
-        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             context = project_context(
                 connection,
                 data_root=data_root,
@@ -3098,7 +3098,7 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
 
 def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[str, object]]:
     """Read all project runs with their admitted CENTRAL submission lineage."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
             """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,r.execution_mode,
@@ -3178,7 +3178,7 @@ def _central_console_execution_projection(
         "seconds": provider_ms / 1000 if isinstance(provider_ms, int) and provider_ms >= 0 else None,
         "total_seconds": total_ms / 1000 if isinstance(total_ms, int) and total_ms >= 0 else None,
     }
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         invocation = connection.execute(
             """SELECT provider,model FROM provider_invocations
                  WHERE run_id=? ORDER BY ordinal DESC LIMIT 1""", (run_id,),
@@ -3207,7 +3207,7 @@ def _central_console_validation_evidence(
 ) -> list[dict[str, str]]:
     """Expose only redacted terminal validation results, never commands or paths."""
     try:
-        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 """SELECT a.artifact_id FROM execution_artifact_records AS a
                      JOIN ep_parity_lifecycle_dispatches AS d
@@ -3258,7 +3258,7 @@ def _central_console_terminal_revision_timeline(
     payloads never become Console evidence.
     """
     try:
-        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 """SELECT a.artifact_id,a.created_at
                      FROM execution_artifact_records AS a
@@ -3318,7 +3318,7 @@ def _central_console_current_execution_diagnostic(data_root: Path, project_id: s
     intentionally scoped through the active project run and returned as plain
     text only; a stored JSON document is not a Console presentation format.
     """
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         active = connection.execute(
             """SELECT run_id FROM ep_execution_runs
                  WHERE project_id=? AND state IN ('CLAIMED','RUNNING')
@@ -3417,7 +3417,7 @@ def _no_project_console_snapshot(data_root: Path) -> dict[str, object]:
     # live run as queued in the platform pop-out.  A dispatch is the canonical
     # ownership fact: unclaimed submissions are queued; CLAIMED/RUNNING
     # dispatches are active; terminal dispatches are neither.
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         active_execution_count = int(connection.execute(
             "SELECT COUNT(*) FROM ep_parity_lifecycle_dispatches WHERE state IN ('CLAIMED','RUNNING')"
         ).fetchone()[0])
@@ -3481,7 +3481,7 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
 
 def _central_console_terminal_execution_diagnostic(data_root: Path, run_id: str) -> str | None:
     """Return one redacted terminal checkpoint diagnostic for a history row."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             """SELECT checkpoint FROM execution_lifecycle_events
                  WHERE run_id=? AND phase IN ('BLOCKED', 'FAILED')
@@ -3616,7 +3616,7 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
 
 def _central_console_report_path(data_root: Path, project_id: str, run_id: str) -> Path | None:
     """Resolve one project-scoped CENTRAL report without a checkout fallback."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             """SELECT h.report_path FROM prompt_execution_history AS h
                  JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=h.run_id
@@ -3644,7 +3644,7 @@ def _central_console_report(data_root: Path, project_id: str, run_id: str) -> by
 
 def _central_console_analysis_path(data_root: Path, project_id: str, run_id: str) -> Path | None:
     """Resolve the latest verified advisory analysis for exactly one project run."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             """SELECT a.digest_algorithm,a.digest,a.storage_location
                  FROM execution_artifact_records AS a
@@ -3719,7 +3719,7 @@ def _retry_central_console_analysis(data_root: Path, project_id: str, run_id: st
 
 def _central_console_chat_history(data_root: Path, project_id: str, run_id: str) -> list[dict[str, object]] | None:
     """Return a project-authorized CENTRAL transcript; no root fallback exists."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
             "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND run_id=?",
             (project_id, run_id),
@@ -3748,7 +3748,7 @@ def _central_console_chat_context(
     data_root: Path, project_id: str, run_id: str,
 ) -> dict[str, object] | None:
     """Build one bounded CENTRAL-only context package for a terminal run."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         connection.row_factory = sqlite3.Row
         row = connection.execute(
             """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,
@@ -3810,7 +3810,7 @@ def _central_console_append_chat_message(
     if content == "Niet beschikbaar.":
         raise CodexChatError("Het chatbericht bevat geen bewaarbare tekst.", code="CHAT_REQUEST_INVALID")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=CHAT_RETENTION_DAYS)).isoformat()
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
             """SELECT 1 FROM ep_parity_lifecycle_dispatches AS d
                  JOIN prompt_execution_history AS h ON h.run_id=d.run_id
@@ -3852,7 +3852,7 @@ def _central_console_chat_response(
 
 def _central_console_clear_chat_history(data_root: Path, project_id: str, run_id: str) -> bool:
     """Clear only the selected project's advisory transcript, never run evidence."""
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
             """SELECT 1 FROM ep_parity_lifecycle_dispatches AS d
                  JOIN prompt_execution_history AS h ON h.run_id=d.run_id
@@ -3963,7 +3963,7 @@ def _central_console_component_logs(
         clauses.append("json_extract(payload, '$.event') IN (" + ",".join("?" for _ in filters.events) + ")")
         parameters.extend(filters.events)
     where = " WHERE " + " AND ".join(clauses)
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         total = int(connection.execute("SELECT COUNT(*) FROM engineering_component_logs" + where, parameters).fetchone()[0])
         rows = connection.execute(
             "SELECT id,component,payload,created_at FROM engineering_component_logs" + where
@@ -4004,7 +4004,7 @@ def _clear_central_console_component_logs(data_root: Path, component: str) -> di
     else:
         return None
     stored = tuple(selected)
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         cursor = connection.execute(
             "DELETE FROM engineering_component_logs WHERE component IN (" + ",".join("?" for _ in stored) + ")",
             stored,
@@ -4460,7 +4460,7 @@ def _admit_server_owned_file_inbox(
     elif isinstance(constraints, Mapping):
         payload["constraints"] = {**constraints, "transport_principal": "FILE_INBOX"}
     try:
-        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             request = submission_service.request_from_mapping(project_id, payload, transport="FILE_INBOX")
             return submission_service.submit(connection, request).to_dict()
     except submission_service.SubmissionError as error:
@@ -5209,7 +5209,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if target_component is not None and target_component not in PLATFORM_COMPONENT_IDS:
                     raise ValueError
                 if run_id is not None:
-                    with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
                         run_project = connection.execute(
                             "SELECT project_id FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
                             (run_id,),
@@ -5542,7 +5542,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         or not all(isinstance(payload.get(field), str) for field in ("operation_id", "submission_id", "expected_state", "disposition", "reason"))
                         or not isinstance(payload.get("expected_revision"), int) or isinstance(payload.get("expected_revision"), bool)):
                     raise ValueError
-                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
                     connection.execute("BEGIN IMMEDIATE")
                     token = self.headers.get("Authorization", "")[7:] if self.headers.get("Authorization", "").startswith("Bearer ") else None
                     capability = "QUEUE_DECLINE" if payload["disposition"] == "DECLINED" else "QUEUE_HOLD_RESUME"
@@ -5723,7 +5723,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             authorization = self.headers.get("Authorization", "")
             token = authorization[7:] if authorization.startswith("Bearer ") else None
             try:
-                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
                     if _authenticated_consumer(connection, token, project_id) is None:
                         self._send(401, {"error": "UNAUTHENTICATED"})
                         return
@@ -5746,7 +5746,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             authorization = self.headers.get("Authorization", "")
             token = authorization[7:] if authorization.startswith("Bearer ") else None
             try:
-                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
                     if _authenticated_consumer(connection, token, project_id) is None:
                         self._send(401, {"error": "UNAUTHENTICATED"})
                         return
@@ -5800,7 +5800,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 # observational provenance only: callers cannot select an
                 # execution implementation through this header.
                 transport = self.headers.get("EP-Submission-Transport", "HTTP")
-                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
                     if _authenticated_consumer(connection, token, project_id) is None:
                         raise submission_service.SubmissionError("UNAUTHENTICATED", 401)
                     request = submission_service.request_from_mapping(project_id, payload, transport=transport)
@@ -5852,7 +5852,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length).decode("utf-8"))
             authorization = self.headers.get("Authorization", "")
             token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else None
-            with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+            with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
                 result = action(connection, body) if action is agent_trust.pair else action(connection, body, token)
             self._send(200, result, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
         except (ValueError, OSError, json.JSONDecodeError, agent_trust.AgentTrustError):
@@ -6396,13 +6396,13 @@ def main(argv: list[str] | None = None) -> int:
             result = {"result": "UNINSTALLED", **server_relay.uninstall()}
         elif args.command == "topology":
             initialize(args.data_root)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = project_topology.topology(connection)
         elif args.command == "submission-diagnose":
             if not args.submission_id:
                 raise ServerConfigurationError("--submission-id is required for submission diagnostics.")
             initialize(args.data_root)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 row = connection.execute("SELECT s.project_id,s.repository_id,s.state,s.admission,s.transport,s.transport_receipt_id,s.transport_received_at,p.run_id,d.state,d.operator_resolution,p.project_id,p.repository_id FROM ep_submissions s LEFT JOIN ep_receipt_run_provenance p ON p.submission_id=s.submission_id LEFT JOIN ep_parity_lifecycle_dispatches d ON d.run_id=p.run_id WHERE s.submission_id=?", (args.submission_id,)).fetchone()
                 if row is None:
                     raise ServerConfigurationError("UNKNOWN_SUBMISSION")
@@ -6428,27 +6428,27 @@ def main(argv: list[str] | None = None) -> int:
                 declaration = json.loads(args.declaration.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
                 raise ServerConfigurationError("REPOSITORY_DECLARATION_UNREADABLE") from error
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = project_topology.register_server_local_topology(connection, declaration=declaration)
         elif args.command == "bootstrap-topology":
             if not args.project_id or not args.repository_id:
                 raise ServerConfigurationError("--project-id and --repository-id are required for topology bootstrap.")
             initialize(args.data_root)
             declaration = {"schema_version": "1.0", "project": {"id": args.project_id, "authority_repository_id": args.repository_id}, "repository": {"id": args.repository_id, "role": "authority"}, "validation": {"kind": "none"}}
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = project_topology.register_server_local_topology(connection, declaration=declaration)
         elif args.command == "issue-consumer-credential":
             if not args.project_id or not args.consumer_id:
                 raise ServerConfigurationError("--project-id and --consumer-id are required for credential issuance.")
             initialize(args.data_root)
             from .submission_service import issue_consumer_credential
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = issue_consumer_credential(connection, consumer_id=args.consumer_id, project_id=args.project_id)
         elif args.command in {"grant-operator-capability", "revoke-operator-capability"}:
             if not args.project_id or not args.consumer_id or not args.capability:
                 raise ServerConfigurationError("--project-id, --consumer-id and --capability are required for queue operator capability management.")
             initialize(args.data_root)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 if args.command == "grant-operator-capability":
                     registered = connection.execute("SELECT 1 FROM ep_consumer_registrations WHERE consumer_id=? AND project_id=? AND status='ACTIVE'", (args.consumer_id, args.project_id)).fetchone()
                     if registered is None:
@@ -6462,7 +6462,7 @@ def main(argv: list[str] | None = None) -> int:
             if not all((args.producer_type, args.external_resource_type, args.external_resource_identity, args.project_id, args.repository_id, args.reason)):
                 raise ServerConfigurationError("--producer-type, --external-resource-type, --external-resource-identity, --project-id, --repository-id and --reason are required for producer binding registration.")
             initialize(args.data_root)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 binding = external_producer_binding.register(
                     connection,
                     data_root=args.data_root,
@@ -6476,13 +6476,13 @@ def main(argv: list[str] | None = None) -> int:
             result = {"binding_id": binding.binding_id, "project_id": binding.project_id, "repository_id": binding.repository_id, "version": binding.version, "result": "REGISTERED"}
         elif args.command == "list-producer-bindings":
             initialize(args.data_root)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = {"bindings": external_producer_binding.list_bindings(connection, data_root=args.data_root)}
         elif args.command == "deactivate-producer-binding":
             if not args.binding_id or not args.reason:
                 raise ServerConfigurationError("--binding-id and --reason are required for producer binding deactivation.")
             initialize(args.data_root)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 binding = external_producer_binding.deactivate(connection, data_root=args.data_root, binding_id=args.binding_id, reason=args.reason)
             result = {"binding_id": binding.binding_id, "project_id": binding.project_id, "repository_id": binding.repository_id, "version": binding.version, "result": "DEACTIVATED"}
         elif args.command == "provision-declaration":
@@ -6491,7 +6491,7 @@ def main(argv: list[str] | None = None) -> int:
             initialize(args.data_root)
             from .repository_attachment import config_path, load_repository_attachment, parse_repository_attachment
             root = args.path.resolve(strict=True)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 row = connection.execute("SELECT attachment_contract FROM ep_repository_registrations WHERE project_id=? AND repository_id=?", (args.project_id, args.repository_id)).fetchone()
             if row is None:
                 raise ServerConfigurationError("CENTRAL_REPOSITORY_NOT_REGISTERED")
@@ -6511,7 +6511,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.project_id or not args.repository_id:
                 raise ServerConfigurationError("--project-id and --repository-id are required for local binding commands.")
             initialize(args.data_root)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 if args.command in {"bind-repository", "rebind-repository"}:
                     if args.path is None:
                         raise ServerConfigurationError("--path is required when binding a repository.")
@@ -6527,7 +6527,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.agent_id:
                 raise ServerConfigurationError("--agent-id is required for Agent lifecycle commands.")
             initialize(args.data_root)
-            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 if args.command == "pairing-create": result = agent_trust.create_pairing_code(connection, args.agent_id)
                 elif args.command == "agent-status": result = agent_trust.registration_status(connection, args.agent_id)
                 elif args.command == "agent-revoke": result = {"agent_id": args.agent_id, "revoked": agent_trust.revoke(connection, args.agent_id)}

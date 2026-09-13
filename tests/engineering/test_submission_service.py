@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 from pathlib import Path
 import socket
@@ -23,7 +25,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             probe.bind(("127.0.0.1", 0))
             self.port = probe.getsockname()[1]
         server.initialize(self.root, bind_port=self.port)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             now = "2026-01-01T00:00:00+00:00"
             connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", ("djconnect", "{}", "ACTIVE", now, now))
             connection.execute("INSERT INTO ep_repository_registrations VALUES(?,?,?,?,?,?,?)", ("djconnect", "djconnect", "djconnect", "authority", "{}", now, now))
@@ -97,7 +99,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         return payload
 
     def test_forge_action_context_is_validated_persisted_immutable_and_never_backfilled(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             legacy = submission_service.submit(
                 connection,
                 submission_service.request_from_mapping("djconnect", self.forge_payload("historical"), transport="HTTP"),
@@ -150,7 +152,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             submission_service.request_from_mapping("djconnect", malformed, transport="HTTP")
 
     def test_forge_v13_planning_context_is_bound_immutable_and_never_backfilled(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             legacy = submission_service.submit(
                 connection,
                 submission_service.request_from_mapping("djconnect", self.forge_action_context_payload("v12"), transport="HTTP"),
@@ -219,7 +221,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         ))
 
     def test_versioned_forge_submission_receipt_is_durable_and_idempotent(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             request = submission_service.request_from_mapping(
                 "djconnect", self.forge_payload(), transport="HTTP",
             )
@@ -249,7 +251,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
 
     def test_service_preserves_cross_transport_idempotency_and_history(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             http = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload(), transport="HTTP"))
             cli = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload(), transport="CLI"))
             path = self.root / "inbox.json"
@@ -262,7 +264,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT count(*) FROM ep_submission_prompt_history").fetchone()[0], 1)
 
     def test_operator_dispositions_are_audited_and_only_resumable_from_hold_states(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("operator"), transport="HTTP"))
             held = submission_service.operator_queue_disposition(
                 connection, project_id="djconnect", submission_id=submitted.submission_id,
@@ -319,7 +321,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 )
 
     def test_claimed_submission_rejects_queue_mutation_without_audit_event(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("claimed"), transport="HTTP"))
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-claimed", "djconnect", "CLAIMED", "now", "now", "MANAGED"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)", (submitted.submission_id, "djconnect", "djconnect", "run-claimed", "CLAIMED", "prompt", "now", "now", "NONE"))
@@ -330,7 +332,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind LIKE 'OPERATOR_QUEUE_%'", (submitted.submission_id,)).fetchone()[0], 0)
 
     def test_queue_operation_id_replays_once_and_rejects_payload_collision(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("operation"), transport="HTTP"))
             first = submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason="Investigate source", expected_state="QUEUED", expected_revision=0, operation_id="queue-operation-1", actor_reference="operator-a")
             replay = submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="QUARANTINED", reason="Investigate source", expected_state="QUEUED", expected_revision=0, operation_id="queue-operation-1", actor_reference="operator-a")
@@ -341,7 +343,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 submission_service.operator_queue_disposition(connection, project_id="djconnect", submission_id=submitted.submission_id, disposition="DECLINED", reason="Different command", expected_state="QUARANTINED", expected_revision=1, operation_id="queue-operation-1", actor_reference="operator-a")
 
     def test_queue_disposition_rejects_non_string_or_control_reason_without_mutation(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("invalid-reason"), transport="HTTP"))
             for reason in (None, {}, [], True, "\x00bad", "\n"):
                 with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_QUEUE_DISPOSITION"):
@@ -362,7 +364,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
 
     def test_console_queue_actions_change_only_the_selected_submission_and_are_audited(self) -> None:
         """Exercise the browser-facing queue action endpoint against CENTRAL."""
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             submitted = submission_service.submit(
                 connection, submission_service.request_from_mapping("djconnect", self.payload("console-actions"), transport="HTTP"),
             )
@@ -392,7 +394,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with self.assertRaises(HTTPError) as rejected:
             urlopen(Request(endpoint, data=body, method="POST", headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}", "Authorization": f"Bearer {self.credential}"}))  # nosec B310
         self.assertEqual(rejected.exception.code, 409)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             events = [row[0] for row in connection.execute(
                 "SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id", (submitted.submission_id,)
             )]
@@ -402,7 +404,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         ])
 
     def test_console_queue_actions_reject_cross_origin_and_unknown_project(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             submitted = submission_service.submit(
                 connection, submission_service.request_from_mapping("djconnect", self.payload("console-denial"), transport="HTTP"),
             )
@@ -417,7 +419,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             with self.assertRaises(HTTPError) as rejected:
                 urlopen(request)  # nosec B310
             self.assertEqual(rejected.exception.code, expected)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT state FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone()[0], "QUEUED")
 
     def test_authenticated_producer_readback_is_exactly_correlated_and_terminal_evidence_backed(self) -> None:
@@ -458,7 +460,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             "accepted_request_digest": receipt["accepted_request_digest"],
         })
         self.assertRegex(receipt["accepted_request_digest"], r"^sha256:[0-9a-f]{64}$")
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             audit = connection.execute(
                 "SELECT direction,event_kind,producer_contract_version,forge_provenance_contract_version,forge_application_version,ep_application_version,receipt_id,accepted_request_digest FROM ep_forge_exchange_audit WHERE submission_id=?",
                 (submission_id,),
@@ -489,7 +491,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(initial["result"], {"outcome": "NOT_STARTED", "terminal": False, "delivery_qualified": False})
         self.assertEqual(initial["provenance"]["status"], "PERSISTED")
 
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             started = "2026-01-01T00:00:00+00:00"
             completed = "2026-01-01T00:00:01+00:00"
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-readback", "djconnect", "COMPLETE", started, completed, "MANAGED"))
@@ -505,7 +507,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps(checkpoint.to_dict()), "COMPLETE", "now"))
             connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)", ("run-readback", "COMPLETE", "safe", "now", None, "/private/report", "now"))
         artifact_id = submission_service.write_terminal_evidence(self.root, repository_root=self.root, run_id="run-readback")
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             direct = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submission_id)
             self.assertIsNotNone(direct)
             stored_artifact = submission_service.producer_evidence_artifact(connection, project_id="djconnect", artifact_id=artifact_id)
@@ -557,7 +559,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 headers={"Authorization": f"Bearer {self.credential}"},
             ))  # nosec B310
         self.assertEqual(cross_project.exception.code, 401)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             now = "2026-01-01T00:00:00+00:00"
             connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", ("other", "{}", "ACTIVE", now, now))
             connection.execute("INSERT INTO ep_repository_registrations VALUES(?,?,?,?,?,?,?)", ("other", "other", "other", "authority", "{}", now, now))
@@ -570,7 +572,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(isolated.exception.code, 404)
         artifact_path = self.root / "artifacts" / "projects" / "djconnect" / "runs" / "run-readback" / "terminal-evidence-v1.json"
         artifact_path.write_text("{}\n", encoding="utf-8")
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             corrupt = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submission_id)
             self.assertEqual(corrupt["evidence"]["status"], "CORRUPT")  # type: ignore[index]
             self.assertFalse(corrupt["result"]["delivery_qualified"])  # type: ignore[index]
@@ -614,7 +616,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                             "mission_revision": "1", "intent_id": "intent-1", "intent_revision": "1", "action_id": "action-1",
                             "runtime_prompt": {"id": "prompt-1", "content_digest": "sha256:" + "b" * 64},
                             "retry_of_correlation_id": None}}})
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             first = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", payload, transport="HTTP"))
             replay = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", payload, transport="HTTP"))
             self.assertTrue(replay.duplicate)
@@ -637,7 +639,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(submission_service.SubmissionError, code):
                 submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             unknown_project = submission_service.SubmissionRequest("absent", "djconnect", "x", "HUMAN", None, "x", "HTTP")
             with self.assertRaisesRegex(submission_service.SubmissionError, "UNKNOWN_PROJECT"):
                 submission_service.submit(connection, unknown_project)

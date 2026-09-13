@@ -19,6 +19,7 @@ from uuid import uuid4
 import zipfile
 
 from . import central_database
+from .storage import sqlite_connection
 
 
 FORMAT_VERSION = 1
@@ -77,7 +78,7 @@ def _database_schema_version(content: bytes) -> int:
         with tempfile.NamedTemporaryFile(prefix="ep-central-schema-", suffix=".db", delete=False) as temporary:
             temporary.write(content)
             temporary_path = Path(temporary.name)
-        with sqlite3.connect(f"file:{temporary_path}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{temporary_path}?mode=ro", uri=True) as connection:
             row = connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()
         return int(row[0]) if row and row[0] is not None else 0
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError) as error:

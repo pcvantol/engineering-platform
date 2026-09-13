@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 import os
 from pathlib import Path
@@ -57,7 +59,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         migration.set_admission_freeze(self.repo, migration_id=self.migration_id, reason="test")
         self.central = self.data / "engineering.db"
         migration.copy_snapshot(self.legacy, self.central)
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute("CREATE TABLE backup_probe (value TEXT)")
             connection.execute("INSERT INTO backup_probe VALUES ('fixture')")
         pointer = migration.write_authority_pointer(migration_id=self.migration_id, authority=self.central, legacy=self.legacy, state="AUTHORITY_SWITCHED")
@@ -89,7 +91,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         self.assertEqual(migration.recover_contaminated_prewrite(self.repo, migration_id=self.migration_id, services=self.services)["state"], "ROLLBACK_COMPLETED")
 
     def test_legitimate_human_submission_blocks_before_service_stop(self) -> None:
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute(
                 "INSERT INTO execution_submissions (submission_id, producer_id, producer_type, prompt_content, prompt_metadata, target_identity, original_envelope, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 ("human-submission", "ingress", "HUMAN", "redacted", "{}", "target", "{}", "2026-01-01T00:00:00Z"),
@@ -100,7 +102,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         self.assertEqual(migration.load_receipt(self.migration_id)["state"], "SERVICES_RESTARTED")
 
     def test_unknown_contamination_fails_closed(self) -> None:
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute("DROP TABLE backup_probe")
             connection.execute("DELETE FROM engineering_schema_migrations WHERE version=41")
         with self.assertRaisesRegex(migration.CutoverError, "CONTAMINATION_PROVENANCE_UNRESOLVED"):
@@ -111,7 +113,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         self.assertFalse(baseline["credential_delta"])
         self.assertFalse(baseline["registration_delta"])
         self.assertFalse(baseline["project_scope_delta"])
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute(
                 "INSERT INTO ep_consumer_credentials (credential_id, consumer_id, project_id, verifier, fingerprint, issued_at) VALUES (?, ?, ?, ?, ?, ?)",
                 ("delta", "consumer", "project", b"v" * 32, b"f" * 32, "2026-01-01T00:00:00Z"),
@@ -123,7 +125,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
             migration.recover_contaminated_prewrite(self.repo, migration_id=self.migration_id, services=self.services)
 
     def test_registration_and_project_scope_delta_fail_closed(self) -> None:
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute(
                 "INSERT INTO ep_consumer_registrations (consumer_id, project_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 ("delta-consumer", "delta-project", "ACTIVE", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
@@ -135,7 +137,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         self.assertEqual(changed["domains"]["project_scope"]["classification"], "CONTAMINATION_PROVENANCE_UNRESOLVED")
 
     def test_legacy_drift_and_service_quiescence_fail_closed(self) -> None:
-        with sqlite3.connect(self.legacy) as connection:
+        with sqlite_connection(self.legacy) as connection:
             connection.execute("CREATE TABLE recovery_drift (value TEXT)")
         with self.assertRaisesRegex(migration.CutoverError, "LEGACY_BASELINE_MISMATCH"):
             migration.recover_contaminated_prewrite(self.repo, migration_id=self.migration_id, services=self.services)
@@ -152,14 +154,14 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         migration._atomic_json(migration.receipt_path(self.migration_id), receipt)
 
     def _submission(self, path: Path, run_id: str, producer_type: str = "HUMAN") -> None:
-        with sqlite3.connect(path) as connection:
+        with sqlite_connection(path) as connection:
             connection.execute(
                 "INSERT INTO execution_submissions (submission_id,producer_id,producer_type,prompt_content,prompt_metadata,target_identity,original_envelope,execution_run_id,received_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (f"submission-{run_id}", "fixture", producer_type, "redacted", "{}", "target", "{}", run_id, "2026-01-01T00:00:00Z"),
             )
 
     def _history(self, path: Path, run_id: str, title: str = "Fixture") -> None:
-        with sqlite3.connect(path) as connection:
+        with sqlite_connection(path) as connection:
             connection.execute(
                 "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,updated_at) VALUES(?,?,?,?,?)",
                 (run_id, "COMPLETE", title, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
@@ -168,7 +170,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
     def test_provider_recovery_delta_resolves_only_its_new_legitimate_descendant(self) -> None:
         self._submission(self.legacy, "run-a")
         migration.copy_snapshot(self.legacy, self.central)
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute(
                 "INSERT INTO provider_recovery_attempts(run_id,recovery_ordinal,maximum_attempts,triggering_invocation_id,replacement_invocation_id,lifecycle_phase,state,requested_at) VALUES(?,?,?,?,?,?,?,?)",
                 ("run-a", 1, 1, "original", "replacement", "PROVIDER_EXECUTION", "RECOVERED", "2026-01-01T00:00:00Z"),
@@ -187,7 +189,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         self._submission(self.legacy, "run-a")
         self._history(self.legacy, "run-a", "Historical")
         migration.copy_snapshot(self.legacy, self.central)
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute(
                 "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
                 ("run-a", '{"phase":"FINALIZATION"}', "FINALIZE_AGENT", "2026-01-01T00:00:00Z"),
@@ -221,24 +223,24 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
         self._submission(self.legacy, "run-a")
         self._history(self.legacy, "run-a", "Before")
         migration.copy_snapshot(self.legacy, self.central)
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute("UPDATE prompt_execution_history SET prompt_title='After' WHERE run_id='run-a'")
         modified = migration.managed_lineage_attestation(self.legacy, self.central)
         self.assertEqual(modified["production_component_count"], 1)
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute("DELETE FROM prompt_execution_history WHERE run_id='run-a'")
         removed = migration.managed_lineage_attestation(self.legacy, self.central)
         self.assertEqual(removed["production_component_count"], 1)
 
     def test_run_bound_table_without_primary_or_unique_key_is_a_schema_blocker(self) -> None:
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute("CREATE TABLE unkeyed_run_evidence (run_id TEXT, payload TEXT)")
             connection.execute("INSERT INTO unkeyed_run_evidence VALUES ('orphan','{}')")
         with self.assertRaisesRegex(migration.CutoverError, "run-bound table has no deterministic key: unkeyed_run_evidence"):
             migration.managed_lineage_attestation(self.legacy, self.central)
 
     def _historical_authority_fixture(self) -> None:
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             registrations = (
                 ("workspace-client", "project-alpha", "ACTIVE", "now", "now", None, "{}"),
                 ("consumer", "project", "DISABLED", "2026-08-31 12:44:24", "2026-08-31 12:44:26", "2026-08-31 12:44:26", '{"action":"DISABLE"}'),
@@ -275,7 +277,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
             migration.contaminated_prewrite_status(self.repo, migration_id=self.migration_id)
         path.unlink()
         migration._atomic_json(path, attestation)
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute("CREATE TABLE attestation_drift (value TEXT)")
         with self.assertRaisesRegex(migration.CutoverError, "CONTAMINATION_PROVENANCE_UNRESOLVED"):
             migration.contaminated_prewrite_status(self.repo, migration_id=self.migration_id)
@@ -283,7 +285,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
     def test_attestation_legacy_drift_fails_closed(self) -> None:
         self._historical_authority_fixture()
         migration.create_contamination_attestation(self.repo, migration_id=self.migration_id, operator="operator")
-        with sqlite3.connect(self.legacy) as connection:
+        with sqlite_connection(self.legacy) as connection:
             connection.execute("CREATE TABLE legacy_attestation_drift (value TEXT)")
         with self.assertRaisesRegex(migration.CutoverError, "LEGACY_BASELINE_MISMATCH"):
             migration.contaminated_prewrite_status(self.repo, migration_id=self.migration_id)
@@ -301,7 +303,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
     def test_attestation_delta_drift_and_production_precedence_fail_closed(self) -> None:
         self._historical_authority_fixture()
         migration.create_contamination_attestation(self.repo, migration_id=self.migration_id, operator="operator")
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute(
                 "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
                 ("orphan-authority", "orphan", "project", b"v" * 32, b"f" * 32, "2026-08-31 12:45:00"),
@@ -317,7 +319,7 @@ class ContaminatedPrewriteRecoveryTests(unittest.TestCase):
             migration.contaminated_prewrite_status(self.repo, migration_id=self.migration_id)
 
     def test_weak_historical_fixture_is_rejected(self) -> None:
-        with sqlite3.connect(self.central) as connection:
+        with sqlite_connection(self.central) as connection:
             connection.execute("INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("similar", "values", "ACTIVE", "2026-01-01", "2026-01-01"))
         with self.assertRaisesRegex(migration.CutoverError, "CONTAMINATION_PROVENANCE_UNRESOLVED"):
             migration.create_contamination_attestation(self.repo, migration_id=self.migration_id, operator="operator")

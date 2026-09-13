@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+
+from .storage import sqlite_connection
 import tempfile
 
 
@@ -43,7 +45,7 @@ def migrate_legacy_database(data_root: Path) -> None:
         return
     candidate = database.with_name(f".{DATABASE_FILENAME}.migrating")
     try:
-        with sqlite3.connect(f"file:{legacy}?mode=ro", uri=True) as source, sqlite3.connect(candidate) as target:
+        with sqlite_connection(f"file:{legacy}?mode=ro", uri=True) as source, sqlite_connection(candidate) as target:
             source.backup(target)
         candidate.chmod(0o600)
         os.replace(candidate, database)
@@ -65,7 +67,7 @@ def details(data_root: Path) -> dict[str, object]:
     result: dict[str, object] = {"path": str(database), "size_bytes": 0, "schema_version": 0, "integrity": "UNAVAILABLE"}
     try:
         result["size_bytes"] = database.stat().st_size
-        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{database}?mode=ro", uri=True) as connection:
             result["schema_version"] = _schema_version(connection)
             result["integrity"] = "PASS" if [str(row[0]) for row in connection.execute("PRAGMA integrity_check")] == ["ok"] else "FAILED"
     except (OSError, sqlite3.DatabaseError):
@@ -82,7 +84,7 @@ def snapshot(data_root: Path) -> bytes | None:
     try:
         with tempfile.NamedTemporaryFile(prefix="ep-central-backup-", suffix=".db", delete=False) as temporary:
             temporary_path = Path(temporary.name)
-        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as source, sqlite3.connect(temporary_path) as backup:
+        with sqlite_connection(f"file:{database}?mode=ro", uri=True) as source, sqlite_connection(temporary_path) as backup:
             source.backup(backup)
         return temporary_path.read_bytes()
     except (OSError, sqlite3.DatabaseError):
@@ -94,7 +96,7 @@ def snapshot(data_root: Path) -> bytes | None:
 
 def maintenance_configuration(data_root: Path) -> dict[str, int]:
     try:
-        with sqlite3.connect(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
             row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (MAINTENANCE_INTERVAL_KEY,)).fetchone()
     except (OSError, sqlite3.DatabaseError):
         return {"interval_seconds": DEFAULT_MAINTENANCE_INTERVAL_SECONDS}
@@ -108,7 +110,7 @@ def maintenance_configuration(data_root: Path) -> dict[str, int]:
 def update_maintenance_configuration(data_root: Path, interval_seconds: object) -> dict[str, int]:
     if not isinstance(interval_seconds, int) or isinstance(interval_seconds, bool) or interval_seconds not in MAINTENANCE_INTERVAL_OPTIONS:
         raise ValueError("CENTRAL_DATABASE_MAINTENANCE_INTERVAL_INVALID")
-    with sqlite3.connect(path(data_root)) as connection:
+    with sqlite_connection(path(data_root)) as connection:
         previous = maintenance_configuration(data_root)["interval_seconds"]
         connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (MAINTENANCE_INTERVAL_KEY, json.dumps(interval_seconds)))
     return {"previous": previous, "interval_seconds": interval_seconds}
@@ -117,7 +119,7 @@ def update_maintenance_configuration(data_root: Path, interval_seconds: object) 
 def capacity_configuration(data_root: Path) -> dict[str, int]:
     """Return the one installation-wide admission reserve for Codex capacity."""
     try:
-        with sqlite3.connect(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
             row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (CODEX_CAPACITY_RESERVE_KEY,)).fetchone()
         value = int(json.loads(row[0])) if row else 0
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
@@ -138,7 +140,7 @@ def update_capacity_configuration(data_root: Path, reserve_percent: object) -> d
     if not isinstance(reserve_percent, int) or isinstance(reserve_percent, bool) or reserve_percent not in CODEX_CAPACITY_RESERVE_OPTIONS:
         raise ValueError("CODEX_CAPACITY_RESERVE_INVALID")
     previous = capacity_configuration(data_root)["codex_capacity_reserve_percent"]
-    with sqlite3.connect(path(data_root)) as connection:
+    with sqlite_connection(path(data_root)) as connection:
         connection.execute(
             "INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (CODEX_CAPACITY_RESERVE_KEY, json.dumps(reserve_percent)),
@@ -149,7 +151,7 @@ def update_capacity_configuration(data_root: Path, reserve_percent: object) -> d
 def console_interval_configuration(data_root: Path) -> dict[str, object]:
     result = dict(CONSOLE_CONFIGURATION_DEFAULTS)
     try:
-        with sqlite3.connect(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
             for key, value in connection.execute("SELECT key,value FROM engineering_metadata WHERE key LIKE 'console.%'"):
                 name = str(key).removeprefix("console.")
                 parsed = json.loads(value)
@@ -163,7 +165,7 @@ def update_console_interval_configuration(data_root: Path, key: object, value: o
     if not isinstance(key, str) or key not in CONSOLE_CONFIGURATION_OPTIONS or value not in CONSOLE_CONFIGURATION_OPTIONS[key]:
         raise ValueError("CONSOLE_CONFIGURATION_INVALID")
     previous = console_interval_configuration(data_root)[key]
-    with sqlite3.connect(path(data_root)) as connection:
+    with sqlite_connection(path(data_root)) as connection:
         connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("console." + key, json.dumps(value)))
     return {"key": key, "previous": previous, "value": value}
 
@@ -183,7 +185,7 @@ def record_provider_capacity(
     bucket = timestamp.replace(hour=timestamp.hour - timestamp.hour % 2, minute=0, second=0, microsecond=0)
     cutoff = bucket - timedelta(days=7)
     try:
-        with sqlite3.connect(path(data_root)) as connection:
+        with sqlite_connection(path(data_root)) as connection:
             row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (PROVIDER_CAPACITY_HISTORY_KEY,)).fetchone()
             try:
                 payload = json.loads(row[0]) if row else {}
@@ -224,7 +226,7 @@ def provider_capacity_history(
     if not provider or hours < 1:
         return []
     try:
-        with sqlite3.connect(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
             row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (PROVIDER_CAPACITY_HISTORY_KEY,)).fetchone()
         payload = json.loads(row[0]) if row else {}
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
@@ -249,7 +251,7 @@ def run_periodic_maintenance(data_root: Path, *, now: datetime | None = None) ->
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     interval = maintenance_configuration(data_root)["interval_seconds"]
     try:
-        with sqlite3.connect(path(data_root)) as connection:
+        with sqlite_connection(path(data_root)) as connection:
             row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (MAINTENANCE_LAST_ATTEMPT_KEY,)).fetchone()
             try:
                 previous = datetime.fromisoformat(json.loads(row[0]).replace("Z", "+00:00")) if row else None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 from pathlib import Path
 import sqlite3
@@ -14,7 +16,7 @@ class ParityContextTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.data = Path(self.temp.name) / "central"
         server.initialize(self.data)
         self.roots: dict[str, Path] = {}
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             for identity in ("alpha", "beta"):
                 root = Path(self.temp.name) / identity; (root / ".engineering-platform").mkdir(parents=True)
                 (root / ".engineering-platform" / "repository.json").write_text(json.dumps({
@@ -30,13 +32,13 @@ class ParityContextTests(unittest.TestCase):
     def tearDown(self) -> None: self.temp.cleanup()
 
     def _submit(self, project: str, prompt: str = "Validate only.") -> str:
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             result = submission_service.submit(connection, submission_service.SubmissionRequest(project, project, "test", "HUMAN", "1", prompt, "HTTP"))
             return result.submission_id
 
     def test_context_candidate_and_console_data_are_project_scoped(self) -> None:
         alpha, beta = self._submit("alpha"), self._submit("beta")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             context = parity_context.project_context(connection, data_root=self.data, project_id="alpha", repository_id="alpha")
             candidate = parity_context.historical_candidate(connection, context=context, submission_id=alpha)
             self.assertEqual(candidate.execution_mode, "MANAGED")
@@ -58,7 +60,7 @@ class ParityContextTests(unittest.TestCase):
         # admission boundary.  Keep this parity test on the valid, explicit
         # public contract rather than relying on the retired multiline form.
         submission = self._submit("alpha", "Execution Mode: Genesis\nTarget repository: /tmp/target\n")
-        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             local_repository_binding.unbind_local_repository(connection, project_id="alpha", repository_id="alpha")
             readonly = parity_context.project_context(connection, data_root=self.data, project_id="alpha", repository_id="alpha", require_local_root=False)
             self.assertIsNone(readonly.local_repository_root)

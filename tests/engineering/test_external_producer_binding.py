@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import sqlite3
 import tempfile
 import unittest
@@ -15,7 +17,7 @@ class ExternalProducerBindingTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "server"
         server.initialize(self.root)
         self.database = self.root / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             self._topology(connection, "project-a", "repository-a")
             self._topology(connection, "project-b", "repository-b")
 
@@ -38,7 +40,7 @@ class ExternalProducerBindingTests(unittest.TestCase):
         )
 
     def test_registration_normalizes_and_resolves_an_explicit_github_binding(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             binding = external_producer_binding.register(
                 connection,
                 data_root=self.root,
@@ -62,7 +64,7 @@ class ExternalProducerBindingTests(unittest.TestCase):
             )
 
     def test_duplicate_and_cross_project_binding_fail_closed(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             args = {
                 "data_root": self.root,
                 "producer_type": external_producer_binding.DEPENDABOT,
@@ -80,7 +82,7 @@ class ExternalProducerBindingTests(unittest.TestCase):
                 external_producer_binding.register(connection, **args)
 
     def test_deactivation_preserves_audit_and_removes_the_active_resolution(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             binding = external_producer_binding.register(
                 connection,
                 data_root=self.root,
@@ -112,7 +114,7 @@ class ExternalProducerBindingTests(unittest.TestCase):
                 )
 
     def test_registration_requires_the_installation_data_root_owner(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             with patch("engineering_platform.platform_admin.os.geteuid", return_value=-1):
                 with self.assertRaisesRegex(PermissionError, "PLATFORM_ADMIN_FORBIDDEN"):
                     external_producer_binding.register(
@@ -127,7 +129,7 @@ class ExternalProducerBindingTests(unittest.TestCase):
                     )
 
     def test_resolution_has_no_default_project_or_external_identity_fallback(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             with self.assertRaisesRegex(external_producer_binding.ProducerBindingError, "BINDING_NOT_FOUND"):
                 external_producer_binding.resolve(
                     connection,

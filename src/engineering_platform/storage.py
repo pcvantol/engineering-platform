@@ -7,7 +7,8 @@ silently replaced or downgraded.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import argparse
 import json
@@ -36,6 +37,55 @@ CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT = "EP_CENTRAL_OPERATIONAL_DATABASE"
 
 class EngineeringStorageError(RuntimeError):
     """Raised when the local Engineering evidence database is unsafe to use."""
+
+
+class _ClosingSQLiteConnection(sqlite3.Connection):
+    """Close an ``open_storage`` connection when its outer context exits.
+
+    A raw SQLite connection commits or rolls back on ``__exit__`` but leaves
+    its file descriptor open.  Some established callers use a nested
+    transaction block, so only the outermost context owns the close.
+    """
+
+    def __enter__(self) -> sqlite3.Connection:
+        self._storage_context_depth = getattr(self, "_storage_context_depth", 0) + 1
+        return super().__enter__()
+
+    def __exit__(self, *arguments: object) -> bool | None:
+        try:
+            return super().__exit__(*arguments)
+        finally:
+            depth = getattr(self, "_storage_context_depth", 1) - 1
+            self._storage_context_depth = max(depth, 0)
+            if depth <= 0:
+                self.close()
+
+
+@contextmanager
+def closing_sqlite_connection(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Commit or roll back a connection and then close it deterministically.
+
+    ``sqlite3.Connection.__exit__`` does not close a connection.  This scope
+    retains its transaction semantics and explicitly releases the resource on
+    every exit path.  It intentionally wraps a connection rather than altering
+    ``sqlite3.Connection`` itself, so a nested transaction block cannot close
+    an outer owner prematurely.
+    """
+    try:
+        with connection as active_connection:
+            yield active_connection
+    finally:
+        connection.close()
+
+
+@contextmanager
+def sqlite_connection(*arguments: object, **keywords: object) -> Iterator[sqlite3.Connection]:
+    """Open a short-lived SQLite connection with deterministic cleanup.
+
+    Use this for direct SQLite access whose lifetime is the surrounding block.
+    """
+    with closing_sqlite_connection(sqlite3.connect(*arguments, **keywords)) as connection:
+        yield connection
 
 
 def _evidence_connection(root: Path, central_database: Path | None = None) -> sqlite3.Connection:
@@ -2594,6 +2644,7 @@ def open_storage(
             timeout=10,
             isolation_level=None,
             uri=not create,
+            factory=_ClosingSQLiteConnection,
         )
     except sqlite3.DatabaseError as error:
         raise EngineeringStorageError("Engineering storage could not be opened safely.") from error

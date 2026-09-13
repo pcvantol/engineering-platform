@@ -5,6 +5,8 @@ their public module boundaries.  They are not line-execution fixtures.
 """
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 import io
 import runpy
@@ -136,7 +138,7 @@ class CentralAuthorityBoundaryTests(unittest.TestCase):
         self.assertEqual(central_database.provider_capacity_history(self.root, provider="codex", hours=0), [])
 
     def test_maintenance_never_compacts_while_central_execution_is_active(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("project-a", "DECLARATION", "ACTIVE", "now", "now"))
             connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("repo-a", "project-a", "repo-a", "authority", "DECLARATION", "now", "now"))
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("run-a", "project-a", "RUNNING", "now", "now"))
@@ -146,7 +148,7 @@ class CentralAuthorityBoundaryTests(unittest.TestCase):
 
     def test_no_project_snapshot_counts_claimed_work_as_active_not_queued(self) -> None:
         """The platform pop-out must not recast an admitted live run as queued."""
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("run-active", "project-a", "RUNNING", "started", "updated"),
@@ -174,7 +176,7 @@ class CentralAuthorityBoundaryTests(unittest.TestCase):
 
     def test_central_history_projects_persisted_dismissal_and_hides_repeat_action(self) -> None:
         """A first successful dismissal remains visible after a history refresh."""
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("run-dismissed", "project-a", "BLOCKED", "started", "closed-at"),
@@ -206,7 +208,7 @@ class CentralAuthorityBoundaryTests(unittest.TestCase):
 
     def test_central_history_projects_operator_capabilities_and_retry_successor(self) -> None:
         """History controls come from durable dispatcher state, not a terminal label."""
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             for run_id, state, updated_at in (
                 ("run-open", "BLOCKED", "open-at"),
                 ("run-parent", "BLOCKED", "parent-at"),
@@ -338,7 +340,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(launchd.installs, [("com.engineeringplatform.dashboard-relay", Path("/tmp/relay.plist"))])
 
     def test_topology_rejects_malformed_server_declarations(self) -> None:
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             with self.assertRaises(TopologyRegistrationError):
                 register_server_local_topology(connection, declaration={"project_id": "wrong"})
 
@@ -531,7 +533,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         )
         malformed.do_POST()
         self.assertEqual(responses[-1][0], 400)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             code = agent_trust.create_pairing_code(connection, "agent-http-1")["pairing_code"]
         body = json.dumps({"protocol_version": "1.0", "agent_id": "agent-http-1", "pairing_code": code}).encode()
         paired, responses = self._in_process_console_handler(
@@ -560,7 +562,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_central_log_query_filters_only_canonical_central_events(self) -> None:
         """Log filtering handles malformed storage and rejects unsafe query input."""
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)", ("operations_console", '{"event":"ready","level":"INFO"}', "2026-01-01T00:00:00+00:00"))
         page = server._central_console_component_logs(self.root, "operations_console", {"level": ["INFO"], "event": ["ready"], "sort": ["event"], "direction": ["asc"]})
         self.assertEqual(page["total"], 1)
@@ -744,7 +746,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         with patch("engineering_platform.server._console_projects", return_value=[]):
             handler._delegate_dashboard("do_POST")
         self.assertEqual(responses[-1], (200, {"logged": True}))
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             payload = connection.execute(
                 "SELECT payload FROM engineering_component_logs "
                 "WHERE component='operations_console' ORDER BY id DESC LIMIT 1"
@@ -765,7 +767,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         with patch("engineering_platform.server._console_projects", return_value=[{"project_id": "project-a"}]):
             handler._delegate_dashboard("do_POST")
         self.assertEqual(responses[-1], (410, {"error": "TELEMETRY_CLEAR_RETIRED"}))
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             payload = connection.execute(
                 "SELECT payload FROM engineering_component_logs "
                 "WHERE component='operations_console' ORDER BY id DESC LIMIT 1"
@@ -781,7 +783,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         handler.server.central_data_transfer_active = True
         handler._delegate_dashboard("do_POST")
         self.assertEqual(responses[-1], (423, {"error": "CENTRAL_DATA_TRANSFER_IN_PROGRESS"}))
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             payload = connection.execute(
                 "SELECT payload FROM engineering_component_logs "
                 "WHERE component='operations_console' ORDER BY id DESC LIMIT 1"
@@ -1136,7 +1138,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_emergency_recovery_central_ownership_and_lease_release_are_exact(self) -> None:
         database = self.root / "recovery-central.db"
-        with sqlite3.connect(database) as connection:
+        with sqlite_connection(database) as connection:
             connection.execute("CREATE TABLE ep_execution_runs(run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL)")
             connection.execute("INSERT INTO ep_execution_runs VALUES('inbox-abcdef','project-a')")
         emergency_recovery._require_central_project_ownership(database, "project-a", "inbox-abcdef")
@@ -1459,7 +1461,7 @@ class InstallationBoundaryTests(unittest.TestCase):
     def test_server_topology_rejects_repository_identity_drift(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "repository_attachment" / "python-authority.json"
         declaration = json.loads(fixture.read_text(encoding="utf-8"))
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             first = project_topology.register_server_local_topology(connection, declaration=declaration)
             self.assertEqual(first["result"], "REGISTERED")
             conflict = json.loads(json.dumps(declaration))
@@ -1765,7 +1767,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_central_active_diagnostic_is_run_scoped_plain_text_and_never_json(self) -> None:
         """An active diagnostic is a redacted display string, not an API body."""
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("run-project-a", "project-a", "RUNNING", "created", "updated"),
@@ -1800,7 +1802,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             "runtime_prompt": {"id": "prompt-0006", "content_digest": "sha256:" + "a" * 64},
             "retry_of_correlation_id": None,
         }
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("project-a", "DECLARATION", "ACTIVE", "now", "now"))
             connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("repo-a", "project-a", "repo-a", "authority", "DECLARATION", "now", "now"))
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)", ("run-forge", "project-a", "RUNNING", "created", "updated", "MANAGED"))
@@ -1849,7 +1851,7 @@ class InstallationBoundaryTests(unittest.TestCase):
     def test_central_detail_uses_persisted_usage_and_activity_not_host_reconstruction(self) -> None:
         """Role-aware activity and usage survive CENTRAL's detail projection."""
         run_id = "run-persisted-activity"
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)", ("project-activity", "DECLARATION", "ACTIVE", "now", "now"))
             connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("repo-activity", "project-activity", "repo-activity", "authority", "DECLARATION", "now", "now"))
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", (run_id, "project-activity", "COMPLETE", "now", "later"))
@@ -1938,7 +1940,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_central_console_detail_projects_terminal_checkpoint_diagnostic(self) -> None:
         """Terminal blocking evidence is visible without consulting a log fallback."""
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("project-terminal", "DECLARATION", "ACTIVE", "now", "now"),
@@ -1981,7 +1983,7 @@ class InstallationBoundaryTests(unittest.TestCase):
     def test_central_chat_routes_generate_and_store_only_project_scoped_redacted_transcripts(self) -> None:
         """The installed Console owns both chat mutations without checkout fallback."""
         project_id, run_id, submission_id = "project-a", "run-terminal", "submission-terminal"
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)",
                 (project_id, "DECLARATION", "ACTIVE", "now", "now"),
@@ -2020,7 +2022,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(context["submitted_prompt"], "bounded submitted prompt")
         self.assertNotIn("repository", context)
         self.assertIsNone(server._central_console_chat_context(self.root, "other-project", run_id))
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM execution_chat_messages WHERE run_id=?", (run_id,)
@@ -2038,7 +2040,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(server._central_console_chat_history(self.root, project_id, run_id), [])
         # The Console view must not merely hide a cached transcript: the
         # selected run's persisted CENTRAL rows are permanently removed.
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM execution_chat_messages WHERE run_id=?", (run_id,)
@@ -2171,7 +2173,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         run_id = "run-terminal"
         project_id = "project-a"
         submission_id = "submission-terminal"
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?,?,?,?)",
                 (project_id, "DECLARATION", "ACTIVE", "now", "now"),
@@ -2241,7 +2243,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         record_terminal_evidence(wrong_project_evidence)
         self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])
         record_terminal_evidence(terminal_evidence)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
                 "UPDATE execution_artifact_records SET created_at='' WHERE artifact_id=?",
                 (f"terminal-evidence:{run_id}",),
@@ -2253,13 +2255,13 @@ class InstallationBoundaryTests(unittest.TestCase):
         connection = Mock()
         connection.execute.return_value.fetchone.return_value = ("checkout:report.md",)
         database = Mock(); database.__enter__ = Mock(return_value=connection); database.__exit__ = Mock(return_value=False)
-        with patch("engineering_platform.server.sqlite3.connect", return_value=database):
+        with patch("engineering_platform.storage.sqlite3.connect", return_value=database):
             self.assertIsNone(server._central_console_report(self.root, "project-a", "run-a"))
         connection.execute.side_effect = [Mock(fetchone=Mock(return_value=(1,))), Mock(fetchall=Mock(return_value=[("user", "hello", "model", "at")]))]
-        with patch("engineering_platform.server.sqlite3.connect", return_value=database):
+        with patch("engineering_platform.storage.sqlite3.connect", return_value=database):
             self.assertEqual(server._central_console_chat_history(self.root, "project-a", "run-a"), [{"role": "user", "text": "hello", "model": "model", "created_at": "at"}])
         connection.execute.side_effect = [Mock(fetchone=Mock(return_value=None))]
-        with patch("engineering_platform.server.sqlite3.connect", return_value=database):
+        with patch("engineering_platform.storage.sqlite3.connect", return_value=database):
             self.assertIsNone(server._central_console_chat_history(self.root, "project-a", "run-a"))
 
     def test_submission_diagnosis_and_declaration_provisioning_use_only_registered_central_records(self) -> None:
@@ -2267,7 +2269,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         root = self.root.parent / "cli-diagnosis"
         with redirect_stdout(io.StringIO()):
             self.assertEqual(server.main(["bootstrap-topology", "--data-root", str(root), "--project-id", "project-a", "--repository-id", "repo-a"]), 0)
-        with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("run-a", "project-a", "RUNNING", "now", "now"))
             connection.execute("INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("sub-a", "project-a", "repo-a", "test", "TEST", "HTTP", "p", "digest", "{}", "QUEUED", "ADMITTED", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", ("sub-a", "project-a", "repo-a", "run-a", "RUNNING", "CENTRAL:prompt", "now", "now"))
@@ -2284,13 +2286,13 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(records[0]["admission_audit_provenance"], "UNAVAILABLE")
         self.assertEqual(records[0]["receipt_run_provenance"], "UNAVAILABLE")
         self.assertEqual(records[0]["dispatch_scope_provenance"], "UNAVAILABLE")
-        with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)", ("sub-a", "ADMISSION_GRANTED", "{}", "now"))
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "sub-a"]), 0)
         self.assertEqual(json.loads(output.getvalue())["admission_audit_provenance"], "PRESENT")
-        with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
             installation_id = connection.execute("SELECT value FROM engineering_metadata WHERE key='installation.instance_id'").fetchone()[0]
             connection.execute("INSERT INTO ep_receipt_run_provenance(submission_id,run_id,project_id,repository_id,installation_id,created_at) VALUES(?,?,?,?,?,?)", ("sub-a", "run-a", "project-a", "repo-a", installation_id, "now"))
         output = io.StringIO()
@@ -2300,7 +2302,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(diagnosed["receipt_run_provenance"], "PRESENT")
         self.assertEqual(diagnosed["early_failure"], {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"})
         self.assertIsNone(records[0]["early_failure"])
-        with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("sub-incomplete", "project-a", "repo-a", "test", "TEST", "FILE_INBOX", "p", "digest", "{}", "QUEUED", "ADMITTED", "now"))
         output = io.StringIO()
         with redirect_stdout(output):
@@ -2308,7 +2310,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["transport_provenance"], "INCOMPLETE")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(server.main(["bootstrap-topology", "--data-root", str(root), "--project-id", "project-b", "--repository-id", "repo-b"]), 0)
-        with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("run-b", "project-b", "RUNNING", "now", "now"))
             connection.execute("INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("sub-conflict", "project-a", "repo-a", "test", "TEST", "HTTP", "p", "digest", "{}", "QUEUED", "ADMITTED", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", ("sub-conflict", "project-b", "repo-b", "run-b", "RUNNING", "CENTRAL:prompt", "now", "now"))

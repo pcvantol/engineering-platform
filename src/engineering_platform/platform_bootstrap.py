@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, shared_workspace_store
+from .storage import sqlite_connection
 
 
 WORKSPACE_DIRECTORY = ".engineering"
@@ -56,7 +57,7 @@ def _history_count(workspace: Path) -> int:
     if not database.is_file():
         return 0
     try:
-        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{database}?mode=ro", uri=True) as connection:
             return int(connection.execute("SELECT COUNT(*) FROM prompt_execution_history").fetchone()[0])
     except (sqlite3.DatabaseError, OSError):
         return 0
@@ -80,7 +81,7 @@ def _merge_databases(source: Path, destination: Path) -> None:
     projections take the newest timestamp.  Any incompatible schema fails
     closed before either source evidence or the shared store is removed.
     """
-    with sqlite3.connect(destination) as connection:
+    with sqlite_connection(destination) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("ATTACH DATABASE ? AS legacy", (str(source),))
         in_transaction = False

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 import socket
 import sqlite3
@@ -20,7 +22,7 @@ class FileInboxTransportTest(unittest.TestCase):
             probe.bind(("127.0.0.1", 0))
             self.port = probe.getsockname()[1]
         server.initialize(self.root, bind_port=self.port)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             now = "2026-01-01T00:00:00+00:00"
             connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", ("project-a", "{}", "ACTIVE", now, now))
             connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", ("project-b", "{}", "ACTIVE", now, now))
@@ -50,7 +52,7 @@ class FileInboxTransportTest(unittest.TestCase):
         receipts = list((self.inbox / "accepted").glob("*.receipt.json"))
         self.assertEqual(len(receipts), 1)
         receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute("SELECT transport,transport_receipt_id,transport_received_at,state FROM ep_submissions").fetchone()
         self.assertEqual(row[0], "FILE_INBOX")
         self.assertEqual(row[1], receipt["receipt_id"])
@@ -63,7 +65,7 @@ class FileInboxTransportTest(unittest.TestCase):
         outcome = file_inbox.process_once(self.inbox, server=f"http://127.0.0.1:{self.port}", credential=self.credential)
         self.assertEqual(outcome, {"accepted": 0, "quarantined": 2, "retryable": 0})
         self.assertEqual(len(list((self.inbox / "quarantine").glob("*.json"))), 4)
-        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 0)
 
     def test_installed_service_heartbeat_marks_the_platform_ingress_running(self) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -16,7 +18,7 @@ class CentralDatabaseMaintenanceTests(unittest.TestCase):
             data_root = Path(temporary) / "central"
             data_root.mkdir()
             legacy = data_root / central_database.LEGACY_DATABASE_FILENAME
-            with sqlite3.connect(legacy) as connection:
+            with sqlite_connection(legacy) as connection:
                 connection.execute("CREATE TABLE proof (value TEXT)")
                 connection.execute("INSERT INTO proof VALUES ('retained')")
 
@@ -25,7 +27,7 @@ class CentralDatabaseMaintenanceTests(unittest.TestCase):
             database = central_database.path(data_root)
             self.assertTrue(database.is_file())
             self.assertFalse(legacy.exists())
-            with sqlite3.connect(database) as connection:
+            with sqlite_connection(database) as connection:
                 self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "retained")
 
     def test_provider_capacity_history_and_reserve_are_installation_owned(self) -> None:
@@ -82,7 +84,7 @@ class CentralDatabaseMaintenanceTests(unittest.TestCase):
             data_root = Path(temporary) / "central"
             server.initialize(data_root)
             database = central_database.path(data_root)
-            with sqlite3.connect(database) as connection:
+            with sqlite_connection(database) as connection:
                 connection.execute(
                     "INSERT INTO engineering_metadata(key,value) VALUES(?,?)",
                     ("coverage.snapshot", json.dumps("central-only")),
@@ -97,7 +99,7 @@ class CentralDatabaseMaintenanceTests(unittest.TestCase):
             with tempfile.NamedTemporaryFile(suffix=".db") as restored:
                 restored.write(backup or b"")
                 restored.flush()
-                with sqlite3.connect(restored.name) as connection:
+                with sqlite_connection(restored.name) as connection:
                     self.assertEqual(
                         connection.execute("SELECT value FROM engineering_metadata WHERE key='coverage.snapshot'").fetchone(),
                         (json.dumps("central-only"),),

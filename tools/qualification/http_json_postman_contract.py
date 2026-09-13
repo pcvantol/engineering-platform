@@ -2,6 +2,8 @@
 """Fail closed when the HTTP implementation, OpenAPI and Postman drift."""
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import argparse
 import http.server
 import json
@@ -122,7 +124,7 @@ def _queue_action_contract(data_root: Path, base_url: str) -> None:
         "repository": {"id": repository, "role": "authority"},
         "validation": {"kind": "none"},
     }
-    with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+    with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
         server.project_topology.register_server_local_topology(connection, declaration=declaration)
         credential = str(submission_service.issue_consumer_credential(
             connection, consumer_id="postman-queue", project_id=project,
@@ -170,7 +172,7 @@ def _queue_action_contract(data_root: Path, base_url: str) -> None:
         status, detail = action("DEFERRED", "Capability negative contract", bearer=bearer)
         if status != expected_status:
             raise RuntimeError(f"POSTMAN_QUEUE_AUTHORIZATION_FAILED:{expected_status}:{status}:{detail}")
-    with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+    with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
         for capability in ("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"):
             connection.execute(
                 "INSERT INTO ep_operator_capabilities(consumer_id,project_id,capability,granted_at) VALUES(?,?,?,?)",
@@ -211,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         data_root = Path(temporary) / "data"
         port = _port()
         server.initialize(data_root, bind_port=port)
-        with sqlite3.connect(data_root / server.SERVER_DATABASE_FILENAME) as connection:
+        with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
             server.project_topology.register_server_local_topology(connection, declaration={
                 "schema_version": "1.0", "project": {"id": "postman-project", "authority_repository_id": "postman-repository"},
                 "repository": {"id": "postman-repository", "role": "authority"}, "validation": {"kind": "none"},

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from datetime import datetime, timezone
 import fcntl
 from pathlib import Path
@@ -43,6 +45,35 @@ from engineering_platform.platform_version import EngineeringPlatformManifest
 
 
 class EngineeringStorageTest(unittest.TestCase):
+    def test_sqlite_context_helpers_close_connections_and_preserve_transactions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "connection.db"
+            with storage.sqlite_connection(database) as connection:
+                connection.execute("CREATE TABLE records(value TEXT NOT NULL)")
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+
+            failed_connection: sqlite3.Connection | None = None
+            with self.assertRaisesRegex(RuntimeError, "abort transaction"):
+                with storage.sqlite_connection(database) as failed_connection:
+                    failed_connection.execute("INSERT INTO records(value) VALUES('discarded')")
+                    raise RuntimeError("abort transaction")
+            self.assertIsNotNone(failed_connection)
+            with self.assertRaises(sqlite3.ProgrammingError):
+                failed_connection.execute("SELECT 1")  # type: ignore[union-attr]
+            verification = sqlite3.connect(database)
+            try:
+                self.assertEqual(verification.execute("SELECT value FROM records").fetchall(), [])
+            finally:
+                verification.close()
+
+            with open_storage(root) as managed_connection:
+                with managed_connection:
+                    self.assertEqual(managed_connection.execute("PRAGMA foreign_keys").fetchone(), (1,))
+            with self.assertRaises(sqlite3.ProgrammingError):
+                managed_connection.execute("SELECT 1")
+
     def test_storage_admission_context_is_complete_valid_and_root_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -80,7 +111,8 @@ class EngineeringStorageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             database = root / "central.db"
-            open_storage(root).backup(sqlite3.connect(database))
+            with open_storage(root) as source, sqlite_connection(database) as target:
+                source.backup(target)
             store = StateStore(root / ".engineering" / "engineering-runs", central_database=database)
             state = TransactionState("central-safe-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT")
             path = store.save(state)
@@ -676,7 +708,7 @@ class EngineeringStorageTest(unittest.TestCase):
             root = Path(temporary)
             path = database_path(root)
             path.parent.mkdir()
-            with sqlite3.connect(path) as connection:
+            with sqlite_connection(path) as connection:
                 connection.execute("CREATE TABLE unrelated(value TEXT)")
             with self.assertRaisesRegex(EngineeringStorageError, "no recognized schema history"):
                 open_storage(root)
@@ -686,7 +718,7 @@ class EngineeringStorageTest(unittest.TestCase):
             root = Path(temporary)
             path = database_path(root)
             path.parent.mkdir()
-            with sqlite3.connect(path) as connection:
+            with sqlite_connection(path) as connection:
                 connection.execute(
                     "CREATE TABLE ep_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
                 )
@@ -857,7 +889,7 @@ class EngineeringStorageTest(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(EngineeringStorageError, "no active execution lease"):
                     activate_storage_schema(root)
-                with sqlite3.connect(database_path(root)) as connection:
+                with sqlite_connection(database_path(root)) as connection:
                     connection.execute("UPDATE execution_run_leases SET lease_state='RELEASED'")
                     connection.execute(
                         "INSERT OR REPLACE INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
@@ -870,13 +902,14 @@ class EngineeringStorageTest(unittest.TestCase):
                     )
                 with self.assertRaisesRegex(EngineeringStorageError, "no non-terminal execution"):
                     activate_storage_schema(root)
-                with sqlite3.connect(database_path(root)) as connection:
+                with sqlite_connection(database_path(root)) as connection:
                     connection.execute(
                         "UPDATE engineering_transactions SET phase='COMPLETE' WHERE run_id='inbox-schema-activation'"
                     )
                 # Legacy Dashboard/Inbox watcher locks are no longer lifecycle
                 # authority and cannot block CENTRAL schema activation.
-                activate_storage_schema(root)
+                with activate_storage_schema(root):
+                    pass
 
     def test_storage_activation_command_reports_the_activated_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from pathlib import Path
 import json
 import os
@@ -43,7 +45,7 @@ class EmergencyRecoveryTest(unittest.TestCase):
     def test_central_recovery_rejects_missing_or_cross_project_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "engineering.db"
-            with sqlite3.connect(database) as connection:
+            with sqlite_connection(database) as connection:
                 connection.execute("CREATE TABLE ep_execution_runs(run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL)")
                 connection.execute(
                     "INSERT INTO ep_execution_runs(run_id,project_id) VALUES(?,?)",

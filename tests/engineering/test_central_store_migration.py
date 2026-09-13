@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from contextlib import contextmanager
 import hashlib
 import fcntl
@@ -172,7 +174,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
         directory_target.mkdir()
         self.assertEqual(migration.classify_target(directory_target)["state"], "UNKNOWN")
         empty_database = Path(self.temporary.name) / "empty.db"
-        with sqlite3.connect(empty_database) as connection:
+        with sqlite_connection(empty_database) as connection:
             connection.execute("PRAGMA user_version=1")
         self.assertEqual(migration.classify_target(empty_database)["state"], "EMPTY_NEW")
         malformed_lock = Path(self.temporary.name) / "malformed.lock"
@@ -189,10 +191,10 @@ class CentralStoreMigrationTests(unittest.TestCase):
 
     def test_target_equivalence_detects_schema_and_authority_content_drift(self) -> None:
         target = Path(self.temporary.name) / "candidate.db"
-        with sqlite3.connect(self.source) as source, sqlite3.connect(target) as destination:
+        with sqlite_connection(self.source) as source, sqlite_connection(target) as destination:
             source.backup(destination)
         self.assertTrue(migration.validate_target_equivalence(self.source, target)["equivalent"])
-        with sqlite3.connect(target) as connection:
+        with sqlite_connection(target) as connection:
             connection.execute("DELETE FROM ep_consumer_registrations")
         result = migration.validate_target_equivalence(self.source, target)
         self.assertFalse(result["equivalent"])
@@ -209,7 +211,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
 
     def test_forensic_contaminated_target_remains_non_authoritative(self) -> None:
         target = Path(self.temporary.name) / "forensic.db"
-        with sqlite3.connect(target) as connection:
+        with sqlite_connection(target) as connection:
             connection.execute("PRAGMA user_version=1")
         data_root = Path(self.temporary.name) / "installation"
         receipt = data_root / "migration" / "forensic.json"
@@ -247,7 +249,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
         compatible = target.parent / "target-root" / ".engineering" / "engineering.db"
         self.assertEqual(migration.classify_target(compatible)["state"], "COMPATIBLE_EXISTING")
         conflicting = target.parent / "conflicting.db"
-        with sqlite3.connect(conflicting) as connection:
+        with sqlite_connection(conflicting) as connection:
             connection.execute("CREATE TABLE unrelated (id INTEGER)")
         self.assertEqual(migration.classify_target(conflicting)["state"], "CONFLICTING_EXISTING")
         target.write_bytes(b"not sqlite")
@@ -266,7 +268,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
         self.assertIn("SOURCE_INTEGRITY_FAILED", wrong_facts["blocking_codes"])
 
     def test_quiescence_blocks_active_transaction_lease_recovery_and_lock(self) -> None:
-        with sqlite3.connect(self.source) as connection:
+        with sqlite_connection(self.source) as connection:
             connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-active", "{}", "RUNNING", "now"))
             connection.execute("INSERT INTO execution_run_leases(lease_id,run_id,host_identity,host_instance_id,acquired_at,last_heartbeat_at,expires_at,lease_state,lease_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("lease-active", "run-active", "host", "instance", "now", "now", "later", "ACTIVE", 1, "now", "now"))
             connection.execute("INSERT INTO provider_recovery_attempts(run_id,recovery_ordinal,maximum_attempts,triggering_invocation_id,replacement_invocation_id,lifecycle_phase,state,requested_at) VALUES(?,?,?,?,?,?,?,?)", ("run-active", 1, 1, "invocation-old", "invocation-new", "PROVIDER_EXECUTION", "RECOVERY_AVAILABLE", "now"))
@@ -290,7 +292,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
 
     def test_wal_is_reported_without_checkpoint_or_sidecar_mutation(self) -> None:
         wal = Path(self.temporary.name) / "wal.db"
-        with sqlite3.connect(wal) as connection:
+        with sqlite_connection(wal) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("CREATE TABLE facts (id INTEGER)")
         candidate = migration.StoreCandidate(str(wal), str(wal.resolve()), ("test",))
@@ -307,10 +309,10 @@ class CentralStoreMigrationTests(unittest.TestCase):
         self.assertNotIn("migration_id", result)
         self.assertEqual(before, after)
         target = Path(self.temporary.name) / "candidate.db"
-        with sqlite3.connect(self.source) as source, sqlite3.connect(target) as copied:
+        with sqlite_connection(self.source) as source, sqlite_connection(target) as copied:
             source.backup(copied)
         self.assertTrue(migration.validate_target_equivalence(self.source, target)["equivalent"])
-        with sqlite3.connect(target) as connection:
+        with sqlite_connection(target) as connection:
             connection.execute("DELETE FROM ep_consumer_registrations")
         compared = migration.validate_target_equivalence(self.source, target)
         self.assertFalse(compared["equivalent"])
@@ -382,7 +384,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
         with root_patch, target_patch, resolver_patch:
             migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
             self.assertEqual(migration.admission_status(self.root)["migration_id"], "migration-a")
-            with sqlite3.connect(self.source) as connection:
+            with sqlite_connection(self.source) as connection:
                 connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("unexpected", "{}", "COMPLETE", "now"))
             receipt = migration.controlled_cutover(self.root)
             self.assertEqual(receipt["state"], "AUTHORITY_SWITCHED")
@@ -398,7 +400,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
             def running(self, _label: str) -> bool:
                 return True
             def stop(self, _label: str) -> None:
-                with sqlite3.connect(self.source) as connection:
+                with sqlite_connection(self.source) as connection:
                     connection.execute(
                         "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
                         ("inbox", '{"event":"watcher_shutdown_completed"}', "now"),
@@ -424,7 +426,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
         original_target_state = migration.classify_target
 
         def mutate_before_backup(path: Path) -> dict[str, object]:
-            with sqlite3.connect(self.source) as connection:
+            with sqlite_connection(self.source) as connection:
                 connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("rogue", "{}", "COMPLETE", "now"))
             return original_target_state(path)
 
@@ -443,7 +445,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
             receipt = migration.load_receipt("migration-a")
             baseline = migration.quiescent_source_baseline(migration.discover_legacy_stores(self.root)[0])
             migration.transition_receipt(receipt, "QUIESCENT_SOURCE_BASELINE", source=baseline["source"], quiescent_source_baseline=baseline)
-            with sqlite3.connect(self.source) as connection:
+            with sqlite_connection(self.source) as connection:
                 connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("rogue", "{}", "COMPLETE", "now"))
             with self.assertRaises(migration.CutoverError) as error:
                 migration.controlled_cutover(self.root)
@@ -626,7 +628,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
                         desired_state_check=lambda _repo: True,
                     )
             self.assertEqual(binding.exception.code, "POST_CUTOVER_READINESS_FAILED")
-            with sqlite3.connect(self.source) as connection:
+            with sqlite_connection(self.source) as connection:
                 connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("legacy-drift", "{}", "COMPLETE", "now"))
             with self.assertRaises(migration.CutoverError) as drift:
                 migration.complete_stage_a(

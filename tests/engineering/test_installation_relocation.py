@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -17,7 +19,7 @@ class InstallationRelocationTest(unittest.TestCase):
         self.root.mkdir()
         self.target = Path(self.temporary.name) / "selected"
         self.target.mkdir()
-        with sqlite3.connect(self.root / DATABASE_FILENAME) as connection:
+        with sqlite_connection(self.root / DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE proof (value TEXT)")
             connection.execute("INSERT INTO proof VALUES ('retained')")
         (self.root / "file-inbox" / "incoming").mkdir(parents=True)
@@ -44,7 +46,7 @@ class InstallationRelocationTest(unittest.TestCase):
         self.assertFalse(self.root.is_symlink())
         self.assertTrue((destination / "file-inbox/incoming").is_dir())
         self.assertEqual((destination / "artifacts/proof.txt").read_text(encoding="utf-8"), "retained")
-        with sqlite3.connect(destination / DATABASE_FILENAME) as connection:
+        with sqlite_connection(destination / DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT value FROM proof").fetchone()[0], "retained")
         self.assertFalse((destination / "runtime/pending-platform-data-relocation.json").exists())
 

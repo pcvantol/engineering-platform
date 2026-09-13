@@ -16,6 +16,7 @@ from typing import Any, Mapping
 
 from . import central_database
 from .providers import GitProvider
+from .storage import sqlite_connection
 
 
 HOST_EXECUTION_EVIDENCE_CONTRACT_VERSION = "1.0"
@@ -112,7 +113,7 @@ def record_start(data_root: Path, *, run_id: str, repository_root: Path, capture
     """Persist the one pre-provider host snapshot for a CENTRAL run."""
     document = _start_snapshot(repository_root)
     encoded = json.dumps(document, sort_keys=True, separators=(",", ":"))
-    with sqlite3.connect(central_database.path(data_root)) as connection:
+    with sqlite_connection(central_database.path(data_root)) as connection:
         connection.execute(
             "INSERT OR IGNORE INTO ep_execution_host_evidence(run_id,start_document,captured_at) VALUES(?,?,?)",
             (run_id, encoded, captured_at),
@@ -127,7 +128,7 @@ def record_terminal(
     values = (modified, created, deleted, renamed)
     if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
         raise ValueError("Execution Host terminal counters are invalid")
-    with sqlite3.connect(central_database.path(data_root)) as connection:
+    with sqlite_connection(central_database.path(data_root)) as connection:
         document = _terminal_snapshot(
             repository_root, modified=modified, created=created, deleted=deleted, renamed=renamed,
             worktree_state=worktree_state, connection=connection, run_id=run_id,

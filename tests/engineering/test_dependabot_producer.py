@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 import sqlite3
 import tempfile
@@ -24,7 +26,7 @@ class DependabotProducerTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "server"
         server.initialize(self.root)
         self.database = self.root / server.SERVER_DATABASE_FILENAME
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             for project_id, repository_id in (("project-a", "repository-a"), ("project-b", "repository-b")):
                 connection.execute(
                     "INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?, '{}', 'ACTIVE', 'now', 'now')",
@@ -65,7 +67,7 @@ class DependabotProducerTests(unittest.TestCase):
         )
 
     def test_two_explicit_bindings_admit_only_to_their_bound_project_repository(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             first = dependabot_producer.admit(
                 connection,
                 external_repository="pcvantol/repository-a",
@@ -91,7 +93,7 @@ class DependabotProducerTests(unittest.TestCase):
             )
 
     def test_replay_is_idempotent_and_unknown_external_identity_fails_closed(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             first = dependabot_producer.admit(
                 connection,
                 external_repository="pcvantol/repository-a",
@@ -115,7 +117,7 @@ class DependabotProducerTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 1)
 
     def test_inactive_binding_project_and_forged_source_fail_before_admission(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             binding = external_producer_binding.resolve(
                 connection,
                 producer_type=external_producer_binding.DEPENDABOT,
@@ -154,7 +156,7 @@ class DependabotProducerTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 0)
 
     def test_binding_change_cannot_reinterpret_an_already_admitted_pr_head(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             dependabot_producer.admit(
                 connection,
                 external_repository="pcvantol/repository-a",
@@ -219,7 +221,7 @@ class DependabotProducerTests(unittest.TestCase):
         # ``tick`` is intentionally usable before the thread is started; the
         # child loop owns heartbeat projection in normal Server composition.
         self.assertIsNone(heartbeat)
-        with sqlite3.connect(self.database) as connection:
+        with sqlite_connection(self.database) as connection:
             self.assertEqual(
                 connection.execute("SELECT project_id,repository_id,transport FROM ep_submissions").fetchone(),
                 ("project-a", "repository-a", "DEPENDABOT"),
@@ -236,7 +238,7 @@ class DependabotProducerTests(unittest.TestCase):
         visible_submission_counts: list[int] = []
 
         def event(_name: str, _context: dict[str, object]) -> None:
-            with sqlite3.connect(self.database) as connection:
+            with sqlite_connection(self.database) as connection:
                 visible_submission_counts.append(int(connection.execute(
                     "SELECT COUNT(*) FROM ep_submissions WHERE transport='DEPENDABOT'"
                 ).fetchone()[0]))

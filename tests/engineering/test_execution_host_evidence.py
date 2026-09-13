@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import sqlite3
 import subprocess
 import tempfile
@@ -25,7 +27,7 @@ class ExecutionHostEvidenceTest(unittest.TestCase):
             data_root = root / "central"
             server.initialize(data_root)
             database = data_root / server.SERVER_DATABASE_FILENAME
-            with sqlite3.connect(database) as connection:
+            with sqlite_connection(database) as connection:
                 connection.execute(
                     "INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)",
                     ("project", "{}", "ACTIVE", "now", "now"),
@@ -41,7 +43,7 @@ class ExecutionHostEvidenceTest(unittest.TestCase):
                 data_root, run_id="run", repository_root=repository, worktree_state="clean",
                 modified=0, created=0, deleted=0, renamed=0, captured_at="2026-09-13T00:01:00+00:00",
             )
-            with sqlite3.connect(database) as connection:
+            with sqlite_connection(database) as connection:
                 projected = execution_host_evidence.terminal_projection(connection, run_id="run")
                 self.assertEqual(projected["contract_version"], "1.0")
                 self.assertEqual(projected["start"]["status"], "AVAILABLE")

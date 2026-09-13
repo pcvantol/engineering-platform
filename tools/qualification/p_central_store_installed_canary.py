@@ -8,6 +8,8 @@ a deterministic service-control double so no host LaunchAgent is touched.
 
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import json
 import os
 from pathlib import Path
@@ -146,7 +148,7 @@ def _negative_cases(root: Path) -> dict[str, str]:
     migration.set_admission_freeze(stale_repo, migration_id="stale", reason="installed qualification")
     stale_services = Services()
     migration.controlled_cutover(stale_repo, services=stale_services)
-    with sqlite3.connect(stale_source) as connection:
+    with sqlite_connection(stale_source) as connection:
         connection.execute(
             "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
             ("stale-source-write", "{}", "COMPLETE", "now"),

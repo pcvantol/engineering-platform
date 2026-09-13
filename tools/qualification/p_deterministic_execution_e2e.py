@@ -9,6 +9,8 @@ boundary; CI never selects that profile.
 """
 from __future__ import annotations
 
+from engineering_platform.storage import sqlite_connection
+
 import argparse
 from contextlib import nullcontext
 import json
@@ -185,7 +187,7 @@ def verify_receipt(data_root: Path, project: str, run_id: str) -> dict[str, obje
     # The standalone Server owns epdata.sqlite.  The former engineering.db
     # name is deliberately retired and must never become an accidental second
     # lifecycle authority during qualification.
-    with sqlite3.connect(data_root / CENTRAL_DATABASE_FILENAME) as connection:
+    with sqlite_connection(data_root / CENTRAL_DATABASE_FILENAME) as connection:
         row = connection.execute("SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (run_id,)).fetchone()
     if row is None or row[0] != "COMPLETE":
         raise RuntimeError("TERMINAL_CHECKPOINT_UNAVAILABLE")
@@ -197,7 +199,7 @@ def verify_controlled_recovery(data_root: Path, checkout: Path, run_id: str, bas
     consumed = json.loads(control.read_text(encoding="utf-8"))
     if consumed.get("kind") != "CONTROLLED_PROVIDER_INTERRUPTION" or consumed.get("phase") != "EXECUTE_AGENT":
         raise RuntimeError(f"CONTROLLED_INTERRUPTION_EVIDENCE_INVALID: {consumed}")
-    with sqlite3.connect(data_root / CENTRAL_DATABASE_FILENAME) as connection:
+    with sqlite_connection(data_root / CENTRAL_DATABASE_FILENAME) as connection:
         recovery = connection.execute(
             "SELECT lifecycle_phase,state,result FROM provider_recovery_attempts WHERE run_id=?", (run_id,)
         ).fetchone()
