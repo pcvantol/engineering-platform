@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import sys
 from collections.abc import Iterable, Iterator, Mapping
+from time import sleep
 
 from .agent_state import redact_diagnostic
 from . import central_database as central_database_module
@@ -31,6 +32,7 @@ SERVER_DATA_ROOT_ENVIRONMENT = "EP_SERVER_DATA_ROOT"
 DEFAULT_LOG_LEVEL = "INFO"
 COMPONENT_LOG_PAGE_SIZE = 50
 MAX_COMPONENT_LOG_PAGE_SIZE = 200
+COMPONENT_LOG_WRITE_ATTEMPTS = 3
 PLATFORM_LOG_COMPONENTS = PLATFORM_COMPONENT_IDS
 VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 LOG_LEVELS_AT_OR_ABOVE = {
@@ -148,14 +150,22 @@ class SQLiteLogHandler(logging.Handler):
             # central connection policy as those writers; a bare SQLite
             # connection can turn an ordinary concurrent hand-off into a
             # dropped operational log or an opaque storage failure.
-            connection = _evidence_connection(self.root, self.central_database)
-            try:
-                connection.execute(
-                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
-                    (self.component, payload, created_at),
-                )
-            finally:
-                connection.close()
+            for attempt in range(COMPONENT_LOG_WRITE_ATTEMPTS):
+                connection: sqlite3.Connection | None = None
+                try:
+                    connection = _evidence_connection(self.root, self.central_database)
+                    connection.execute(
+                        "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                        (self.component, payload, created_at),
+                    )
+                    return
+                except sqlite3.OperationalError:
+                    if attempt + 1 == COMPONENT_LOG_WRITE_ATTEMPTS:
+                        raise
+                    sleep(0.02 * (attempt + 1))
+                finally:
+                    if connection is not None:
+                        connection.close()
         except (EngineeringStorageError, OSError, sqlite3.DatabaseError, TypeError, ValueError):
             # Falling back into an arbitrary checkout would silently create a
             # second supported component-log authority.  Keep the diagnostic

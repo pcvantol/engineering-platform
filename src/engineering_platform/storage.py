@@ -2612,6 +2612,15 @@ def open_storage(
             raise EngineeringStorageError(
                 "Engineering storage schema is newer than this Engineering Platform supports."
             )
+        # A Server-owned CENTRAL database has already been migrated by the
+        # Server before a lifecycle worker can run.  Opening it from a
+        # repository-scoped runner is therefore a normal data operation, not
+        # a schema transaction.  Taking ``BEGIN IMMEDIATE`` here on every
+        # projection read competes with the worker's writes and can surface as
+        # a spurious SQLite I/O failure under a busy execution.  Never import
+        # local compatibility state into CENTRAL either.
+        if central and current >= ENGINEERING_STORAGE_SCHEMA_VERSION:
+            return connection
         admitted_ceiling = _admitted_migration_ceiling(root)
         if (
             admitted_ceiling is not None

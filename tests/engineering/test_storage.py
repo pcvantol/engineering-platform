@@ -108,6 +108,37 @@ class EngineeringStorageTest(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_central_storage_open_skips_legacy_schema_write_transaction(self) -> None:
+        """A runner's CENTRAL read must not contend for the schema writer lock."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            central = root / "epdata.sqlite"
+            source = open_storage(root)
+            target = sqlite3.connect(central)
+            try:
+                source.backup(target)
+            finally:
+                source.close()
+                target.close()
+            statements: list[str] = []
+            original_connect = sqlite3.connect
+
+            def traced_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+                connection = original_connect(*args, **kwargs)
+                connection.set_trace_callback(statements.append)
+                return connection
+
+            with patch.object(storage.sqlite3, "connect", side_effect=traced_connect), patch.dict(
+                os.environ,
+                {storage.CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT: str(central)},
+                clear=False,
+            ):
+                connection = open_storage(root)
+            try:
+                self.assertFalse(any(statement == "BEGIN IMMEDIATE" for statement in statements))
+            finally:
+                connection.close()
+
     def test_checkpoint_store_removes_json_shadow_and_rejects_corrupt_durable_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

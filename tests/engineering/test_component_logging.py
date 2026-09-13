@@ -68,6 +68,33 @@ class ComponentLoggingTest(unittest.TestCase):
                     ).fetchone()[0])["event"],
                 )
 
+    def test_central_logger_retries_a_transient_sqlite_write_failure(self) -> None:
+        """A busy CENTRAL hand-off must not silently drop an audit event."""
+        from engineering_platform.server import initialize
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "central"
+            initialize(data_root)
+            central = data_root / server.SERVER_DATABASE_FILENAME
+            logger = component_logging.component_logger(
+                root, "lifecycle_worker", central_database=central,
+            )
+            original = component_logging._evidence_connection
+            with patch.object(
+                component_logging,
+                "_evidence_connection",
+                side_effect=(sqlite3.OperationalError("disk I/O error"), original(root, central)),
+            ), patch.object(component_logging, "sleep") as delay:
+                component_logging.log_event(logger, logging.INFO, "central_retry_succeeded")
+            delay.assert_called_once_with(0.02)
+            with sqlite3.connect(central) as connection:
+                self.assertEqual(
+                    json.loads(connection.execute(
+                        "SELECT payload FROM engineering_component_logs WHERE component='lifecycle_worker'"
+                    ).fetchone()[0])["event"],
+                    "central_retry_succeeded",
+                )
+
     def test_log_records_version_for_owning_and_named_canonical_components(self) -> None:
         from engineering_platform.server import initialize
         with tempfile.TemporaryDirectory() as temporary:
