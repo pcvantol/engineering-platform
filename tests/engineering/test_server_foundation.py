@@ -553,6 +553,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!\n"); selected.chmod(0o700)
         plan = type("LegacyPlan", (), {
             "operation_id": "update-0001",
+            "current_version": "2.3.2",
             "legacy_adoption": {"interpreter": str(selected)},
         })()
         actions = server._installation_update_operational_actions(self.root)
@@ -565,7 +566,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
             "engineering_platform.server.operational_installation.package_identity", return_value=package,
         ), patch("engineering_platform.server.central_database.details", return_value={"integrity": "PASS"}):
-            self.assertEqual(actions.inventory(object())["package_version"], "2.3.2")
+            self.assertEqual(actions.inventory(plan)["package_version"], "2.3.2")
         with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
         ), patch(
@@ -616,8 +617,19 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         selected.chmod(0o700)
         plan = type("LegacyPlan", (), {
             "operation_id": "update-0001",
+            "current_version": "2.3.2",
             "legacy_adoption": {"interpreter": str(selected)},
         })()
+        with patch(
+            "engineering_platform.server.server_service.configured_interpreter",
+            return_value=selected,
+        ), patch(
+            "engineering_platform.server.operational_installation.package_identity",
+            return_value={"version": "2.3.99"},
+        ):
+            with self.assertRaisesRegex(server.ServerConfigurationError, "admitted source version"):
+                actions.inventory(plan)
+
         unloaded = type("Runtime", (), {"loaded": False})()
         with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,

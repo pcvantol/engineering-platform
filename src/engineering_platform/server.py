@@ -6277,11 +6277,15 @@ def _installation_update_operational_actions(
             raise ServerConfigurationError("the admitted source service interpreter is invalid")
         return expected.absolute()
 
-    def inventory(_plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
+    def inventory(plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
         selected = server_service.configured_interpreter(root)
         if selected is None:
             raise ServerConfigurationError("the existing EP user service is unavailable")
         package = operational_installation.package_identity(selected)
+        if package.get("version") != plan.current_version:
+            raise ServerConfigurationError(
+                "the existing EP user service package differs from the admitted source version"
+            )
         return {
             "result": "PASS", "service_label": server_service.LABEL,
             "service_interpreter": str(selected), "package_version": package["version"],
