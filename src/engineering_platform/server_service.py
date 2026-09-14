@@ -309,6 +309,12 @@ def replace_runtime(data_root: Path, *, expected_interpreter: str | Path, interp
     result = _launchctl(("bootstrap", _domain(), str(plist)), runner)
     if result.returncode and "service already loaded" not in (result.stderr or "").lower():
         raise ServerServiceError("Unable to activate the replacement EP Server runtime.")
+    if not service_loaded(
+        data_root=data_root,
+        expected_interpreter=replacement,
+        runner=runner,
+    ):
+        raise ServerServiceError("Unable to verify the activated EP Server runtime binding.")
     return {"state": "replaced", "label": LABEL, "plist": str(plist), "interpreter": str(replacement)}
 
 

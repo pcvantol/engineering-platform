@@ -165,8 +165,31 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
         admission = admit(plan, runner=runner, service_home=home)
         return root, home, old_package, plan, candidate, admission, runner
 
-    @staticmethod
-    def _service_runner(command):  # type: ignore[no-untyped-def]
+    def _service_runner(self, command):  # type: ignore[no-untyped-def]
+        action = command[1]
+        if action == "bootout":
+            self._loaded_launchagent = None
+        elif action == "bootstrap":
+            with Path(command[-1]).open("rb") as stream:
+                self._loaded_launchagent = plistlib.load(stream)
+        elif action == "print":
+            payload = getattr(self, "_loaded_launchagent", None)
+            if not isinstance(payload, dict):
+                return subprocess.CompletedProcess(
+                    command, 3, "", "Could not find service",
+                )
+            arguments = payload["ProgramArguments"]
+            output = "\n".join((
+                f"gui/501/{server_service.LABEL} = {{",
+                f"    program = {arguments[0]}",
+                "    arguments = {",
+                *(f"        {argument}" for argument in arguments),
+                "    }",
+                f"    working directory = {payload['WorkingDirectory']}",
+                "}",
+                "",
+            ))
+            return subprocess.CompletedProcess(command, 0, output, "")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     def _actions(self, root: Path, home: Path, target: Path):
@@ -291,6 +314,17 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
 
             candidate_interpreter = root.resolve() / "operations" / operation_id / "candidate-venv" / "bin" / "python"
             candidate_site = candidate_interpreter.parent.parent / "lib" / "python3.12" / "site-packages"
+            service_is_loaded = True
+
+            def loaded_service(*, expected_interpreter, **_kwargs):  # type: ignore[no-untyped-def]
+                if Path(expected_interpreter).absolute() == candidate_interpreter.absolute():
+                    return True
+                return service_is_loaded
+
+            def quiesce_service(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                nonlocal service_is_loaded
+                service_is_loaded = False
+
             health = {
                 "service": "engineering-platform-server", "instance_id": identity.instance_id,
                 "healthy": True, "product_version": "2.3.35",
@@ -319,12 +353,12 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
                 "engineering_platform.installation_update_composition.execute", side_effect=public_execute,
             ), patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
                 "engineering_platform.server.server_service.service_loaded",
-                side_effect=(True, True, False, False, False, False, False, False),
+                side_effect=loaded_service,
             ), patch(
                 "engineering_platform.server._health_response", return_value=health,
             ), redirect_stdout(command_output):
                 lifecycle_type.return_value.runtime_details.return_value = lifecycle
-                lifecycle_type.return_value.quiesce.return_value = None
+                lifecycle_type.return_value.quiesce.side_effect = quiesce_service
                 common_target = (
                     "--data-root", str(root), "--operation-id", operation_id,
                     "--target-version", "2.3.35", "--target-digest", target_digest,

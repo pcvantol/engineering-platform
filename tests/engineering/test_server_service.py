@@ -26,6 +26,22 @@ class ServerServiceTests(unittest.TestCase):
     def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
+    def loaded_service_output(self, interpreter: Path, data_root: Path | None = None) -> str:
+        root = (data_root or self.root).resolve()
+        executable = interpreter.absolute()
+        return f"""gui/501/{server_service.LABEL} = {{
+    program = {executable}
+    arguments = {{
+        {executable}
+        -m
+        engineering_platform.server
+        serve
+        --data-root
+        {root}
+    }}
+    working directory = {root}
+}}\n"""
+
     def test_payload_runs_foreground_server_from_absolute_interpreter(self) -> None:
         paths = server_service.default_paths(self.root, self.home)
         payload = server_service.plist_payload(paths, Path("/runtime/bin/python"))
@@ -104,7 +120,8 @@ class ServerServiceTests(unittest.TestCase):
 
         def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(arguments)
-            return subprocess.CompletedProcess(arguments, 0, "", "")
+            output = self.loaded_service_output(new) if arguments[1] == "print" else ""
+            return subprocess.CompletedProcess(arguments, 0, output, "")
 
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
             result = server_service.replace_runtime(self.root, expected_interpreter=old, interpreter=new,
@@ -113,13 +130,17 @@ class ServerServiceTests(unittest.TestCase):
         self.assertEqual(calls, [
             ["launchctl", "bootout", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
             ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+            ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
         ])
         self.assertEqual(server_service.configured_interpreter(self.root, home=self.home), new.absolute())
         calls.clear()
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
             server_service.replace_runtime(self.root, expected_interpreter=old, interpreter=new,
                                            home=self.home, runner=runner)
-        self.assertEqual(calls, [["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)]])
+        self.assertEqual(calls, [
+            ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+            ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
+        ])
 
     def test_retained_update_quiescence_skips_a_second_bootout_and_restores_boot_policy(self) -> None:
         paths = server_service.default_paths(self.root, self.home)
@@ -135,11 +156,19 @@ class ServerServiceTests(unittest.TestCase):
         self.assertIs(maintenance["RunAtLoad"], False)
         self.assertIs(maintenance["KeepAlive"], False)
         calls: list[list[str]] = []
+        bootstrapped = False
 
         def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            nonlocal bootstrapped
             calls.append(arguments)
             if arguments[1] == "print":
-                return subprocess.CompletedProcess(arguments, 3, "", "Could not find service")
+                if not bootstrapped:
+                    return subprocess.CompletedProcess(arguments, 3, "", "Could not find service")
+                return subprocess.CompletedProcess(
+                    arguments, 0, self.loaded_service_output(new), "",
+                )
+            if arguments[1] == "bootstrap":
+                bootstrapped = True
             return subprocess.CompletedProcess(arguments, 0, "", "")
 
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
@@ -150,6 +179,7 @@ class ServerServiceTests(unittest.TestCase):
         self.assertEqual(calls, [
             ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
             ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+            ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
         ])
         with paths.plist_path.open("rb") as stream:
             active = plistlib.load(stream)
@@ -165,23 +195,16 @@ class ServerServiceTests(unittest.TestCase):
             self.root, expected_interpreter=old, home=self.home,
         )
         calls: list[list[str]] = []
+        bootstrapped = False
 
         def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            nonlocal bootstrapped
             calls.append(arguments)
             output = ""
             if arguments[1] == "print":
-                output = f"""gui/501/{server_service.LABEL} = {{
-    program = {old.absolute()}
-    arguments = {{
-        {old.absolute()}
-        -m
-        engineering_platform.server
-        serve
-        --data-root
-        {self.root.resolve()}
-    }}
-    working directory = {self.root.resolve()}
-}}\n"""
+                output = self.loaded_service_output(new if bootstrapped else old)
+            elif arguments[1] == "bootstrap":
+                bootstrapped = True
             return subprocess.CompletedProcess(arguments, 0, output, "")
 
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
@@ -193,7 +216,32 @@ class ServerServiceTests(unittest.TestCase):
             ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
             ["launchctl", "bootout", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
             ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+            ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
         ])
+
+    def test_replace_runtime_rejects_a_stale_same_label_job_after_bootstrap(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        old, new = Path(sys.executable), Path(self.temporary.name) / "replacement-python"
+        stale = Path(self.temporary.name) / "stale-python"
+        new.symlink_to(old)
+        stale.symlink_to(old)
+        server_service.write_plist(paths, old)
+
+        def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            if arguments[1] == "bootstrap":
+                return subprocess.CompletedProcess(arguments, 5, "", "Service already loaded")
+            if arguments[1] == "print":
+                return subprocess.CompletedProcess(
+                    arguments, 0, self.loaded_service_output(stale), "",
+                )
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            with self.assertRaisesRegex(server_service.ServerServiceError, "admitted runtime binding"):
+                server_service.replace_runtime(
+                    self.root, expected_interpreter=old, interpreter=new,
+                    home=self.home, runner=runner,
+                )
 
     def test_service_loaded_distinguishes_absence_from_inspection_failure(self) -> None:
         def result(code: int, error: str = "", output: str = ""):
