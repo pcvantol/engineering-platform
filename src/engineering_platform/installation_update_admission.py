@@ -17,6 +17,7 @@ from typing import Mapping
 from . import (
     installation_update_activation,
     legacy_installation_adoption,
+    operational_installation,
     operational_installation_record,
     server_service,
 )
@@ -162,6 +163,24 @@ def _matches_admission_snapshot(admission: ExecutionAdmission, snapshot: Mapping
     if admission.schema_version == 3:
         return registered == dict(snapshot)
     return False
+
+
+def _require_retained_candidate_package(
+    candidate: PreparedUpdateCandidate,
+    *,
+    runner: object = subprocess.run,
+) -> None:
+    """Reprove the installed candidate after its staged wheel is removed."""
+    try:
+        identity = operational_installation.package_identity(candidate.interpreter, runner=runner)
+    except (operational_installation.OperationalInstallationError, OSError, subprocess.SubprocessError) as error:
+        raise InstallationUpdateAdmissionError(
+            "activated candidate package identity is unavailable after verification"
+        ) from error
+    if dict(identity) != dict(candidate.package):
+        raise InstallationUpdateAdmissionError(
+            "activated candidate package identity changed after verification"
+        )
 
 
 def _require_pre_activation_provenance(
@@ -322,6 +341,8 @@ def admitted_candidate(
         or dict(admission.prepared_candidate) != candidate.payload()
     ):
         raise InstallationUpdateAdmissionError("execution admission does not bind the exact prepared candidate")
+    if state in {"VERIFIED", "CLEANUP_PENDING", "COMPLETE"}:
+        _require_retained_candidate_package(candidate, runner=runner)
     if admission.schema_version == 3:
         if plan.legacy_adoption is None:
             raise InstallationUpdateAdmissionError("execution admission legacy baseline is unavailable")

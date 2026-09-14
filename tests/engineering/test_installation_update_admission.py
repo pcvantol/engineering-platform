@@ -319,3 +319,27 @@ class InstallationUpdateAdmissionTests(unittest.TestCase):
                        side_effect=InstallationUpdateActivationError("invalid")):
                 with self.assertRaisesRegex(InstallationUpdateAdmissionError, "target record is invalid"):
                     admitted_candidate(plan, admission, runner=runner)
+
+    def test_post_verification_resume_revalidates_installed_candidate_without_staged_wheel(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, candidate, runner, _wheel = self._prepared(Path(temporary))
+            admission = admit(plan, runner=runner)
+            original = load(root)
+            replace_for_update(
+                root,
+                expected_version=plan.current_version,
+                expected_artifact_digest=plan.current_digest,
+                replacement=replacement_record(plan, current=original, interpreter=candidate.interpreter),
+            )
+            with InstallationUpdateSession(plan) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED"):
+                    session.advance(state, {"result": "PASS", "step": state})
+            Path(candidate.staged_artifact).unlink()
+
+            self.assertEqual(admitted_candidate(plan, admission, runner=runner), candidate)
+            runner.version = "9.9.9"
+            with self.assertRaisesRegex(
+                InstallationUpdateAdmissionError,
+                "candidate package identity changed after verification",
+            ):
+                admitted_candidate(plan, admission, runner=runner)
