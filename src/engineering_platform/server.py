@@ -6252,6 +6252,31 @@ def _installation_update_operational_actions(
     root = data_root.resolve()
     paths = server_service.default_paths(root)
 
+    def admitted_source_interpreter(
+        plan: installation_update_plan.InstallationUpdatePlan,
+    ) -> Path:
+        """Resolve the service launcher from the update's admitted source."""
+        if plan.legacy_adoption is not None:
+            value = plan.legacy_adoption.get("interpreter")
+        else:
+            try:
+                record = operational_installation_record.load(root)
+            except operational_installation_record.OperationalInstallationRecordError as error:
+                raise ServerConfigurationError("the admitted source installation is unavailable") from error
+            if (
+                record["installation_id"] != plan.installation_id
+                or record["version"] != plan.current_version
+                or record["artifact_digest"] != plan.current_digest
+            ):
+                raise ServerConfigurationError("the admitted source installation changed before quiescence")
+            value = record.get("interpreter")
+        if not isinstance(value, str):
+            raise ServerConfigurationError("the admitted source service interpreter is unavailable")
+        expected = Path(value).expanduser()
+        if not expected.is_absolute():
+            raise ServerConfigurationError("the admitted source service interpreter is invalid")
+        return expected.absolute()
+
     def inventory(_plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
         selected = server_service.configured_interpreter(root)
         if selected is None:
@@ -6263,13 +6288,16 @@ def _installation_update_operational_actions(
             "central": central_database.details(root),
         }
 
-    def quiesce(_plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
+    def quiesce(plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
         lifecycle = LaunchdProvider()
         selected = server_service.configured_interpreter(root)
         if selected is None:
             raise ServerConfigurationError("the existing EP user service is unavailable")
+        expected = admitted_source_interpreter(plan)
+        if selected != expected:
+            raise ServerConfigurationError("the EP user service differs from the admitted source interpreter")
         retained = server_service.retain_update_quiescence(
-            root, expected_interpreter=selected,
+            root, expected_interpreter=expected,
         )
         observed = lifecycle.runtime_details(server_service.LABEL)
         if observed is not None and not observed.loaded:

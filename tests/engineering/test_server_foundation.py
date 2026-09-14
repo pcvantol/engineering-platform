@@ -551,6 +551,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
     def test_public_update_operational_actions_inventory_quiesce_and_verify_exact_runtime(self) -> None:
         selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!\n"); selected.chmod(0o700)
+        plan = type("LegacyPlan", (), {"legacy_adoption": {"interpreter": str(selected)}})()
         actions = server._installation_update_operational_actions(self.root)
         runtime = type("Runtime", (), {"loaded": True})()
         configuration = type("Configuration", (), {"bind_host": "127.0.0.1", "bind_port": 8765})()
@@ -567,7 +568,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
         ) as retain:
             lifecycle_type.return_value.runtime_details.return_value = runtime
-            self.assertEqual(actions.quiesce(object())["state"], "QUIESCED")
+            self.assertEqual(actions.quiesce(plan)["state"], "QUIESCED")
             lifecycle_type.return_value.quiesce.assert_called_once()
             retain.assert_called_once_with(self.root.resolve(), expected_interpreter=selected)
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
@@ -593,6 +594,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         selected = Path(self.temporary.name) / "selected-python"
         selected.write_text("#!\n")
         selected.chmod(0o700)
+        plan = type("LegacyPlan", (), {"legacy_adoption": {"interpreter": str(selected)}})()
         unloaded = type("Runtime", (), {"loaded": False})()
         with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
@@ -601,7 +603,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
         ):
             lifecycle_type.return_value.runtime_details.return_value = unloaded
-            self.assertEqual(actions.quiesce(object())["state"], "ALREADY_QUIESCED")
+            self.assertEqual(actions.quiesce(plan)["state"], "ALREADY_QUIESCED")
             lifecycle_type.return_value.quiesce.assert_not_called()
 
         loaded = type("Runtime", (), {"loaded": True})()
@@ -613,7 +615,31 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ):
             lifecycle_type.return_value.runtime_details.side_effect = (loaded, unloaded)
             lifecycle_type.return_value.quiesce.side_effect = OSError("already stopped")
-            self.assertEqual(actions.quiesce(object())["state"], "ALREADY_QUIESCED")
+            self.assertEqual(actions.quiesce(plan)["state"], "ALREADY_QUIESCED")
+
+        drifted = Path(self.temporary.name) / "drifted-python"
+        drifted.write_text("#!\n")
+        drifted.chmod(0o700)
+        registered_plan = type("RegisteredPlan", (), {
+            "legacy_adoption": None,
+            "installation_id": "installation-1",
+            "current_version": "2.3.1",
+            "current_digest": "sha256:" + "a" * 64,
+        })()
+        source_record = {
+            "installation_id": "installation-1", "version": "2.3.1",
+            "artifact_digest": "sha256:" + "a" * 64, "interpreter": str(selected),
+        }
+        with patch(
+            "engineering_platform.server.operational_installation_record.load", return_value=source_record,
+        ), patch(
+            "engineering_platform.server.server_service.configured_interpreter", return_value=drifted,
+        ), patch(
+            "engineering_platform.server.server_service.retain_update_quiescence",
+        ) as retain:
+            with self.assertRaisesRegex(server.ServerConfigurationError, "admitted source interpreter"):
+                actions.quiesce(registered_plan)
+            retain.assert_not_called()
 
         configuration = type("Configuration", (), {"bind_host": "127.0.0.1", "bind_port": 8765})()
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(

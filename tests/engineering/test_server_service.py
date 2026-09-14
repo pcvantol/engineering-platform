@@ -128,6 +128,8 @@ class ServerServiceTests(unittest.TestCase):
 
         def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(arguments)
+            if arguments[1] == "print":
+                return subprocess.CompletedProcess(arguments, 3, "", "Could not find service")
             return subprocess.CompletedProcess(arguments, 0, "", "")
 
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
@@ -136,12 +138,38 @@ class ServerServiceTests(unittest.TestCase):
                 home=self.home, runner=runner,
             )
         self.assertEqual(calls, [
+            ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
             ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
         ])
         with paths.plist_path.open("rb") as stream:
             active = plistlib.load(stream)
         self.assertIs(active["RunAtLoad"], True)
         self.assertEqual(active["KeepAlive"], {"SuccessfulExit": False})
+
+    def test_replace_runtime_unloads_a_login_loaded_maintenance_job(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        old, new = Path(sys.executable), Path(self.temporary.name) / "replacement-python"
+        new.symlink_to(old)
+        server_service.write_plist(paths, old)
+        server_service.retain_update_quiescence(
+            self.root, expected_interpreter=old, home=self.home,
+        )
+        calls: list[list[str]] = []
+
+        def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            server_service.replace_runtime(
+                self.root, expected_interpreter=old, interpreter=new,
+                home=self.home, runner=runner,
+            )
+        self.assertEqual(calls, [
+            ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
+            ["launchctl", "bootout", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+            ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+        ])
 
     def test_replace_runtime_rejects_an_unexpected_or_missing_service(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "expected operational interpreter"):

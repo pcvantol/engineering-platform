@@ -178,6 +178,17 @@ def _update_quiescence_retained(data_root: Path, *, home: Path | None = None) ->
     )
 
 
+def _service_loaded(*, runner: Runner | None = None) -> bool:
+    """Distinguish an unloaded job from a login-loaded maintenance job."""
+    result = _launchctl(("print", f"{_domain()}/{LABEL}"), runner)
+    if result.returncode == 0:
+        return True
+    error = (result.stderr or "").lower()
+    if any(marker in error for marker in ("could not find service", "no such process", "not found")):
+        return False
+    raise ServerServiceError("Unable to inspect the owned EP Server LaunchAgent during runtime replacement.")
+
+
 def install(data_root: Path, *, interpreter: str | Path | None = None, home: Path | None = None,
             runner: Runner | None = None) -> Mapping[str, str]:
     paths = default_paths(data_root, home)
@@ -221,9 +232,16 @@ def replace_runtime(data_root: Path, *, expected_interpreter: str | Path, interp
     # If it follows the new write, the next retry observes the replacement and
     # only completes the idempotent bootstrap below.
     if current == expected:
-        if not _update_quiescence_retained(data_root, home=home):
+        retained = _update_quiescence_retained(data_root, home=home)
+        # A login can load a RunAtLoad=False maintenance plist without
+        # starting its process.  The plist policy therefore cannot prove that
+        # the job is unloaded; boot it out when launchd still owns the job.
+        if not retained or _service_loaded(runner=runner):
             result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
-            if result.returncode and "could not find service" not in (result.stderr or "").lower():
+            if result.returncode and not any(
+                marker in (result.stderr or "").lower()
+                for marker in ("could not find service", "no such process", "not found")
+            ):
                 raise ServerServiceError("Unable to stop the owned EP Server LaunchAgent for runtime replacement.")
         plist = write_plist(paths, replacement)
     else:
