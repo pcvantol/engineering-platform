@@ -20,6 +20,7 @@ from typing import Any, Mapping
 
 from . import central_database, execution_host_evidence
 from .platform_version import CURRENT_PLATFORM_VERSION
+from .revision_binding import parse_repository_revision_binding
 from .storage import sqlite_connection
 
 
@@ -432,6 +433,10 @@ def request_from_mapping(project_id: str, payload: object, *, transport: str) ->
         transport_received_at=_token(payload.get("transport_received_at"), "transport_received_at", optional=True),
     )
     _forge_provenance(request)
+    try:
+        parse_repository_revision_binding(request.constraints)
+    except ValueError as error:
+        raise SubmissionError("INVALID_REPOSITORY_REVISION_BINDING") from error
     return request
 
 
@@ -501,6 +506,10 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
     _transport(request.transport)
     _validate_execution_mode(request)
     _forge_provenance(request)
+    try:
+        parse_repository_revision_binding(request.constraints)
+    except ValueError as error:
+        raise SubmissionError("INVALID_REPOSITORY_REVISION_BINDING") from error
     project = connection.execute("SELECT status FROM ep_project_registrations WHERE project_id=?", (request.project_id,)).fetchone()
     if project is None:
         raise SubmissionError("UNKNOWN_PROJECT", 404)
@@ -578,7 +587,7 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
 
 
 PRODUCER_READBACK_CONTRACT_VERSION = "1.2"
-TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.3"
+TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.4"
 _TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
@@ -820,12 +829,41 @@ def _write_immutable_artifact(target: Path, payload: bytes) -> None:
     temporary.replace(target)
 
 
+def _is_retained_v13_terminal_artifact(
+    target: Path, *, run_id: str, submission_id: str, project_id: str, repository_id: str,
+) -> bool:
+    """Recognize one old, correctly-bound terminal artifact without rewriting it."""
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("artifact_type") != "EP_TERMINAL_EVIDENCE":
+        return False
+    if payload.get("contract_version") != "1.3":
+        return False
+    submission = payload.get("submission")
+    run = payload.get("run")
+    repository = payload.get("repository")
+    return (
+        isinstance(submission, dict)
+        and isinstance(run, dict)
+        and isinstance(repository, dict)
+        and submission.get("id") == submission_id
+        and submission.get("project_id") == project_id
+        and repository.get("id") == repository_id
+        and run.get("id") == run_id
+    )
+
+
 def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]:
     """Return a run-bound delivery revision, never an ambient checkout HEAD."""
     if outcome != "COMPLETE":
-        return None, True
+        # A terminal checkpoint is authentic evidence of this run's end, but
+        # it is not delivery evidence.  In particular, BLOCKED/FAILED runs
+        # must never turn an absent PR or merge into a qualified delivery.
+        return None, False
     if getattr(state, "action_intent", None) == "VALIDATION_ONLY":
-        return None, True
+        return None, False
     revision = getattr(state, "finalization_merge_commit", None) or getattr(state, "implementation_merge_commit", None)
     evidence = getattr(state, "commit_evidence", ())
     if isinstance(revision, str) and __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
@@ -888,7 +926,7 @@ def write_terminal_evidence(
     can never manufacture evidence for an otherwise terminal-looking row.
     """
     from .agent_state import StateError, TransactionState
-    from .storage import record_artifact
+    from .storage import record_artifact, verify_artifact_integrity
 
     database = central_database.path(data_root)
     with sqlite_connection(database) as connection:
@@ -934,6 +972,19 @@ def write_terminal_evidence(
         raise SubmissionError("TERMINAL_TIMING_UNAVAILABLE", 500)
     artifact_id = _terminal_artifact_id(run_id)
     report_id = f"report:{run_id}"
+    target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "terminal-evidence-v1.json"
+    if _is_retained_v13_terminal_artifact(
+        target, run_id=run_id, submission_id=str(row[0]), project_id=str(row[1]),
+        repository_id=str(row[2]),
+    ) and verify_artifact_integrity(
+        repository_root, artifact_id, central_database=database,
+        artifact_root=data_root / "artifacts",
+    ):
+        # Reconciliation may revisit terminal runs long after a new artifact
+        # contract ships. The older evidence remains immutable and truthful;
+        # require its pre-existing CENTRAL digest record rather than adopting
+        # a same-account filesystem payload as evidence.
+        return artifact_id
     assurance_status, current_reviews, reviews = _current_assurance(checkpoint)
     findings = [finding for review in reviews for finding in review.get("findings", [])]
     findings_id = _findings_artifact_id(run_id) if checkpoint.assurance_profile is not None else None
@@ -961,8 +1012,28 @@ def write_terminal_evidence(
         "provenance": constraints.get("forge_execution"),
         "run": {"id": run_id, "outcome": outcome, "delivery_qualified": delivery_qualified, **timing},
         "host_execution": host_execution,
-        "repository": {"id": str(row[2]), "revision": revision,
-                       "revision_required": checkpoint.action_intent != "VALIDATION_ONLY" and outcome == "COMPLETE"},
+        "repository": {
+            "id": str(row[2]),
+            "requested_revision": checkpoint.requested_repository_revision,
+            "execution_baseline": checkpoint.execution_baseline_sha,
+            "baseline_transition": {
+                "status": (
+                    "ALLOWED" if checkpoint.allowed_baseline_revision is not None
+                    else "EXACT" if checkpoint.requested_repository_revision is not None
+                    else "UNSPECIFIED"
+                ),
+                "from": checkpoint.requested_repository_revision,
+                "to": checkpoint.execution_baseline_sha,
+                "allowed_to": checkpoint.allowed_baseline_revision,
+            },
+            "candidate": checkpoint.implementation_head_sha,
+            "revision": revision,
+            "revision_required": checkpoint.action_intent != "VALIDATION_ONLY" and outcome == "COMPLETE",
+        },
+        "delivery": {
+            "status": "DELIVERED" if delivery_qualified else "NOT_DELIVERED",
+            "revision": revision,
+        },
         "report": {"id": report_id, "terminal_state": outcome},
         "references": {
             "validation": list(checkpoint.validation_evidence), "quality": list(checkpoint.quality_evidence),
@@ -977,7 +1048,6 @@ def write_terminal_evidence(
             "findings": {"open_blocking": sum(1 for review in current_reviews for finding in review.get("findings", []) if finding.get("blocking") and finding.get("disposition") == "OPEN"), "open_non_blocking": sum(1 for review in current_reviews for finding in review.get("findings", []) if not finding.get("blocking") and finding.get("disposition") in {"OPEN", "NON_BLOCKING"}), "artifact": None if findings_id is None else {"id": findings_id, "digest_algorithm": "sha256", "digest": hashlib.sha256(findings_bytes).hexdigest()}},
         },
     }
-    target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "terminal-evidence-v1.json"
     _write_immutable_artifact(target, _canonical_json_bytes(payload))
     record_artifact(
         repository_root, target, artifact_id=artifact_id, artifact_type="EP_TERMINAL_EVIDENCE",

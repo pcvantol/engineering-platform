@@ -85,6 +85,24 @@ may be terminalized only when it has this exact host-verified no-op shape.
 `FAILED` may have valid terminal evidence with a null revision; they are not
 fabricated into successful delivery.
 
+For new Managed submissions, an optional accepted
+`repository_revision_binding` constraint records a full
+`requested_revision` and either an exact pin (`allowed_baseline_revision:
+null`) or one explicitly permitted baseline transition. The terminal artifact
+keeps that request reference, the selected execution baseline, the candidate,
+and any delivery revision as separate fields. A pin mismatch is rejected before
+repository synchronization or provider work; a transition is valid only when
+the synchronized baseline equals the named permitted revision. This does not
+alter historical artifacts or infer a missing candidate or delivery. Existing
+v1.3 terminal artifacts remain their original bytes during reconciliation;
+they are registered and read as historical evidence rather than rewritten as
+v1.4.
+
+Required host validation controls receive a distinct, per-child scratch
+directory below the EP-managed artifact root. EP probes write/read, rename and
+SQLite before launching the child and reports an unavailable or lost directory
+as an unexecuted validation-environment failure, never as a passing control.
+
 For every terminal run, the authenticated `run` object additionally contains
 `execution_started_at`, `execution_completed_at`, and
 `execution_duration_ms`.  These are derived only from the durable

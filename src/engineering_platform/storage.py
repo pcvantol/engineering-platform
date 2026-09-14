@@ -1926,7 +1926,7 @@ def load_submission_for_run(root: Path, run_id: str, *, central_database: Path |
             "SELECT submission.submission_id,submission.producer_id,submission.producer_type,"
             "submission.producer_version,submission.contract_version,submission.correlation_id,"
             "submission.mission_id,submission.engineering_action_id,submission.execution_context_version,submission.execution_context_snapshot,"
-            "submission.forge_governance_handoff_version,submission.forge_governance_handoff_snapshot "
+            "submission.prompt_metadata,submission.forge_governance_handoff_version,submission.forge_governance_handoff_snapshot "
             "FROM execution_submissions AS submission JOIN execution_submission_run_links AS link "
             "ON link.submission_id=submission.submission_id WHERE link.run_id=?", (run_id,)
         ).fetchone()
@@ -1942,10 +1942,19 @@ def load_submission_for_run(root: Path, run_id: str, *, central_database: Path |
             raise EngineeringStorageError("Persisted Execution Context snapshot is corrupt.") from error
         if not isinstance(snapshot, dict):
             raise EngineeringStorageError("Persisted Execution Context snapshot is invalid.")
+    try:
+        prompt_metadata = json.loads(row[10])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise EngineeringStorageError("Persisted submission metadata is corrupt.") from error
+    if not isinstance(prompt_metadata, dict):
+        raise EngineeringStorageError("Persisted submission metadata is invalid.")
+    constraints = prompt_metadata.get("constraints")
+    if constraints is not None and not isinstance(constraints, dict):
+        raise EngineeringStorageError("Persisted submission constraints are invalid.")
     handoff = None
-    if row[11] is not None:
+    if row[12] is not None:
         try:
-            handoff = json.loads(row[11])
+            handoff = json.loads(row[12])
         except (TypeError, json.JSONDecodeError) as error:
             raise EngineeringStorageError("Persisted Forge Governance Handoff snapshot is corrupt.") from error
         if not isinstance(handoff, dict):
@@ -1954,7 +1963,8 @@ def load_submission_for_run(root: Path, run_id: str, *, central_database: Path |
         "submission_id": row[0], "producer_id": row[1], "producer_type": row[2],
         "producer_version": row[3], "contract_version": row[4], "correlation_id": row[5],
         "mission_id": row[6], "engineering_action_id": row[7], "execution_context_version": row[8], "execution_context": snapshot,
-        "forge_governance_handoff_version": row[10], "forge_governance_handoff": handoff,
+        "constraints": constraints,
+        "forge_governance_handoff_version": row[11], "forge_governance_handoff": handoff,
     }
 
 
