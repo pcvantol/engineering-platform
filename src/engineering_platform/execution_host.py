@@ -56,6 +56,7 @@ from .platform_api import PlatformConfiguration, PlatformConfigurationError
 from .resources import package_path
 from .platform_bootstrap import runtime_workspace
 from .providers import DeterministicValidationExecutor, GitProvider, CodexCliProvider
+from .revision_binding import parse_repository_revision_binding
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
 from .capability_preflight import latest as latest_capability_preflight
@@ -986,11 +987,13 @@ class EngineeringRunner:
                 exit_code = command_outcome
                 diagnostic_stdout = diagnostic_stderr = None
                 diagnostic_capture_available = False
+                infrastructure_diagnostic = None
             else:
                 exit_code = command_outcome.exit_code
                 diagnostic_stdout = command_outcome.stdout
                 diagnostic_stderr = command_outcome.stderr
                 diagnostic_capture_available = command_outcome.diagnostic_capture_available
+                infrastructure_diagnostic = getattr(command_outcome, "infrastructure_diagnostic", None)
             completed_at = datetime.now(timezone.utc).isoformat()
             try:
                 record_validation_command_terminal(
@@ -1002,8 +1005,13 @@ class EngineeringRunner:
                 record_validation_control_result(
                     self.root, run_id=validation.run_id, validation_id=launcher.validation_id,
                     category=launcher.category, control_identity=launcher.control_identity,
-                    required_for_profile=True, execution_status="EXECUTED", result=result,
-                    evidence_ref="command_terminal", observed_at=completed_at,
+                    required_for_profile=True,
+                    execution_status="NOT_EXECUTED" if infrastructure_diagnostic else "EXECUTED",
+                    result=result,
+                    evidence_ref=(
+                        f"validation_environment:{infrastructure_diagnostic}"
+                        if infrastructure_diagnostic else "command_terminal"
+                    ), observed_at=completed_at,
                     currentness=validation.repair_iterations,
                     central_database=self.store.central_database,
                 )
@@ -1030,10 +1038,25 @@ class EngineeringRunner:
                         diagnostic_code="VALIDATION_DIAGNOSTIC_CAPTURE_UNAVAILABLE", error=error,
                     )
             complete_phase(self.root, span, outcome="COMPLETE" if exit_code == 0 else "FAILED")
+            if infrastructure_diagnostic:
+                return self._save_terminal(
+                    validation, "BLOCKED", "validation_environment",
+                    f"Required local validation was not executed: {infrastructure_diagnostic}.",
+                )
         return validation
 
     def _run_required_validation_command(self, command: tuple[str, ...]):
         """Run one deterministic control, preserving unavailable terminals."""
+        if isinstance(self.validation_executor, DeterministicValidationExecutor):
+            scratch_parent = (
+                self.store.central_database.parent / "artifacts"
+                if self.store.central_database is not None
+                else self.root / ".engineering" / "artifacts"
+            )
+            return self.validation_executor.run(
+                self.root, command, scratch_parent=scratch_parent,
+                run_id=os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID"),
+            )
         return self.validation_executor.run(self.root, command)
 
     def _managed_action(self, state: TransactionState, action: str, authority: str = "AUTONOMOUS_EP_ACTION", *, actor: str = "execution_host", evidence_ref: str = "runtime") -> None:
@@ -1852,6 +1875,7 @@ class EngineeringRunner:
             ), implementation
         validation = replace(
             state, phase="LOCAL_REPOSITORY_VALIDATION", branch=branch, pull_request=None,
+            implementation_head_sha=candidate.head_sha,
             next_action="run_local_repository_validation", local_validation_iterations=0,
             local_validation_audit=(),
         )
@@ -2580,6 +2604,31 @@ First implementation pull-request publication gate:
         except EngineeringStorageError:
             persisted_submission = None
         producer_context = persisted_submission.get("execution_context") if isinstance(persisted_submission, dict) else None
+        raw_constraints = persisted_submission.get("constraints") if isinstance(persisted_submission, dict) else None
+        try:
+            revision_binding = parse_repository_revision_binding(
+                raw_constraints if isinstance(raw_constraints, dict) else None,
+            )
+        except ValueError:
+            return self._save_terminal(
+                state, "BLOCKED", "repository_revision_binding",
+                "Accepted repository revision binding is invalid.",
+            )
+        if revision_binding is not None:
+            if state.requested_repository_revision not in {None, revision_binding.requested_revision}:
+                return self._save_terminal(
+                    state, "BLOCKED", "repository_revision_binding",
+                    "Checkpoint repository request revision conflicts with the accepted request.",
+                )
+            if state.allowed_baseline_revision not in {None, revision_binding.allowed_baseline_revision}:
+                return self._save_terminal(
+                    state, "BLOCKED", "repository_revision_binding",
+                    "Checkpoint allowed baseline conflicts with the accepted request.",
+                )
+            state = replace(
+                state, requested_repository_revision=revision_binding.requested_revision,
+                allowed_baseline_revision=revision_binding.allowed_baseline_revision,
+            )
         action_intent = producer_context.get("action_intent", "MUTATING_DELIVERY") if isinstance(producer_context, dict) else "MUTATING_DELIVERY"
         context = resolve_execution_context(objective, self.root, action_intent=action_intent)
         if state.action_intent != context.action_intent:
@@ -2709,7 +2758,14 @@ First implementation pull-request publication gate:
         # and so the bounded retry policy in the repository client is used.
         if context.execution_mode == "MANAGED":
             try:
-                self.repository.synchronize_main(self.root)
+                # A pin is a pre-mutation contract: never synchronize it to a
+                # newer ambient main. A named transition is explicit and is
+                # verified immediately after the normal host-owned sync.
+                if revision_binding is None or revision_binding.allowed_baseline_revision is not None:
+                    self.repository.synchronize_main(self.root)
+                # The initial observation predates lease acquisition. Always
+                # refresh it here: an exact pin skips synchronization, never
+                # the final branch/clean/head verification under this lease.
                 evidence = self.repository.inspect(self.root)
             except RunnerError as error:
                 return self._save_terminal(
@@ -2729,6 +2785,18 @@ First implementation pull-request publication gate:
                     "managed_target_baseline",
                     "Managed target baseline verification failed: expected clean main synchronized with origin/main.",
                 )
+            if revision_binding is not None:
+                expected_baseline = (
+                    revision_binding.allowed_baseline_revision
+                    or revision_binding.requested_revision
+                )
+                if evidence.head_sha != expected_baseline:
+                    return self._save_terminal(
+                        state, "BLOCKED", "repository_revision_binding",
+                        "Requested repository revision does not match the selected Managed baseline.",
+                    )
+            state = replace(state, execution_baseline_sha=evidence.head_sha)
+            self.store.save(state)
         admission_phase = self._start_phase(state.run_id, "DETERMINISTIC_ADMISSION", category="ADMISSION")
         state, admission_error = self._confirm_deterministic_admission(state)
         complete_phase(
