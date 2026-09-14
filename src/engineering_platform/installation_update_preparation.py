@@ -350,7 +350,7 @@ def staged_execution_plan(
     unchanged = (
         "operation_id", "installation_id", "data_root", "current_version",
         "current_digest", "target_version", "target_digest",
-        "target_source_revision", "cleanup_targets", "steps",
+        "target_source_revision", "cleanup_targets", "steps", "legacy_adoption",
     )
     if any(getattr(rebound, field) != getattr(plan, field) for field in unchanged):
         raise InstallationUpdatePreparationError("registered installation changed before staged candidate binding")
