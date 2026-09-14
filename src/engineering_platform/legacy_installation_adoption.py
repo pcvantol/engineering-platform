@@ -159,7 +159,7 @@ def _validate_authorization(value: LegacyAdoptionAuthorization, observation: Leg
             and _REVISION.fullmatch(value.target_source_revision) and _VERSION.fullmatch(value.target_version)
             and isinstance(value.operation_id, str) and value.operation_id):
         raise LegacyInstallationAdoptionError("adoption authorization identity is invalid")
-    if (value.instance_id != observation.instance_id or Path(value.data_root).resolve() != Path(observation.data_root)
+    if (value.instance_id != observation.instance_id or Path(value.data_root).resolve() != Path(observation.data_root).resolve()
             or value.service_label != observation.service_label
             or operational_installation.launcher(value.interpreter) != operational_installation.launcher(observation.interpreter)
             or value.old_artifact_digest != observation.artifact_digest):
