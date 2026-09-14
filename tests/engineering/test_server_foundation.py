@@ -575,11 +575,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ) as retain, patch(
             "engineering_platform.server.server_service.service_loaded",
             side_effect=(True, True, False),
-        ):
+        ) as loaded_service:
             lifecycle_type.return_value.runtime_details.return_value = runtime
             self.assertEqual(actions.quiesce(plan)["state"], "QUIESCED")
             lifecycle_type.return_value.quiesce.assert_called_once()
             retain.assert_called_once_with(self.root.resolve(), expected_interpreter=selected)
+            loaded_service.assert_has_calls([
+                call(data_root=self.root.resolve(), expected_interpreter=selected),
+                call(data_root=self.root.resolve(), expected_interpreter=selected),
+                call(data_root=self.root.resolve(), expected_interpreter=selected),
+            ])
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
             "engineering_platform.server.operational_installation.resolve", return_value=installation,
         ), patch("engineering_platform.server.operational_installation.package_identity", return_value=package), patch(
@@ -619,12 +624,15 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ) as retain, patch(
             "engineering_platform.server.server_service.service_loaded",
             return_value=False,
-        ):
+        ) as loaded_service:
             lifecycle_type.return_value.runtime_details.return_value = unloaded
             with self.assertRaisesRegex(server.ServerConfigurationError, "not loaded before initial quiescence"):
                 actions.quiesce(plan)
             lifecycle_type.return_value.quiesce.assert_not_called()
             retain.assert_not_called()
+            loaded_service.assert_called_once_with(
+                data_root=self.root.resolve(), expected_interpreter=selected,
+            )
 
         with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,

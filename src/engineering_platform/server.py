@@ -6306,7 +6306,9 @@ def _installation_update_operational_actions(
             raise ServerConfigurationError("the installation update cannot quiesce from its current state")
         # Prove that launchd is inspectable before changing persistent policy;
         # a provider/I/O failure must never be projected as an absent job.
-        loaded = server_service.service_loaded()
+        loaded = server_service.service_loaded(
+            data_root=root, expected_interpreter=expected,
+        )
         if operation_state == "INVENTORIED" and not loaded:
             # A configured plist is not evidence that a service existed.  Only
             # durable QUIESCED progress may interpret later job absence as the
@@ -6317,7 +6319,9 @@ def _installation_update_operational_actions(
         retained = server_service.retain_update_quiescence(
             root, expected_interpreter=expected,
         )
-        if not server_service.service_loaded():
+        if not server_service.service_loaded(
+            data_root=root, expected_interpreter=expected,
+        ):
             return {
                 "result": "PASS", "service_label": server_service.LABEL,
                 "state": "ALREADY_QUIESCED", "retention": retained["state"],
@@ -6325,13 +6329,17 @@ def _installation_update_operational_actions(
         try:
             lifecycle.quiesce(server_service.LABEL, paths.plist_path)
         except OSError:
-            if server_service.service_loaded():
+            if server_service.service_loaded(
+                data_root=root, expected_interpreter=expected,
+            ):
                 raise
             return {
                 "result": "PASS", "service_label": server_service.LABEL,
                 "state": "ALREADY_QUIESCED", "retention": retained["state"],
             }
-        if server_service.service_loaded():
+        if server_service.service_loaded(
+            data_root=root, expected_interpreter=expected,
+        ):
             raise ServerConfigurationError("the EP user service remained loaded after quiescence")
         return {
             "result": "PASS", "service_label": server_service.LABEL,

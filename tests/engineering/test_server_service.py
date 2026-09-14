@@ -168,7 +168,21 @@ class ServerServiceTests(unittest.TestCase):
 
         def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(arguments)
-            return subprocess.CompletedProcess(arguments, 0, "", "")
+            output = ""
+            if arguments[1] == "print":
+                output = f"""gui/501/{server_service.LABEL} = {{
+    program = {old.absolute()}
+    arguments = {{
+        {old.absolute()}
+        -m
+        engineering_platform.server
+        serve
+        --data-root
+        {self.root.resolve()}
+    }}
+    working directory = {self.root.resolve()}
+}}\n"""
+            return subprocess.CompletedProcess(arguments, 0, output, "")
 
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
             server_service.replace_runtime(
@@ -182,9 +196,9 @@ class ServerServiceTests(unittest.TestCase):
         ])
 
     def test_service_loaded_distinguishes_absence_from_inspection_failure(self) -> None:
-        def result(code: int, error: str = ""):
+        def result(code: int, error: str = "", output: str = ""):
             def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
-                return subprocess.CompletedProcess(arguments, code, "", error)
+                return subprocess.CompletedProcess(arguments, code, output, error)
             return runner
 
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
@@ -192,6 +206,62 @@ class ServerServiceTests(unittest.TestCase):
             self.assertFalse(server_service.service_loaded(runner=result(3, "Could not find service")))
             with self.assertRaisesRegex(server_service.ServerServiceError, "inspect"):
                 server_service.service_loaded(runner=result(5, "Input/output error"))
+
+    def test_service_loaded_proves_the_live_runtime_binding(self) -> None:
+        expected = Path(sys.executable).absolute()
+        output = f"""gui/501/{server_service.LABEL} = {{
+    active count = 1
+    path = {self.home}/Library/LaunchAgents/{server_service.LABEL}.plist
+    state = running
+    program = {expected}
+    arguments = {{
+        {expected}
+        -m
+        engineering_platform.server
+        serve
+        --data-root
+        {self.root.resolve()}
+    }}
+    working directory = {self.root.resolve()}
+}}\n"""
+
+        def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(arguments, 0, output, "")
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            self.assertTrue(server_service.service_loaded(
+                data_root=self.root,
+                expected_interpreter=expected,
+                runner=runner,
+            ))
+
+    def test_service_loaded_rejects_a_stale_loaded_runtime_binding(self) -> None:
+        expected = Path(sys.executable).absolute()
+        stale = Path(self.temporary.name) / "stale-python"
+        stale.symlink_to(expected)
+        output = f"""gui/501/{server_service.LABEL} = {{
+    program = {stale}
+    arguments = {{
+        {stale}
+        -m
+        engineering_platform.server
+        serve
+        --data-root
+        {self.root.parent / 'other-instance'}
+    }}
+    working directory = {self.root.parent / 'other-instance'}
+}}\n"""
+
+        def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(arguments, 0, output, "")
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            with self.assertRaisesRegex(server_service.ServerServiceError, "admitted runtime binding"):
+                server_service.service_loaded(
+                    data_root=self.root,
+                    expected_interpreter=expected,
+                    runner=runner,
+                )
 
     def test_replace_runtime_rejects_an_unexpected_or_missing_service(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "expected operational interpreter"):

@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import plistlib
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -179,10 +180,62 @@ def _update_quiescence_retained(data_root: Path, *, home: Path | None = None) ->
     )
 
 
-def service_loaded(*, runner: Runner | None = None) -> bool:
-    """Prove loaded or absent; never project an inspection error as absent."""
+def _launchctl_loaded_arguments(output: str) -> tuple[str, ...] | None:
+    """Extract the argv launchd reports for one loaded job."""
+    match = re.search(
+        r"(?ms)^\s*arguments\s*=\s*\{\s*\n(?P<arguments>.*?)^\s*\}\s*$",
+        output,
+    )
+    if match is None:
+        return None
+    return tuple(
+        line.strip()
+        for line in match.group("arguments").splitlines()
+        if line.strip()
+    )
+
+
+def _launchctl_loaded_value(output: str, key: str) -> str | None:
+    match = re.search(rf"(?m)^\s*{re.escape(key)}\s*=\s*(?P<value>.+?)\s*$", output)
+    return match.group("value") if match is not None else None
+
+
+def service_loaded(
+    *,
+    data_root: Path | None = None,
+    expected_interpreter: str | Path | None = None,
+    runner: Runner | None = None,
+) -> bool:
+    """Prove loaded or absent and optionally prove the loaded runtime binding.
+
+    The on-disk plist is not evidence for an already loaded job: launchd can
+    retain the prior definition after that file is rewritten.  Update callers
+    therefore bind the live inspection to the admitted interpreter/data root.
+    """
+    if (data_root is None) != (expected_interpreter is None):
+        raise ServerServiceError("A loaded service binding requires both interpreter and data root.")
     result = _launchctl(("print", f"{_domain()}/{LABEL}"), runner)
     if result.returncode == 0:
+        if data_root is not None and expected_interpreter is not None:
+            expected = _installed_interpreter(expected_interpreter)
+            root = data_root.resolve()
+            expected_arguments = (
+                str(expected), "-m", "engineering_platform.server", "serve",
+                "--data-root", str(root),
+            )
+            arguments = _launchctl_loaded_arguments(result.stdout or "")
+            program = _launchctl_loaded_value(result.stdout or "", "program")
+            working_directory = _launchctl_loaded_value(
+                result.stdout or "", "working directory",
+            )
+            if (
+                arguments != expected_arguments
+                or program != str(expected)
+                or working_directory != str(root)
+            ):
+                raise ServerServiceError(
+                    "Loaded EP Server LaunchAgent does not match the admitted runtime binding."
+                )
         return True
     error = (result.stderr or "").lower()
     if any(marker in error for marker in ("could not find service", "no such process", "not found")):
@@ -237,7 +290,11 @@ def replace_runtime(data_root: Path, *, expected_interpreter: str | Path, interp
         # A login can load a RunAtLoad=False maintenance plist without
         # starting its process.  The plist policy therefore cannot prove that
         # the job is unloaded; boot it out when launchd still owns the job.
-        if not retained or service_loaded(runner=runner):
+        if not retained or service_loaded(
+            data_root=data_root,
+            expected_interpreter=expected,
+            runner=runner,
+        ):
             result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
             if result.returncode and not any(
                 marker in (result.stderr or "").lower()
