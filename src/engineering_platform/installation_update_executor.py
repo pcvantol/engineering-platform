@@ -48,10 +48,20 @@ def _activate(plan: InstallationUpdatePlan, action: ActivationAction) -> dict[st
             or replacement.get("source_revision") != plan.target_source_revision):
         raise InstallationUpdateExecutorError("activated installation does not match the exact target identity")
     try:
-        updated = operational_installation_record.replace_for_update(
-            Path(plan.data_root), expected_version=plan.current_version,
-            expected_artifact_digest=plan.current_digest, replacement=replacement,
-        )
+        if plan.legacy_adoption is None:
+            updated = operational_installation_record.replace_for_update(
+                Path(plan.data_root), expected_version=plan.current_version,
+                expected_artifact_digest=plan.current_digest, replacement=replacement,
+            )
+        else:
+            updated = operational_installation_record.record(
+                Path(plan.data_root), installation_id=str(replacement["installation_id"]),
+                version=str(replacement["version"]), channel=str(replacement["channel"]),
+                artifact_digest=str(replacement["artifact_digest"]), source_revision=str(replacement["source_revision"]),
+                interpreter=Path(str(replacement["interpreter"])), roles=replacement["roles"],
+                desired_state=str(replacement["desired_state"]), observed_state=str(replacement["observed_state"]),
+                verification=replacement["verification"], cleanup=replacement["cleanup"],
+            )
     except operational_installation_record.OperationalInstallationRecordError as error:
         raise InstallationUpdateExecutorError("installation update activation record is invalid") from error
     if (updated["version"] != plan.target_version
