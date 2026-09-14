@@ -138,6 +138,7 @@ class ServerServiceTests(unittest.TestCase):
             server_service.replace_runtime(self.root, expected_interpreter=old, interpreter=new,
                                            home=self.home, runner=runner)
         self.assertEqual(calls, [
+            ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
             ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
             ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
         ])
@@ -226,8 +227,10 @@ class ServerServiceTests(unittest.TestCase):
         new.symlink_to(old)
         stale.symlink_to(old)
         server_service.write_plist(paths, old)
+        calls: list[list[str]] = []
 
         def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
             if arguments[1] == "bootstrap":
                 return subprocess.CompletedProcess(arguments, 5, "", "Service already loaded")
             if arguments[1] == "print":
@@ -237,11 +240,73 @@ class ServerServiceTests(unittest.TestCase):
             return subprocess.CompletedProcess(arguments, 0, "", "")
 
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
-            with self.assertRaisesRegex(server_service.ServerServiceError, "admitted runtime binding"):
+            with self.assertRaisesRegex(server_service.ServerServiceError, "runtime binding"):
                 server_service.replace_runtime(
                     self.root, expected_interpreter=old, interpreter=new,
                     home=self.home, runner=runner,
                 )
+            calls.clear()
+            with self.assertRaisesRegex(server_service.ServerServiceError, "runtime binding"):
+                server_service.replace_runtime(
+                    self.root, expected_interpreter=old, interpreter=new,
+                    home=self.home, runner=runner,
+                )
+        self.assertEqual(calls, [
+            ["launchctl", "print", f"gui/{server_service.os.getuid()}/{server_service.LABEL}"],
+        ])
+
+    def test_replace_runtime_recovers_an_exact_old_job_that_races_bootstrap(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        old, new = Path(sys.executable), Path(self.temporary.name) / "replacement-python"
+        new.symlink_to(old)
+        server_service.write_plist(paths, old)
+        loaded: Path | None = old
+        bootstrap_calls = 0
+        calls: list[list[str]] = []
+
+        def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            nonlocal bootstrap_calls, loaded
+            calls.append(arguments)
+            if arguments[1] == "bootout":
+                loaded = None
+                return subprocess.CompletedProcess(arguments, 0, "", "")
+            if arguments[1] == "bootstrap":
+                bootstrap_calls += 1
+                if bootstrap_calls == 1:
+                    loaded = old
+                    return subprocess.CompletedProcess(
+                        arguments, 5, "", "Service already loaded",
+                    )
+                loaded = new
+                return subprocess.CompletedProcess(arguments, 0, "", "")
+            if arguments[1] == "print":
+                if loaded is None:
+                    return subprocess.CompletedProcess(
+                        arguments, 3, "", "Could not find service",
+                    )
+                return subprocess.CompletedProcess(
+                    arguments, 0, self.loaded_service_output(loaded), "",
+                )
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            with self.assertRaisesRegex(server_service.ServerServiceError, "runtime binding"):
+                server_service.replace_runtime(
+                    self.root, expected_interpreter=old, interpreter=new,
+                    home=self.home, runner=runner,
+                )
+            result = server_service.replace_runtime(
+                self.root, expected_interpreter=old, interpreter=new,
+                home=self.home, runner=runner,
+            )
+
+        self.assertEqual(result["state"], "replaced")
+        self.assertEqual(server_service.configured_interpreter(self.root, home=self.home), new.absolute())
+        self.assertEqual(loaded, new.absolute())
+        self.assertEqual(
+            [call[1] for call in calls],
+            ["bootout", "bootstrap", "print", "print", "bootout", "bootstrap", "print"],
+        )
 
     def test_service_loaded_distinguishes_absence_from_inspection_failure(self) -> None:
         def result(code: int, error: str = "", output: str = ""):
@@ -304,7 +369,7 @@ class ServerServiceTests(unittest.TestCase):
             return subprocess.CompletedProcess(arguments, 0, output, "")
 
         with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
-            with self.assertRaisesRegex(server_service.ServerServiceError, "admitted runtime binding"):
+            with self.assertRaisesRegex(server_service.ServerServiceError, "runtime binding"):
                 server_service.service_loaded(
                     data_root=self.root,
                     expected_interpreter=expected,

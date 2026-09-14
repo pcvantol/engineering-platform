@@ -200,6 +200,47 @@ def _launchctl_loaded_value(output: str, key: str) -> str | None:
     return match.group("value") if match is not None else None
 
 
+def loaded_service_interpreter(
+    data_root: Path,
+    *,
+    expected_interpreters: Sequence[str | Path],
+    runner: Runner | None = None,
+) -> Path | None:
+    """Return one loaded, exact allowed binding or prove true absence."""
+    allowed = tuple(_installed_interpreter(candidate) for candidate in expected_interpreters)
+    if not allowed:
+        raise ServerServiceError("A loaded service binding requires an expected interpreter.")
+    result = _launchctl(("print", f"{_domain()}/{LABEL}"), runner)
+    if result.returncode:
+        error = (result.stderr or "").lower()
+        if any(marker in error for marker in ("could not find service", "no such process", "not found")):
+            return None
+        raise ServerServiceError("Unable to inspect the owned EP Server LaunchAgent during runtime replacement.")
+    root = data_root.resolve()
+    arguments = _launchctl_loaded_arguments(result.stdout or "")
+    program = _launchctl_loaded_value(result.stdout or "", "program")
+    working_directory = _launchctl_loaded_value(result.stdout or "", "working directory")
+    try:
+        observed = _installed_interpreter(arguments[0]) if arguments is not None else None
+    except (IndexError, ServerServiceError) as error:
+        raise ServerServiceError(
+            "Loaded EP Server LaunchAgent does not match an allowed runtime binding."
+        ) from error
+    if (
+        observed not in allowed
+        or program != str(observed)
+        or arguments != (
+            str(observed), "-m", "engineering_platform.server", "serve",
+            "--data-root", str(root),
+        )
+        or working_directory != str(root)
+    ):
+        raise ServerServiceError(
+            "Loaded EP Server LaunchAgent does not match an allowed runtime binding."
+        )
+    return observed
+
+
 def service_loaded(
     *,
     data_root: Path | None = None,
@@ -214,28 +255,14 @@ def service_loaded(
     """
     if (data_root is None) != (expected_interpreter is None):
         raise ServerServiceError("A loaded service binding requires both interpreter and data root.")
+    if data_root is not None and expected_interpreter is not None:
+        return loaded_service_interpreter(
+            data_root,
+            expected_interpreters=(expected_interpreter,),
+            runner=runner,
+        ) is not None
     result = _launchctl(("print", f"{_domain()}/{LABEL}"), runner)
     if result.returncode == 0:
-        if data_root is not None and expected_interpreter is not None:
-            expected = _installed_interpreter(expected_interpreter)
-            root = data_root.resolve()
-            expected_arguments = (
-                str(expected), "-m", "engineering_platform.server", "serve",
-                "--data-root", str(root),
-            )
-            arguments = _launchctl_loaded_arguments(result.stdout or "")
-            program = _launchctl_loaded_value(result.stdout or "", "program")
-            working_directory = _launchctl_loaded_value(
-                result.stdout or "", "working directory",
-            )
-            if (
-                arguments != expected_arguments
-                or program != str(expected)
-                or working_directory != str(root)
-            ):
-                raise ServerServiceError(
-                    "Loaded EP Server LaunchAgent does not match the admitted runtime binding."
-                )
         return True
     error = (result.stderr or "").lower()
     if any(marker in error for marker in ("could not find service", "no such process", "not found")):
@@ -304,7 +331,22 @@ def replace_runtime(data_root: Path, *, expected_interpreter: str | Path, interp
         plist = write_plist(paths, replacement)
     else:
         # A crash may leave the replacement selected by a maintenance plist.
-        # Restore the normal boot policy before idempotently bootstrapping it.
+        # A retained old job can race the earlier absence check and block the
+        # first bootstrap.  On resume, unload only that exact admitted old
+        # binding (never an unknown same-label job) before retrying.
+        loaded = loaded_service_interpreter(
+            data_root,
+            expected_interpreters=(expected, replacement),
+            runner=runner,
+        )
+        if loaded == expected:
+            result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
+            if result.returncode:
+                raise ServerServiceError(
+                    "Unable to stop the stale admitted EP Server LaunchAgent during activation recovery."
+                )
+        # Restore the normal boot policy before idempotently bootstrapping the
+        # replacement or acknowledging its already-loaded exact binding.
         plist = write_plist(paths, replacement)
     result = _launchctl(("bootstrap", _domain(), str(plist)), runner)
     if result.returncode and "service already loaded" not in (result.stderr or "").lower():
