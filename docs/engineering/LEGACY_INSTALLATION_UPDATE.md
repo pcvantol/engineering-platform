@@ -75,3 +75,57 @@ After durable verification, a later resume may find that operation-scoped
 cleanup has already removed the staged wheel. It then reopens the digest-bound
 candidate evidence and accepts only the exact target record and service for the
 same operation; it does not reactivate or reconstruct legacy provenance.
+
+## Recovery and authority boundaries
+
+Initial quiescence requires a live `launchctl` readback that exactly matches
+the admitted interpreter, label, arguments, working directory and data root.
+The executor journals `QUIESCING` before it changes the persistent boot policy
+or stops that service. A restart from that durable intent may accept true
+service absence; an unreadable service state or a different same-label binding
+still fails closed.
+
+Activation validates the selected package version against the immutable source
+plan before quiescence and validates the exact target binding again after
+bootstrap. If the admitted old job races the first bootstrap after the plist
+has already selected the target, a resume may unload only that exact old
+binding and retry the target. It never unloads or adopts an unknown same-label
+job. A target record written before the `ACTIVATED` journal event and a staged
+wheel cleaned after `VERIFIED` are accepted only through their existing exact,
+durable operation evidence.
+
+The compatibility boundary remains a macOS per-user LaunchAgent. Qualification
+simulates only the external service/process edges; it does not claim a
+LaunchDaemon, live adoption, live schema migration, publication, rollback from
+the old wheel after migration, merge authorization or owner authorization.
+
+## PR #224 qualification handoff
+
+The exact final review head and test head are the final PR head recorded in the
+PR description. The indirection is intentional: a commit cannot contain its
+own commit identifier. Both native review results and every final validation
+must name that same head before merge consideration.
+
+- Release candidate: `2.3.50`.
+- Wheel: `engineering_platform-2.3.50-py3-none-any.whl` (3,281,240 bytes).
+- Wheel SHA-256: `17fe753f9d22f2c7cd7be5aa85f5986197f0706e2ab1b6809fd78b7fc95cc857`.
+- Production-wheel contents: 155 allowlisted members and no runtime
+  dependencies.
+- Installed full suite: 1,701 tests passed; 132 measured modules, none below
+  80.20%; aggregate branch-aware coverage 84.61318133646493%.
+- `installation_update_activation.py`: 81.69014084507042% branch-aware
+  coverage.
+- Installed new-process legacy chain: six tests passed through public
+  inspection, authorization, planning, preparation, admission, apply/resume,
+  status and durable reopening.
+- Focused update/service chain: 119 tests passed with one expected source-only
+  skip. Dashboard logic: 40 tests passed. Installed ingress, deterministic
+  execution, HTTP/OpenAPI/Postman, route ownership and five-locale UI guards
+  each reported `PASS`.
+
+R224-1 is closed by the installed public chain and production composition;
+R224-2 is closed by the owning not-found classification plus corrupt,
+unreadable and dangling-link rejection; R224-3 is closed by byte-preserving
+historical plan reopening with its original digest. The PR remains
+review-ready only: publishing, merging and live activation are separate,
+explicitly authorized operations.
