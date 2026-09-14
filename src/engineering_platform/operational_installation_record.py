@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 from typing import Mapping
 
@@ -18,6 +19,10 @@ _FIELDS = frozenset({"schema_version", "installation_id", "version", "channel", 
 
 
 class OperationalInstallationRecordError(ValueError): pass
+
+
+class OperationalInstallationRecordNotFound(OperationalInstallationRecordError):
+    """No directory entry exists for the operational installation record."""
 
 
 def _validate(value: object) -> dict[str, object]:
@@ -56,14 +61,26 @@ def validate_record(value: Mapping[str, object]) -> dict[str, object]:
     return _validate(dict(value))
 
 
-def _write(path: Path, value: Mapping[str, object]) -> None:
+def _write(path: Path, value: Mapping[str, object], *, replace: bool = True) -> bool:
     descriptor, temporary = tempfile.mkstemp(prefix=".operational-installation-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(value, stream, sort_keys=True, separators=(",", ":")); stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600); os.replace(temporary, path)
+        os.chmod(temporary, 0o600)
+        if replace:
+            os.replace(temporary, path)
+            return True
+        try:
+            # A hard link publishes the fully-written file atomically without
+            # replacing a directory entry created after the preceding load.
+            os.link(temporary, path)
+            return True
+        except FileExistsError:
+            return False
     except BaseException:
         Path(temporary).unlink(missing_ok=True); raise
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def record(data_root: Path, *, installation_id: str, version: str, channel: str,
@@ -83,11 +100,22 @@ def record(data_root: Path, *, installation_id: str, version: str, channel: str,
     value: dict[str, object] = {"schema_version": 1, "installation_id": installation_id, "version": version, "channel": channel, "artifact_digest": artifact_digest, "source_revision": source_revision, "interpreter": str(executable), "roles": dict(roles), "desired_state": desired_state, "observed_state": observed_state, "verification": dict(verification), "cleanup": dict(cleanup)}
     _validate(value)
     root.mkdir(mode=0o700, parents=True, exist_ok=True); path = root / FILENAME
-    if path.exists():
+    try:
         existing = load(root)
+    except OperationalInstallationRecordNotFound:
+        existing = None
+    if existing is not None:
         if existing != value: raise OperationalInstallationRecordError("operational installation record already exists with different identity")
         return existing
-    _write(path, value); return value
+    if _write(path, value, replace=False):
+        return value
+    # Another writer won the atomic no-overwrite publication.  Accept only
+    # the exact idempotent identity; corrupt or conflicting bytes survive for
+    # diagnosis and make this operation fail closed.
+    existing = load(root)
+    if existing != value:
+        raise OperationalInstallationRecordError("operational installation record already exists with different identity")
+    return existing
 
 
 def replace_for_update(data_root: Path, *, expected_version: str,
@@ -120,6 +148,34 @@ def replace_for_update(data_root: Path, *, expected_version: str,
 
 
 def load(data_root: Path) -> dict[str, object]:
-    try: value = json.loads((Path(data_root).resolve() / FILENAME).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error: raise OperationalInstallationRecordError("operational installation record is unreadable") from error
+    path = Path(data_root).resolve() / FILENAME
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError as error:
+        # ``open`` also reports ENOENT for a dangling symlink.  Only a second
+        # lstat at this owning boundary can classify an absent directory entry
+        # as missing; every extant but unreadable entry remains a conflict.
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            raise OperationalInstallationRecordNotFound(
+                "operational installation record is absent"
+            ) from error
+        except OSError as state_error:
+            raise OperationalInstallationRecordError(
+                "operational installation record is unreadable"
+            ) from state_error
+        raise OperationalInstallationRecordError(
+            "operational installation record is unreadable"
+        ) from error
+    except OSError as error:
+        raise OperationalInstallationRecordError("operational installation record is unreadable") from error
+    try:
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise OperationalInstallationRecordError("operational installation record is unreadable")
+            value = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise OperationalInstallationRecordError("operational installation record is unreadable") from error
     return _validate(value)

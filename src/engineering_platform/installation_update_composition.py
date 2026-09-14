@@ -70,11 +70,12 @@ def _admitted_target(
     *,
     admission: ExecutionAdmission,
     runner: MigrationRunner,
+    service_home: Path | None = None,
 ) -> Path:
     """Resolve only the durable OI-4c candidate launcher for this operation."""
     try:
         candidate = installation_update_admission.admitted_candidate(
-            plan, admission, runner=runner,
+            plan, admission, runner=runner, service_home=service_home,
         )
     except installation_update_admission.InstallationUpdateAdmissionError as error:
         raise InstallationUpdateCompositionError("installation update execution admission is invalid") from error
@@ -88,8 +89,8 @@ def _admitted_target(
 
 
 def _admitted_pre_activation_record(admission: ExecutionAdmission) -> Mapping[str, object] | None:
-    """Pass the v2-bound old record to activation; v1 has no target resume."""
-    if admission.schema_version == 1:
+    """Pass the v2-bound old record; typed legacy v3 intentionally has none."""
+    if admission.schema_version in {1, 3}:
         return None
     if admission.schema_version != 2:
         raise InstallationUpdateCompositionError("installation update execution admission is invalid")
@@ -102,19 +103,37 @@ def _admitted_pre_activation_record(admission: ExecutionAdmission) -> Mapping[st
         raise InstallationUpdateCompositionError("installation update execution admission is invalid") from error
 
 
-def _inventory(plan: InstallationUpdatePlan, *, target: Path,
+def _inventory(plan: InstallationUpdatePlan, *, target: Path, admission: ExecutionAdmission,
                action: EvidenceAction, runner: MigrationRunner) -> Mapping[str, object]:
     """Prove the planned current record and target package before quiescing."""
     if not target.is_file():
         raise InstallationUpdateCompositionError("target interpreter is unavailable")
-    try:
-        current = operational_installation_record.load(Path(plan.data_root))
-    except operational_installation_record.OperationalInstallationRecordError as error:
-        raise InstallationUpdateCompositionError("registered operational installation is unavailable") from error
-    if (current["installation_id"] != plan.installation_id
-            or current["version"] != plan.current_version
-            or current["artifact_digest"] != plan.current_digest):
-        raise InstallationUpdateCompositionError("registered operational installation changed before update")
+    if plan.legacy_adoption is None:
+        try:
+            current = operational_installation_record.load(Path(plan.data_root))
+        except operational_installation_record.OperationalInstallationRecordError as error:
+            raise InstallationUpdateCompositionError("registered operational installation is unavailable") from error
+        if (current["installation_id"] != plan.installation_id
+                or current["version"] != plan.current_version
+                or current["artifact_digest"] != plan.current_digest):
+            raise InstallationUpdateCompositionError("registered operational installation changed before update")
+        registered: Mapping[str, object] = {
+            "kind": "REGISTERED_INSTALLATION",
+            "installation_id": current["installation_id"],
+            "version": current["version"],
+            "artifact_digest": current["artifact_digest"],
+        }
+    else:
+        if admission.schema_version != 3:
+            raise InstallationUpdateCompositionError("legacy inventory lacks typed execution admission")
+        registered = {
+            "kind": "LEGACY_ADOPTION",
+            "provenance_digest": admission.registered_installation.get("decision_digest"),
+            "installation_id": plan.installation_id,
+            "version": plan.current_version,
+            "artifact_digest": plan.current_digest,
+            "source_revision": None,
+        }
     try:
         target_identity = operational_installation.package_identity(target, runner=runner)
     except operational_installation.OperationalInstallationError as error:
@@ -123,11 +142,7 @@ def _inventory(plan: InstallationUpdatePlan, *, target: Path,
             or not _same_launcher(target_identity["interpreter"], target)):
         raise InstallationUpdateCompositionError("target interpreter does not provide the planned EP package")
     return {
-        "registered_installation": {
-            "installation_id": current["installation_id"],
-            "version": current["version"],
-            "artifact_digest": current["artifact_digest"],
-        },
+        "registered_installation": dict(registered),
         "target_package": {
             "interpreter": str(target),
             "version": target_identity["version"],
@@ -141,9 +156,10 @@ def _bound_target(
     *,
     admission: ExecutionAdmission,
     runner: MigrationRunner,
+    service_home: Path | None = None,
 ) -> Path:
     """Require a recovery attempt to keep the target proven at inventory."""
-    target = _admitted_target(plan, admission=admission, runner=runner)
+    target = _admitted_target(plan, admission=admission, runner=runner, service_home=service_home)
     try:
         events = status(Path(plan.data_root), plan.operation_id)["events"]
     except InstallationUpdateOperationError as error:
@@ -166,9 +182,12 @@ def _verify(
     admission: ExecutionAdmission,
     action: EvidenceAction,
     runner: MigrationRunner,
+    service_home: Path | None = None,
 ) -> Mapping[str, object]:
     """Keep verification bound to the runtime activated from the inventoried path."""
-    expected = _bound_target(plan, admission=admission, runner=runner)
+    expected = _bound_target(
+        plan, admission=admission, runner=runner, service_home=service_home,
+    )
     try:
         record = operational_installation_record.load(Path(plan.data_root))
     except operational_installation_record.OperationalInstallationRecordError as error:
@@ -197,24 +216,35 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
     # CAS and before the ACTIVATED journal write.
     if (not isinstance(admission, ExecutionAdmission)
             or type(admission.schema_version) is not int
-            or admission.schema_version != 2):
-        raise InstallationUpdateCompositionError("installation update requires a v2 execution admission")
+            or admission.schema_version not in {2, 3}):
+        raise InstallationUpdateCompositionError(
+            "installation update requires a v2 execution admission or typed legacy v3 evidence"
+        )
     # Reject an absent, forged, tampered, or stale admission before the
     # executor can reach a service quiesce action.  Every later runtime step
     # repeats the same durable lookup while that executor owns the lock.
-    _admitted_target(plan, admission=admission, runner=migration_runner)
+    _admitted_target(
+        plan, admission=admission, runner=migration_runner, service_home=activation_home,
+    )
     pre_activation_record = _admitted_pre_activation_record(admission)
 
     def guarded(action: EvidenceAction) -> EvidenceAction:
         def invoke(bound_plan: InstallationUpdatePlan) -> Mapping[str, object]:
-            _admitted_target(bound_plan, admission=admission, runner=migration_runner)
+            _admitted_target(
+                bound_plan, admission=admission, runner=migration_runner,
+                service_home=activation_home,
+            )
             return action(bound_plan)
         return invoke
 
     return InstallationUpdateActions(
         inventory=lambda bound_plan: _inventory(
             bound_plan,
-            target=_admitted_target(bound_plan, admission=admission, runner=migration_runner),
+            target=_admitted_target(
+                bound_plan, admission=admission, runner=migration_runner,
+                service_home=activation_home,
+            ),
+            admission=admission,
             action=actions.inventory,
             runner=migration_runner,
         ),
@@ -222,21 +252,29 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
         backup=guarded(installation_update_backup.backup),
         migrate=lambda bound_plan: installation_update_migration.migrate(
             bound_plan,
-            interpreter=_bound_target(bound_plan, admission=admission, runner=migration_runner),
+            interpreter=_bound_target(
+                bound_plan, admission=admission, runner=migration_runner,
+                service_home=activation_home,
+            ),
             runner=migration_runner,
         ),
         activate=lambda bound_plan: installation_update_activation.activate(
             bound_plan,
-            interpreter=_bound_target(bound_plan, admission=admission, runner=migration_runner),
+            interpreter=_bound_target(
+                bound_plan, admission=admission, runner=migration_runner,
+                service_home=activation_home,
+            ),
             pre_activation_record=pre_activation_record,
             home=activation_home,
             runner=activation_runner,
+            package_runner=migration_runner,
         ),
         verify=lambda bound_plan: _verify(
             bound_plan,
             admission=admission,
             action=actions.verify,
             runner=migration_runner,
+            service_home=activation_home,
         ),
     )
 

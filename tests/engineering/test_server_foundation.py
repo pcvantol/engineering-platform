@@ -495,6 +495,119 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(server.main(("installation-update-status", "--data-root", str(self.root))), 2)
 
+    def test_public_update_prepare_admit_apply_and_resume_use_only_durable_bindings(self) -> None:
+        artifact = Path(self.temporary.name) / "exact.whl"; artifact.write_bytes(b"wheel")
+        builder = Path(self.temporary.name) / "builder"; builder.write_text("#!\n"); builder.chmod(0o700)
+        source_plan = unittest.mock.MagicMock()
+        execution_plan = unittest.mock.MagicMock()
+        source_plan.payload.return_value = {"operation_id": "update-0001"}
+        execution_plan.payload.return_value = {"operation_id": "update-0001", "artifact": "staged.whl"}
+        candidate = unittest.mock.MagicMock()
+        candidate.payload.return_value = {"operation_id": "update-0001", "interpreter": "/candidate/python"}
+        arguments = (
+            "--data-root", str(self.root), "--operation-id", "update-0001",
+            "--artifact", str(artifact), "--target-version", "2.3.2",
+            "--target-digest", "sha256:" + "a" * 64,
+            "--target-source-revision", "b" * 40, "--venv-builder", str(builder),
+        )
+        with patch("engineering_platform.server.installation_update_plan.prepare", return_value=source_plan), patch(
+            "engineering_platform.server.installation_update_preparation.prepare_candidate", return_value=candidate,
+        ) as prepare_candidate, patch(
+            "engineering_platform.server.installation_update_preparation.staged_execution_plan", return_value=execution_plan,
+        ), patch("engineering_platform.server.installation_update_operation.InstallationUpdateSession") as session_type:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(("installation-update-prepare", *arguments)), 0)
+        prepare_candidate.assert_called_once_with(source_plan, venv_builder=builder)
+        session_type.return_value.__enter__.return_value.bind_prepared_candidate.assert_called_once_with(
+            candidate, runner=subprocess.run,
+        )
+
+        admission_payload = {
+            "schema_version": 2, "operation_id": "update-0001", "plan_digest": "sha256:digest",
+            "installation_id": "installation-1", "registered_installation": {},
+            "prepared_candidate": {},
+        }
+        admission = unittest.mock.MagicMock()
+        admission.payload.return_value = admission_payload
+        with patch("engineering_platform.server.installation_update_operation.reopen_plan", return_value=execution_plan) as reopen, patch(
+            "engineering_platform.server.installation_update_admission.admit", return_value=admission,
+        ):
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(("installation-update-admit", "--data-root", str(self.root), "--operation-id", "update-0001")), 0)
+        reopen.assert_called_once_with(self.root, "update-0001")
+
+        for command in ("installation-update-apply", "installation-update-resume"):
+            with self.subTest(command=command), patch(
+                "engineering_platform.server.installation_update_operation.reopen_plan", return_value=execution_plan,
+            ), patch(
+                "engineering_platform.server.installation_update_operation.execution_admission", return_value=admission_payload,
+            ), patch(
+                "engineering_platform.server._installation_update_operational_actions", return_value="actions",
+            ), patch(
+                "engineering_platform.server.installation_update_composition.execute", return_value={"state": "COMPLETE"},
+            ) as execute_update, redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main((command, "--data-root", str(self.root), "--operation-id", "update-0001")), 0)
+                execute_update.assert_called_once()
+
+    def test_public_update_operational_actions_inventory_quiesce_and_verify_exact_runtime(self) -> None:
+        selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!\n"); selected.chmod(0o700)
+        actions = server._installation_update_operational_actions(self.root)
+        runtime = type("Runtime", (), {"loaded": True})()
+        configuration = type("Configuration", (), {"bind_host": "127.0.0.1", "bind_port": 8765})()
+        installation, package = object(), {"version": "2.3.2"}
+        registered, response, qualification = {"state": "REGISTERED"}, {"healthy": True}, {"qualification": "PASS"}
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+            "engineering_platform.server.operational_installation.package_identity", return_value=package,
+        ), patch("engineering_platform.server.central_database.details", return_value={"integrity": "PASS"}):
+            self.assertEqual(actions.inventory(object())["package_version"], "2.3.2")
+        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type:
+            lifecycle_type.return_value.runtime_details.return_value = runtime
+            self.assertEqual(actions.quiesce(object())["state"], "QUIESCED")
+            lifecycle_type.return_value.quiesce.assert_called_once()
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+            "engineering_platform.server.operational_installation.resolve", return_value=installation,
+        ), patch("engineering_platform.server.operational_installation.package_identity", return_value=package), patch(
+            "engineering_platform.server.operational_installation.record_status", return_value=registered,
+        ), patch("engineering_platform.server.ServerConfiguration.load", return_value=configuration), patch(
+            "engineering_platform.server._health_response", side_effect=(OSError("starting"), response),
+        ), patch("engineering_platform.server.time.sleep"), patch(
+            "engineering_platform.server.operational_installation.qualify_runtime_response", return_value=qualification,
+        ) as qualify:
+            self.assertEqual(actions.verify(object()), {"result": "PASS", "qualification": qualification})
+        qualify.assert_called_once_with(installation, record=registered, package=package, response=response)
+
+    def test_public_update_operational_actions_fail_closed_and_quiesce_idempotently(self) -> None:
+        actions = server._installation_update_operational_actions(self.root)
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=None):
+            with self.assertRaisesRegex(server.ServerConfigurationError, "existing EP user service"):
+                actions.inventory(object())
+            with self.assertRaisesRegex(server.ServerConfigurationError, "activated EP user service"):
+                actions.verify(object())
+
+        unloaded = type("Runtime", (), {"loaded": False})()
+        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type:
+            lifecycle_type.return_value.runtime_details.return_value = unloaded
+            self.assertEqual(actions.quiesce(object())["state"], "ALREADY_QUIESCED")
+            lifecycle_type.return_value.quiesce.assert_not_called()
+
+        loaded = type("Runtime", (), {"loaded": True})()
+        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type:
+            lifecycle_type.return_value.runtime_details.side_effect = (loaded, unloaded)
+            lifecycle_type.return_value.quiesce.side_effect = OSError("already stopped")
+            self.assertEqual(actions.quiesce(object())["state"], "ALREADY_QUIESCED")
+
+        selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!\n"); selected.chmod(0o700)
+        configuration = type("Configuration", (), {"bind_host": "127.0.0.1", "bind_port": 8765})()
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
+            "engineering_platform.server.operational_installation.resolve"
+        ), patch("engineering_platform.server.operational_installation.package_identity", return_value={"version": "2.3.2"}), patch(
+            "engineering_platform.server.operational_installation.record_status", return_value={"state": "REGISTERED"},
+        ), patch("engineering_platform.server.ServerConfiguration.load", return_value=configuration), patch(
+            "engineering_platform.server._health_response", side_effect=OSError("unavailable"),
+        ), patch("engineering_platform.server.time.sleep"):
+            with self.assertRaisesRegex(server.ServerConfigurationError, "health identity"):
+                actions.verify(object())
+
     def test_queue_operator_capability_grant_and_revoke_are_durable(self) -> None:
         server.initialize(self.root)
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:

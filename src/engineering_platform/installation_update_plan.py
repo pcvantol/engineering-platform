@@ -35,7 +35,13 @@ class InstallationUpdatePlan:
     legacy_adoption: dict[str, object] | None = None
 
     def payload(self) -> dict[str, object]:
-        return asdict(self)
+        value = asdict(self)
+        # Preserve pre-legacy journal bytes and their recorded digest.  The
+        # absent optional field is the sole historical compatibility case;
+        # non-empty legacy evidence is always explicit and immutable.
+        if value["legacy_adoption"] is None:
+            del value["legacy_adoption"]
+        return value
 
 
 def _digest(path: Path) -> str:
@@ -80,7 +86,7 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
     legacy = None
     try:
         current = operational_installation_record.load(root)
-    except operational_installation_record.OperationalInstallationRecordError as error:
+    except operational_installation_record.OperationalInstallationRecordNotFound:
         # A missing release record can enter only through one previously
         # persisted, exact legacy decision.  It remains an observation—not a
         # fabricated old release or a generally nullable source revision.
@@ -94,6 +100,8 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
         current = {"installation_id": observed.instance_id, "version": observed.version,
                    "artifact_digest": observed.artifact_digest}
         legacy = observed.payload()
+    except operational_installation_record.OperationalInstallationRecordError as error:
+        raise InstallationUpdatePlanError("registered operational installation is invalid") from error
     current_version = str(current["version"])
     current_semver, target_semver = _version(current_version, "registered operational"), _version(target_version, "target")
     if target_semver < current_semver:

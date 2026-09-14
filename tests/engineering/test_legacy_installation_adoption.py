@@ -140,6 +140,13 @@ class LegacyInstallationAdoptionTests(unittest.TestCase):
             with self.assertRaisesRegex(LegacyInstallationAdoptionError, "different identity"):
                 adopt(observation=observed, authorization=conflicting, authorizer=lambda *_args: None)
 
+            path = root / "legacy-installation-adoption.json"
+            path.unlink()
+            path.symlink_to(root / "missing-decision")
+            with self.assertRaisesRegex(LegacyInstallationAdoptionError, "unreadable"):
+                adopt(observation=observed, authorization=good, authorizer=lambda *_args: None)
+            self.assertTrue(path.is_symlink())
+
     def test_real_adoption_record_is_the_only_legacy_update_plan_baseline(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "runtime"; root.mkdir(mode=0o700)

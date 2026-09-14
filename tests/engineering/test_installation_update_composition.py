@@ -179,13 +179,14 @@ class InstallationUpdateCompositionTests(unittest.TestCase):
                 self.assertIs(runner, migration_runner)
                 return {"interpreter": str(target), "integrity": "PASS", "schema_version": 56}
 
-            def activate(bound_plan, *, interpreter, pre_activation_record, home, runner):
+            def activate(bound_plan, *, interpreter, pre_activation_record, home, runner, package_runner):
                 calls.append("activate")
                 self.assertIs(bound_plan, plan)
                 self.assertEqual(interpreter, target)
                 self.assertEqual(pre_activation_record, admission.registered_installation["record"])
                 self.assertEqual(home, activation_home)
                 self.assertIs(runner, migration_runner)
+                self.assertIs(package_runner, migration_runner)
                 return self._replacement(bound_plan, target, original=pre_activation_record)
 
             with patch(
@@ -237,7 +238,7 @@ class InstallationUpdateCompositionTests(unittest.TestCase):
                 self.assertIs(runner, candidate_runner)
                 return {"result": "PASS", "interpreter": str(interpreter)}
 
-            def activate(_plan, *, interpreter, pre_activation_record, home, runner):
+            def activate(_plan, *, interpreter, pre_activation_record, home, runner, package_runner):
                 first_calls.append("activate")
                 self.assertEqual(interpreter, target)
                 self.assertEqual(pre_activation_record, original)
@@ -280,7 +281,7 @@ class InstallationUpdateCompositionTests(unittest.TestCase):
                 resumed_calls.append("migrate")
                 return {"result": "PASS"}
 
-            def resumed_activate(_plan, *, interpreter, pre_activation_record, home, runner):
+            def resumed_activate(_plan, *, interpreter, pre_activation_record, home, runner, package_runner):
                 resumed_calls.append("activate")
                 self.assertEqual(interpreter, target)
                 self.assertEqual(pre_activation_record, original)
@@ -302,7 +303,7 @@ class InstallationUpdateCompositionTests(unittest.TestCase):
                 result = execute(plan, admission=admission, actions=resumed, migration_runner=candidate_runner)
 
             self.assertEqual(result["state"], "COMPLETE")
-            self.assertEqual(resumed_calls, ["activate", "verify"])
+            self.assertEqual(resumed_calls, ["verify"])
 
     def test_rejects_every_noncanonical_target_record_during_migrated_recovery(self) -> None:
         changes = (

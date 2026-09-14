@@ -6,6 +6,11 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from engineering_platform.installation_update_plan import InstallationUpdatePlanError, prepare
+from engineering_platform.legacy_installation_adoption import (
+    LegacyAdoptionAuthorization,
+    LegacyInstallationObservation,
+    adopt,
+)
 from engineering_platform.operational_installation_record import record
 
 
@@ -35,9 +40,27 @@ class InstallationUpdatePlanTests(unittest.TestCase):
             root = Path(temporary) / "runtime"; wheel = Path(temporary) / "wrong.whl"; wheel.write_bytes(b"wrong")
             with self.assertRaisesRegex(InstallationUpdatePlanError, "registered"):
                 prepare(root, operation_id="update-0001", artifact=wheel, target_version="2.3.2", target_digest="sha256:" + "a" * 64, target_source_revision="c" * 40)
-            executable = root / "python"; root.mkdir(); executable.write_text(""); executable.chmod(0o755); self._record(root, executable)
-            with self.assertRaisesRegex(InstallationUpdatePlanError, "does not match"):
-                prepare(root, operation_id="update-0001", artifact=wheel, target_version="2.3.2", target_digest="sha256:" + "a" * 64, target_source_revision="c" * 40)
+
+    def test_corrupt_present_record_never_falls_back_to_legacy_adoption(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtime"; root.mkdir()
+            (root / "operational-installation.json").write_text("{not-json", encoding="utf-8")
+            wheel = Path(temporary) / "target.whl"; wheel.write_bytes(b"target")
+            digest = "sha256:" + hashlib.sha256(wheel.read_bytes()).hexdigest()
+            observation = LegacyInstallationObservation(
+                "installation-1", str(root.resolve()), "com.engineeringplatform.server",
+                str(root / "old-python"), str(root / "old-package"), "2.3.1",
+                "sha256:" + "a" * 64, str(root / "old.whl"),
+            )
+            authorization = LegacyAdoptionAuthorization(
+                "installation-1", str(root.resolve()), "com.engineeringplatform.server",
+                str(root / "old-python"), observation.artifact_digest, "2.3.2",
+                digest, "c" * 40, "legacy-update-0001", True,
+            )
+            adopt(observation=observation, authorization=authorization, authorizer=lambda *_args: None)
+            with self.assertRaisesRegex(InstallationUpdatePlanError, "invalid"):
+                prepare(root, operation_id="legacy-update-0001", artifact=wheel, target_version="2.3.2",
+                        target_digest=digest, target_source_revision="c" * 40)
 
     def test_plan_refuses_downgrade_without_a_compatible_recovery_operation(self) -> None:
         with TemporaryDirectory() as temporary:

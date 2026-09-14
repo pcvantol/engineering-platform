@@ -1,9 +1,19 @@
+import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from engineering_platform.installation_update_plan import InstallationUpdatePlan
-from engineering_platform.installation_update_operation import InstallationUpdateOperationError, InstallationUpdateSession, cleanup, create, status, transition
+from engineering_platform.installation_update_operation import (
+    InstallationUpdateOperationError,
+    InstallationUpdateSession,
+    cleanup,
+    create,
+    reopen_plan,
+    status,
+    transition,
+)
 
 
 def plan(root: Path) -> InstallationUpdatePlan:
@@ -107,3 +117,51 @@ class InstallationUpdateOperationTests(unittest.TestCase):
                 session.advance("INVENTORIED", {})
             with self.assertRaisesRegex(InstallationUpdateOperationError, "does not own"):
                 session.cleanup()
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "does not own"):
+                session.execution_admission()
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "does not own"):
+                session.prepared_record_provenance()
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "does not own"):
+                session.bind_execution_admission({})
+
+    def test_historical_plan_payload_and_digest_reopen_without_rewrite(self):
+        with TemporaryDirectory() as temporary:
+            update = plan(Path(temporary))
+            original_plan = {
+                "operation_id": update.operation_id,
+                "installation_id": update.installation_id,
+                "data_root": update.data_root,
+                "current_version": update.current_version,
+                "current_digest": update.current_digest,
+                "target_version": update.target_version,
+                "target_digest": update.target_digest,
+                "target_source_revision": update.target_source_revision,
+                "artifact": update.artifact,
+                "cleanup_targets": list(update.cleanup_targets),
+                "steps": list(update.steps),
+            }
+            canonical = json.dumps(original_plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            original_digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+            journal = Path(update.data_root) / "operations" / update.operation_id / "operation.json"
+            journal.parent.mkdir(parents=True)
+            journal.write_text(json.dumps({
+                "schema_version": 2, "operation_id": update.operation_id,
+                "plan": original_plan, "plan_digest": original_digest,
+                "state": "PREPARED", "events": [{"state": "PREPARED", "evidence": {}}],
+                "prepared_candidate": None, "prepared_candidate_digest": None,
+            }), encoding="utf-8")
+
+            with InstallationUpdateSession(update) as resumed:
+                resumed.advance("INVENTORIED", {"historical_resume": "PASS"})
+            self.assertEqual(reopen_plan(Path(temporary), update.operation_id), update)
+            reopened = json.loads(journal.read_text(encoding="utf-8"))
+            self.assertEqual(reopened["plan"], original_plan)
+            self.assertEqual(reopened["plan_digest"], original_digest)
+            self.assertNotIn("legacy_adoption", reopened["plan"])
+
+            forged = InstallationUpdatePlan(**{
+                **update.__dict__,
+                "legacy_adoption": {"source_revision": None},
+            })
+            with self.assertRaisesRegex(InstallationUpdateOperationError, "exact plan"):
+                create(forged)

@@ -73,6 +73,30 @@ def _activate(plan: InstallationUpdatePlan, action: ActivationAction) -> dict[st
             "source_revision": updated["source_revision"]}
 
 
+def _recovered_activation(plan: InstallationUpdatePlan) -> dict[str, object] | None:
+    """Acknowledge an exact record write whose journal acknowledgement was lost."""
+    try:
+        record = operational_installation_record.load(Path(plan.data_root))
+    except operational_installation_record.OperationalInstallationRecordNotFound:
+        if plan.legacy_adoption is not None:
+            return None
+        raise InstallationUpdateExecutorError("registered installation disappeared during activation") from None
+    except operational_installation_record.OperationalInstallationRecordError as error:
+        raise InstallationUpdateExecutorError("installation update activation record is invalid") from error
+    if (record["installation_id"] == plan.installation_id
+            and record["version"] == plan.target_version
+            and record["artifact_digest"] == plan.target_digest
+            and record["source_revision"] == plan.target_source_revision):
+        return {"installation_id": record["installation_id"], "interpreter": record["interpreter"],
+                "version": record["version"], "artifact_digest": record["artifact_digest"],
+                "source_revision": record["source_revision"]}
+    if (record["installation_id"] == plan.installation_id
+            and record["version"] == plan.current_version
+            and record["artifact_digest"] == plan.current_digest):
+        return None
+    raise InstallationUpdateExecutorError("operational installation changed during activation recovery")
+
+
 def _verified(plan: InstallationUpdatePlan, action: EvidenceAction) -> dict[str, object]:
     evidence = _evidence(action(plan), "verification")
     try:
@@ -123,7 +147,10 @@ def execute(plan: InstallationUpdatePlan, actions: InstallationUpdateActions) ->
                     evidence = _inventory(plan, action) if state == "INVENTORIED" else _evidence(action(plan), state.lower())
                     current = session.advance(state, evidence)
             if current["state"] == "MIGRATED":
-                current = session.advance("ACTIVATED", _activate(plan, actions.activate))
+                recovered = _recovered_activation(plan)
+                current = session.advance(
+                    "ACTIVATED", recovered if recovered is not None else _activate(plan, actions.activate),
+                )
             if current["state"] == "ACTIVATED":
                 current = session.advance("VERIFIED", _verified(plan, actions.verify))
             if current["state"] in {"VERIFIED", "CLEANUP_PENDING"}:

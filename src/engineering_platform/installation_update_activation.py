@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+from typing import Callable
 from typing import Mapping
 
 from . import operational_installation, operational_installation_record, server_service
@@ -77,7 +79,8 @@ def legacy_replacement_record(plan: InstallationUpdatePlan, *, interpreter: str 
 
 def activate(plan: InstallationUpdatePlan, *, interpreter: str | Path,
              pre_activation_record: Mapping[str, object] | None = None,
-             home: Path | None = None, runner: server_service.Runner | None = None) -> Mapping[str, object]:
+             home: Path | None = None, runner: server_service.Runner | None = None,
+             package_runner: Callable[..., object] = subprocess.run) -> Mapping[str, object]:
     """Activate one exact installed EP interpreter, without PATH selection.
 
     The executor performs the following record CAS only after this action
@@ -105,7 +108,7 @@ def activate(plan: InstallationUpdatePlan, *, interpreter: str | Path,
                 service_expected = target
             else:
                 raise InstallationUpdateActivationError("operational installation changed before activation")
-        identity = operational_installation.package_identity(target)
+        identity = operational_installation.package_identity(target, runner=package_runner)
         if (identity["version"] != plan.target_version
                 or Path(str(identity["interpreter"])).expanduser().absolute() != target):
             raise InstallationUpdateActivationError("replacement interpreter does not provide the target EP version")
