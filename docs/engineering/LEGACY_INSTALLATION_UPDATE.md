@@ -70,3 +70,8 @@ verification and operation-scoped cleanup steps. A retry recognizes durable
 progress and the two activation acknowledgement windows: service already on
 the admitted target before record creation, and exact target record already
 written before the `ACTIVATED` journal event.
+
+After durable verification, a later resume may find that operation-scoped
+cleanup has already removed the staged wheel. It then reopens the digest-bound
+candidate evidence and accepts only the exact target record and service for the
+same operation; it does not reactivate or reconstruct legacy provenance.
