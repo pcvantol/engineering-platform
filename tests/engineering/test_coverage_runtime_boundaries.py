@@ -502,6 +502,21 @@ class InstallationBoundaryTests(unittest.TestCase):
         translate.assert_called_once_with("nl", ["Recorded validation passed."])
         self.assertEqual(responses[-1], (200, {"translations": ["Validatie geslaagd."]}))
 
+    def test_translation_parser_recursion_returns_safe_bad_request_without_provider(self) -> None:
+        # Python 3.11 can raise RecursionError for a byte-bounded nested body;
+        # newer decoders need not. Exercise that supported decoder outcome.
+        body = b'{"locale":"nl","texts":' + b'[' * 2000 + b'0' + b']' * 2000 + b'}'
+        handler, responses = self._in_process_console_handler(
+            "/api/dashboard-translate", body=body,
+            headers={"X-Engineering-Platform-Project": "project-a", "Content-Length": str(len(body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": "project-a"}]), patch(
+            "engineering_platform.server.json.loads", side_effect=RecursionError
+        ), patch("engineering_platform.server.dashboard_translation.translate") as translate:
+            handler._delegate_dashboard("do_POST")
+        translate.assert_not_called()
+        self.assertEqual(responses, [(400, {"error": "DASHBOARD_TRANSLATION_REQUEST_INVALID"})])
+
     def test_console_dispatch_success_paths_require_server_services_not_checkout_state(self) -> None:
         """Successes are explicit Server service calls, not legacy fallthrough."""
         projects = [{"project_id": "project-a"}]

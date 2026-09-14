@@ -575,7 +575,7 @@ the canonical local-path copy control.
 
 ## 8. Localization and content rules
 
-All user-facing console strings are catalogued in
+Static user-facing console strings are catalogued in
 `assets/dashboard_locales.mjs` for **en, nl, de, fr and es**. New copy must
 ship in all five language blocks and must not introduce a visible string
 literal into `dashboard.js`. Keep operation language concrete:
@@ -600,15 +600,40 @@ literal into `dashboard.js`. Keep operation language concrete:
   both active and historical detail views. Stored evidence is never changed.
 - `POST /api/dashboard-translate` is a selected-project CENTRAL Console route,
   protected by the same-origin and project guards. It accepts one supported
-  locale and one to eight non-empty Unicode texts, each up to 4,096 characters
-  and 24,000 characters per request; output is bounded to 6,144 characters per
-  item. The browser batches larger visible inventories, deduplicates in-flight
-  source/locale work, and keeps a bounded transient cache. English returns the
-  exact source without provider work. The managed provider receives untrusted
-  text as read-only data and may not alter authority or persistence.
+  locale and one to eight non-empty Unicode texts, each up to 4,096 codepoints
+  and 24,000 codepoints per request. Python `len()` and JavaScript codepoint
+  iteration share this length definition; UTF-16 `string.length` does not.
+  The actual JSON body, including locale, escaping and overhead, must fit
+  32,768 UTF-8 bytes. Output is bounded to 6,144 codepoints per item. The
+  browser batches without truncating, normalizing or reordering sources;
+  individually invalid sources fall back independently.
+- `assets/dashboard_translation.mjs` owns a 256-entry successful-translation
+  LRU cache, at most two concurrent requests and 640 pending unique sources
+  (plus at most 16 active sources). Each source/locale request has at most
+  16 DOM subscribers. Saturation retains the source. A separate, bounded
+  1,024-entry failure registry permits at most two automatic attempts with
+  a 15-second interval; ordinary rerenders cannot start an endless retry loop.
+  An explicit locale switch or detail reopen resets the failure epoch without
+  duplicating in-flight work. The server's independent insertion-order cache
+  holds at most 512 entries.
+- The translation provider has an enforced 75-second subprocess deadline
+  and a combined stdout/stderr limit of 1,048,576 bytes. Its own process
+  session is terminated on completion or error and its direct child reaped.
+  The browser has a separate 80-second transport deadline; aborting fetch
+  does not replace the server deadline. No other process/session is stopped.
+  The managed provider receives untrusted text as read-only data and may not
+  alter authority or persistence. English starts no provider work.
+- Catalog membership is identified explicitly before diagnostic formatting;
+  adding line breaks is not proof of translation. Unknown diagnostic prose
+  retains its exact source separately. Formatting applies to successful
+  translations and the English source projection; failures show the full
+  byte-exact source. Technical literals and canonical downloads stay unchanged.
 - A locale switch rerenders currently visible active and historical surfaces
   in place, including open detail modals. Obsolete async responses are ignored
-  when their source, element, or locale no longer matches. On a provider or
+  when their source, element, locale or open modal no longer matches. Pending
+  obsolete locale work is discarded. Form values, expanded sections, active
+  project and modal identity, focus and scroll are retained without submitting
+  actions or changing runtime configuration. On a provider or
   request failure the exact source remains visible with a localized temporary
   unavailability indication; failures are not cached as translations.
 

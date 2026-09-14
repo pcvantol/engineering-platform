@@ -2876,6 +2876,41 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toContainText(source);
   });
 
+  test("translates unknown diagnostics independently of formatting and preserves literal sources", async ({ page }) => {
+    const source = "Validation blocked. Expected: usable scratch. Observed: missing directory.";
+    const translated = "Validatie geblokkeerd. Verwacht: bruikbare werkruimte. Waargenomen: ontbrekende map.";
+    const requests = [];
+    await page.route("**/api/dashboard-translate", async (route) => {
+      const payload = route.request().postDataJSON();
+      requests.push(payload);
+      await route.fulfill({ json: { translations: payload.texts.map(() => translated) } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await selectDashboardLocale(page, "nl");
+    const show = (diagnostic) => page.evaluate((text) => {
+      const modal = document.querySelector("#promptHistoryDetailModal");
+      if (!modal.open) modal.showModal();
+      renderPromptHistoryDetail({ history: {
+        run_id: "diagnostic-projection", status: "BLOCKED", blocking_reason: text,
+      } });
+    }, diagnostic);
+    const detail = page.locator("#promptHistoryDetailContent");
+    await show(source);
+    await expect(detail).toContainText(translated.replaceAll(". ", ".\n"));
+    expect(requests.flatMap(({ texts }) => texts)).toEqual([source]);
+    await show("Waiting for the operator to merge the pull request.");
+    await expect(detail).toContainText(DASHBOARD_MESSAGES.nl["operational.waiting_for_operator_merge"]);
+    for (const literal of ["DETERMINISTIC_ADMISSION", "/tmp/missing-directory", "git status --short", "a".repeat(40)]) {
+      await show(literal);
+      await expect(detail).toContainText(literal);
+    }
+    expect(requests.flatMap(({ texts }) => texts)).toEqual([source]);
+    await selectDashboardLocale(page, "en");
+    await show(source);
+    await expect(detail).toContainText(source.replaceAll(". ", ".\n"));
+    expect(requests).toHaveLength(1);
+  });
+
   test("keeps lease-lost finalization visible for safe recovery", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));

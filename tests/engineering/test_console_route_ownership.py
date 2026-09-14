@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
@@ -106,3 +107,21 @@ class ConsoleRouteOwnershipTest(unittest.TestCase):
             source = Path(temporary) / "src" / "engineering_platform"; source.mkdir(parents=True)
             (source / "server.py").write_text('selected = self.headers.get("X-Engineering-Platform-Project")\n', encoding="utf-8")
             self.assertIn("PLATFORM_ROUTE_PROJECT_DELEGATION", guard.violations(source.parent))
+
+    def test_guard_requires_imported_translation_module_and_its_real_route(self) -> None:
+        for missing in ("import", "asset", "route"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temporary:
+                source = Path(temporary) / "engineering_platform"
+                assets = source / "assets"
+                assets.mkdir(parents=True)
+                shutil.copyfile(SOURCE_ROOT / "engineering_platform/server.py", source / "server.py")
+                dashboard = (SOURCE_ROOT / "engineering_platform/assets/dashboard.js").read_text()
+                translation = (SOURCE_ROOT / "engineering_platform/assets/dashboard_translation.mjs").read_text()
+                if missing == "import":
+                    dashboard = dashboard.replace('import { createDynamicEvidenceLocalizer } from "./dashboard_translation.mjs";', "")
+                if missing == "route":
+                    translation = translation.replace("/api/dashboard-translate", "/api/wrong-route")
+                (assets / "dashboard.js").write_text(dashboard)
+                if missing != "asset":
+                    (assets / "dashboard_translation.mjs").write_text(translation)
+                self.assertIn("DASHBOARD_FETCH_CONTRACT_INCOMPLETE", guard.violations(source.parent))

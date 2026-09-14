@@ -1,10 +1,10 @@
 {
   "name": "engineering-platform-browser-validation",
   "private": true,
-  "version": "2.3.35",
+  "version": "2.3.37",
   "scripts": {
     "test:engineering-dashboard": "PYTHONPATH=src python3 -m engineering_platform.dashboard_browser_validation",
-    "test:engineering-dashboard-logic": "node --test tests/engineering/dashboard_status_store.test.mjs tests/engineering/ui_localization_contract.test.mjs",
+    "test:engineering-dashboard-logic": "node --test tests/engineering/dashboard_status_store.test.mjs tests/engineering/ui_localization_contract.test.mjs tests/engineering/dashboard_translation.test.mjs",
     "test:ui-localization": "node tools/qualification/ui_localization_contract.mjs .",
     "test:p-transport-ingress-matrix": "python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root ."
   },
