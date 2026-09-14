@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -433,8 +434,37 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
             second_activation.assert_not_called()
             self.assertTrue((root / "operations" / plan.operation_id / "backup" / "central.sqlite").is_file())
 
+    @patch("engineering_platform.server_service.platform.system", return_value="Darwin")
+    def test_migration_side_effect_before_event_is_resumable(self, _platform) -> None:  # type: ignore[no-untyped-def]
+        with TemporaryDirectory() as temporary:
+            root, home, _old_package, plan, candidate, admission, runner = self._prepared(Path(temporary))
+            target = Path(candidate.interpreter)
+            original_advance = InstallationUpdateSession.advance
+
+            def lose_migrated_event(session, state, evidence):  # type: ignore[no-untyped-def]
+                if state == "MIGRATED":
+                    raise RuntimeError("lost MIGRATED event")
+                return original_advance(session, state, evidence)
+
+            with patch.object(InstallationUpdateSession, "advance", new=lose_migrated_event), self.assertRaisesRegex(
+                RuntimeError, "lost MIGRATED event",
+            ):
+                execute(
+                    plan, admission=admission, actions=self._actions(root, home, target),
+                    migration_runner=runner, activation_home=home,
+                    activation_runner=self._service_runner,
+                )
+            self.assertEqual(status(root, plan.operation_id)["state"], "BACKED_UP")
+
+            result = execute(
+                plan, admission=admission, actions=self._actions(root, home, target),
+                migration_runner=runner, activation_home=home,
+                activation_runner=self._service_runner,
+            )
+            self.assertEqual(result["state"], "COMPLETE")
+
     def test_stale_service_or_package_blocks_admission_before_mutation(self) -> None:
-        for changed in ("service", "package"):
+        for changed in ("service", "service_data_root", "package"):
             with self.subTest(changed=changed), TemporaryDirectory() as temporary:
                 root, home, old_package, plan, candidate, _admission, runner = self._prepared(Path(temporary))
                 # Recreate the PREPARED state without consuming the existing
@@ -449,6 +479,13 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
                     other = Path(temporary) / "other-python"
                     other.write_text("#!\n", encoding="utf-8"); other.chmod(0o700)
                     server_service.write_plist(server_service.default_paths(root, home), other)
+                elif changed == "service_data_root":
+                    paths = server_service.default_paths(root, home)
+                    with paths.plist_path.open("rb") as stream:
+                        payload = plistlib.load(stream)
+                    payload["ProgramArguments"][-1] = str(Path(temporary) / "other-instance")
+                    with paths.plist_path.open("wb") as stream:
+                        plistlib.dump(payload, stream)
                 else:
                     (old_package / "__init__.py").write_text("changed\n", encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "legacy installation changed"):

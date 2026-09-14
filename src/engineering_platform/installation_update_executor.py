@@ -32,6 +32,7 @@ class InstallationUpdateActions:
     migrate: EvidenceAction
     activate: ActivationAction
     verify: EvidenceAction
+    expected_activation: Mapping[str, object] | None = None
 
 
 def _evidence(value: Mapping[str, object], step: str) -> dict[str, object]:
@@ -73,8 +74,25 @@ def _activate(plan: InstallationUpdatePlan, action: ActivationAction) -> dict[st
             "source_revision": updated["source_revision"]}
 
 
-def _recovered_activation(plan: InstallationUpdatePlan) -> dict[str, object] | None:
+def _recovered_activation(
+    plan: InstallationUpdatePlan,
+    expected_replacement: Mapping[str, object] | None,
+) -> dict[str, object] | None:
     """Acknowledge an exact record write whose journal acknowledgement was lost."""
+    try:
+        expected = (
+            operational_installation_record.validate_record(expected_replacement)
+            if expected_replacement is not None else None
+        )
+    except operational_installation_record.OperationalInstallationRecordError as error:
+        raise InstallationUpdateExecutorError("installation update activation expectation is invalid") from error
+    if expected is not None and (
+        expected["installation_id"] != plan.installation_id
+        or expected["version"] != plan.target_version
+        or expected["artifact_digest"] != plan.target_digest
+        or expected["source_revision"] != plan.target_source_revision
+    ):
+        raise InstallationUpdateExecutorError("installation update activation expectation is invalid")
     try:
         record = operational_installation_record.load(Path(plan.data_root))
     except operational_installation_record.OperationalInstallationRecordNotFound:
@@ -83,10 +101,7 @@ def _recovered_activation(plan: InstallationUpdatePlan) -> dict[str, object] | N
         raise InstallationUpdateExecutorError("registered installation disappeared during activation") from None
     except operational_installation_record.OperationalInstallationRecordError as error:
         raise InstallationUpdateExecutorError("installation update activation record is invalid") from error
-    if (record["installation_id"] == plan.installation_id
-            and record["version"] == plan.target_version
-            and record["artifact_digest"] == plan.target_digest
-            and record["source_revision"] == plan.target_source_revision):
+    if expected is not None and record == expected:
         return {"installation_id": record["installation_id"], "interpreter": record["interpreter"],
                 "version": record["version"], "artifact_digest": record["artifact_digest"],
                 "source_revision": record["source_revision"]}
@@ -147,7 +162,7 @@ def execute(plan: InstallationUpdatePlan, actions: InstallationUpdateActions) ->
                     evidence = _inventory(plan, action) if state == "INVENTORIED" else _evidence(action(plan), state.lower())
                     current = session.advance(state, evidence)
             if current["state"] == "MIGRATED":
-                recovered = _recovered_activation(plan)
+                recovered = _recovered_activation(plan, actions.expected_activation)
                 current = session.advance(
                     "ACTIVATED", recovered if recovered is not None else _activate(plan, actions.activate),
                 )

@@ -110,7 +110,8 @@ def _same_launcher(left: str | Path, right: str | Path) -> bool:
 
 def _verify_record(plan: InstallationUpdatePlan, candidate: PreparedUpdateCandidate, *,
                    runner: object = subprocess.run, service_home: Path | None = None,
-                   allowed_target_interpreter: str | Path | None = None) -> dict[str, object]:
+                   allowed_target_interpreter: str | Path | None = None,
+                   allow_target_configured_version: bool = False) -> dict[str, object]:
     if plan.legacy_adoption is not None:
         if _same_launcher(str(plan.legacy_adoption.get("interpreter", "")), candidate.interpreter):
             raise InstallationUpdateAdmissionError("prepared candidate is already selected as the legacy runtime")
@@ -121,6 +122,7 @@ def _verify_record(plan: InstallationUpdatePlan, candidate: PreparedUpdateCandid
                 target_source_revision=plan.target_source_revision, runner=runner,
                 service_home=service_home,
                 allowed_target_interpreter=allowed_target_interpreter,
+                allow_target_configured_version=allow_target_configured_version,
             )
             return current_record_provenance(plan)
         except (legacy_installation_adoption.LegacyInstallationAdoptionError,
@@ -336,6 +338,7 @@ def admitted_candidate(
                 raise InstallationUpdateAdmissionError("operational installation conflicts with admitted legacy baseline")
             snapshot = _verify_record(
                 plan, candidate, runner=runner, service_home=service_home,
+                allow_target_configured_version=state == "BACKED_UP",
             )
             _require_pre_activation_provenance(plan, admission, snapshot)
         elif state == "MIGRATED":

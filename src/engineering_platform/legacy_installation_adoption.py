@@ -328,13 +328,14 @@ def revalidate_bound_baseline(
     runner: Callable[..., object] | None = None,
     service_home: Path | None = None,
     allowed_target_interpreter: str | Path | None = None,
+    allow_target_configured_version: bool = False,
 ) -> dict[str, object]:
     """Recheck authority, service selection, wheel and installed old bytes.
 
-    The caller owns the installation session lock.  ``allowed_target_interpreter``
-    is used only in the MIGRATED activation acknowledgement window: the old
-    package must still match its wheel, while the service may already select
-    the exact admitted candidate.
+    The caller owns the installation session lock. ``allow_target_configured_version``
+    covers a migration side effect whose journal acknowledgement was lost,
+    while still requiring the old service selection. ``allowed_target_interpreter``
+    additionally covers the MIGRATED activation acknowledgement window.
     """
     root = Path(data_root).expanduser().resolve()
     try:
@@ -365,7 +366,7 @@ def revalidate_bound_baseline(
     except operational_installation.OperationalInstallationError as error:
         raise LegacyInstallationAdoptionError("observed legacy installation changed after adoption") from error
     allowed_versions = {None, observation.version}
-    if allowed_target_interpreter is not None:
+    if allow_target_configured_version or allowed_target_interpreter is not None:
         # The exact-target migration invokes target initialize() before the
         # service switch and therefore may already have advanced the product
         # version in server.json.  This is not evidence that the old package

@@ -223,10 +223,22 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
     # Reject an absent, forged, tampered, or stale admission before the
     # executor can reach a service quiesce action.  Every later runtime step
     # repeats the same durable lookup while that executor owns the lock.
-    _admitted_target(
+    admitted_target = _admitted_target(
         plan, admission=admission, runner=migration_runner, service_home=activation_home,
     )
     pre_activation_record = _admitted_pre_activation_record(admission)
+    try:
+        expected_activation = (
+            installation_update_activation.legacy_replacement_record(
+                plan, interpreter=admitted_target,
+            )
+            if plan.legacy_adoption is not None else
+            installation_update_activation.replacement_record(
+                plan, current=pre_activation_record, interpreter=admitted_target,
+            )
+        )
+    except (TypeError, installation_update_activation.InstallationUpdateActivationError) as error:
+        raise InstallationUpdateCompositionError("installation update activation expectation is invalid") from error
 
     def guarded(action: EvidenceAction) -> EvidenceAction:
         def invoke(bound_plan: InstallationUpdatePlan) -> Mapping[str, object]:
@@ -276,6 +288,7 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
             runner=migration_runner,
             service_home=activation_home,
         ),
+        expected_activation=expected_activation,
     )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import plistlib
 import subprocess
 import sys
 import unittest
@@ -53,6 +54,16 @@ class ServerServiceTests(unittest.TestCase):
         paths = server_service.default_paths(self.root, self.home)
         server_service.write_plist(paths, Path(sys.executable))
         self.assertEqual(server_service.configured_interpreter(self.root, home=self.home), Path(sys.executable).absolute())
+
+    def test_configured_interpreter_rejects_a_service_bound_to_another_data_root(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        server_service.write_plist(paths, Path(sys.executable))
+        with paths.plist_path.open("rb") as stream:
+            payload = plistlib.load(stream)
+        payload["ProgramArguments"][-1] = str(self.root.parent / "other-instance")
+        with paths.plist_path.open("wb") as stream:
+            plistlib.dump(payload, stream)
+        self.assertIsNone(server_service.configured_interpreter(self.root, home=self.home))
 
     def test_uninitialized_data_root_fails_closed(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "initialized"):
