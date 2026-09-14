@@ -106,9 +106,9 @@ PR description. The indirection is intentional: a commit cannot contain its
 own commit identifier. Both native review results and every final validation
 must name that same head before merge consideration.
 
-- Release candidate: `2.3.50`.
-- Wheel: `engineering_platform-2.3.50-py3-none-any.whl` (3,281,240 bytes).
-- Wheel SHA-256: `17fe753f9d22f2c7cd7be5aa85f5986197f0706e2ab1b6809fd78b7fc95cc857`.
+- Release candidate: `2.3.51`.
+- Wheel: `engineering_platform-2.3.51-py3-none-any.whl` (3,281,254 bytes).
+- Wheel SHA-256: `5ce6040502d4f204b657e975b18804b02c0a063fe9ef2717a235f2b931eb05cd`.
 - Production-wheel contents: 155 allowlisted members and no runtime
   dependencies.
 - Installed full suite: 1,701 tests passed; 132 measured modules, none below
