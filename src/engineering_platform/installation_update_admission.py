@@ -177,9 +177,48 @@ def _require_retained_candidate_package(
         raise InstallationUpdateAdmissionError(
             "activated candidate package identity is unavailable after verification"
         ) from error
+    candidate_root = Path(candidate.candidate_venv)
+    launcher = Path(candidate.interpreter)
+    try:
+        retained_paths = tuple(Path(str(identity[label])) for label in ("metadata", "package"))
+        if (
+            candidate_root.is_symlink()
+            or not candidate_root.is_dir()
+            or launcher.parent.is_symlink()
+            or not launcher.parent.is_dir()
+            or not launcher.is_file()
+            or any(not path.is_absolute() or not path.is_dir() for path in retained_paths)
+        ):
+            raise ValueError
+        retained_root = candidate_root.resolve(strict=True)
+        for path in retained_paths:
+            path.resolve(strict=True).relative_to(retained_root)
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        raise InstallationUpdateAdmissionError(
+            "activated candidate package identity is unavailable after verification"
+        ) from error
     if dict(identity) != dict(candidate.package):
         raise InstallationUpdateAdmissionError(
             "activated candidate package identity changed after verification"
+        )
+
+
+def _require_activated_service(
+    plan: InstallationUpdatePlan,
+    candidate: PreparedUpdateCandidate,
+    *,
+    service_home: Path | None = None,
+) -> None:
+    """Keep cleanup bound to the exact activated service and data root."""
+    try:
+        selected = server_service.configured_interpreter(Path(plan.data_root), home=service_home)
+    except server_service.ServerServiceError as error:
+        raise InstallationUpdateAdmissionError(
+            "activated service does not bind the admitted candidate"
+        ) from error
+    if selected != Path(candidate.interpreter):
+        raise InstallationUpdateAdmissionError(
+            "activated service does not bind the admitted candidate"
         )
 
 
@@ -343,6 +382,7 @@ def admitted_candidate(
         raise InstallationUpdateAdmissionError("execution admission does not bind the exact prepared candidate")
     if state in {"VERIFIED", "CLEANUP_PENDING", "COMPLETE"}:
         _require_retained_candidate_package(candidate, runner=runner)
+        _require_activated_service(plan, candidate, service_home=service_home)
     if admission.schema_version == 3:
         if plan.legacy_adoption is None:
             raise InstallationUpdateAdmissionError("execution admission legacy baseline is unavailable")
