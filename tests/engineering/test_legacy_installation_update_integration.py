@@ -318,6 +318,9 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
             ), patch(
                 "engineering_platform.installation_update_composition.execute", side_effect=public_execute,
             ), patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
+                "engineering_platform.server.server_service.service_loaded",
+                side_effect=(True, True, False, False, False, False, False, False),
+            ), patch(
                 "engineering_platform.server._health_response", return_value=health,
             ), redirect_stdout(command_output):
                 lifecycle_type.return_value.runtime_details.return_value = lifecycle

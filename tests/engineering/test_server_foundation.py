@@ -566,7 +566,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ), patch(
             "engineering_platform.server.server_service.retain_update_quiescence",
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
-        ) as retain:
+        ) as retain, patch(
+            "engineering_platform.server.server_service.service_loaded",
+            side_effect=(True, True, False),
+        ):
             lifecycle_type.return_value.runtime_details.return_value = runtime
             self.assertEqual(actions.quiesce(plan)["state"], "QUIESCED")
             lifecycle_type.return_value.quiesce.assert_called_once()
@@ -601,6 +604,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ), patch(
             "engineering_platform.server.server_service.retain_update_quiescence",
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
+        ), patch(
+            "engineering_platform.server.server_service.service_loaded",
+            side_effect=(False, False),
         ):
             lifecycle_type.return_value.runtime_details.return_value = unloaded
             self.assertEqual(actions.quiesce(plan)["state"], "ALREADY_QUIESCED")
@@ -612,10 +618,25 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ), patch(
             "engineering_platform.server.server_service.retain_update_quiescence",
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
+        ), patch(
+            "engineering_platform.server.server_service.service_loaded",
+            side_effect=(True, True, False),
         ):
             lifecycle_type.return_value.runtime_details.side_effect = (loaded, unloaded)
             lifecycle_type.return_value.quiesce.side_effect = OSError("already stopped")
             self.assertEqual(actions.quiesce(plan)["state"], "ALREADY_QUIESCED")
+
+        with patch(
+            "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+        ), patch(
+            "engineering_platform.server.server_service.service_loaded",
+            side_effect=server.server_service.ServerServiceError("service-manager inspection failed"),
+        ), patch(
+            "engineering_platform.server.server_service.retain_update_quiescence",
+        ) as retain:
+            with self.assertRaisesRegex(server.server_service.ServerServiceError, "inspection failed"):
+                actions.quiesce(plan)
+            retain.assert_not_called()
 
         drifted = Path(self.temporary.name) / "drifted-python"
         drifted.write_text("#!\n")

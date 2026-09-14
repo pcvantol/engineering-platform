@@ -6296,11 +6296,13 @@ def _installation_update_operational_actions(
         expected = admitted_source_interpreter(plan)
         if selected != expected:
             raise ServerConfigurationError("the EP user service differs from the admitted source interpreter")
+        # Prove that launchd is inspectable before changing persistent policy;
+        # a provider/I/O failure must never be projected as an absent job.
+        server_service.service_loaded()
         retained = server_service.retain_update_quiescence(
             root, expected_interpreter=expected,
         )
-        observed = lifecycle.runtime_details(server_service.LABEL)
-        if observed is not None and not observed.loaded:
+        if not server_service.service_loaded():
             return {
                 "result": "PASS", "service_label": server_service.LABEL,
                 "state": "ALREADY_QUIESCED", "retention": retained["state"],
@@ -6308,13 +6310,14 @@ def _installation_update_operational_actions(
         try:
             lifecycle.quiesce(server_service.LABEL, paths.plist_path)
         except OSError:
-            recovered = lifecycle.runtime_details(server_service.LABEL)
-            if recovered is None or recovered.loaded:
+            if server_service.service_loaded():
                 raise
             return {
                 "result": "PASS", "service_label": server_service.LABEL,
                 "state": "ALREADY_QUIESCED", "retention": retained["state"],
             }
+        if server_service.service_loaded():
+            raise ServerConfigurationError("the EP user service remained loaded after quiescence")
         return {
             "result": "PASS", "service_label": server_service.LABEL,
             "state": "QUIESCED", "retention": retained["state"],

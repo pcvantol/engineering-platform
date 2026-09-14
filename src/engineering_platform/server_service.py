@@ -134,6 +134,7 @@ def configured_interpreter(data_root: Path, *, home: Path | None = None) -> Path
         not isinstance(arguments, list)
         or len(arguments) != 6
         or not isinstance(arguments[0], str)
+        or payload.get("Label") != LABEL
         or arguments[1:] != ["-m", "engineering_platform.server", "serve", "--data-root", expected_root]
         or payload.get("WorkingDirectory") != expected_root
         or not isinstance(environment, dict)
@@ -178,8 +179,8 @@ def _update_quiescence_retained(data_root: Path, *, home: Path | None = None) ->
     )
 
 
-def _service_loaded(*, runner: Runner | None = None) -> bool:
-    """Distinguish an unloaded job from a login-loaded maintenance job."""
+def service_loaded(*, runner: Runner | None = None) -> bool:
+    """Prove loaded or absent; never project an inspection error as absent."""
     result = _launchctl(("print", f"{_domain()}/{LABEL}"), runner)
     if result.returncode == 0:
         return True
@@ -236,7 +237,7 @@ def replace_runtime(data_root: Path, *, expected_interpreter: str | Path, interp
         # A login can load a RunAtLoad=False maintenance plist without
         # starting its process.  The plist policy therefore cannot prove that
         # the job is unloaded; boot it out when launchd still owns the job.
-        if not retained or _service_loaded(runner=runner):
+        if not retained or service_loaded(runner=runner):
             result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
             if result.returncode and not any(
                 marker in (result.stderr or "").lower()

@@ -65,6 +65,16 @@ class ServerServiceTests(unittest.TestCase):
             plistlib.dump(payload, stream)
         self.assertIsNone(server_service.configured_interpreter(self.root, home=self.home))
 
+    def test_configured_interpreter_rejects_a_different_launchagent_label(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        server_service.write_plist(paths, Path(sys.executable))
+        with paths.plist_path.open("rb") as stream:
+            payload = plistlib.load(stream)
+        payload["Label"] = server_service.LABEL + ".other"
+        with paths.plist_path.open("wb") as stream:
+            plistlib.dump(payload, stream)
+        self.assertIsNone(server_service.configured_interpreter(self.root, home=self.home))
+
     def test_uninitialized_data_root_fails_closed(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "initialized"):
             server_service.install(self.root.parent / "missing", interpreter=Path(__file__).resolve(), home=self.home, runner=self.runner)
@@ -170,6 +180,18 @@ class ServerServiceTests(unittest.TestCase):
             ["launchctl", "bootout", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
             ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
         ])
+
+    def test_service_loaded_distinguishes_absence_from_inspection_failure(self) -> None:
+        def result(code: int, error: str = ""):
+            def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(arguments, code, "", error)
+            return runner
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            self.assertTrue(server_service.service_loaded(runner=result(0)))
+            self.assertFalse(server_service.service_loaded(runner=result(3, "Could not find service")))
+            with self.assertRaisesRegex(server_service.ServerServiceError, "inspect"):
+                server_service.service_loaded(runner=result(5, "Input/output error"))
 
     def test_replace_runtime_rejects_an_unexpected_or_missing_service(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "expected operational interpreter"):
