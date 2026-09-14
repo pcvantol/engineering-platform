@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from engineering_platform import storage
+from engineering_platform import agent_state, storage
 from engineering_platform.storage import (
     DATABASE_FILENAME,
     ENGINEERING_STORAGE_SCHEMA_VERSION,
@@ -121,6 +121,42 @@ class EngineeringStorageTest(unittest.TestCase):
             missing = StateStore(root / "other" / "runs", central_database=root / "missing.db")
             with self.assertRaisesRegex(StateError, "canonical engineering storage is unavailable"):
                 missing.run_ids()
+
+    def test_central_checkpoint_retries_one_transient_disk_io_error(self) -> None:
+        """A one-off SQLite I/O failure cannot discard a post-provider checkpoint."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "central.db"
+            with open_storage(root) as source, sqlite_connection(database) as target:
+                source.backup(target)
+            store = StateStore(root / ".engineering" / "engineering-runs", central_database=database)
+            original_open = store._open
+            attempts = 0
+
+            class FailFirstBegin:
+                def __init__(self, connection: sqlite3.Connection) -> None:
+                    self.connection = connection
+
+                def execute(self, statement: str, *arguments: object) -> object:
+                    if statement == "BEGIN IMMEDIATE":
+                        raise sqlite3.OperationalError("disk I/O error")
+                    return self.connection.execute(statement, *arguments)
+
+                def close(self) -> None:
+                    self.connection.close()
+
+            def open_once(*, create: bool) -> sqlite3.Connection:
+                nonlocal attempts
+                attempts += 1
+                connection = original_open(create=create)
+                return FailFirstBegin(connection) if attempts == 1 else connection  # type: ignore[return-value]
+
+            state = TransactionState("transient-io-run", "pcvantol/forge", "prompt.md", "LOCAL_REPOSITORY_VALIDATION")
+            with patch.object(store, "_open", side_effect=open_once), patch.object(agent_state, "sleep") as delay:
+                store.save(state)
+            delay.assert_called_once_with(0.02)
+            self.assertEqual(attempts, 2)
+            self.assertEqual(store.load(state.run_id), state)
 
     def test_explicit_central_evidence_connection_uses_shared_sqlite_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
