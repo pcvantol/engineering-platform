@@ -854,7 +854,7 @@
       ]
     },
     {
-      "name": "Translation route is fail-closed pending project mutation support",
+      "name": "Translation route rejects malformed payload",
       "request": {
         "method": "POST",
         "header": [
@@ -878,7 +878,7 @@
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('expected status', () => pm.response.to.have.status(405));"
+              "pm.test('expected status', () => pm.response.to.have.status(400));"
             ]
           }
         }

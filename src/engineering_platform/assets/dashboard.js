@@ -858,6 +858,7 @@ function activeReviewerAgents(items, executionStatus = {}) {
     card.innerHTML = `<strong>${t("ui.reviewer_agents")}</strong><p class="estimate-meta" id="activeReviewerSummary"></p><div class="reviewer-agents__list" id="activeReviewerList"></div>`;
     $("currentRun")?.querySelector(".current-run__grid")?.append(card);
   }
+  card.querySelector(":scope > strong").textContent = t("ui.reviewer_agents");
   card.hidden = !agents.length;
   if (!agents.length) {
     $("activeReviewerSummary").textContent = "";
@@ -3183,7 +3184,7 @@ function providerNeutralLabels() {
     ["#processMetrics>strong", "ui.local_ai_processes"],
     ["#usage>strong", "section.ai_provider_usage"],
     ["#currentDiagnostic>strong", "section.ai_execution_diagnostics"],
-    ["#rateLimits .label", "section.ai_provider_limits"],
+    ["#rateLimitLabel", "section.ai_provider_limits"],
     ["#codexChat>strong", "section.ai_conversation"],
     ["#chatMessages", "section.ai_conversation"],
     ["label[for=chatInput]", "section.new_ai_question"],
@@ -6092,6 +6093,9 @@ function changeDashboardLocale(value) {
   const scroll = { x: window.scrollX, y: window.scrollY }, focused = document.activeElement;
   dashboardLocale = normalizeLocale(value);
   locale = createLocaleService(dashboardLocale, { strict: strictLocalizationMode, surface: "Operations Console" });
+  localizationCalls.clear();
+  fallback.current_action = t("dashboard.status_unavailable");
+  fallback.diagnostic = t("dashboard.status_unavailable");
   dashboardClientState.locale = dashboardLocale;
   saveDashboardClientState();
   applyDashboardLocale();
