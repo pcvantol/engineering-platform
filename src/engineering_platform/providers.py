@@ -12,8 +12,11 @@ import pwd
 from pathlib import Path
 import re
 import shutil
+import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 from typing import Mapping, Protocol, Sequence
 
 
@@ -108,15 +111,188 @@ def installed_python_environment() -> dict[str, str]:
     return environment
 
 
+VALIDATION_SCRATCH_UNAVAILABLE = "VALIDATION_SCRATCH_UNAVAILABLE"
+VALIDATION_SCRATCH_LOST = "VALIDATION_SCRATCH_LOST"
+
+
+class ValidationEnvironmentError(RuntimeError):
+    """A bounded validation child cannot use its EP-owned scratch directory."""
+
+    def __init__(self, diagnostic_code: str) -> None:
+        super().__init__(diagnostic_code)
+        self.diagnostic_code = diagnostic_code
+
+
+class ValidationScratch:
+    """One private, short-lived filesystem boundary for a validation child.
+
+    The parent belongs to the already selected EP data root.  Each direct
+    validation subprocess gets a unique child directory, so neither a target
+    checkout nor a system-wide temporary location becomes execution state.
+    """
+
+    def __init__(self, parent: Path, *, run_id: str) -> None:
+        self.parent = parent
+        self.run_id = run_id
+        self.directory: Path | None = None
+        self._base_fd: int | None = None
+        self._directory_name: str | None = None
+        self._directory_identity: os.stat_result | None = None
+
+    @staticmethod
+    def _safe_prefix(run_id: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_-]", "-", run_id)[:64]
+        return f"validation-{safe or 'run'}-"
+
+    @staticmethod
+    def _probe(directory: Path) -> None:
+        """Prove precisely the operations the child validation may need."""
+        created = directory / ".ep-validation-probe"
+        renamed = directory / ".ep-validation-probe-renamed"
+        database = directory / ".ep-validation-probe.sqlite"
+        connection: sqlite3.Connection | None = None
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(created, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.write(descriptor, b"engineering-platform-validation\n")
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            if created.read_bytes() != b"engineering-platform-validation\n":
+                raise OSError("validation scratch readback mismatch")
+            os.replace(created, renamed)
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE validation_probe(value TEXT NOT NULL)")
+            connection.execute("INSERT INTO validation_probe(value) VALUES('ok')")
+            connection.commit()
+            row = connection.execute("SELECT value FROM validation_probe").fetchone()
+            if row != ("ok",):
+                raise OSError("validation scratch sqlite readback mismatch")
+        except (OSError, sqlite3.Error) as error:
+            raise ValidationEnvironmentError(VALIDATION_SCRATCH_UNAVAILABLE) from error
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if connection is not None:
+                connection.close()
+            # These exact paths were created only inside this unique directory.
+            for path in (
+                created, renamed, database,
+                database.with_name(database.name + "-journal"),
+                database.with_name(database.name + "-wal"),
+                database.with_name(database.name + "-shm"),
+            ):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def __enter__(self) -> Path:
+        base = self.parent / "validation-scratch"
+        try:
+            base.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if base.is_symlink() or not base.is_dir():
+                raise OSError("validation scratch parent is not a directory")
+            flags = os.O_RDONLY | os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            self._base_fd = os.open(base, flags)
+            if not os.path.samestat(os.lstat(base), os.fstat(self._base_fd)):
+                raise OSError("validation scratch parent changed while opening")
+            self.directory = Path(tempfile.mkdtemp(prefix=self._safe_prefix(self.run_id), dir=base))
+            self._directory_name = self.directory.name
+            self._directory_identity = os.stat(self.directory, follow_symlinks=False)
+            self._probe(self.directory)
+            return self.directory
+        except ValidationEnvironmentError:
+            self.__exit__(None, None, None)
+            raise
+        except OSError as error:
+            self.__exit__(None, None, None)
+            raise ValidationEnvironmentError(VALIDATION_SCRATCH_UNAVAILABLE) from error
+
+    def __exit__(self, *_: object) -> None:
+        base_fd, self._base_fd = self._base_fd, None
+        directory_name, self._directory_name = self._directory_name, None
+        identity, self._directory_identity = self._directory_identity, None
+        self.directory = None
+        if base_fd is None:
+            return
+        try:
+            if directory_name is None or identity is None:
+                return
+            # Address the leaf through the parent fd held before launching the
+            # child. A child may rename the parent or replace its path with a
+            # symlink, but that cannot redirect this cleanup outside the
+            # original EP-owned directory. shutil.rmtree's fd implementation
+            # also refuses a leaf swapped for a symlink after this check.
+            observed = os.stat(directory_name, dir_fd=base_fd, follow_symlinks=False)
+            if stat.S_ISDIR(observed.st_mode) and os.path.samestat(observed, identity):
+                try:
+                    shutil.rmtree(directory_name, dir_fd=base_fd)
+                except OSError:
+                    # The child may already have removed or replaced its own
+                    # leaf. Never chase an unowned replacement for cleanup.
+                    pass
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(base_fd)
+
+    def is_current_directory(self) -> bool:
+        """Whether the original scratch leaf still exists beneath its held fd."""
+        if self._base_fd is None or self._directory_name is None or self._directory_identity is None:
+            return False
+        try:
+            observed = os.stat(
+                self._directory_name, dir_fd=self._base_fd, follow_symlinks=False,
+            )
+        except OSError:
+            return False
+        return stat.S_ISDIR(observed.st_mode) and os.path.samestat(
+            observed, self._directory_identity,
+        )
+
+
+def validation_child_environment(root: Path, scratch: Path) -> dict[str, str]:
+    """Build the exact child environment after the scratch preflight passes."""
+    environment = installed_python_environment()
+    source = root / "src"
+    import_root = source if source.is_dir() else root
+    inherited = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = str(import_root) + (os.pathsep + inherited if inherited else "")
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        environment[name] = str(scratch)
+    return environment
+
+
 class DeterministicValidationExecutor:
     """Run one resolved validation control outside provider-agent dispatch."""
 
     def __init__(self, process: ProcessProvider | None = None) -> None:
         self.process = process or LocalProcessProvider()
 
-    def run(self, root: Path, command: tuple[str, ...]) -> "DeterministicValidationResult":
+    def run(
+        self, root: Path, command: tuple[str, ...], *, scratch_parent: Path | None = None,
+        run_id: str | None = None,
+    ) -> "DeterministicValidationResult":
         try:
-            completed = self.process.execute(root, command, environment=installed_python_environment())
+            if scratch_parent is None:
+                completed = self.process.execute(root, command, environment=installed_python_environment())
+            else:
+                scratch_area = ValidationScratch(scratch_parent, run_id=run_id or "validation")
+                with scratch_area as scratch:
+                    environment = validation_child_environment(root, scratch)
+                    if not scratch_area.is_current_directory():
+                        raise ValidationEnvironmentError(VALIDATION_SCRATCH_LOST)
+                    completed = self.process.execute(
+                        root, command, environment=environment,
+                    )
+                    if not scratch_area.is_current_directory():
+                        raise ValidationEnvironmentError(VALIDATION_SCRATCH_LOST)
             stdout = completed.stdout
             stderr = completed.stderr
             return DeterministicValidationResult(
@@ -124,6 +300,11 @@ class DeterministicValidationExecutor:
                 stdout=stdout if isinstance(stdout, str) else None,
                 stderr=stderr if isinstance(stderr, str) else None,
                 diagnostic_capture_available=isinstance(stdout, str) and isinstance(stderr, str),
+            )
+        except ValidationEnvironmentError as error:
+            return DeterministicValidationResult(
+                exit_code=None, stdout=None, stderr=None,
+                diagnostic_capture_available=False, infrastructure_diagnostic=error.diagnostic_code,
             )
         except OSError:
             return DeterministicValidationResult(
@@ -140,6 +321,7 @@ class DeterministicValidationResult:
     stdout: str | None
     stderr: str | None
     diagnostic_capture_available: bool
+    infrastructure_diagnostic: str | None = None
 
 
 class RepositoryProvider(Protocol):

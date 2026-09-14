@@ -114,6 +114,12 @@ class TransactionState:
     branch: str | None = None
     pull_request: int | None = None
     last_verified_sha: str | None = None
+    # The original accepted request remains distinct from both the selected
+    # baseline and any implementation candidate. It is never inferred from a
+    # later checkout head.
+    requested_repository_revision: str | None = None
+    execution_baseline_sha: str | None = None
+    allowed_baseline_revision: str | None = None
     next_action: str = "invoke_agent"
     terminal_condition: str = "repository_reconciled"
     diagnostic: str | None = None
@@ -170,6 +176,8 @@ class TransactionState:
         defaults = {
             "diagnostic": None, "owner_authorized": False, "transaction_kind": "IMPLEMENTATION",
             "execution_mode": "MANAGED", "genesis_repository_path": None, "genesis_commit_sha": None,
+            "requested_repository_revision": None, "execution_baseline_sha": None,
+            "allowed_baseline_revision": None,
             "action_intent": "MUTATING_DELIVERY",
             "implementation_branch": None, "implementation_pull_request": None,
             "implementation_head_sha": None, "implementation_merge_commit": None,
@@ -235,6 +243,14 @@ class TransactionState:
             raise StateError("checkpoint pull_request is invalid")
         if state.last_verified_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", state.last_verified_sha):
             raise StateError("checkpoint last_verified_sha is invalid")
+        revision_binding_fields = (
+            state.requested_repository_revision, state.execution_baseline_sha,
+            state.allowed_baseline_revision,
+        )
+        if any(value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value)) for value in revision_binding_fields):
+            raise StateError("checkpoint repository revision binding is invalid")
+        if state.allowed_baseline_revision is not None and state.requested_repository_revision is None:
+            raise StateError("checkpoint allowed baseline requires a requested revision")
         if state.diagnostic is not None and (not isinstance(state.diagnostic, str) or not state.diagnostic or state.diagnostic != redact_diagnostic(state.diagnostic)):
             raise StateError("checkpoint diagnostic is invalid or unsafe")
         if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"} or state.execution_mode not in {"MANAGED", "GENESIS"} or state.action_intent not in {"MUTATING_DELIVERY", "VALIDATION_ONLY"}:

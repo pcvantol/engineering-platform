@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from engineering_platform.storage import sqlite_connection
+from engineering_platform.storage import record_artifact
 
 import json
 from pathlib import Path
@@ -203,6 +204,63 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
 
         self.assertEqual(submission_service._repository_revision(verified, "COMPLETE"), (revision, True))
         self.assertEqual(submission_service._repository_revision(unproven, "COMPLETE"), (None, False))
+
+    def test_blocked_checkpoint_is_terminal_evidence_not_delivery_evidence(self) -> None:
+        blocked = TransactionState(
+            "blocked-checkpoint", "djconnect", "prompt", "BLOCKED", terminal=True,
+            action_intent="MUTATING_DELIVERY", transaction_kind="IMPLEMENTATION",
+            implementation_merge_commit="a" * 40,
+            commit_evidence=({
+                "phase": "EXECUTE_AGENT", "observed_at": "2026-01-01T00:00:00+00:00",
+                "commit_sha": "a" * 40, "description": "implementation_merge_verified",
+            },),
+        )
+        self.assertEqual(submission_service._repository_revision(blocked, "BLOCKED"), (None, False))
+
+    def test_repository_revision_binding_requires_full_explicit_revisions(self) -> None:
+        payload = self.payload("revision-binding")
+        payload["constraints"] = {"repository_revision_binding": {
+            "requested_revision": "a" * 40,
+            "allowed_baseline_revision": "b" * 40,
+        }}
+        request = submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        self.assertEqual(
+            request.constraints and request.constraints["repository_revision_binding"],
+            {"requested_revision": "a" * 40, "allowed_baseline_revision": "b" * 40},
+        )
+        invalid = self.payload("bad-revision-binding")
+        invalid["constraints"] = {"repository_revision_binding": {
+            "requested_revision": "a" * 7,
+            "allowed_baseline_revision": None,
+        }}
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_REPOSITORY_REVISION_BINDING"):
+            submission_service.request_from_mapping("djconnect", invalid, transport="HTTP")
+
+        direct = submission_service.SubmissionRequest(
+            project_id="djconnect", repository_id="djconnect", producer_id="test",
+            producer_type="HUMAN", producer_version="1", prompt="direct admission",
+            transport="HTTP", constraints=invalid["constraints"],
+        )
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_REPOSITORY_REVISION_BINDING"):
+                submission_service.submit(connection, direct)
+
+    def test_retained_v13_terminal_artifact_is_recognized_without_rewrite(self) -> None:
+        target = self.root / "artifacts" / "projects" / "djconnect" / "runs" / "run-old" / "terminal-evidence-v1.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({
+            "artifact_type": "EP_TERMINAL_EVIDENCE", "contract_version": "1.3",
+            "submission": {"id": "sub-old", "project_id": "djconnect"},
+            "run": {"id": "run-old"}, "repository": {"id": "djconnect"},
+        }), encoding="utf-8")
+        self.assertTrue(submission_service._is_retained_v13_terminal_artifact(
+            target, run_id="run-old", submission_id="sub-old", project_id="djconnect",
+            repository_id="djconnect",
+        ))
+        self.assertFalse(submission_service._is_retained_v13_terminal_artifact(
+            target, run_id="another-run", submission_id="sub-old", project_id="djconnect",
+            repository_id="djconnect",
+        ))
 
     def test_terminal_timing_is_utc_ordered_and_durable(self) -> None:
         self.assertEqual(
@@ -426,7 +484,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         server.start(self.root)
         with urlopen(f"http://127.0.0.1:{self.port}/v1/producer-compatibility") as response:  # nosec B310
             compatibility = json.loads(response.read())
-        self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2"], "terminal_evidence": ["1.3"]})
+        self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2"], "terminal_evidence": ["1.4"]})
         self.assertEqual(compatibility["producer"]["id"], "engineering-platform")
         payload = self.payload("readback")
         payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "2.7.2"},
@@ -503,7 +561,15 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 {"reviewer": "quality", "status": "PASS", "candidate_sha": "c" * 40, "profile_digest": profile["digest"], "invocation_id": "quality-1", "findings": []},
                 {"reviewer": "security", "status": "FAIL", "candidate_sha": "c" * 40, "profile_digest": profile["digest"], "invocation_id": "security-1", "findings": [finding]},
             )
-            checkpoint = TransactionState(run_id="run-readback", repository="djconnect", prompt_path="prompt", phase="COMPLETE", terminal=True, action_intent="VALIDATION_ONLY", assurance_profile=profile, assurance_reviews=reviews, repair_iterations=2)
+            checkpoint = TransactionState(
+                run_id="run-readback", repository="djconnect", prompt_path="prompt",
+                phase="COMPLETE", terminal=True, action_intent="VALIDATION_ONLY",
+                requested_repository_revision="a" * 40,
+                execution_baseline_sha="b" * 40,
+                allowed_baseline_revision="b" * 40,
+                implementation_head_sha="c" * 40,
+                assurance_profile=profile, assurance_reviews=reviews, repair_iterations=2,
+            )
             connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps(checkpoint.to_dict()), "COMPLETE", "now"))
             connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)", ("run-readback", "COMPLETE", "safe", "now", None, "/private/report", "now"))
         artifact_id = submission_service.write_terminal_evidence(self.root, repository_root=self.root, run_id="run-readback")
@@ -521,7 +587,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(terminal["run"]["execution_started_at"], "2026-01-01T00:00:00+00:00")
         self.assertEqual(terminal["run"]["execution_completed_at"], "2026-01-01T00:00:01+00:00")
         self.assertEqual(terminal["run"]["execution_duration_ms"], 1000)
-        self.assertEqual(terminal["result"], {"outcome": "COMPLETE", "terminal": True, "delivery_qualified": True})
+        self.assertEqual(terminal["result"], {"outcome": "COMPLETE", "terminal": True, "delivery_qualified": False})
         self.assertEqual(terminal["evidence"]["status"], "AVAILABLE")
         self.assertEqual(terminal["evidence"]["terminal_artifact"]["id"], artifact_id)
         self.assertEqual(terminal["evidence"]["repository"]["revision"], None)
@@ -539,8 +605,49 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(artifact["run"]["execution_started_at"], "2026-01-01T00:00:00+00:00")
         self.assertEqual(artifact["run"]["execution_completed_at"], "2026-01-01T00:00:01+00:00")
         self.assertEqual(artifact["run"]["execution_duration_ms"], 1000)
+        self.assertEqual(artifact["repository"]["requested_revision"], "a" * 40)
+        self.assertEqual(artifact["repository"]["execution_baseline"], "b" * 40)
+        self.assertEqual(artifact["repository"]["candidate"], "c" * 40)
+        self.assertEqual(artifact["repository"]["baseline_transition"], {
+            "status": "ALLOWED", "from": "a" * 40, "to": "b" * 40,
+            "allowed_to": "b" * 40,
+        })
+        self.assertEqual(artifact["delivery"], {"status": "NOT_DELIVERED", "revision": None})
         self.assertEqual(artifact["assurance"]["repair_rounds"], {"used": 2, "maximum": 3})
         self.assertEqual(artifact["assurance"]["findings"]["artifact"]["id"], "assurance-findings:run-readback")
+
+        # A new writer must not replace a previously immutable v1.3 terminal
+        # artifact merely because it can now emit a richer v1.4 shape.
+        historical = dict(artifact)
+        historical["contract_version"] = "1.3"
+        historical["repository"] = {
+            "id": "djconnect", "revision": None, "revision_required": False,
+        }
+        historical.pop("delivery")
+        artifact_path = self.root / "artifacts" / "projects" / "djconnect" / "runs" / "run-readback" / "terminal-evidence-v1.json"
+        historical_bytes = submission_service._canonical_json_bytes(historical)
+        artifact_path.write_bytes(historical_bytes)
+        with self.assertRaisesRegex(submission_service.SubmissionError, "TERMINAL_EVIDENCE_IMMUTABLE_CONFLICT"):
+            submission_service.write_terminal_evidence(
+                self.root, repository_root=self.root, run_id="run-readback",
+            )
+        record_artifact(
+            self.root, artifact_path, artifact_id=artifact_id,
+            artifact_type="EP_TERMINAL_EVIDENCE", content_type="application/json",
+            created_at="2026-01-01T00:00:01+00:00", run_id="run-readback",
+            submission_id=submission_id, mission_id="mission-1", producer_id="forge",
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+            artifact_root=self.root / "artifacts", ep_run_id="run-readback",
+            ep_submission_id=submission_id,
+        )
+        self.assertEqual(
+            submission_service.write_terminal_evidence(
+                self.root, repository_root=self.root, run_id="run-readback",
+            ), artifact_id,
+        )
+        self.assertEqual(artifact_path.read_bytes(), historical_bytes)
+        with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+            terminal = json.loads(response.read())
 
         # The projection is CENTRAL state, not a process-local cache: a Server
         # restart preserves the exact submission/run/evidence correlation.
@@ -570,7 +677,6 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 headers={"Authorization": f"Bearer {other_credential}"},
             ))  # nosec B310
         self.assertEqual(isolated.exception.code, 404)
-        artifact_path = self.root / "artifacts" / "projects" / "djconnect" / "runs" / "run-readback" / "terminal-evidence-v1.json"
         artifact_path.write_text("{}\n", encoding="utf-8")
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             corrupt = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submission_id)

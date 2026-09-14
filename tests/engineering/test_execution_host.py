@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from engineering_platform.storage import sqlite_connection
 
 from pathlib import Path
 import json
 import os
 import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -95,6 +97,7 @@ class FakeRepository:
     def __init__(self, *, clean: bool = True, branch: str = "main", contains: bool = True) -> None:
         self.evidence = RepositoryEvidence("pcvantol/djconnect", branch, "a" * 40, clean, contains)
         self.contains = contains
+        self.inspect_calls: list[Path] = []
         self.cleanup_calls: list[tuple[str | None, ...]] = []
         self.cleanup_error: RunnerError | None = None
         self.refresh_main_reference_calls: list[Path] = []
@@ -103,6 +106,7 @@ class FakeRepository:
         self.synchronize_error: RunnerError | None = None
 
     def inspect(self, root: Path) -> RepositoryEvidence:
+        self.inspect_calls.append(root)
         return self.evidence
 
     def main_contains(self, root: Path, sha: str) -> bool:
@@ -1733,6 +1737,47 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(agent.roots, [self.root])
         self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
         self.assertEqual(state.assurance_profile["candidate_sha"], "a" * 40)
+        self.assertEqual(repository.synchronize_calls, [self.root])
+
+    def test_exact_requested_revision_refuses_mismatch_before_synchronization_or_provider(self) -> None:
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {
+            "execution_context": None,
+            "constraints": {"repository_revision_binding": {
+                "requested_revision": "b" * 40,
+                "allowed_baseline_revision": None,
+            }},
+        }
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id="pinned-revision-mismatch")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "repository_revision_binding")
+        self.assertEqual(state.requested_repository_revision, "b" * 40)
+        self.assertIsNone(state.execution_baseline_sha)
+        self.assertEqual(repository.synchronize_calls, [])
+        self.assertGreaterEqual(len(repository.inspect_calls), 2)
+        self.assertEqual(agent.prompts, [])
+
+    def test_explicitly_allowed_baseline_transition_is_recorded_separately(self) -> None:
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("WAITING"))
+        submission = {
+            "execution_context": None,
+            "constraints": {"repository_revision_binding": {
+                "requested_revision": "b" * 40,
+                "allowed_baseline_revision": "a" * 40,
+            }},
+        }
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id="allowed-revision-transition")
+        self.assertEqual(state.requested_repository_revision, "b" * 40)
+        self.assertEqual(state.execution_baseline_sha, "a" * 40)
+        self.assertEqual(state.allowed_baseline_revision, "a" * 40)
         self.assertEqual(repository.synchronize_calls, [self.root])
 
     def test_provider_recovery_preflight_rejects_every_ambiguous_restart_condition(self) -> None:
@@ -5230,6 +5275,151 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         payload = load_validation_failure_diagnostic(self.root, control["diagnostic_evidence_ref"])
         self.assertEqual(payload["capture_status"], "AVAILABLE")
         self.assertEqual(payload["failing_test_identities"], [])
+
+    def test_executor_provides_a_private_child_scratch_and_source_import_root(self) -> None:
+        source = self.root / "src" / "validation_probe_package"
+        source.mkdir(parents=True)
+        (source / "__init__.py").write_text("VALUE = 'source-root'\n", encoding="utf-8")
+        artifacts = self.root / "managed-artifacts"
+        preserved = artifacts / "preserved" / "marker.txt"
+        preserved.parent.mkdir(parents=True)
+        preserved.write_text("do not remove", encoding="utf-8")
+        program = "".join((
+            "import os, pathlib, sqlite3, tempfile, validation_probe_package\n",
+            "scratch = pathlib.Path(tempfile.mkdtemp())\n",
+            "payload = scratch / 'payload'\n",
+            "payload.write_text(validation_probe_package.VALUE)\n",
+            "assert payload.read_text() == 'source-root'\n",
+            "payload.replace(scratch / 'renamed')\n",
+            "database = sqlite3.connect(scratch / 'child.sqlite')\n",
+            "database.execute('CREATE TABLE probe(value TEXT)')\n",
+            "database.execute(\"INSERT INTO probe VALUES ('ok')\")\n",
+            "database.commit()\n",
+            "assert database.execute('SELECT value FROM probe').fetchone() == ('ok',)\n",
+            "database.close()\n",
+            "assert os.environ['TMPDIR'] == os.environ['TMP'] == os.environ['TEMP']\n",
+        ))
+        result = DeterministicValidationExecutor().run(
+            self.root, (sys.executable, "-c", program), scratch_parent=artifacts,
+            run_id=self.run_id,
+        )
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertTrue(result.diagnostic_capture_available)
+        self.assertEqual(list((artifacts / "validation-scratch").iterdir()), [])
+        self.assertEqual(preserved.read_text(encoding="utf-8"), "do not remove")
+
+    def test_executor_refuses_unavailable_scratch_before_starting_child(self) -> None:
+        class Process:
+            called = False
+
+            def execute(self, *_: object, **__: object) -> subprocess.CompletedProcess[str]:
+                self.called = True
+                return subprocess.CompletedProcess(("unreachable",), 0, "", "")
+
+        process = Process()
+        with patch("engineering_platform.providers.tempfile.mkdtemp", side_effect=PermissionError("denied")):
+            result = DeterministicValidationExecutor(process).run(
+                self.root, ("unreachable",), scratch_parent=self.root / "artifacts", run_id=self.run_id,
+            )
+        self.assertIsNone(result.exit_code)
+        self.assertEqual(result.infrastructure_diagnostic, "VALIDATION_SCRATCH_UNAVAILABLE")
+        self.assertFalse(process.called)
+
+    def test_executor_reports_scratch_lost_before_starting_child(self) -> None:
+        class Process:
+            called = False
+
+            def execute(self, *_: object, **__: object) -> subprocess.CompletedProcess[str]:
+                self.called = True
+                return subprocess.CompletedProcess(("unreachable",), 0, "", "")
+
+        process = Process()
+        from engineering_platform import providers
+        original_environment = providers.validation_child_environment
+
+        def remove_then_build(root: Path, scratch: Path) -> dict[str, str]:
+            shutil.rmtree(scratch)
+            return original_environment(root, scratch)
+
+        with patch("engineering_platform.providers.validation_child_environment", side_effect=remove_then_build):
+            result = DeterministicValidationExecutor(process).run(
+                self.root, ("unreachable",), scratch_parent=self.root / "artifacts", run_id=self.run_id,
+            )
+        self.assertIsNone(result.exit_code)
+        self.assertEqual(result.infrastructure_diagnostic, "VALIDATION_SCRATCH_LOST")
+        self.assertFalse(process.called)
+
+    def test_executor_reports_scratch_lost_when_child_removes_it_before_success(self) -> None:
+        class Process:
+            def execute(
+                self, _: Path, __: tuple[str, ...], *, environment: dict[str, str] | None = None,
+            ) -> subprocess.CompletedProcess[str]:
+                assert environment is not None
+                shutil.rmtree(Path(environment["TMPDIR"]))
+                return subprocess.CompletedProcess(("check",), 0, "", "")
+
+        result = DeterministicValidationExecutor(Process()).run(
+            self.root, ("check",), scratch_parent=self.root / "artifacts", run_id=self.run_id,
+        )
+        self.assertIsNone(result.exit_code)
+        self.assertEqual(result.infrastructure_diagnostic, "VALIDATION_SCRATCH_LOST")
+
+    def test_executor_cleanup_cannot_follow_a_child_replaced_scratch_parent(self) -> None:
+        external = self.root / "external"
+        marker = external / "marker.txt"
+        marker.parent.mkdir()
+        marker.write_text("preserve", encoding="utf-8")
+        relocated: list[Path] = []
+
+        class Process:
+            def execute(
+                self, _: Path, __: tuple[str, ...], *, environment: dict[str, str] | None = None,
+            ) -> subprocess.CompletedProcess[str]:
+                assert environment is not None
+                scratch = Path(environment["TMPDIR"])
+                base = scratch.parent
+                moved = base.with_name("relocated-validation-scratch")
+                base.replace(moved)
+                base.symlink_to(external, target_is_directory=True)
+                relocated.append(moved)
+                return subprocess.CompletedProcess(("check",), 0, "", "")
+
+        result = DeterministicValidationExecutor(Process()).run(
+            self.root, ("check",), scratch_parent=self.root / "artifacts", run_id=self.run_id,
+        )
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "preserve")
+        self.assertEqual(list(relocated[0].iterdir()), [])
+
+    def test_concurrent_validation_children_receive_distinct_live_scratch_directories(self) -> None:
+        from threading import Barrier
+
+        barrier = Barrier(2)
+        observed: list[Path] = []
+        testcase = self
+
+        class Process:
+            def execute(
+                self, _: Path, __: tuple[str, ...], *, environment: dict[str, str] | None = None,
+            ) -> subprocess.CompletedProcess[str]:
+                assert environment is not None
+                scratch = Path(environment["TMPDIR"])
+                observed.append(scratch)
+                barrier.wait(timeout=5)
+                testcase.assertTrue(scratch.is_dir())
+                return subprocess.CompletedProcess(("check",), 0, "ok", "")
+
+        artifacts = self.root / "managed-artifacts"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda index: DeterministicValidationExecutor(Process()).run(
+                    self.root, ("check",), scratch_parent=artifacts, run_id=f"{self.run_id}-{index}",
+                ),
+                range(2),
+            ))
+        self.assertEqual([result.exit_code for result in results], [0, 0])
+        self.assertEqual(len(set(observed)), 2)
+        self.assertTrue(all(not path.exists() for path in observed))
 
     def test_unavailable_capture_preserves_terminal_unavailable_and_projects_report(self) -> None:
         command_id = "command-3"
