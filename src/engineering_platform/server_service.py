@@ -76,13 +76,18 @@ def _installed_interpreter(candidate: str | Path | None = None) -> Path:
     return executable
 
 
-def plist_payload(paths: ServicePaths, interpreter: Path) -> dict[str, object]:
+def plist_payload(
+    paths: ServicePaths,
+    interpreter: Path,
+    *,
+    run_at_load: bool = True,
+) -> dict[str, object]:
     return {
         "Label": LABEL,
         "ProgramArguments": [str(interpreter), "-m", "engineering_platform.server", "serve", "--data-root", str(paths.data_root)],
         "WorkingDirectory": str(paths.data_root),
-        "RunAtLoad": True,
-        "KeepAlive": {"SuccessfulExit": False},
+        "RunAtLoad": run_at_load,
+        "KeepAlive": {"SuccessfulExit": False} if run_at_load else False,
         "ProcessType": "Background",
         "EnvironmentVariables": {
             "PATH": DEFAULT_PATH,
@@ -95,10 +100,14 @@ def plist_payload(paths: ServicePaths, interpreter: Path) -> dict[str, object]:
     }
 
 
-def write_plist(paths: ServicePaths, interpreter: Path) -> Path:
+def write_plist(paths: ServicePaths, interpreter: Path, *, run_at_load: bool = True) -> Path:
     paths.launch_agents_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths.log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    content = plistlib.dumps(plist_payload(paths, interpreter), fmt=plistlib.FMT_XML, sort_keys=True)
+    content = plistlib.dumps(
+        plist_payload(paths, interpreter, run_at_load=run_at_load),
+        fmt=plistlib.FMT_XML,
+        sort_keys=True,
+    )
     temporary = paths.plist_path.with_suffix(".plist.tmp")
     temporary.write_bytes(content)
     temporary.chmod(0o644)
@@ -132,6 +141,41 @@ def configured_interpreter(data_root: Path, *, home: Path | None = None) -> Path
     ):
         return None
     return _installed_interpreter(arguments[0])
+
+
+def retain_update_quiescence(
+    data_root: Path,
+    *,
+    expected_interpreter: str | Path,
+    home: Path | None = None,
+) -> Mapping[str, str]:
+    """Persist the maintenance stop so login cannot reload the old runtime."""
+    paths = default_paths(data_root, home)
+    current = configured_interpreter(data_root, home=home)
+    expected = _installed_interpreter(expected_interpreter)
+    if current != expected:
+        raise ServerServiceError("EP Server service does not reference the expected operational interpreter.")
+    write_plist(paths, expected, run_at_load=False)
+    return {
+        "state": "UPDATE_QUIESCENCE_RETAINED",
+        "label": LABEL,
+        "plist": str(paths.plist_path),
+        "interpreter": str(expected),
+    }
+
+
+def _update_quiescence_retained(data_root: Path, *, home: Path | None = None) -> bool:
+    path = default_paths(data_root, home).plist_path
+    try:
+        with path.open("rb") as stream:
+            payload = plistlib.load(stream)
+    except (OSError, plistlib.InvalidFileException):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("RunAtLoad") is False
+        and payload.get("KeepAlive") is False
+    )
 
 
 def install(data_root: Path, *, interpreter: str | Path | None = None, home: Path | None = None,
@@ -177,12 +221,15 @@ def replace_runtime(data_root: Path, *, expected_interpreter: str | Path, interp
     # If it follows the new write, the next retry observes the replacement and
     # only completes the idempotent bootstrap below.
     if current == expected:
-        result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
-        if result.returncode and "could not find service" not in (result.stderr or "").lower():
-            raise ServerServiceError("Unable to stop the owned EP Server LaunchAgent for runtime replacement.")
+        if not _update_quiescence_retained(data_root, home=home):
+            result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
+            if result.returncode and "could not find service" not in (result.stderr or "").lower():
+                raise ServerServiceError("Unable to stop the owned EP Server LaunchAgent for runtime replacement.")
         plist = write_plist(paths, replacement)
     else:
-        plist = paths.plist_path
+        # A crash may leave the replacement selected by a maintenance plist.
+        # Restore the normal boot policy before idempotently bootstrapping it.
+        plist = write_plist(paths, replacement)
     result = _launchctl(("bootstrap", _domain(), str(plist)), runner)
     if result.returncode and "service already loaded" not in (result.stderr or "").lower():
         raise ServerServiceError("Unable to activate the replacement EP Server runtime.")

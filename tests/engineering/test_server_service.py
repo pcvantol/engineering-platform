@@ -111,6 +111,38 @@ class ServerServiceTests(unittest.TestCase):
                                            home=self.home, runner=runner)
         self.assertEqual(calls, [["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)]])
 
+    def test_retained_update_quiescence_skips_a_second_bootout_and_restores_boot_policy(self) -> None:
+        paths = server_service.default_paths(self.root, self.home)
+        old, new = Path(sys.executable), Path(self.temporary.name) / "replacement-python"
+        new.symlink_to(old)
+        server_service.write_plist(paths, old)
+        retained = server_service.retain_update_quiescence(
+            self.root, expected_interpreter=old, home=self.home,
+        )
+        self.assertEqual(retained["state"], "UPDATE_QUIESCENCE_RETAINED")
+        with paths.plist_path.open("rb") as stream:
+            maintenance = plistlib.load(stream)
+        self.assertIs(maintenance["RunAtLoad"], False)
+        self.assertIs(maintenance["KeepAlive"], False)
+        calls: list[list[str]] = []
+
+        def runner(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        with patch("engineering_platform.server_service.platform.system", return_value="Darwin"):
+            server_service.replace_runtime(
+                self.root, expected_interpreter=old, interpreter=new,
+                home=self.home, runner=runner,
+            )
+        self.assertEqual(calls, [
+            ["launchctl", "bootstrap", f"gui/{server_service.os.getuid()}", str(paths.plist_path)],
+        ])
+        with paths.plist_path.open("rb") as stream:
+            active = plistlib.load(stream)
+        self.assertIs(active["RunAtLoad"], True)
+        self.assertEqual(active["KeepAlive"], {"SuccessfulExit": False})
+
     def test_replace_runtime_rejects_an_unexpected_or_missing_service(self) -> None:
         with self.assertRaisesRegex(server_service.ServerServiceError, "expected operational interpreter"):
             server_service.replace_runtime(self.root, expected_interpreter=Path(sys.executable),

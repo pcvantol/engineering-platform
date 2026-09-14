@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from engineering_platform.installation_update_executor import (
     InstallationUpdateActions, InstallationUpdateExecutorError, execute,
@@ -199,4 +200,24 @@ class InstallationUpdateExecutorTests(unittest.TestCase):
                 activate, step("verify"), replacement,
             )
             self.assertEqual(execute(same_plan, guarded)["state"], "COMPLETE")
+            self.assertEqual(calls, ["activate", "verify"])
+
+    def test_six_callback_cas_gap_retries_idempotent_activation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            plan = self._plan(Path(temporary))
+            calls: list[str] = []
+            actions = self._actions(plan, calls)
+            original_advance = InstallationUpdateSession.advance
+
+            def lose_activated_event(session, state, evidence):
+                if state == "ACTIVATED":
+                    raise RuntimeError("lost ACTIVATED event")
+                return original_advance(session, state, evidence)
+
+            with patch.object(
+                InstallationUpdateSession, "advance", new=lose_activated_event,
+            ), self.assertRaisesRegex(RuntimeError, "lost ACTIVATED event"):
+                execute(plan, actions)
+            calls.clear()
+            self.assertEqual(execute(plan, self._actions(plan, calls))["state"], "COMPLETE")
             self.assertEqual(calls, ["activate", "verify"])

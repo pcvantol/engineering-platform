@@ -249,6 +249,26 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
             return action(bound_plan)
         return invoke
 
+    def after_quiescence(action: EvidenceAction) -> EvidenceAction:
+        def invoke(bound_plan: InstallationUpdatePlan) -> Mapping[str, object]:
+            _admitted_target(
+                bound_plan, admission=admission, runner=migration_runner,
+                service_home=activation_home,
+            )
+            _evidence(actions.quiesce(bound_plan), "retained quiescence")
+            return action(bound_plan)
+        return invoke
+
+    def migrate(bound_plan: InstallationUpdatePlan) -> Mapping[str, object]:
+        target = _bound_target(
+            bound_plan, admission=admission, runner=migration_runner,
+            service_home=activation_home,
+        )
+        _evidence(actions.quiesce(bound_plan), "retained quiescence")
+        return installation_update_migration.migrate(
+            bound_plan, interpreter=target, runner=migration_runner,
+        )
+
     return InstallationUpdateActions(
         inventory=lambda bound_plan: _inventory(
             bound_plan,
@@ -261,15 +281,8 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
             runner=migration_runner,
         ),
         quiesce=guarded(actions.quiesce),
-        backup=guarded(installation_update_backup.backup),
-        migrate=lambda bound_plan: installation_update_migration.migrate(
-            bound_plan,
-            interpreter=_bound_target(
-                bound_plan, admission=admission, runner=migration_runner,
-                service_home=activation_home,
-            ),
-            runner=migration_runner,
-        ),
+        backup=after_quiescence(installation_update_backup.backup),
+        migrate=migrate,
         activate=lambda bound_plan: installation_update_activation.activate(
             bound_plan,
             interpreter=_bound_target(

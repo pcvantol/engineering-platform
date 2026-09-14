@@ -6265,17 +6265,32 @@ def _installation_update_operational_actions(
 
     def quiesce(_plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
         lifecycle = LaunchdProvider()
+        selected = server_service.configured_interpreter(root)
+        if selected is None:
+            raise ServerConfigurationError("the existing EP user service is unavailable")
+        retained = server_service.retain_update_quiescence(
+            root, expected_interpreter=selected,
+        )
         observed = lifecycle.runtime_details(server_service.LABEL)
         if observed is not None and not observed.loaded:
-            return {"result": "PASS", "service_label": server_service.LABEL, "state": "ALREADY_QUIESCED"}
+            return {
+                "result": "PASS", "service_label": server_service.LABEL,
+                "state": "ALREADY_QUIESCED", "retention": retained["state"],
+            }
         try:
             lifecycle.quiesce(server_service.LABEL, paths.plist_path)
         except OSError:
             recovered = lifecycle.runtime_details(server_service.LABEL)
             if recovered is None or recovered.loaded:
                 raise
-            return {"result": "PASS", "service_label": server_service.LABEL, "state": "ALREADY_QUIESCED"}
-        return {"result": "PASS", "service_label": server_service.LABEL, "state": "QUIESCED"}
+            return {
+                "result": "PASS", "service_label": server_service.LABEL,
+                "state": "ALREADY_QUIESCED", "retention": retained["state"],
+            }
+        return {
+            "result": "PASS", "service_label": server_service.LABEL,
+            "state": "QUIESCED", "retention": retained["state"],
+        }
 
     def verify(_plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
         selected = server_service.configured_interpreter(root)

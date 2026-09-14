@@ -109,6 +109,15 @@ def _recovered_activation(
             and record["version"] == plan.current_version
             and record["artifact_digest"] == plan.current_digest):
         return None
+    if (expected is None
+            and record["installation_id"] == plan.installation_id
+            and record["version"] == plan.target_version
+            and record["artifact_digest"] == plan.target_digest
+            and record["source_revision"] == plan.target_source_revision):
+        # Original six-callback callers have no declarative replacement to
+        # compare. Never acknowledge the record on identifiers alone; retry
+        # their contractually idempotent activation callback instead.
+        return None
     raise InstallationUpdateExecutorError("operational installation changed during activation recovery")
 
 

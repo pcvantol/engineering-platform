@@ -209,7 +209,10 @@ class InstallationUpdateCompositionTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["state"], "COMPLETE")
-            self.assertEqual(calls, ["inventory", "quiesce", "backup", "migrate", "activate", "verify"])
+            self.assertEqual(calls, [
+                "inventory", "quiesce", "quiesce", "backup", "quiesce",
+                "migrate", "activate", "verify",
+            ])
             self.assertEqual(load(root)["version"], plan.target_version)
             self.assertEqual(load(root)["interpreter"], str(target))
 
@@ -269,7 +272,10 @@ class InstallationUpdateCompositionTests(unittest.TestCase):
 
             self.assertEqual(status(root, plan.operation_id)["state"], "MIGRATED")
             self.assertEqual(load(root), self._replacement(plan, target, original=original))
-            self.assertEqual(first_calls, ["inventory", "quiesce", "backup", "migrate", "activate"])
+            self.assertEqual(first_calls, [
+                "inventory", "quiesce", "quiesce", "backup", "quiesce",
+                "migrate", "activate",
+            ])
 
             resumed_calls: list[str] = []
 

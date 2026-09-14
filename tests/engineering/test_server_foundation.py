@@ -560,10 +560,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "engineering_platform.server.operational_installation.package_identity", return_value=package,
         ), patch("engineering_platform.server.central_database.details", return_value={"integrity": "PASS"}):
             self.assertEqual(actions.inventory(object())["package_version"], "2.3.2")
-        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type:
+        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
+            "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+        ), patch(
+            "engineering_platform.server.server_service.retain_update_quiescence",
+            return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
+        ) as retain:
             lifecycle_type.return_value.runtime_details.return_value = runtime
             self.assertEqual(actions.quiesce(object())["state"], "QUIESCED")
             lifecycle_type.return_value.quiesce.assert_called_once()
+            retain.assert_called_once_with(self.root.resolve(), expected_interpreter=selected)
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
             "engineering_platform.server.operational_installation.resolve", return_value=installation,
         ), patch("engineering_platform.server.operational_installation.package_identity", return_value=package), patch(
@@ -584,19 +590,31 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             with self.assertRaisesRegex(server.ServerConfigurationError, "activated EP user service"):
                 actions.verify(object())
 
+        selected = Path(self.temporary.name) / "selected-python"
+        selected.write_text("#!\n")
+        selected.chmod(0o700)
         unloaded = type("Runtime", (), {"loaded": False})()
-        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type:
+        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
+            "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+        ), patch(
+            "engineering_platform.server.server_service.retain_update_quiescence",
+            return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
+        ):
             lifecycle_type.return_value.runtime_details.return_value = unloaded
             self.assertEqual(actions.quiesce(object())["state"], "ALREADY_QUIESCED")
             lifecycle_type.return_value.quiesce.assert_not_called()
 
         loaded = type("Runtime", (), {"loaded": True})()
-        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type:
+        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
+            "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+        ), patch(
+            "engineering_platform.server.server_service.retain_update_quiescence",
+            return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
+        ):
             lifecycle_type.return_value.runtime_details.side_effect = (loaded, unloaded)
             lifecycle_type.return_value.quiesce.side_effect = OSError("already stopped")
             self.assertEqual(actions.quiesce(object())["state"], "ALREADY_QUIESCED")
 
-        selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!\n"); selected.chmod(0o700)
         configuration = type("Configuration", (), {"bind_host": "127.0.0.1", "bind_port": 8765})()
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), patch(
             "engineering_platform.server.operational_installation.resolve"
