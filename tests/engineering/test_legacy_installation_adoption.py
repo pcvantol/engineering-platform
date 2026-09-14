@@ -13,6 +13,7 @@ from engineering_platform.legacy_installation_adoption import (
     _digest, _wheel_record, adopt, inspect, local_owner_authority,
 )
 from engineering_platform.operational_installation import OperationalInstallation
+from engineering_platform.installation_update_plan import prepare
 
 
 class LegacyInstallationAdoptionTests(unittest.TestCase):
@@ -82,6 +83,17 @@ class LegacyInstallationAdoptionTests(unittest.TestCase):
             with self.assertRaisesRegex(LegacyInstallationAdoptionError, "invalid"):
                 _wheel_record(invalid)
 
+    def test_wheel_parser_rejects_changed_member_bytes_with_an_unchanged_record_hash(self) -> None:
+        with TemporaryDirectory() as temporary:
+            wheel = Path(temporary) / "tampered.whl"
+            expected = base64.urlsafe_b64encode(hashlib.sha256(b"original\n").digest()).rstrip(b"=").decode()
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("engineering_platform/__init__.py", b"changed\n")
+                archive.writestr("x.dist-info/METADATA", "Name: engineering-platform\nVersion: 2.3.34\n")
+                archive.writestr("x.dist-info/RECORD", f"engineering_platform/__init__.py,sha256={expected},9\n")
+            with self.assertRaisesRegex(LegacyInstallationAdoptionError, "package bytes"):
+                _wheel_record(wheel)
+
     def test_inspection_refuses_wrong_service_package_failure_and_version_mismatch(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "runtime"; package = root / "engineering_platform"; package.mkdir(parents=True)
@@ -127,3 +139,22 @@ class LegacyInstallationAdoptionTests(unittest.TestCase):
             conflicting = LegacyAdoptionAuthorization(**{**good.payload(), "operation_id": "operation-2"})
             with self.assertRaisesRegex(LegacyInstallationAdoptionError, "different identity"):
                 adopt(observation=observed, authorization=conflicting, authorizer=lambda *_args: None)
+
+    def test_real_adoption_record_is_the_only_legacy_update_plan_baseline(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtime"; root.mkdir(mode=0o700)
+            old_digest = "sha256:" + "a" * 64
+            observed = LegacyInstallationObservation("instance-1", str(root), "service", str(root / "python"), str(root / "package"),
+                "2.3.34", old_digest, str(root / "old.whl"))
+            target = root / "target.whl"; target.write_bytes(b"target")
+            target_digest = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+            authorization = LegacyAdoptionAuthorization("instance-1", str(root), "service", str(root / "python"), old_digest,
+                "2.3.36", target_digest, "c" * 40, "legacy-update-0001", True)
+            adopt(observation=observed, authorization=authorization, authorizer=lambda *_args: None)
+            plan = prepare(root, operation_id="legacy-update-0001", artifact=target, target_version="2.3.36",
+                           target_digest=target_digest, target_source_revision="c" * 40)
+            self.assertEqual(plan.legacy_adoption, observed.payload())
+            authorization = LegacyAdoptionAuthorization(**{**authorization.payload(), "target_artifact_digest": "sha256:" + "b" * 64})
+            # A decision is immutable: a changed target needs a fresh decision.
+            with self.assertRaisesRegex(LegacyInstallationAdoptionError, "different identity"):
+                adopt(observation=observed, authorization=authorization, authorizer=lambda *_args: None)

@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 import stat
 import tempfile
@@ -20,6 +21,7 @@ from typing import Callable, Mapping
 import zipfile
 
 from . import operational_installation
+from .operational_installation_lock import OperationalInstallationLock, OperationalInstallationLockError
 
 
 FILENAME = "legacy-installation-adoption.json"
@@ -83,6 +85,12 @@ def _wheel_record(path: Path) -> tuple[str, dict[str, str]]:
     try:
         with zipfile.ZipFile(path) as archive:
             names = archive.namelist()
+            if len(names) != len(set(names)):
+                raise LegacyInstallationAdoptionError("preserved wheel has duplicate archive members")
+            for name in names:
+                member = PurePosixPath(name)
+                if member.is_absolute() or ".." in member.parts or not name or "\\" in name:
+                    raise LegacyInstallationAdoptionError("preserved wheel has unsafe archive members")
             metadata = [name for name in names if name.endswith(".dist-info/METADATA")]
             records = [name for name in names if name.endswith(".dist-info/RECORD")]
             if len(metadata) != 1 or len(records) != 1:
@@ -99,6 +107,13 @@ def _wheel_record(path: Path) -> tuple[str, dict[str, str]]:
                 name, digest, _size = line.split(",", 2)
                 algorithm, separator, encoded = digest.partition("=")
                 if algorithm == "sha256" and separator and name.startswith("engineering_platform/"):
+                    if name not in names:
+                        raise LegacyInstallationAdoptionError("preserved wheel RECORD names a missing package member")
+                    actual = base64.urlsafe_b64encode(
+                        hashlib.sha256(archive.read(name)).digest()
+                    ).rstrip(b"=").decode("ascii")
+                    if actual != encoded:
+                        raise LegacyInstallationAdoptionError("preserved wheel package bytes differ from RECORD")
                     hashes[name] = encoded
     except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as error:
         if isinstance(error, LegacyInstallationAdoptionError):
@@ -186,25 +201,55 @@ def local_owner_authority(authorization: LegacyAdoptionAuthorization, observatio
 def adopt(*, observation: LegacyInstallationObservation, authorization: LegacyAdoptionAuthorization,
           authorizer: Callable[[LegacyAdoptionAuthorization, LegacyInstallationObservation], None] = local_owner_authority) -> dict[str, object]:
     """Atomically persist one non-release adoption fact; never writes a release record."""
-    _validate_authorization(authorization, observation)
-    authorizer(authorization, observation)
     root, path = Path(observation.data_root).resolve(), Path(observation.data_root).resolve() / FILENAME
     payload = {"schema_version": 1, "kind": "OBSERVED_LEGACY_ARTIFACT", "observation": observation.payload(),
                "authorization": authorization.payload()}
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if path.exists():
-        try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise LegacyInstallationAdoptionError("legacy adoption record is unreadable") from error
-        if existing != payload:
-            raise LegacyInstallationAdoptionError("legacy adoption record already exists with different identity")
-        return payload
-    descriptor, temporary = tempfile.mkstemp(prefix=".legacy-adoption-", dir=root)
+    lock = OperationalInstallationLock(root)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, sort_keys=True, separators=(",", ":")); stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600); os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True); raise
-    return payload
+        lock.acquire(authorization.operation_id)
+    except OperationalInstallationLockError as error:
+        raise LegacyInstallationAdoptionError("legacy adoption cannot acquire the operational installation lock") from error
+    try:
+        _validate_authorization(authorization, observation)
+        authorizer(authorization, observation)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise LegacyInstallationAdoptionError("legacy adoption record is unreadable") from error
+            if existing != payload:
+                raise LegacyInstallationAdoptionError("legacy adoption record already exists with different identity")
+            return payload
+        descriptor, temporary = tempfile.mkstemp(prefix=".legacy-adoption-", dir=root)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, sort_keys=True, separators=(",", ":")); stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
+            os.chmod(temporary, 0o600); os.replace(temporary, path)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True); raise
+        return payload
+    finally:
+        lock.release(authorization.operation_id)
+
+
+def bound_baseline(data_root: Path, *, operation_id: str, target_version: str,
+                   target_digest: str, target_source_revision: str) -> LegacyInstallationObservation:
+    """Reopen only the exact, durable adoption decision bound to this update."""
+    root = Path(data_root).expanduser().resolve()
+    try:
+        value = json.loads((root / FILENAME).read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or set(value) != {"schema_version", "kind", "observation", "authorization"}:
+            raise ValueError
+        observation = LegacyInstallationObservation(**value["observation"])
+        authorization = LegacyAdoptionAuthorization(**value["authorization"])
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise LegacyInstallationAdoptionError("legacy adoption record is invalid") from error
+    if value["schema_version"] != 1 or value["kind"] != "OBSERVED_LEGACY_ARTIFACT" or observation.source_revision is not None:
+        raise LegacyInstallationAdoptionError("legacy adoption record is invalid")
+    _validate_authorization(authorization, observation)
+    if (Path(observation.data_root).resolve() != root or authorization.operation_id != operation_id
+            or authorization.target_version != target_version or authorization.target_artifact_digest != target_digest
+            or authorization.target_source_revision != target_source_revision):
+        raise LegacyInstallationAdoptionError("legacy adoption record is not bound to this update")
+    return observation
