@@ -102,16 +102,17 @@ the old wheel after migration, merge authorization or owner authorization.
 ## PR #224 qualification handoff
 
 The exact final review head and test head are the final PR head recorded in the
-PR description. The indirection is intentional: a commit cannot contain its
-own commit identifier. Both native review results and every final validation
-must name that same head before merge consideration.
+PR description. The indirection for the review head is intentional: a commit
+cannot contain its own identifier. The exact full-suite test head is
+`6c9a2d3301ccffe0c2b5a4f6e59ee1f91eb5a112`; any later final-head difference
+is restricted to this evidence-only handoff correction.
 
 - Release candidate: `2.3.51`.
 - Wheel: `engineering_platform-2.3.51-py3-none-any.whl` (3,281,254 bytes).
 - Wheel SHA-256: `5ce6040502d4f204b657e975b18804b02c0a063fe9ef2717a235f2b931eb05cd`.
 - Production-wheel contents: 155 allowlisted members and no runtime
   dependencies.
-- Installed full suite: 1,701 tests passed; 132 measured modules, none below
+- Installed full suite: 1,702 tests passed; 132 measured modules, none below
   80.20%; aggregate branch-aware coverage 84.61%.
 - `installation_update_activation.py`: 81.69014084507042% branch-aware
   coverage.
