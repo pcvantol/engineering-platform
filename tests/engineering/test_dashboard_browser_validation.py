@@ -18,7 +18,7 @@ class DashboardBrowserValidationTest(unittest.TestCase):
 
         self.assertEqual(
             run.call_args.args[0],
-            ("npx", "playwright", "test", "tests/engineering/dashboard.spec.mjs", "--workers=1", "--shard=2/4"),
+            ("npx", "playwright", "test", "tests/engineering/dashboard.spec.mjs", "tests/engineering/dashboard_translation.integration.spec.mjs", "--workers=1", "--shard=2/4"),
         )
 
     def test_local_batch_starts_four_one_worker_ci_shards(self) -> None:
