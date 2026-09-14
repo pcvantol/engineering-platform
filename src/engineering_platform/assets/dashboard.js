@@ -1,5 +1,6 @@
 import { createDashboardStatusStore } from "./dashboard_status_store.mjs";
-import { createLocaleService, normalizeLocale, preferredLocale } from "./dashboard_locales.mjs";
+import { createLocaleService, DASHBOARD_MESSAGES, normalizeLocale, preferredLocale } from "./dashboard_locales.mjs";
+import { createDynamicEvidenceLocalizer } from "./dashboard_translation.mjs";
 
 function initialDashboardLocale() {
   try {
@@ -78,10 +79,37 @@ function capabilityRecommendation(value) {
   return key ? t(key) : String(value || t("format.not_available"));
 }
 function formatDiagnostic(value) {
-  return translate(value || t("value.no_diagnostics")).replace(
-    /\.\s+(?=(?:Expected|Observed|Required action|Verwacht|Waargenomen|Vereiste actie):)/g,
+  return formatDiagnosticProjection(translate(value || t("value.no_diagnostics")));
+}
+function formatDiagnosticProjection(value) {
+  return String(value).replace(
+    /\.[ \t]+(?=(?:Expected|Observed|Required action|Verwacht|Waargenomen|Vereiste actie|Erwartet|Beobachtet|Erforderliche Aktion|Attendu|Observé|Action requise|Esperado|Observado|Acción requerida):)/g,
     ".\n",
   );
+}
+function dynamicDiagnosticSource(value) {
+  if (typeof value !== "string" || !value.trim() || operationalTranslation(value)) return false;
+  const literal = value.trim();
+  // These are syntactic technical literals, not prose language detection.
+  // Only the existing diagnostic prose field is eligible; raw logs, prompts,
+  // identifiers and command/path fields never enter this projection.
+  return !(/^[A-Z][A-Z0-9_]*$/.test(literal)
+    || /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(literal)
+    || /^[0-9a-f]{7,64}$/i.test(literal)
+    || /^(?:[A-Za-z]:[\\/]|\/|\.\.?\/|~\/|https?:\/\/)/.test(literal)
+    || /^(?:\$\s|```|(?:git|npm|npx|python[\d.]*|pip[\d.]*|codex|curl|bash|sh|zsh)\s)/.test(literal));
+}
+function renderDiagnostic(element, source, empty = t("value.no_diagnostics")) {
+  const original = typeof source === "string" ? source : "";
+  element.textContent = formatDiagnostic(original || empty);
+  element.removeAttribute("data-translation-state");
+  element.removeAttribute("title");
+  if (dynamicDiagnosticSource(original)) {
+    void localizeDynamicEvidence([{ source: original, element, format: formatDiagnosticProjection }]);
+  } else {
+    // Invalidate an older request even when its replacement is a catalog label.
+    element.dataset.dynamicEvidenceSource = original;
+  }
 }
 function enumLabel(value, fallback = t("format.not_available")) {
   const enumValue = String(value || "").trim();
@@ -210,20 +238,26 @@ const OPERATIONAL_PRESENTATION_KEYS = {
   "Waiting for the operator to merge the pull request.": "operational.waiting_for_operator_merge",
   "Execution Host ownership is stale; no execution is currently running.": "operational.stale_host_ownership",
 };
-function translate(value) {
+function operationalTranslation(value) {
   const raw = String(value || "");
   const providerDeadline = /^Provider action exceeded the (\d+)-minute host-owned deadline\.$/.exec(raw);
   if (providerDeadline) {
-    return t("operational.provider_deadline_exceeded", { minutes: providerDeadline[1] });
+    return { key: "operational.provider_deadline_exceeded", values: { minutes: providerDeadline[1] } };
   }
   const capabilityReview = /^Capability review:\s*(.+)$/i.exec(raw);
   if (capabilityReview) {
-    return t("operational.activity_capability_review", {
+    return { key: "operational.activity_capability_review", values: {
       reviewer: reviewerLabel(capabilityReview[1]),
-    });
+    } };
   }
   const presentationKey = OPERATIONAL_PRESENTATION_KEYS[raw];
-  return presentationKey ? t(presentationKey) : t("state." + raw, {}, raw);
+  if (presentationKey) return { key: presentationKey };
+  const stateKey = "state." + raw;
+  return Object.hasOwn(DASHBOARD_MESSAGES.en, stateKey) ? { key: stateKey } : null;
+}
+function translate(value) {
+  const raw = String(value || ""), message = operationalTranslation(raw);
+  return message ? t(message.key, message.values) : raw;
 }
 function humanize() {
   for (const id of [
@@ -490,11 +524,30 @@ function clock() {
   $("lastRefresh").textContent =
     t("format.last_updated", { value: lastRefresh ? locale.dateTime(lastRefresh) : t("format.loading") });
 }
+const executionDiagnosticViews = new Map();
 function l(id, url, run, last, container) {
-  if (run === (last ? lastLogRun : currentLogRun)) return;
+  const element = $(id);
+  // The initial shell's loading label must not overwrite acquired evidence
+  // when the static catalogue is reapplied on a locale change.
+  element.removeAttribute("data-i18n");
+  const render = (view) => {
+    if (executionDiagnosticViews.get(id) !== view) return;
+    if (view.pending) {
+      element.textContent = t("ui.diagnostic_loading");
+      element.dataset.dynamicEvidenceSource = "";
+      return;
+    }
+    $(container).hidden = false;
+    renderDiagnostic(element, view.source, t(last
+      ? "ui.diagnostic_unavailable_history" : "ui.diagnostic_unavailable_active"));
+  };
+  const previous = executionDiagnosticViews.get(id);
+  if (previous?.run === run) { render(previous); return; }
+  const view = { run, source: "", pending: true };
+  executionDiagnosticViews.set(id, view);
   if (last) lastLogRun = run;
   else currentLogRun = run;
-  $(id).textContent = t("ui.diagnostic_loading");
+  render(view);
   fetch(url, { cache: "no-store" })
     .then(async (response) => {
       const text = await response.text();
@@ -510,18 +563,13 @@ function l(id, url, run, last, container) {
         Boolean(x) &&
         !x.startsWith("No Codex CLI diagnostic is available") &&
         !x.startsWith("Geen Codex CLI-diagnose beschikbaar");
-      $(container).hidden = false;
-      $(id).textContent = available
-        ? x
-        : last
-          ? t("ui.diagnostic_unavailable_history")
-          : t("ui.diagnostic_unavailable_active");
+      view.source = available ? x : "";
+      view.pending = false;
+      render(view);
     })
     .catch(() => {
-      $(container).hidden = false;
-      $(id).textContent = last
-        ? t("ui.diagnostic_unavailable_history")
-        : t("ui.diagnostic_unavailable_active");
+      view.pending = false;
+      render(view);
     });
 }
 function usage(x) {
@@ -858,6 +906,7 @@ function activeReviewerAgents(items, executionStatus = {}) {
     card.innerHTML = `<strong>${t("ui.reviewer_agents")}</strong><p class="estimate-meta" id="activeReviewerSummary"></p><div class="reviewer-agents__list" id="activeReviewerList"></div>`;
     $("currentRun")?.querySelector(".current-run__grid")?.append(card);
   }
+  card.querySelector(":scope > strong").textContent = t("ui.reviewer_agents");
   card.hidden = !agents.length;
   if (!agents.length) {
     $("activeReviewerSummary").textContent = "";
@@ -2100,35 +2149,12 @@ function lifecyclePhaseTiming(spans) {
     duration_ms: hasDuration ? phase.duration_ms : null,
   }));
 }
-const dynamicEvidenceTranslationCache = new Map();
-async function localizeDynamicEvidence(rows) {
-  if (dashboardLocale === "en" || !rows.length) return;
-  const originals = [...new Set(rows.map(({ source }) => source).filter(
-    (source) => source && !dynamicEvidenceTranslationCache.has(`${dashboardLocale}\u0000${source}`),
-  ))];
-  if (originals.length) {
-    try {
-      const response = await fetch("/api/dashboard-translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ locale: dashboardLocale, texts: originals }),
-      });
-      const payload = response.ok ? await response.json() : null;
-      if (!Array.isArray(payload?.translations) || payload.translations.length !== originals.length) return;
-      payload.translations.forEach((translation, index) => {
-        if (typeof translation === "string" && translation.trim()) {
-          dynamicEvidenceTranslationCache.set(`${dashboardLocale}\u0000${originals[index]}`, translation);
-        }
-      });
-    } catch {
-      return;
-    }
-  }
-  rows.forEach(({ source, element }) => {
-    const translation = dynamicEvidenceTranslationCache.get(`${dashboardLocale}\u0000${source}`);
-    if (translation && element.textContent === source) element.textContent = translation;
-  });
-}
+const dynamicEvidenceLocalizer = createDynamicEvidenceLocalizer({
+  getLocale: () => dashboardLocale,
+  sourceFallbackTitle: () => t("translation.source_unavailable"),
+});
+function localizeDynamicEvidence(rows) { return dynamicEvidenceLocalizer.localize(rows); }
+function retryDynamicEvidence() { dynamicEvidenceLocalizer.retry(); }
 function lifecycleQualityEvidence(step) {
   const evidence = Array.isArray(step?.quality_evidence) ? step.quality_evidence : [];
   if (!evidence.length) return null;
@@ -2227,7 +2253,7 @@ function lifecycleRepairEvidence(step) {
   void localizeDynamicEvidence(dynamicRows);
   return section;
 }
-let lifecycleDetailTrigger = null;
+let lifecycleDetailTrigger = null, lifecycleDetailStep = null;
 function closeLifecycleDetail() {
   const modal = $("lifecycleDetailModal");
   if (modal?.open) modal.close();
@@ -2236,10 +2262,12 @@ function lifecycleDetailStatusKey(step) {
   const state = String(step?.state || "UNKNOWN").toLowerCase();
   return state === "active" && isOperatorMergeStep(step) ? "operator-wait" : state;
 }
-function openLifecycleDetail(step, trigger) {
+function openLifecycleDetail(step, trigger, { presentationOnly = false } = {}) {
   const modal = $("lifecycleDetailModal"), content = $("lifecycleDetailContent");
   if (!modal || !content) return;
+  if (!presentationOnly) retryDynamicEvidence();
   lifecycleDetailTrigger = trigger || document.activeElement;
+  lifecycleDetailStep = step;
   // A lifecycle detail is a child view: its modal chrome follows the nearest
   // parent surface, while the step state below still controls only its glyph.
   inheritModalAccent(modal, lifecycleDetailTrigger);
@@ -2293,10 +2321,10 @@ function openLifecycleDetail(step, trigger) {
   const repairEvidence = lifecycleRepairEvidence(step);
   if (repairEvidence) content.append(repairEvidence);
   if (!modal.open) modal.showModal();
-  resetDashboardModalInitialFocus(modal);
+  if (!presentationOnly) resetDashboardModalInitialFocus(modal);
 }
 $("lifecycleDetailClose")?.addEventListener("click", closeLifecycleDetail);
-$("lifecycleDetailModal")?.addEventListener("close", () => { lifecycleDetailTrigger?.focus?.(); lifecycleDetailTrigger = null; });
+$("lifecycleDetailModal")?.addEventListener("close", () => { lifecycleDetailTrigger?.focus?.(); lifecycleDetailTrigger = null; lifecycleDetailStep = null; });
 function lifecycleFlow(projection, { historical = false } = {}) {
   const section = document.createElement("section");
   section.className = "execution-lifecycle" + (historical ? " execution-lifecycle--historical" : "");
@@ -2686,7 +2714,7 @@ function renderHealthStatus(x, snapshot = {}) {
   queueItems(x.queue_items, x.queue_depth);
   $("repositoryState").textContent = translate(x.repository_state || "UNKNOWN");
   $("workspaceState").textContent = translate(x.workspace_state || "UNKNOWN");
-  $("diag").textContent = formatDiagnostic(x.diagnostic);
+  renderDiagnostic($("diag"), x.diagnostic);
   $("platformVersion").textContent = x.platform_version || t("format.not_available");
   $("dashboardVersion").textContent =
     components.dashboard || t("format.not_available");
@@ -3179,7 +3207,7 @@ function providerNeutralLabels() {
     ["#processMetrics>strong", "ui.local_ai_processes"],
     ["#usage>strong", "section.ai_provider_usage"],
     ["#currentDiagnostic>strong", "section.ai_execution_diagnostics"],
-    ["#rateLimits .label", "section.ai_provider_limits"],
+    ["#rateLimitLabel", "section.ai_provider_limits"],
     ["#codexChat>strong", "section.ai_conversation"],
     ["#chatMessages", "section.ai_conversation"],
     ["label[for=chatInput]", "section.new_ai_question"],
@@ -4653,7 +4681,7 @@ function telemetryDetailMarkdown(detail, date) {
   ];
   const phaseRows = phases.map((phase) => [telemetryLabel(phase.phase), telemetryMs(phase.average_ms), telemetryMs(phase.median_ms), telemetryMs(phase.total_ms), telemetryPercent(phase.share_percent), phase.runs]);
   const runRows = runs.map((run) => [
-    run.run_id, run.started_at ? locale.dateTime(new Date(run.started_at)) : t("format.unavailable"), run.status,
+    run.run_id, run.started_at ? locale.dateTime(new Date(run.started_at)) : t("format.unavailable"), translate(run.status),
     telemetryMs(run.total_duration_ms), telemetryRunMetric(run.queue_wait_ms, run.phase_telemetry), telemetryRunMetric(run.provider_duration_ms, run.phase_telemetry),
     telemetryRunMetric(run.validation_duration_ms, run.phase_telemetry), telemetryRunMetric(run.external_wait_ms, run.phase_telemetry),
     run.largest_phase ? telemetryLabel(run.largest_phase) : telemetryRunMetric(null, run.phase_telemetry), run.producer_type,
@@ -4700,6 +4728,7 @@ function telemetryDetailTableScroll(table, label) {
 }
 function openTelemetryDetail(date, trigger) {
   if (!date) return;
+  retryDynamicEvidence();
   void recordUserAction("telemetry_detail_opened");
   const requestId = ++telemetryDetailRequestId;
   telemetryDetailTrigger = trigger || document.activeElement;
@@ -4780,7 +4809,7 @@ function renderTelemetryDetail(detail, content) {
     });
     id.addEventListener("click", (event) => { event.stopPropagation(); open(); });
     const phaseTelemetry = run.phase_telemetry;
-    const values = [id, run.started_at ? locale.dateTime(new Date(run.started_at)) : t("format.unavailable"), run.status, telemetryMs(run.total_duration_ms), telemetryRunMetric(run.queue_wait_ms, phaseTelemetry), telemetryRunMetric(run.provider_duration_ms, phaseTelemetry), telemetryRunMetric(run.validation_duration_ms, phaseTelemetry), telemetryRunMetric(run.external_wait_ms, phaseTelemetry), run.largest_phase ? telemetryLabel(run.largest_phase) : (phaseTelemetry === "RECORDED" ? t("telemetry.not_executed") : t("telemetry.not_recorded_short")), run.producer_type || t("format.unavailable"), run.repository || t("format.unavailable"), run.model || t("format.unavailable")];
+    const values = [id, run.started_at ? locale.dateTime(new Date(run.started_at)) : t("format.unavailable"), translate(run.status), telemetryMs(run.total_duration_ms), telemetryRunMetric(run.queue_wait_ms, phaseTelemetry), telemetryRunMetric(run.provider_duration_ms, phaseTelemetry), telemetryRunMetric(run.validation_duration_ms, phaseTelemetry), telemetryRunMetric(run.external_wait_ms, phaseTelemetry), run.largest_phase ? telemetryLabel(run.largest_phase) : (phaseTelemetry === "RECORDED" ? t("telemetry.not_executed") : t("telemetry.not_recorded_short")), run.producer_type || t("format.unavailable"), run.repository || t("format.unavailable"), run.model || t("format.unavailable")];
     values.forEach((value) => {
       const cell = document.createElement("td");
       if (value instanceof Element) cell.append(value); else cell.textContent = String(value);
@@ -6085,11 +6114,66 @@ function updateLocalePicker() {
   });
 }
 function changeDashboardLocale(value) {
+  const scroll = { x: window.scrollX, y: window.scrollY }, focused = document.activeElement;
+  const focusable = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex='0']";
+  const focusedModal = focused?.closest("dialog[open]");
+  const focusedIndex = focusedModal ? [...focusedModal.querySelectorAll(focusable)].indexOf(focused) : -1;
+  const controls = [...document.querySelectorAll("input[id], textarea[id], select[id]")]
+    .filter((element) => element.id !== "dashboardLocale" && element.type !== "file")
+    .map((element) => ({ id: element.id, value: element.value, checked: element.checked }));
+  const details = [...document.querySelectorAll("details[id]")].map((element) => ({ id: element.id, open: element.open }));
+  const modalState = [...document.querySelectorAll("dialog[open]")].map((modal) => ({
+    modal,
+    // These containers stay in place; only their evidence children are rebuilt.
+    scroll: [modal, ...modal.querySelectorAll("[id], .dashboard-modal-shell__panel")]
+      .map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft })),
+    details: [...modal.querySelectorAll("details")].map((element) => element.open),
+  }));
+  retryDynamicEvidence();
   dashboardLocale = normalizeLocale(value);
   locale = createLocaleService(dashboardLocale, { strict: strictLocalizationMode, surface: "Operations Console" });
+  localizationCalls.clear();
+  fallback.current_action = t("dashboard.status_unavailable");
+  fallback.diagnostic = t("dashboard.status_unavailable");
   dashboardClientState.locale = dashboardLocale;
   saveDashboardClientState();
-  window.location.reload();
+  applyDashboardLocale();
+  if (latestStatus) renderDashboardStatus(latestStatus, latestDashboardSnapshot || {});
+  if ($("telemetryDetailModal")?.open && telemetryDetailPayload) {
+    $("telemetryDetailTitle").textContent = t("telemetry.detail_title", { date: telemetryDate(telemetryDetailDate) });
+    $("telemetryDetailDescription").textContent = t("telemetry.detail_description");
+    setTelemetryDetailDownloads(telemetryDetailPayload, telemetryDetailDate);
+    renderTelemetryDetail(telemetryDetailPayload, $("telemetryDetailContent"));
+  }
+  if ($("promptHistoryDetailModal")?.open && promptHistoryDetailPayload) renderPromptHistoryDetail(promptHistoryDetailPayload);
+  if ($("lifecycleDetailModal")?.open && lifecycleDetailStep) openLifecycleDetail(lifecycleDetailStep, lifecycleDetailTrigger, { presentationOnly: true });
+  for (const state of controls) {
+    const element = $(state.id);
+    if (!element) continue;
+    element.value = state.value;
+    if (typeof state.checked === "boolean") element.checked = state.checked;
+    if (element.tagName === "SELECT") syncDashboardSelectPicker(element);
+  }
+  for (const state of details) if ($(state.id)) $(state.id).open = state.open;
+  for (const state of modalState) {
+    state.modal.querySelectorAll("details").forEach((element, index) => {
+      if (index < state.details.length) element.open = state.details[index];
+    });
+    for (const position of state.scroll) if (position.element.isConnected) {
+      position.element.scrollTop = position.top;
+      position.element.scrollLeft = position.left;
+    }
+  }
+  window.scrollTo(scroll.x, scroll.y);
+  if (focused?.isConnected) focused.focus({ preventScroll: true });
+  else {
+    // Rebuilt modal content needs an equivalent focus target, not the removed
+    // node. Keep keyboard navigation inside the same open context.
+    const replacement = (focused?.id && $(focused.id))
+      || (focusedIndex >= 0 && focusedModal?.querySelectorAll(focusable)[focusedIndex])
+      || focusedModal?.querySelector(focusable);
+    replacement?.focus({ preventScroll: true });
+  }
 }
 function applyDashboardLocale() {
   document.documentElement.lang = dashboardLocale;
@@ -7722,6 +7806,12 @@ function promptDetailExecutionSections(history) {
   const context = history.execution_context && typeof history.execution_context === "object" ? history.execution_context : null;
   const contextMissionId = executionContextValue(context?.mission_id) || executionContextValue(history.mission_id);
   const dynamicRows = [];
+  const dynamicDiagnosticField = (label, source) => {
+    const original = executionContextValue(source), value = formatDiagnostic(original || t("detail.not_recorded"));
+    const field = detailField(label, value, true);
+    if (dynamicDiagnosticSource(original)) dynamicRows.push({ source: original, element: field.lastElementChild, format: formatDiagnosticProjection });
+    return field;
+  };
   const contextFields = context ? (() => {
     // The historical metadata block already renders Mission ID as immutable
     // run provenance; retain the shared remaining context fields exactly once.
@@ -7736,10 +7826,8 @@ function promptDetailExecutionSections(history) {
   })() : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   const summaryFields = [
     promptDetailStatusField(history.status),
-    ...(promptHistoryIsBlocked(history.status) ? [detailField(
-      t("detail.blocking_reason"),
-      formatDiagnostic(history.blocking_reason || history.execution_diagnostic || t("detail.not_recorded")),
-      true,
+    ...(promptHistoryIsBlocked(history.status) ? [dynamicDiagnosticField(
+      t("detail.blocking_reason"), history.blocking_reason || history.execution_diagnostic,
     )] : []),
     detailField(t("detail.operator_handling"), operatorHandlingLabel(history)),
     ...(history.dismissed_at ? [detailField(
@@ -7755,7 +7843,7 @@ function promptDetailExecutionSections(history) {
         : history.executed_at,
     ),
     ...(!promptHistoryIsBlocked(history.status) && executionContextValue(history.execution_diagnostic)
-      ? [detailField(t("detail.execution_diagnostic"), formatDiagnostic(history.execution_diagnostic), true)]
+      ? [dynamicDiagnosticField(t("detail.execution_diagnostic"), history.execution_diagnostic)]
       : []),
   ];
   const centralHistory = history.history_source === "CENTRAL";
@@ -8151,6 +8239,7 @@ function closePromptHistoryDetail() {
 }
 function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   if (!entry?.run_id) return;
+  retryDynamicEvidence();
   const runId = String(entry.run_id);
   void recordUserAction("prompt_history_detail_opened", runId);
   if (updateUrl) updatePromptHistoryDetailUrl(runId);

@@ -65,7 +65,7 @@ CASES: tuple[Case, ...] = (
     Case("Missing telemetry day", "GET", "/api/telemetry/2026-01-01", 404, project=True),
     Case("Execution action rejects malformed request", "POST", "/api/execution-dismiss", 400, "{}", True, True),
     Case("Queue action rejects malformed request", "POST", "/api/queue-disposition", 400, "{}", True, True),
-    Case("Translation route is fail-closed pending project mutation support", "POST", "/api/dashboard-translate", 405, "{}", True, True),
+    Case("Translation route rejects malformed payload", "POST", "/api/dashboard-translate", 400, "{}", True, True),
     Case("Retired runtime directory", "POST", "/api/runtime-directory/open", 410, "{}"),
     Case("Retired Inbox configuration", "POST", "/api/configuration/inbox-location", 410, "{}"),
     Case("Retired component logs", "GET", "/api/logs/inbox", 410),

@@ -70,6 +70,14 @@ def violations(source_root: Path) -> list[str]:
     server = (source_root / "engineering_platform" / "server.py").read_text(encoding="utf-8")
     dashboard_path = source_root / "engineering_platform" / "assets" / "dashboard.js"
     dashboard = dashboard_path.read_text(encoding="utf-8") if dashboard_path.exists() else None
+    # The bounded translator is an imported production module, not an inline
+    # fetch anymore. Inspect it only when the dashboard actually imports it.
+    translation_path = dashboard_path.with_name("dashboard_translation.mjs")
+    if dashboard is not None and 'import { createDynamicEvidenceLocalizer } from "./dashboard_translation.mjs";' in dashboard:
+        if translation_path.is_file():
+            dashboard += "\n" + translation_path.read_text(encoding="utf-8")
+        else:
+            findings.append("DASHBOARD_FETCH_CONTRACT_INCOMPLETE")
     # The list above is deliberately the dashboard's complete HTTP surface,
     # including explicitly refused legacy clicks.  These anchors make a newly
     # added fetch fail qualification until it has both an owner and a test.

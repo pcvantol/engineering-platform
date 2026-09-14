@@ -11,12 +11,15 @@ import os
 import pwd
 from pathlib import Path
 import re
+import selectors
 import shutil
+import signal
 import sqlite3
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Mapping, Protocol, Sequence
 
 
@@ -377,6 +380,10 @@ def codex_cli_executable() -> str | None:
     return None
 
 
+class ProviderOutputLimitExceeded(RuntimeError):
+    """An advisory provider invocation exceeded its retained output budget."""
+
+
 class CodexCliProvider(LocalProcessProvider):
     """Codex process adapter pinned exclusively to EP's managed launcher."""
 
@@ -431,12 +438,18 @@ class CodexCliProvider(LocalProcessProvider):
         timeout: float | None = None,
         environment: Mapping[str, str] | None = None,
         input_text: str | None = None,
+        max_output_bytes: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Execute a complete Codex command; callers never spawn its CLI directly."""
         command = self._arguments(arguments)
         # Reviewer invocations are bounded advisory work.  Primary execution
         # streams through ``spawn`` and does not supply a timeout here.
-        if environment is None and input_text is None:
+        if max_output_bytes is not None:
+            return self._invoke_with_output_limit(
+                root, command, timeout=timeout, environment=environment,
+                input_text=input_text, max_output_bytes=max_output_bytes,
+            )
+        if timeout is None and environment is None and input_text is None:
             return self.execute(root, command)
         # The executable is this provider's configured Codex launcher, never a
         # caller-selected command. Remaining values are Codex CLI arguments.
@@ -444,6 +457,80 @@ class CodexCliProvider(LocalProcessProvider):
             (self._executable, *command[1:]), cwd=root,
             env=dict(environment) if environment is not None else None, timeout=timeout,
             text=True, input=input_text, capture_output=True, check=False,
+        )
+
+    def _invoke_with_output_limit(
+        self, root: Path, command: tuple[str, ...], *, timeout: float | None,
+        environment: Mapping[str, str] | None, input_text: str | None,
+        max_output_bytes: int,
+    ) -> subprocess.CompletedProcess[str]:
+        """Capture bounded advisory output; terminate only this invocation's group.
+
+        Nonblocking pipes keep both the byte budget and deadline effective even
+        when the child floods stderr or never consumes its input. This opt-in
+        path does not alter primary execution or other existing provider users.
+        """
+        if max_output_bytes < 1:
+            raise ValueError("Provider output limit must be positive")
+        arguments = (self._executable, *command[1:])
+        pending_input = memoryview(input_text.encode("utf-8") if input_text is not None else b"")
+        output = {"stdout": bytearray(), "stderr": bytearray()}
+        retained = 0
+        with subprocess.Popen(
+            arguments, cwd=root, env=dict(environment) if environment is not None else None,
+            stdin=subprocess.PIPE if input_text is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+        ) as process, selectors.DefaultSelector() as streams:
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            try:
+                for name in output:
+                    stream = getattr(process, name)
+                    os.set_blocking(stream.fileno(), False)
+                    streams.register(stream, selectors.EVENT_READ, name)
+                if process.stdin is not None:
+                    if pending_input:
+                        os.set_blocking(process.stdin.fileno(), False)
+                        streams.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+                    else:
+                        process.stdin.close()
+                while streams.get_map():
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        raise subprocess.TimeoutExpired(arguments, timeout)
+                    for key, _ in streams.select(remaining):
+                        if key.data == "stdin":
+                            try:
+                                pending_input = pending_input[os.write(key.fd, pending_input[:4096]):]
+                            except BrokenPipeError:
+                                pending_input = memoryview(b"")
+                            if not pending_input:
+                                streams.unregister(key.fileobj)
+                                key.fileobj.close()
+                            continue
+                        chunk = os.read(key.fd, min(65_536, max_output_bytes - retained + 1))
+                        if not chunk:
+                            streams.unregister(key.fileobj)
+                            continue
+                        retained += len(chunk)
+                        if retained > max_output_bytes:
+                            raise ProviderOutputLimitExceeded("Provider output byte limit exceeded")
+                        output[key.data].extend(chunk)
+                remaining = None if deadline is None else max(0, deadline - time.monotonic())
+                process.wait(timeout=remaining)
+            finally:
+                # This session was created above for this bounded invocation;
+                # never target another provider or the EP server's process group.
+                # Clean up descendants even if their launcher exits successfully
+                # after closing its pipes. The direct child is always reaped.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+        return subprocess.CompletedProcess(
+            arguments, process.returncode,
+            output["stdout"].decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
+            output["stderr"].decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
         )
 
     def spawn_invocation(
