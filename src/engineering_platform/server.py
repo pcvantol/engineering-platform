@@ -6288,34 +6288,59 @@ def _installation_update_operational_actions(
             "central": central_database.details(root),
         }
 
-    def quiesce(plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
-        lifecycle = LaunchdProvider()
+    def quiescence_binding(
+        plan: installation_update_plan.InstallationUpdatePlan,
+    ) -> tuple[Path, Path]:
         selected = server_service.configured_interpreter(root)
         if selected is None:
             raise ServerConfigurationError("the existing EP user service is unavailable")
         expected = admitted_source_interpreter(plan)
         if selected != expected:
             raise ServerConfigurationError("the EP user service differs from the admitted source interpreter")
+        return selected, expected
+
+    def quiesce_preflight(
+        plan: installation_update_plan.InstallationUpdatePlan,
+    ) -> Mapping[str, object]:
+        """Prove the exact loaded service before recording quiescing intent."""
+        _selected, expected = quiescence_binding(plan)
         try:
             operation_state = installation_update_operation.status(
                 root, plan.operation_id,
             )["state"]
         except (AttributeError, KeyError, installation_update_operation.InstallationUpdateOperationError) as error:
             raise ServerConfigurationError("the installation update quiescence state is unavailable") from error
-        if operation_state not in {"INVENTORIED", "QUIESCED", "BACKED_UP"}:
-            raise ServerConfigurationError("the installation update cannot quiesce from its current state")
-        # Prove that launchd is inspectable before changing persistent policy;
-        # a provider/I/O failure must never be projected as an absent job.
-        loaded = server_service.service_loaded(
+        if operation_state != "INVENTORIED":
+            raise ServerConfigurationError("the installation update cannot prepare quiescence from its current state")
+        if not server_service.service_loaded(
             data_root=root, expected_interpreter=expected,
-        )
-        if operation_state == "INVENTORIED" and not loaded:
-            # A configured plist is not evidence that a service existed.  Only
-            # durable QUIESCED progress may interpret later job absence as the
-            # retained result of this update rather than authority to start it.
+        ):
             raise ServerConfigurationError(
                 "the existing EP user service is not loaded before initial quiescence"
             )
+        return {
+            "result": "PASS", "service_label": server_service.LABEL,
+            "state": "LOADED_SERVICE_BOUND", "interpreter": str(expected),
+            "data_root": str(root),
+        }
+
+    def quiesce(plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
+        lifecycle = LaunchdProvider()
+        _selected, expected = quiescence_binding(plan)
+        try:
+            operation_state = installation_update_operation.status(
+                root, plan.operation_id,
+            )["state"]
+        except (AttributeError, KeyError, installation_update_operation.InstallationUpdateOperationError) as error:
+            raise ServerConfigurationError("the installation update quiescence state is unavailable") from error
+        if operation_state not in {"QUIESCING", "QUIESCED", "BACKED_UP"}:
+            raise ServerConfigurationError("the installation update cannot quiesce from its current state")
+        # A loaded same-label job must still match the admitted runtime.  True
+        # absence is accepted only after the durable QUIESCING intent proves
+        # that this update had first observed the exact loaded service.
+        server_service.service_loaded(
+            data_root=root, expected_interpreter=expected,
+        )
         retained = server_service.retain_update_quiescence(
             root, expected_interpreter=expected,
         )
@@ -6370,6 +6395,7 @@ def _installation_update_operational_actions(
 
     return installation_update_composition.InstallationUpdateOperationalActions(
         inventory=inventory, quiesce=quiesce, verify=verify,
+        quiesce_preflight=quiesce_preflight,
     )
 
 

@@ -33,6 +33,7 @@ class InstallationUpdateActions:
     activate: ActivationAction
     verify: EvidenceAction
     expected_activation: Mapping[str, object] | None = None
+    quiesce_preflight: EvidenceAction | None = None
 
 
 def _evidence(value: Mapping[str, object], step: str) -> dict[str, object]:
@@ -155,21 +156,28 @@ def execute(plan: InstallationUpdatePlan, actions: InstallationUpdateActions) ->
     but before its journal transition causes the same action to be retried.
     No action is reached while another operational update owns the lock.
     """
-    steps: tuple[tuple[str, EvidenceAction], ...] = (
-        ("INVENTORIED", actions.inventory), ("QUIESCED", actions.quiesce),
-        ("BACKED_UP", actions.backup), ("MIGRATED", actions.migrate),
-    )
-    predecessors = {"INVENTORIED": "PREPARED", "QUIESCED": "INVENTORIED",
-                    "BACKED_UP": "QUIESCED", "MIGRATED": "BACKED_UP"}
     try:
         with InstallationUpdateSession(plan) as session:
             current = status(Path(plan.data_root), plan.operation_id)
-            for state, action in steps:
-                if current["state"] == state:
-                    continue
-                if current["state"] == predecessors[state]:
-                    evidence = _inventory(plan, action) if state == "INVENTORIED" else _evidence(action(plan), state.lower())
-                    current = session.advance(state, evidence)
+            if current["state"] == "PREPARED":
+                current = session.advance(
+                    "INVENTORIED", _inventory(plan, actions.inventory),
+                )
+            if current["state"] == "INVENTORIED" and actions.quiesce_preflight is not None:
+                current = session.advance(
+                    "QUIESCING",
+                    _evidence(actions.quiesce_preflight(plan), "quiescence preflight"),
+                )
+            if current["state"] in {"INVENTORIED", "QUIESCING"}:
+                current = session.advance(
+                    "QUIESCED", _evidence(actions.quiesce(plan), "quiesced"),
+                )
+            for state, predecessor, action in (
+                ("BACKED_UP", "QUIESCED", actions.backup),
+                ("MIGRATED", "BACKED_UP", actions.migrate),
+            ):
+                if current["state"] == predecessor:
+                    current = session.advance(state, _evidence(action(plan), state.lower()))
             if current["state"] == "MIGRATED":
                 recovered = _recovered_activation(plan, actions.expected_activation)
                 current = session.advance(

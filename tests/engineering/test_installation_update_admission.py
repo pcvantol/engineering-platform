@@ -321,6 +321,19 @@ class InstallationUpdateAdmissionTests(unittest.TestCase):
                 with self.assertRaisesRegex(InstallationUpdateAdmissionError, "target record is invalid"):
                     admitted_candidate(plan, admission, runner=runner)
 
+    def test_durable_quiescing_intent_retains_exact_pre_activation_admission(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, candidate, runner, _wheel = self._prepared(Path(temporary))
+            admission = admit(plan, runner=runner)
+            with InstallationUpdateSession(plan) as session:
+                session.advance("INVENTORIED", {"result": "PASS"})
+                session.advance("QUIESCING", {"service": "LOADED_AND_BOUND"})
+
+            self.assertEqual(
+                admitted_candidate(plan, admission, runner=runner),
+                candidate,
+            )
+
     def test_post_verification_resume_revalidates_installed_candidate_without_staged_wheel(self) -> None:
         with TemporaryDirectory() as temporary:
             root, plan, candidate, runner, _wheel = self._prepared(Path(temporary))

@@ -52,6 +52,17 @@ class InstallationUpdateOperationTests(unittest.TestCase):
             with InstallationUpdateSession(update) as resumed:
                 self.assertEqual(resumed.advance("QUIESCED", {"service": "STOPPED"})["state"], "QUIESCED")
 
+    def test_quiescing_intent_is_durable_before_service_side_effects(self):
+        with TemporaryDirectory() as temporary:
+            update = plan(Path(temporary))
+            with InstallationUpdateSession(update) as session:
+                session.advance("INVENTORIED", {"inventory": "PASS"})
+                session.advance("QUIESCING", {"service": "LOADED_AND_BOUND"})
+            self.assertEqual(status(Path(temporary), update.operation_id)["state"], "QUIESCING")
+            with InstallationUpdateSession(update) as resumed:
+                resumed.advance("QUIESCED", {"service": "STOPPED"})
+            self.assertEqual(status(Path(temporary), update.operation_id)["state"], "QUIESCED")
+
     def test_cleanup_is_operation_scoped_and_symlink_failure_is_visible(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data root with spaces"; update = plan(root)

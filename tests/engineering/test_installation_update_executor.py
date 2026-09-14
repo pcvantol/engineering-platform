@@ -150,6 +150,40 @@ class InstallationUpdateExecutorTests(unittest.TestCase):
             self.assertEqual(execute(plan, self._actions(plan, resumed_calls))["state"], "COMPLETE")
             self.assertEqual(resumed_calls, ["migrate", "activate", "verify"])
 
+    def test_quiesce_crash_resumes_from_durable_intent_without_repeating_preflight(self) -> None:
+        with TemporaryDirectory() as temporary:
+            plan = self._plan(Path(temporary))
+            calls: list[str] = []
+            actions = self._actions(plan, calls)
+
+            def preflight(_plan):
+                calls.append("quiesce-preflight")
+                return {"result": "PASS", "service": "LOADED_AND_BOUND"}
+
+            def crash_after_quiesce(_plan):
+                calls.append("quiesce")
+                raise RuntimeError("lost quiesce acknowledgement")
+
+            guarded = InstallationUpdateActions(
+                actions.inventory, crash_after_quiesce, actions.backup,
+                actions.migrate, actions.activate, actions.verify,
+                quiesce_preflight=preflight,
+            )
+            with self.assertRaisesRegex(RuntimeError, "lost quiesce acknowledgement"):
+                execute(plan, guarded)
+
+            from engineering_platform.installation_update_operation import status
+            self.assertEqual(status(Path(plan.data_root), plan.operation_id)["state"], "QUIESCING")
+            self.assertEqual(calls, ["inventory", "quiesce-preflight", "quiesce"])
+
+            resumed_calls: list[str] = []
+            resumed = self._actions(plan, resumed_calls)
+            self.assertEqual(execute(plan, resumed)["state"], "COMPLETE")
+            self.assertEqual(
+                resumed_calls,
+                ["quiesce", "backup", "migrate", "activate", "verify"],
+            )
+
     def test_same_release_record_does_not_skip_a_distinct_expected_activation(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

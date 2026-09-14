@@ -51,6 +51,7 @@ class InstallationUpdateOperationalActions:
     inventory: EvidenceAction
     quiesce: EvidenceAction
     verify: EvidenceAction
+    quiesce_preflight: EvidenceAction | None = None
 
 
 def _evidence(value: Mapping[str, object], step: str) -> dict[str, object]:
@@ -302,6 +303,10 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
             service_home=activation_home,
         ),
         expected_activation=expected_activation,
+        quiesce_preflight=(
+            guarded(actions.quiesce_preflight)
+            if actions.quiesce_preflight is not None else None
+        ),
     )
 
 

@@ -556,6 +556,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "legacy_adoption": {"interpreter": str(selected)},
         })()
         actions = server._installation_update_operational_actions(self.root)
+        preflight = actions.quiesce_preflight
+        assert preflight is not None
         runtime = type("Runtime", (), {"loaded": True})()
         configuration = type("Configuration", (), {"bind_host": "127.0.0.1", "bind_port": 8765})()
         installation, package = object(), {"version": "2.3.2"}
@@ -568,19 +570,21 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
         ), patch(
             "engineering_platform.server.installation_update_operation.status",
-            return_value={"state": "INVENTORIED"},
+            side_effect=({"state": "INVENTORIED"}, {"state": "QUIESCING"}),
         ), patch(
             "engineering_platform.server.server_service.retain_update_quiescence",
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
         ) as retain, patch(
             "engineering_platform.server.server_service.service_loaded",
-            side_effect=(True, True, False),
+            side_effect=(True, True, True, False),
         ) as loaded_service:
             lifecycle_type.return_value.runtime_details.return_value = runtime
+            self.assertEqual(preflight(plan)["state"], "LOADED_SERVICE_BOUND")
             self.assertEqual(actions.quiesce(plan)["state"], "QUIESCED")
             lifecycle_type.return_value.quiesce.assert_called_once()
             retain.assert_called_once_with(self.root.resolve(), expected_interpreter=selected)
             loaded_service.assert_has_calls([
+                call(data_root=self.root.resolve(), expected_interpreter=selected),
                 call(data_root=self.root.resolve(), expected_interpreter=selected),
                 call(data_root=self.root.resolve(), expected_interpreter=selected),
                 call(data_root=self.root.resolve(), expected_interpreter=selected),
@@ -599,6 +603,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
     def test_public_update_operational_actions_fail_closed_and_quiesce_idempotently(self) -> None:
         actions = server._installation_update_operational_actions(self.root)
+        preflight = actions.quiesce_preflight
+        assert preflight is not None
         with patch("engineering_platform.server.server_service.configured_interpreter", return_value=None):
             with self.assertRaisesRegex(server.ServerConfigurationError, "existing EP user service"):
                 actions.inventory(object())
@@ -627,35 +633,38 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ) as loaded_service:
             lifecycle_type.return_value.runtime_details.return_value = unloaded
             with self.assertRaisesRegex(server.ServerConfigurationError, "not loaded before initial quiescence"):
-                actions.quiesce(plan)
+                preflight(plan)
             lifecycle_type.return_value.quiesce.assert_not_called()
             retain.assert_not_called()
             loaded_service.assert_called_once_with(
                 data_root=self.root.resolve(), expected_interpreter=selected,
             )
 
-        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
-            "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
-        ), patch(
-            "engineering_platform.server.installation_update_operation.status",
-            return_value={"state": "QUIESCED"},
-        ), patch(
-            "engineering_platform.server.server_service.retain_update_quiescence",
-            return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
-        ), patch(
-            "engineering_platform.server.server_service.service_loaded",
-            side_effect=(False, False),
-        ):
-            lifecycle_type.return_value.runtime_details.return_value = unloaded
-            self.assertEqual(actions.quiesce(plan)["state"], "ALREADY_QUIESCED")
-            lifecycle_type.return_value.quiesce.assert_not_called()
+        for durable_state in ("QUIESCING", "QUIESCED", "BACKED_UP"):
+            with self.subTest(durable_state=durable_state), patch(
+                "engineering_platform.server.LaunchdProvider",
+            ) as lifecycle_type, patch(
+                "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+            ), patch(
+                "engineering_platform.server.installation_update_operation.status",
+                return_value={"state": durable_state},
+            ), patch(
+                "engineering_platform.server.server_service.retain_update_quiescence",
+                return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
+            ), patch(
+                "engineering_platform.server.server_service.service_loaded",
+                side_effect=(False, False),
+            ):
+                lifecycle_type.return_value.runtime_details.return_value = unloaded
+                self.assertEqual(actions.quiesce(plan)["state"], "ALREADY_QUIESCED")
+                lifecycle_type.return_value.quiesce.assert_not_called()
 
         loaded = type("Runtime", (), {"loaded": True})()
         with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
         ), patch(
             "engineering_platform.server.installation_update_operation.status",
-            return_value={"state": "INVENTORIED"},
+            return_value={"state": "QUIESCING"},
         ), patch(
             "engineering_platform.server.server_service.retain_update_quiescence",
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
@@ -679,7 +688,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "engineering_platform.server.server_service.retain_update_quiescence",
         ) as retain:
             with self.assertRaisesRegex(server.server_service.ServerServiceError, "inspection failed"):
-                actions.quiesce(plan)
+                preflight(plan)
             retain.assert_not_called()
 
         drifted = Path(self.temporary.name) / "drifted-python"
@@ -703,7 +712,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "engineering_platform.server.server_service.retain_update_quiescence",
         ) as retain:
             with self.assertRaisesRegex(server.ServerConfigurationError, "admitted source interpreter"):
-                actions.quiesce(registered_plan)
+                preflight(registered_plan)
             retain.assert_not_called()
 
         configuration = type("Configuration", (), {"bind_host": "127.0.0.1", "bind_port": 8765})()

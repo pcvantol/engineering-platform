@@ -20,8 +20,15 @@ from .operational_installation_lock import OperationalInstallationLock
 from . import legacy_installation_adoption, operational_installation_record
 
 
-_STATES = ("PREPARED", "INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE")
+_STATES = (
+    "PREPARED", "INVENTORIED", "QUIESCING", "QUIESCED", "BACKED_UP",
+    "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE",
+)
 _NEXT = {state: _STATES[index + 1:index + 2] for index, state in enumerate(_STATES)}
+# Historical/general-purpose callers had no separate quiescing-intent event.
+# Keep their already-defined direct transition readable and executable while
+# the EP-owned composition opts into the new crash-safe intermediate state.
+_NEXT["INVENTORIED"] = ("QUIESCING", "QUIESCED")
 _NEXT["VERIFIED"] = ("CLEANUP_PENDING", "COMPLETE")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")

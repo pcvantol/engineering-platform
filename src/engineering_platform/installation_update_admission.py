@@ -394,7 +394,7 @@ def admitted_candidate(
             record = None
         except operational_installation_record.OperationalInstallationRecordError as error:
             raise InstallationUpdateAdmissionError("operational installation registration is invalid") from error
-        if state in {"PREPARED", "INVENTORIED", "QUIESCED", "BACKED_UP"}:
+        if state in {"PREPARED", "INVENTORIED", "QUIESCING", "QUIESCED", "BACKED_UP"}:
             if record is not None:
                 raise InstallationUpdateAdmissionError("operational installation conflicts with admitted legacy baseline")
             snapshot = _verify_record(
@@ -425,7 +425,7 @@ def admitted_candidate(
         record = operational_installation_record.load(Path(plan.data_root))
     except operational_installation_record.OperationalInstallationRecordError as error:
         raise InstallationUpdateAdmissionError("registered operational installation is unavailable") from error
-    if state in {"PREPARED", "INVENTORIED", "QUIESCED", "BACKED_UP"}:
+    if state in {"PREPARED", "INVENTORIED", "QUIESCING", "QUIESCED", "BACKED_UP"}:
         _require_pre_activation_provenance(
             plan, admission, _verify_pre_activation_record(plan, candidate, record),
         )
