@@ -17,6 +17,15 @@ let dashboardRoot;
 let installationRoot;
 let dashboardUrl;
 
+const TELEMETRY_PHASES = [
+  "QUEUE_WAIT", "SUBMISSION_CLAIM", "INITIALIZATION", "HOST_PREFLIGHT",
+  "WORKSPACE_PREFLIGHT", "CAPABILITY_PREFLIGHT", "DETERMINISTIC_ADMISSION",
+  "CAPABILITY_REVIEW", "EXECUTION_PREPARATION", "PROVIDER_EXECUTION", "VALIDATION",
+  "QUALITY_CONTROL", "REPAIR", "REPOSITORY_FINALIZATION", "PR_OR_MERGE", "FINALIZATION",
+  "REPORT_GENERATION", "EVIDENCE_PERSISTENCE", "REPOSITORY_CLEANUP", "RECONCILIATION",
+  "EXTERNAL_CI_WAIT", "TOTAL_EXECUTION",
+];
+
 function canonicalPlatformComponents(overrides = {}) {
   const components = {
     ep_server: { healthy: true },
@@ -180,9 +189,8 @@ async function openTitlebarOptions(page) {
 async function selectDashboardLocale(page, language, { waitForInitialProjection = true } = {}) {
   const nativeSelect = page.locator("#dashboardLocale");
   if (waitForInitialProjection) {
-    // Do not replace the page while its first snapshot is still hydrating.
-    // Under the ten-worker CI profile that otherwise races the initial locale
-    // read with a reload and can leave the splash state behind.
+    // The locale is a presentation preference and must not replace a hydrated
+    // dashboard or discard its open detail state.
     await waitForDashboardReady(page);
   } else {
     // Tests that deliberately stub the projection own all dynamic state.  They
@@ -190,17 +198,12 @@ async function selectDashboardLocale(page, language, { waitForInitialProjection 
     await page.waitForFunction(() => typeof window.r === "function");
   }
   if (await nativeSelect.inputValue() === language) return;
-  const localeReload = page.waitForEvent(
-    "framenavigated",
-    (frame) => frame === page.mainFrame(),
-  );
+  const url = page.url();
   // The native select is deliberately hidden behind the accessible custom
   // picker. Force its deterministic change event here; interaction with the
-  // visible picker is covered separately and this helper only verifies the
-  // locale reload contract shared by both controls.
+  // visible picker is covered separately.
   await nativeSelect.selectOption(language, { force: true });
-  await localeReload;
-  await page.waitForLoadState("domcontentloaded");
+  await expect(page).toHaveURL(url);
   if (waitForInitialProjection) await waitForDashboardReady(page);
   else await page.waitForFunction(() => typeof window.r === "function");
 }
@@ -2849,6 +2852,30 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(historicalContext).not.toContainText("ACTIVE");
   });
 
+  test("switches an open historical detail to the selected locale without navigation", async ({ page }) => {
+    const source = "Full validation is blocked by the read-only provider environment lacking a usable temporary directory; checkout-source focused regressions pass.";
+    const translated = "De volledige validatie is geblokkeerd doordat de alleen-lezen-provideromgeving geen bruikbare tijdelijke map heeft; gerichte checkout-regressies slagen.";
+    await page.route("**/api/dashboard-translate", async (route) => {
+      const payload = await route.request().postDataJSON();
+      await route.fulfill({ json: { translations: payload.texts.map(() => translated) } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await selectDashboardLocale(page, "en");
+    await page.evaluate((sourceText) => {
+      const modal = document.querySelector("#promptHistoryDetailModal");
+      modal.showModal();
+      renderPromptHistoryDetail({ history: {
+        run_id: "localized-history", title: "Localized history", status: "BLOCKED", blocking_reason: sourceText,
+      } });
+    }, source);
+    const modal = page.locator("#promptHistoryDetailModal");
+    await expect(modal).toContainText(source);
+    await selectDashboardLocale(page, "nl");
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText(translated);
+    await expect(modal).not.toContainText(source);
+  });
+
   test("keeps lease-lost finalization visible for safe recovery", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
@@ -4712,6 +4739,16 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("provides a localized label for every canonical telemetry phase", () => {
+    for (const language of SUPPORTED_LOCALES) {
+      for (const phase of TELEMETRY_PHASES) {
+        const key = `telemetry.phase.${phase.toLowerCase()}`;
+        expect(DASHBOARD_MESSAGES[language][key]).toBeTruthy();
+        expect(DASHBOARD_MESSAGES[language][key]).not.toBe(phase);
+      }
+    }
+  });
+
   test("exports one loaded telemetry day as Markdown and JSON", async ({ page }) => {
     const detail = {
       summary: {
@@ -5140,7 +5177,7 @@ test.describe("Engineering Status browser smoke", () => {
       summary: { executions: 1, completed: 1, blocked: 0, failed: 0, total_wall_time: { average_ms: 120000, median_ms: 120000 }, active_processing_time: { average_ms: 90000 }, queue_wait: { average_ms: 12000 }, provider_execution: { average_ms: 40000 }, validation: { average_ms: 10000 }, external_wait: { average_ms: 20000 }, overhead: { average_ms: 28000 } },
       phases: [{ phase: "PROVIDER_EXECUTION", average_ms: 40000, median_ms: 40000, total_ms: 40000, share_percent: 33.333, runs: 1 }],
       bottlenecks: { longest_average_phase: { phase: "PROVIDER_EXECUTION" }, largest_accumulated_phase: { phase: "PROVIDER_EXECUTION" }, shares: { queue_wait: 10, provider_execution: 33.333, validation: 8.333, external_wait: 16.667, overhead: 23.333 }, top_time_consumers: [{ phase: "PROVIDER_EXECUTION", share_percent: 33.333 }] },
-      runs: [{ run_id: "inbox-phase-detail", started_at: "2026-08-16T10:00:00+00:00", status: "COMPLETE", total_duration_ms: 120000, queue_wait_ms: 12000, provider_duration_ms: 40000, validation_duration_ms: 10000, external_wait_ms: 20000, largest_phase: "PROVIDER_EXECUTION", producer_type: "INBOX", repository: "pcvantol/djconnect", model: "gpt-5.6-terra", phase_telemetry: "RECORDED" }],
+      runs: [{ run_id: "inbox-phase-detail", started_at: "2026-08-16T10:00:00+00:00", status: "BLOCKED", total_duration_ms: 120000, queue_wait_ms: 12000, provider_duration_ms: 40000, validation_duration_ms: 10000, external_wait_ms: 20000, largest_phase: "PROVIDER_EXECUTION", producer_type: "INBOX", repository: "pcvantol/djconnect", model: "gpt-5.6-terra", phase_telemetry: "RECORDED" }],
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => window.executionTelemetry([{ date: "2026-08-16", prompt_count: 1, average_total_execution_seconds: 120, average_queue_wait_seconds: 12, complete_count: 1, blocked_count: 0, failed_count: 0 }]));
@@ -5153,6 +5190,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.start_time"]);
     await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.producer_type"]);
     await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.target_repository"]);
+    await expect(content).toContainText(DASHBOARD_MESSAGES.nl["state.BLOCKED"]);
+    await expect(content).not.toContainText("BLOCKED");
     await expect(content).toContainText("gpt-5.6-terra");
     await expect(content).toContainText("33,3%");
     await expect(content.locator(".dashboard-action, .execution-dismiss, .predecessor-retry")).toHaveCount(0);

@@ -5715,6 +5715,30 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 )
                 self._send(400, {"error": "INVALID_REQUEST"})
             return
+        if method == "do_POST" and request.path == "/api/dashboard-translate":
+            if not _same_origin(self.headers):
+                self._send(403, {"error": "INVALID_ORIGIN"})
+                return
+            if not isinstance(selected, str) or selected not in project_ids:
+                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 2 <= length <= 32_768:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(payload, dict) or set(payload) != {"locale", "texts"}:
+                    raise ValueError
+                translations = dashboard_translation.translate(payload["locale"], payload["texts"])
+            except dashboard_translation.DashboardTranslationError as error:
+                status_code = 400 if str(error).endswith(("LOCALE_INVALID", "REQUEST_INVALID")) else 503
+                self._send(status_code, {"error": str(error)})
+                return
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(400, {"error": "DASHBOARD_TRANSLATION_REQUEST_INVALID"})
+                return
+            self._send(200, {"translations": translations})
+            return
         if isinstance(selected, str) and selected in project_ids:
             analysis_retry_match = re.fullmatch(
                 r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/analysis-retry",
@@ -5768,30 +5792,6 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             # retained dashboard handler.  New routes must be added above
             # with an explicit Server/CENTRAL authority classification.
             self._send(404 if method == "do_GET" else 405, {"error": "CENTRAL_CONSOLE_ROUTE_UNAVAILABLE"})
-            return
-        if method == "do_POST" and request.path == "/api/dashboard-translate":
-            if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
-                self._send(403, {"error": "INVALID_ORIGIN"})
-                return
-            if not isinstance(selected, str) or selected not in project_ids:
-                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
-                return
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 2 <= length <= 4096:
-                    raise ValueError
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if not isinstance(payload, dict) or set(payload) != {"locale", "texts"}:
-                    raise ValueError
-                translations = dashboard_translation.translate(payload["locale"], payload["texts"])
-            except dashboard_translation.DashboardTranslationError as error:
-                status_code = 400 if str(error).endswith(("LOCALE_INVALID", "REQUEST_INVALID")) else 503
-                self._send(status_code, {"error": str(error)})
-                return
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                self._send(400, {"error": "DASHBOARD_TRANSLATION_REQUEST_INVALID"})
-                return
-            self._send(200, {"translations": translations})
             return
         if method == "do_GET" and request.path == "/" and selected in {None, ""}:
             # No selection is a valid view.  It renders only the host-wide

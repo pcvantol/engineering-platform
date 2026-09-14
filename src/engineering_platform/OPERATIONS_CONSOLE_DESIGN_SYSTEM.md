@@ -590,16 +590,27 @@ literal into `dashboard.js`. Keep operation language concrete:
 - Error-dialog title, dismissal and preflight recovery copy are part of the
   same five-language contract. A browser-supplied default label is never an
   acceptable fallback for console feedback.
-- Dynamic preflight/drift evidence remains machine-readable in persistence and
-  exports. The dashboard presents known evidence codes through deterministic
-  catalogue keys and parameters; it must never invoke an AI service to
-  translate an operational diagnosis. Unknown or redacted evidence follows
-  the existing safe generic-diagnostic path. The narrowly separate
-  `quality_evidence.result` field is operator-facing, bounded, redacted prose
-  produced by an execution. It may be translated on demand only by the
-  installation-managed Codex runtime through the read-only translation route;
-  stored evidence is never changed, provider input is treated as untrusted
-  data, and a failure leaves its original evidence visible.
+- Literal identifiers, commands, hashes, paths, error codes, raw logs,
+  downloadable canonical evidence, and original user prompts remain unchanged.
+  Static labels and known states use catalogue keys. Operator-facing prose from
+  EP evidence is eligible for the shared read-only translation projection:
+  business/engineering/action summaries, blocking reasons and diagnostics,
+  validation/quality/review explanations, repair failed-check explanations,
+  proposed actions, agent summaries, and execution-evidence descriptions in
+  both active and historical detail views. Stored evidence is never changed.
+- `POST /api/dashboard-translate` is a selected-project CENTRAL Console route,
+  protected by the same-origin and project guards. It accepts one supported
+  locale and one to eight non-empty Unicode texts, each up to 4,096 characters
+  and 24,000 characters per request; output is bounded to 6,144 characters per
+  item. The browser batches larger visible inventories, deduplicates in-flight
+  source/locale work, and keeps a bounded transient cache. English returns the
+  exact source without provider work. The managed provider receives untrusted
+  text as read-only data and may not alter authority or persistence.
+- A locale switch rerenders currently visible active and historical surfaces
+  in place, including open detail modals. Obsolete async responses are ignored
+  when their source, element, or locale no longer matches. On a provider or
+  request failure the exact source remains visible with a localized temporary
+  unavailability indication; failures are not cached as translations.
 
 ## 9. Required design-review checklist
 

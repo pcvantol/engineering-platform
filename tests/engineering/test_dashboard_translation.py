@@ -37,7 +37,18 @@ class DashboardTranslationTests(unittest.TestCase):
         with self.assertRaisesRegex(dashboard_translation.DashboardTranslationError, "LOCALE_INVALID"):
             dashboard_translation.translate("pt", ["text"])
         with self.assertRaisesRegex(dashboard_translation.DashboardTranslationError, "REQUEST_INVALID"):
-            dashboard_translation.translate("nl", ["x" * 241])
+            dashboard_translation.translate("nl", ["x" * (dashboard_translation.MAX_TEXT_LENGTH + 1)])
+
+    def test_long_evidence_and_expanded_translation_are_preserved(self) -> None:
+        source = "évidence with unicode and multiple paragraphs\n\n" + ("complete source text " * 70)
+        translated = "vertaalde evidence\n\n" + ("volledige vertaalde tekst " * 120)
+        event = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": json.dumps({"translations": [translated]})},
+        })
+        completed = subprocess.CompletedProcess(("codex",), 0, event, "")
+        with patch("engineering_platform.dashboard_translation.CodexCliProvider.invoke", return_value=completed):
+            self.assertEqual(dashboard_translation.translate("nl", [source]), [translated])
 
     def test_provider_failure_is_a_safe_display_failure(self) -> None:
         with patch(

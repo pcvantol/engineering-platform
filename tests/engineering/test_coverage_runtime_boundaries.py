@@ -488,6 +488,20 @@ class InstallationBoundaryTests(unittest.TestCase):
             update.assert_called_once_with(self.root, "log_level", "DEBUG")
             self.assertEqual(responses[-1][0], 200)
 
+    def test_selected_project_translation_reaches_the_read_only_provider_boundary(self) -> None:
+        """The project route is handled before CENTRAL's generic rejection."""
+        body = json.dumps({"locale": "nl", "texts": ["Recorded validation passed."]}).encode()
+        handler, responses = self._in_process_console_handler(
+            "/api/dashboard-translate", body=body,
+            headers={"X-Engineering-Platform-Project": "project-a", "Content-Length": str(len(body))},
+        )
+        with patch("engineering_platform.server._console_projects", return_value=[{"project_id": "project-a"}]), patch(
+            "engineering_platform.server.dashboard_translation.translate", return_value=["Validatie geslaagd."]
+        ) as translate:
+            handler._delegate_dashboard("do_POST")
+        translate.assert_called_once_with("nl", ["Recorded validation passed."])
+        self.assertEqual(responses[-1], (200, {"translations": ["Validatie geslaagd."]}))
+
     def test_console_dispatch_success_paths_require_server_services_not_checkout_state(self) -> None:
         """Successes are explicit Server service calls, not legacy fallthrough."""
         projects = [{"project_id": "project-a"}]
