@@ -551,7 +551,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
     def test_public_update_operational_actions_inventory_quiesce_and_verify_exact_runtime(self) -> None:
         selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!\n"); selected.chmod(0o700)
-        plan = type("LegacyPlan", (), {"legacy_adoption": {"interpreter": str(selected)}})()
+        plan = type("LegacyPlan", (), {
+            "operation_id": "update-0001",
+            "legacy_adoption": {"interpreter": str(selected)},
+        })()
         actions = server._installation_update_operational_actions(self.root)
         runtime = type("Runtime", (), {"loaded": True})()
         configuration = type("Configuration", (), {"bind_host": "127.0.0.1", "bind_port": 8765})()
@@ -563,6 +566,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(actions.inventory(object())["package_version"], "2.3.2")
         with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+        ), patch(
+            "engineering_platform.server.installation_update_operation.status",
+            return_value={"state": "INVENTORIED"},
         ), patch(
             "engineering_platform.server.server_service.retain_update_quiescence",
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
@@ -597,10 +603,34 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         selected = Path(self.temporary.name) / "selected-python"
         selected.write_text("#!\n")
         selected.chmod(0o700)
-        plan = type("LegacyPlan", (), {"legacy_adoption": {"interpreter": str(selected)}})()
+        plan = type("LegacyPlan", (), {
+            "operation_id": "update-0001",
+            "legacy_adoption": {"interpreter": str(selected)},
+        })()
         unloaded = type("Runtime", (), {"loaded": False})()
         with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+        ), patch(
+            "engineering_platform.server.installation_update_operation.status",
+            return_value={"state": "INVENTORIED"},
+        ), patch(
+            "engineering_platform.server.server_service.retain_update_quiescence",
+            return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
+        ) as retain, patch(
+            "engineering_platform.server.server_service.service_loaded",
+            return_value=False,
+        ):
+            lifecycle_type.return_value.runtime_details.return_value = unloaded
+            with self.assertRaisesRegex(server.ServerConfigurationError, "not loaded before initial quiescence"):
+                actions.quiesce(plan)
+            lifecycle_type.return_value.quiesce.assert_not_called()
+            retain.assert_not_called()
+
+        with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
+            "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+        ), patch(
+            "engineering_platform.server.installation_update_operation.status",
+            return_value={"state": "QUIESCED"},
         ), patch(
             "engineering_platform.server.server_service.retain_update_quiescence",
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
@@ -616,6 +646,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with patch("engineering_platform.server.LaunchdProvider") as lifecycle_type, patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
         ), patch(
+            "engineering_platform.server.installation_update_operation.status",
+            return_value={"state": "INVENTORIED"},
+        ), patch(
             "engineering_platform.server.server_service.retain_update_quiescence",
             return_value={"state": "UPDATE_QUIESCENCE_RETAINED"},
         ), patch(
@@ -628,6 +661,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
         with patch(
             "engineering_platform.server.server_service.configured_interpreter", return_value=selected,
+        ), patch(
+            "engineering_platform.server.installation_update_operation.status",
+            return_value={"state": "INVENTORIED"},
         ), patch(
             "engineering_platform.server.server_service.service_loaded",
             side_effect=server.server_service.ServerServiceError("service-manager inspection failed"),

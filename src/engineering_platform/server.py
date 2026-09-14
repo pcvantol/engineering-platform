@@ -6296,9 +6296,24 @@ def _installation_update_operational_actions(
         expected = admitted_source_interpreter(plan)
         if selected != expected:
             raise ServerConfigurationError("the EP user service differs from the admitted source interpreter")
+        try:
+            operation_state = installation_update_operation.status(
+                root, plan.operation_id,
+            )["state"]
+        except (AttributeError, KeyError, installation_update_operation.InstallationUpdateOperationError) as error:
+            raise ServerConfigurationError("the installation update quiescence state is unavailable") from error
+        if operation_state not in {"INVENTORIED", "QUIESCED", "BACKED_UP"}:
+            raise ServerConfigurationError("the installation update cannot quiesce from its current state")
         # Prove that launchd is inspectable before changing persistent policy;
         # a provider/I/O failure must never be projected as an absent job.
-        server_service.service_loaded()
+        loaded = server_service.service_loaded()
+        if operation_state == "INVENTORIED" and not loaded:
+            # A configured plist is not evidence that a service existed.  Only
+            # durable QUIESCED progress may interpret later job absence as the
+            # retained result of this update rather than authority to start it.
+            raise ServerConfigurationError(
+                "the existing EP user service is not loaded before initial quiescence"
+            )
         retained = server_service.retain_update_quiescence(
             root, expected_interpreter=expected,
         )
