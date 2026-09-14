@@ -47,7 +47,19 @@ from . import external_producer_binding
 from . import file_inbox
 from . import host_admin
 from . import installation_relocation
-from . import installation_update_plan, installation_update_operation
+from . import (
+    installation_update_admission,
+    installation_update_activation,
+    installation_update_backup,
+    installation_update_composition,
+    installation_update_executor,
+    installation_update_migration,
+    installation_update_operation,
+    installation_update_plan,
+    installation_update_preparation,
+    legacy_installation_adoption,
+    operational_installation_record,
+)
 from . import operational_installation
 from . import product_installation_readback
 from . import local_repository_binding
@@ -6199,7 +6211,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -6224,10 +6236,171 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-version")
     parser.add_argument("--target-digest")
     parser.add_argument("--target-source-revision")
+    parser.add_argument("--preserved-wheel", type=Path)
+    parser.add_argument("--venv-builder", type=Path)
+    parser.add_argument("--acknowledge-unknown-source-revision", action="store_true")
     parser.add_argument("--candidate-interpreter", action="append", type=Path, default=[])
     parser.add_argument("--service-reference", action="append", default=[])
     parser.add_argument("--declared-user-home", action="append", type=Path, default=[])
     return parser
+
+
+def _installation_update_operational_actions(
+    data_root: Path,
+) -> installation_update_composition.InstallationUpdateOperationalActions:
+    """Supply the real user-service inventory, quiesce and health adapters."""
+    root = data_root.resolve()
+    paths = server_service.default_paths(root)
+
+    def admitted_source_interpreter(
+        plan: installation_update_plan.InstallationUpdatePlan,
+    ) -> Path:
+        """Resolve the service launcher from the update's admitted source."""
+        if plan.legacy_adoption is not None:
+            value = plan.legacy_adoption.get("interpreter")
+        else:
+            try:
+                record = operational_installation_record.load(root)
+            except operational_installation_record.OperationalInstallationRecordError as error:
+                raise ServerConfigurationError("the admitted source installation is unavailable") from error
+            if (
+                record["installation_id"] != plan.installation_id
+                or record["version"] != plan.current_version
+                or record["artifact_digest"] != plan.current_digest
+            ):
+                raise ServerConfigurationError("the admitted source installation changed before quiescence")
+            value = record.get("interpreter")
+        if not isinstance(value, str):
+            raise ServerConfigurationError("the admitted source service interpreter is unavailable")
+        expected = Path(value).expanduser()
+        if not expected.is_absolute():
+            raise ServerConfigurationError("the admitted source service interpreter is invalid")
+        return expected.absolute()
+
+    def inventory(plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
+        selected = server_service.configured_interpreter(root)
+        if selected is None:
+            raise ServerConfigurationError("the existing EP user service is unavailable")
+        package = operational_installation.package_identity(selected)
+        if package.get("version") != plan.current_version:
+            raise ServerConfigurationError(
+                "the existing EP user service package differs from the admitted source version"
+            )
+        return {
+            "result": "PASS", "service_label": server_service.LABEL,
+            "service_interpreter": str(selected), "package_version": package["version"],
+            "central": central_database.details(root),
+        }
+
+    def quiescence_binding(
+        plan: installation_update_plan.InstallationUpdatePlan,
+    ) -> tuple[Path, Path]:
+        selected = server_service.configured_interpreter(root)
+        if selected is None:
+            raise ServerConfigurationError("the existing EP user service is unavailable")
+        expected = admitted_source_interpreter(plan)
+        if selected != expected:
+            raise ServerConfigurationError("the EP user service differs from the admitted source interpreter")
+        return selected, expected
+
+    def quiesce_preflight(
+        plan: installation_update_plan.InstallationUpdatePlan,
+    ) -> Mapping[str, object]:
+        """Prove the exact loaded service before recording quiescing intent."""
+        _selected, expected = quiescence_binding(plan)
+        try:
+            operation_state = installation_update_operation.status(
+                root, plan.operation_id,
+            )["state"]
+        except (AttributeError, KeyError, installation_update_operation.InstallationUpdateOperationError) as error:
+            raise ServerConfigurationError("the installation update quiescence state is unavailable") from error
+        if operation_state != "INVENTORIED":
+            raise ServerConfigurationError("the installation update cannot prepare quiescence from its current state")
+        if not server_service.service_loaded(
+            data_root=root, expected_interpreter=expected,
+        ):
+            raise ServerConfigurationError(
+                "the existing EP user service is not loaded before initial quiescence"
+            )
+        return {
+            "result": "PASS", "service_label": server_service.LABEL,
+            "state": "LOADED_SERVICE_BOUND", "interpreter": str(expected),
+            "data_root": str(root),
+        }
+
+    def quiesce(plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
+        lifecycle = LaunchdProvider()
+        _selected, expected = quiescence_binding(plan)
+        try:
+            operation_state = installation_update_operation.status(
+                root, plan.operation_id,
+            )["state"]
+        except (AttributeError, KeyError, installation_update_operation.InstallationUpdateOperationError) as error:
+            raise ServerConfigurationError("the installation update quiescence state is unavailable") from error
+        if operation_state not in {"QUIESCING", "QUIESCED", "BACKED_UP"}:
+            raise ServerConfigurationError("the installation update cannot quiesce from its current state")
+        # A loaded same-label job must still match the admitted runtime.  True
+        # absence is accepted only after the durable QUIESCING intent proves
+        # that this update had first observed the exact loaded service.
+        server_service.service_loaded(
+            data_root=root, expected_interpreter=expected,
+        )
+        retained = server_service.retain_update_quiescence(
+            root, expected_interpreter=expected,
+        )
+        if not server_service.service_loaded(
+            data_root=root, expected_interpreter=expected,
+        ):
+            return {
+                "result": "PASS", "service_label": server_service.LABEL,
+                "state": "ALREADY_QUIESCED", "retention": retained["state"],
+            }
+        try:
+            lifecycle.quiesce(server_service.LABEL, paths.plist_path)
+        except OSError:
+            if server_service.service_loaded(
+                data_root=root, expected_interpreter=expected,
+            ):
+                raise
+            return {
+                "result": "PASS", "service_label": server_service.LABEL,
+                "state": "ALREADY_QUIESCED", "retention": retained["state"],
+            }
+        if server_service.service_loaded(
+            data_root=root, expected_interpreter=expected,
+        ):
+            raise ServerConfigurationError("the EP user service remained loaded after quiescence")
+        return {
+            "result": "PASS", "service_label": server_service.LABEL,
+            "state": "QUIESCED", "retention": retained["state"],
+        }
+
+    def verify(_plan: installation_update_plan.InstallationUpdatePlan) -> Mapping[str, object]:
+        selected = server_service.configured_interpreter(root)
+        if selected is None:
+            raise ServerConfigurationError("activated EP user service is unavailable")
+        installation = operational_installation.resolve(root, interpreter=selected)
+        package = operational_installation.package_identity(selected)
+        registered = operational_installation.record_status(installation)
+        configuration = ServerConfiguration.load(root)
+        response: Mapping[str, object] | None = None
+        for _ in range(40):
+            try:
+                response = _health_response({"host": configuration.bind_host, "port": configuration.bind_port})
+                break
+            except (URLError, OSError, ValueError, operational_installation.OperationalInstallationError):
+                time.sleep(0.05)
+        if response is None:
+            raise ServerConfigurationError("activated EP Server health identity is unavailable")
+        qualification = operational_installation.qualify_runtime_response(
+            installation, record=registered, package=package, response=response,
+        )
+        return {"result": "PASS", "qualification": qualification}
+
+    return installation_update_composition.InstallationUpdateOperationalActions(
+        inventory=inventory, quiesce=quiesce, verify=verify,
+        quiesce_preflight=quiesce_preflight,
+    )
 
 
 def _development_profile_for(args: argparse.Namespace) -> development_profile.DevelopmentProfile | None:
@@ -6240,6 +6413,11 @@ def _development_profile_for(args: argparse.Namespace) -> development_profile.De
         service_labels={
             "service-install": server_service.LABEL,
             "service-uninstall": server_service.LABEL,
+            "legacy-adoption-authorize": server_service.LABEL,
+            "installation-update-prepare": server_service.LABEL,
+            "installation-update-admit": server_service.LABEL,
+            "installation-update-apply": server_service.LABEL,
+            "installation-update-resume": server_service.LABEL,
             "relay-install": server_relay._definition_label(),
             "relay-uninstall": server_relay._definition_label(),
         },
@@ -6505,14 +6683,74 @@ def main(argv: list[str] | None = None) -> int:
             result = system_server_service.machine_scope_inventory(
                 args.data_root, user_homes=args.declared_user_home,
             )
-        elif args.command == "installation-update-plan":
+        elif args.command in {"legacy-adoption-inspect", "legacy-adoption-authorize"}:
+            if args.preserved_wheel is None:
+                raise ServerConfigurationError("--preserved-wheel is required for legacy adoption")
+            # The maintenance entry deliberately uses the existing user-service
+            # resolver.  It neither starts the service nor re-labels it as a
+            # system service; unsupported topologies fail closed here.
+            selected = server_service.configured_interpreter(args.data_root)
+            if selected is None:
+                raise ServerConfigurationError("the existing EP user service is unavailable")
+            installation = operational_installation.resolve(args.data_root, interpreter=selected)
+            observed = legacy_installation_adoption.inspect(
+                installation=installation, service_label=server_service.LABEL,
+                service_interpreter=selected, preserved_wheel=args.preserved_wheel,
+            )
+            if args.command == "legacy-adoption-inspect":
+                result = observed.payload()
+            else:
+                if not all((args.operation_id, args.target_version, args.target_digest, args.target_source_revision)):
+                    raise ServerConfigurationError("--operation-id, --target-version, --target-digest and --target-source-revision are required for legacy adoption")
+                authorization = legacy_installation_adoption.LegacyAdoptionAuthorization(
+                    instance_id=observed.instance_id, data_root=observed.data_root,
+                    service_label=observed.service_label, interpreter=observed.interpreter,
+                    old_artifact_digest=observed.artifact_digest, target_version=args.target_version,
+                    target_artifact_digest=args.target_digest, target_source_revision=args.target_source_revision,
+                    operation_id=args.operation_id,
+                    acknowledge_unknown_source_revision=args.acknowledge_unknown_source_revision,
+                )
+                result = legacy_installation_adoption.adopt(observation=observed, authorization=authorization)
+        elif args.command in {"installation-update-plan", "installation-update-prepare"}:
             if not all((args.operation_id, args.artifact, args.target_version, args.target_digest, args.target_source_revision)):
                 raise ServerConfigurationError("--operation-id, --artifact, --target-version, --target-digest and --target-source-revision are required")
-            result = installation_update_plan.prepare(
+            update_plan = installation_update_plan.prepare(
                 args.data_root, operation_id=args.operation_id, artifact=args.artifact,
                 target_version=args.target_version, target_digest=args.target_digest,
                 target_source_revision=args.target_source_revision,
-            ).payload()
+            )
+            if args.command == "installation-update-plan":
+                result = update_plan.payload()
+            else:
+                candidate = installation_update_preparation.prepare_candidate(
+                    update_plan, venv_builder=args.venv_builder or Path(sys.executable),
+                )
+                update_plan = installation_update_preparation.staged_execution_plan(
+                    update_plan, candidate=candidate,
+                )
+                with installation_update_operation.InstallationUpdateSession(update_plan) as session:
+                    session.bind_prepared_candidate(candidate, runner=subprocess.run)
+                result = {"plan": update_plan.payload(), "prepared_candidate": candidate.payload()}
+        elif args.command == "installation-update-admit":
+            if not args.operation_id:
+                raise ServerConfigurationError("--operation-id is required for installation update admission")
+            update_plan = installation_update_operation.reopen_plan(args.data_root, args.operation_id)
+            result = installation_update_admission.admit(update_plan).payload()
+        elif args.command in {"installation-update-apply", "installation-update-resume"}:
+            if not args.operation_id:
+                raise ServerConfigurationError("--operation-id is required for installation update execution")
+            update_plan = installation_update_operation.reopen_plan(args.data_root, args.operation_id)
+            admission_payload = installation_update_operation.execution_admission(update_plan)
+            if admission_payload is None:
+                raise ServerConfigurationError("installation update has not been admitted")
+            try:
+                update_admission = installation_update_admission.ExecutionAdmission(**admission_payload)
+            except TypeError as error:
+                raise ServerConfigurationError("installation update admission is invalid") from error
+            result = installation_update_composition.execute(
+                update_plan, admission=update_admission,
+                actions=_installation_update_operational_actions(args.data_root),
+            )
         elif args.command == "installation-update-status":
             if not args.operation_id:
                 raise ServerConfigurationError("--operation-id is required for installation update status")
@@ -6668,6 +6906,18 @@ def main(argv: list[str] | None = None) -> int:
             system_server_service.SystemServerServiceError,
             operational_installation.OperationalInstallationError,
             product_installation_readback.ProductInstallationReadbackError,
+            installation_update_plan.InstallationUpdatePlanError,
+            installation_update_preparation.InstallationUpdatePreparationError,
+            installation_update_operation.InstallationUpdateOperationError,
+            installation_update_admission.InstallationUpdateAdmissionError,
+            installation_update_composition.InstallationUpdateCompositionError,
+            installation_update_executor.InstallationUpdateExecutorError,
+            installation_update_backup.InstallationUpdateBackupError,
+            installation_update_migration.InstallationUpdateMigrationError,
+            installation_update_activation.InstallationUpdateActivationError,
+            legacy_installation_adoption.LegacyInstallationAdoptionError,
+            operational_installation_record.OperationalInstallationRecordError,
+            server_service.ServerServiceError,
             development_profile.DevelopmentProfileError,
             local_repository_binding.LocalRepositoryBindingError,
             external_producer_binding.ProducerBindingError) as error:

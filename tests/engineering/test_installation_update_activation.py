@@ -9,13 +9,42 @@ from unittest.mock import patch
 from engineering_platform.installation_update_activation import (
     InstallationUpdateActivationError,
     activate,
+    legacy_replacement_record,
     replacement_record,
 )
-from engineering_platform.installation_update_plan import prepare
+from engineering_platform.installation_update_plan import InstallationUpdatePlan, prepare
 from engineering_platform.operational_installation_record import load, record, replace_for_update
 
 
 class InstallationUpdateActivationTests(unittest.TestCase):
+    def test_legacy_baseline_has_no_record_until_it_derives_the_target_identity(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary); old, target = root / "old", root / "target"
+            old.write_text(""); target.write_text(""); old.chmod(0o700); target.chmod(0o700)
+            plan = InstallationUpdatePlan("legacy-update-0001", "installation-1", str(root.resolve()), "2.3.1", "sha256:" + "a" * 64,
+                "2.3.2", "sha256:" + "b" * 64, "c" * 40, str(root / "target.whl"), (), (),
+                {"instance_id": "installation-1", "data_root": str(root.resolve()), "service_label": "com.engineeringplatform.server",
+                 "interpreter": str(old), "version": "2.3.1", "artifact_digest": "sha256:" + "a" * 64, "source_revision": None})
+            replacement = legacy_replacement_record(plan, interpreter=target)
+            self.assertEqual(replacement["source_revision"], "c" * 40)
+            self.assertFalse((root / "operational-installation.json").exists())
+
+    def test_legacy_activation_uses_observed_service_and_target_identity(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary); old, target = root / "old", root / "target"
+            old.write_text(""); target.write_text(""); old.chmod(0o700); target.chmod(0o700)
+            plan = InstallationUpdatePlan("legacy-update-0001", "installation-1", str(root.resolve()), "2.3.1", "sha256:" + "a" * 64,
+                "2.3.2", "sha256:" + "b" * 64, "c" * 40, str(root / "target.whl"), (), (),
+                {"instance_id": "installation-1", "data_root": str(root.resolve()), "service_label": "service", "interpreter": str(old),
+                 "version": "2.3.1", "artifact_digest": "sha256:" + "a" * 64, "source_revision": None})
+            with patch("engineering_platform.installation_update_activation.operational_installation.package_identity", return_value={"interpreter": str(target), "version": "2.3.2"}), patch("engineering_platform.installation_update_activation.server_service.replace_runtime") as replace:
+                activate(plan, interpreter=target)
+            self.assertEqual(replace.call_args.kwargs["expected_interpreter"], old)
+
+    def test_legacy_replacement_rejects_missing_or_changed_binding(self) -> None:
+        plan = InstallationUpdatePlan("legacy-update-0001", "installation-1", "/root", "2.3.1", "sha256:" + "a" * 64, "2.3.2", "sha256:" + "b" * 64, "c" * 40, "/target.whl", (), (), None)
+        with self.assertRaisesRegex(InstallationUpdateActivationError, "baseline is invalid"):
+            legacy_replacement_record(plan, interpreter="/target")
     def _plan(self, root: Path):
         old = root / "old" / "bin" / "python"; old.parent.mkdir(parents=True); old.write_text("#!\n")
         record(root, installation_id="installation-1", version="2.3.1", channel="stable",

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -250,6 +249,34 @@ class InstallationUpdatePreparationTests(unittest.TestCase):
             self.assertEqual(second, first)
             self.assertEqual(len(runner.venv_calls), venv_calls)
             self.assertEqual(len(runner.pip_calls), pip_calls)
+
+    def test_staged_rebind_rejects_a_changed_legacy_provenance_mode(self) -> None:
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "runtime"
+            wheel = base / "candidate.whl"
+            wheel.write_bytes(b"immutable bytes")
+            plan = self._plan(root, wheel)
+            runner = CandidateRunner(target_version=plan.target_version)
+            prepared = prepare_candidate(
+                plan, venv_builder=self._builder(base), runner=runner,
+            )
+            rebound = replace(
+                plan,
+                artifact=prepared.staged_artifact,
+                legacy_adoption={"source_revision": None},
+            )
+
+            with patch.object(
+                update_preparation.installation_update_plan,
+                "prepare",
+                return_value=rebound,
+            ):
+                with self.assertRaisesRegex(
+                    InstallationUpdatePreparationError,
+                    "registered installation changed",
+                ):
+                    staged_execution_plan(plan, candidate=prepared, runner=runner)
 
     def test_normalizes_paths_with_spaces_and_source_and_data_root_symlinks(self) -> None:
         with TemporaryDirectory() as temporary:

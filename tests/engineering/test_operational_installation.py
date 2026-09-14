@@ -216,6 +216,12 @@ class OperationalInstallationTests(unittest.TestCase):
             with self.assertRaisesRegex(OperationalInstallationError, "does not match"):
                 record_status(resolve(root, interpreter=interpreter))
 
+        with TemporaryDirectory() as directory:
+            root, interpreter = self._root(directory)
+            (root / "operational-installation.json").symlink_to(root / "missing-record-target")
+            with self.assertRaisesRegex(OperationalInstallationError, "unreadable"):
+                record_status(resolve(root, interpreter=interpreter))
+
     def test_update_record_replacement_requires_exact_current_identity(self) -> None:
         with TemporaryDirectory() as directory:
             root, interpreter = self._root(directory)

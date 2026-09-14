@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from engineering_platform import server_service
 from engineering_platform.installation_update_admission import (
     ExecutionAdmission,
     InstallationUpdateAdmissionError,
@@ -319,3 +320,83 @@ class InstallationUpdateAdmissionTests(unittest.TestCase):
                        side_effect=InstallationUpdateActivationError("invalid")):
                 with self.assertRaisesRegex(InstallationUpdateAdmissionError, "target record is invalid"):
                     admitted_candidate(plan, admission, runner=runner)
+
+    def test_durable_quiescing_intent_retains_exact_pre_activation_admission(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, candidate, runner, _wheel = self._prepared(Path(temporary))
+            admission = admit(plan, runner=runner)
+            with InstallationUpdateSession(plan) as session:
+                session.advance("INVENTORIED", {"result": "PASS"})
+                session.advance("QUIESCING", {"service": "LOADED_AND_BOUND"})
+
+            self.assertEqual(
+                admitted_candidate(plan, admission, runner=runner),
+                candidate,
+            )
+
+    def test_post_verification_resume_revalidates_installed_candidate_without_staged_wheel(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, candidate, runner, _wheel = self._prepared(Path(temporary))
+            home = Path(temporary) / "home"
+            admission = admit(plan, runner=runner)
+            original = load(root)
+            replace_for_update(
+                root,
+                expected_version=plan.current_version,
+                expected_artifact_digest=plan.current_digest,
+                replacement=replacement_record(plan, current=original, interpreter=candidate.interpreter),
+            )
+            with InstallationUpdateSession(plan) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED"):
+                    session.advance(state, {"result": "PASS", "step": state})
+            Path(candidate.staged_artifact).unlink()
+            server_service.write_plist(
+                server_service.default_paths(root, home),
+                Path(candidate.interpreter),
+            )
+
+            self.assertEqual(
+                admitted_candidate(plan, admission, runner=runner, service_home=home),
+                candidate,
+            )
+            runner.version = "9.9.9"
+            with self.assertRaisesRegex(
+                InstallationUpdateAdmissionError,
+                "candidate package identity .* after verification",
+            ):
+                admitted_candidate(plan, admission, runner=runner, service_home=home)
+
+            runner.version = plan.target_version
+            Path(str(candidate.package["package"])).rmdir()
+            with self.assertRaisesRegex(
+                InstallationUpdateAdmissionError,
+                "candidate package identity is unavailable after verification",
+            ):
+                admitted_candidate(plan, admission, runner=runner, service_home=home)
+
+    def test_post_verification_resume_rejects_registered_service_drift(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root, plan, candidate, runner, _wheel = self._prepared(Path(temporary))
+            home = Path(temporary) / "home"
+            admission = admit(plan, runner=runner)
+            original = load(root)
+            replace_for_update(
+                root,
+                expected_version=plan.current_version,
+                expected_artifact_digest=plan.current_digest,
+                replacement=replacement_record(plan, current=original, interpreter=candidate.interpreter),
+            )
+            with InstallationUpdateSession(plan) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED"):
+                    session.advance(state, {"result": "PASS", "step": state})
+            Path(candidate.staged_artifact).unlink()
+            foreign = Path(temporary) / "foreign-python"
+            foreign.write_text("#!\n", encoding="utf-8")
+            foreign.chmod(0o700)
+            server_service.write_plist(server_service.default_paths(root, home), foreign)
+
+            with self.assertRaisesRegex(
+                InstallationUpdateAdmissionError,
+                "activated service does not bind the admitted candidate",
+            ):
+                admitted_candidate(plan, admission, runner=runner, service_home=home)

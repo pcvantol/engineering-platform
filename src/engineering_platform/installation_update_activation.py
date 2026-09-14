@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+from typing import Callable
 from typing import Mapping
 
 from . import operational_installation, operational_installation_record, server_service
@@ -55,9 +57,30 @@ def replacement_record(
         raise InstallationUpdateActivationError("replacement installation record is invalid") from error
 
 
+def legacy_replacement_record(plan: InstallationUpdatePlan, *, interpreter: str | Path) -> dict[str, object]:
+    """Create the first release record only for the proven target release."""
+    legacy = plan.legacy_adoption
+    if not isinstance(legacy, Mapping) or legacy.get("source_revision") is not None:
+        raise InstallationUpdateActivationError("legacy adoption baseline is invalid")
+    required = ("instance_id", "data_root", "service_label", "interpreter", "version", "artifact_digest")
+    if any(not isinstance(legacy.get(key), str) or not legacy[key] for key in required):
+        raise InstallationUpdateActivationError("legacy adoption baseline is invalid")
+    if (legacy["instance_id"] != plan.installation_id or legacy["data_root"] != plan.data_root
+            or legacy["version"] != plan.current_version or legacy["artifact_digest"] != plan.current_digest):
+        raise InstallationUpdateActivationError("legacy adoption baseline changed before activation")
+    return operational_installation_record.validate_record({
+        "schema_version": 1, "installation_id": plan.installation_id, "version": plan.target_version,
+        "channel": "stable", "artifact_digest": plan.target_digest, "source_revision": plan.target_source_revision,
+        "interpreter": str(Path(interpreter).expanduser().absolute()), "roles": {"server": legacy["service_label"]},
+        "desired_state": "ACTIVE", "observed_state": "ACTIVATING", "verification": {"result": "PENDING"},
+        "cleanup": {"result": "PENDING"},
+    })
+
+
 def activate(plan: InstallationUpdatePlan, *, interpreter: str | Path,
              pre_activation_record: Mapping[str, object] | None = None,
-             home: Path | None = None, runner: server_service.Runner | None = None) -> Mapping[str, object]:
+             home: Path | None = None, runner: server_service.Runner | None = None,
+             package_runner: Callable[..., object] = subprocess.run) -> Mapping[str, object]:
     """Activate one exact installed EP interpreter, without PATH selection.
 
     The executor performs the following record CAS only after this action
@@ -67,23 +90,25 @@ def activate(plan: InstallationUpdatePlan, *, interpreter: str | Path,
     """
     root, target = Path(plan.data_root), Path(interpreter).expanduser().absolute()
     try:
-        current = operational_installation_record.load(root)
-        expected_current = (
-            operational_installation_record.validate_record(pre_activation_record)
-            if pre_activation_record is not None else current
-        )
-        replacement = replacement_record(plan, current=expected_current, interpreter=target)
-        if current == expected_current:
-            service_expected = Path(str(expected_current["interpreter"])).expanduser().absolute()
-        elif pre_activation_record is not None and current == replacement:
-            # Crash after record CAS but before journal ``ACTIVATED``: the
-            # service must already resolve to this exact target (or its
-            # bounded bootstrap must be safely retried), never an arbitrary
-            # old/PATH-selected launcher.
-            service_expected = target
+        legacy = plan.legacy_adoption
+        current = operational_installation_record.load(root) if legacy is None else None
+        if legacy is not None:
+            replacement = legacy_replacement_record(plan, interpreter=target)
+            service_expected = Path(str(legacy["interpreter"])).expanduser().absolute()
         else:
-            raise InstallationUpdateActivationError("operational installation changed before activation")
-        identity = operational_installation.package_identity(target)
+            assert current is not None
+            expected_current = (
+                operational_installation_record.validate_record(pre_activation_record)
+                if pre_activation_record is not None else current
+            )
+            replacement = replacement_record(plan, current=expected_current, interpreter=target)
+            if current == expected_current:
+                service_expected = Path(str(expected_current["interpreter"])).expanduser().absolute()
+            elif pre_activation_record is not None and current == replacement:
+                service_expected = target
+            else:
+                raise InstallationUpdateActivationError("operational installation changed before activation")
+        identity = operational_installation.package_identity(target, runner=package_runner)
         if (identity["version"] != plan.target_version
                 or Path(str(identity["interpreter"])).expanduser().absolute() != target):
             raise InstallationUpdateActivationError("replacement interpreter does not provide the target EP version")

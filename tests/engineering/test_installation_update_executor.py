@@ -4,13 +4,14 @@ import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from engineering_platform.installation_update_executor import (
     InstallationUpdateActions, InstallationUpdateExecutorError, execute,
 )
 from engineering_platform.installation_update_operation import InstallationUpdateSession
 from engineering_platform.installation_update_plan import prepare
-from engineering_platform.operational_installation_record import record, replace_for_update
+from engineering_platform.operational_installation_record import load, record, replace_for_update
 
 
 class InstallationUpdateExecutorTests(unittest.TestCase):
@@ -148,3 +149,109 @@ class InstallationUpdateExecutorTests(unittest.TestCase):
             resumed_calls: list[str] = []
             self.assertEqual(execute(plan, self._actions(plan, resumed_calls))["state"], "COMPLETE")
             self.assertEqual(resumed_calls, ["migrate", "activate", "verify"])
+
+    def test_quiesce_crash_resumes_from_durable_intent_without_repeating_preflight(self) -> None:
+        with TemporaryDirectory() as temporary:
+            plan = self._plan(Path(temporary))
+            calls: list[str] = []
+            actions = self._actions(plan, calls)
+
+            def preflight(_plan):
+                calls.append("quiesce-preflight")
+                return {"result": "PASS", "service": "LOADED_AND_BOUND"}
+
+            def crash_after_quiesce(_plan):
+                calls.append("quiesce")
+                raise RuntimeError("lost quiesce acknowledgement")
+
+            guarded = InstallationUpdateActions(
+                actions.inventory, crash_after_quiesce, actions.backup,
+                actions.migrate, actions.activate, actions.verify,
+                quiesce_preflight=preflight,
+            )
+            with self.assertRaisesRegex(RuntimeError, "lost quiesce acknowledgement"):
+                execute(plan, guarded)
+
+            from engineering_platform.installation_update_operation import status
+            self.assertEqual(status(Path(plan.data_root), plan.operation_id)["state"], "QUIESCING")
+            self.assertEqual(calls, ["inventory", "quiesce-preflight", "quiesce"])
+
+            resumed_calls: list[str] = []
+            resumed = self._actions(plan, resumed_calls)
+            self.assertEqual(execute(plan, resumed)["state"], "COMPLETE")
+            self.assertEqual(
+                resumed_calls,
+                ["quiesce", "backup", "migrate", "activate", "verify"],
+            )
+
+    def test_same_release_record_does_not_skip_a_distinct_expected_activation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = self._plan(root)
+            current = load(root)
+            same_artifact = Path(plan.artifact)
+            same_artifact.write_bytes(b"original wheel")
+            same_digest = "sha256:" + hashlib.sha256(same_artifact.read_bytes()).hexdigest()
+            current = replace_for_update(
+                root,
+                expected_version=plan.current_version,
+                expected_artifact_digest=plan.current_digest,
+                replacement={**current, "artifact_digest": same_digest},
+            )
+            same_plan = prepare(
+                root, operation_id="update-0002", artifact=same_artifact,
+                target_version=plan.current_version, target_digest=same_digest,
+                target_source_revision=str(current["source_revision"]),
+            )
+            with InstallationUpdateSession(same_plan) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED"):
+                    session.advance(state, {"result": "PASS", "step": state})
+            calls: list[str] = []
+            target = root / "same release target" / "bin" / "python"
+            target.parent.mkdir(parents=True)
+            target.write_text("#!/bin/sh\n")
+            target.chmod(0o755)
+            replacement = {
+                **current,
+                "interpreter": str(target),
+                "observed_state": "ACTIVATING",
+                "verification": {"result": "PENDING"},
+                "cleanup": {"result": "PENDING"},
+            }
+
+            def step(name: str):
+                def action(_plan):
+                    calls.append(name)
+                    return {"result": "PASS", "step": name}
+                return action
+
+            def activate(_plan):
+                calls.append("activate")
+                return replacement
+
+            guarded = InstallationUpdateActions(
+                step("inventory"), step("quiesce"), step("backup"), step("migrate"),
+                activate, step("verify"), replacement,
+            )
+            self.assertEqual(execute(same_plan, guarded)["state"], "COMPLETE")
+            self.assertEqual(calls, ["activate", "verify"])
+
+    def test_six_callback_cas_gap_retries_idempotent_activation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            plan = self._plan(Path(temporary))
+            calls: list[str] = []
+            actions = self._actions(plan, calls)
+            original_advance = InstallationUpdateSession.advance
+
+            def lose_activated_event(session, state, evidence):
+                if state == "ACTIVATED":
+                    raise RuntimeError("lost ACTIVATED event")
+                return original_advance(session, state, evidence)
+
+            with patch.object(
+                InstallationUpdateSession, "advance", new=lose_activated_event,
+            ), self.assertRaisesRegex(RuntimeError, "lost ACTIVATED event"):
+                execute(plan, actions)
+            calls.clear()
+            self.assertEqual(execute(plan, self._actions(plan, calls))["state"], "COMPLETE")
+            self.assertEqual(calls, ["activate", "verify"])

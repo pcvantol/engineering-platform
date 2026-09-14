@@ -17,13 +17,23 @@ import re
 
 from .installation_update_plan import InstallationUpdatePlan
 from .operational_installation_lock import OperationalInstallationLock
-from . import operational_installation_record
+from . import legacy_installation_adoption, operational_installation_record
 
 
-_STATES = ("PREPARED", "INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE")
+_STATES = (
+    "PREPARED", "INVENTORIED", "QUIESCING", "QUIESCED", "BACKED_UP",
+    "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE",
+)
 _NEXT = {state: _STATES[index + 1:index + 2] for index, state in enumerate(_STATES)}
+# Historical/general-purpose callers had no separate quiescing-intent event.
+# Keep their already-defined direct transition readable and executable while
+# the EP-owned composition opts into the new crash-safe intermediate state.
+_NEXT["INVENTORIED"] = ("QUIESCING", "QUIESCED")
 _NEXT["VERIFIED"] = ("CLEANUP_PENDING", "COMPLETE")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
+_VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_REVISION = re.compile(r"^[0-9a-f]{40}$")
 _V1_FIELDS = frozenset({"schema_version", "operation_id", "plan", "plan_digest", "state", "events"})
 _V2_FIELDS = _V1_FIELDS | frozenset({"prepared_candidate", "prepared_candidate_digest"})
 _V3_FIELDS = _V2_FIELDS | frozenset({"prepared_record_provenance", "prepared_record_provenance_digest"})
@@ -38,6 +48,12 @@ _ADMISSION_FIELDS = frozenset({"schema_version", "operation_id", "plan_digest", 
 _ADMISSION_RECORD_V1_FIELDS = frozenset({"installation_id", "version", "artifact_digest", "source_revision",
                                          "interpreter", "roles", "record_digest"})
 _ADMISSION_RECORD_V2_FIELDS = _ADMISSION_RECORD_V1_FIELDS | frozenset({"record"})
+_LEGACY_PROVENANCE_FIELDS = frozenset({"kind", "decision", "decision_digest"})
+_PLAN_FIELDS = frozenset({
+    "operation_id", "installation_id", "data_root", "current_version", "current_digest",
+    "target_version", "target_digest", "target_source_revision", "artifact",
+    "cleanup_targets", "steps",
+})
 
 
 class InstallationUpdateOperationError(ValueError):
@@ -95,7 +111,7 @@ def _admission_binding(value: object) -> dict[str, object] | None:
         return None
     schema_value = value.get("schema_version") if isinstance(value, dict) else None
     if (not isinstance(value, dict) or set(value) != _ADMISSION_FIELDS
-            or type(schema_value) is not int or schema_value not in {1, 2}):
+            or type(schema_value) is not int or schema_value not in {1, 2, 3}):
         raise InstallationUpdateOperationError("execution admission binding is invalid")
     if not all(isinstance(value.get(field), str) and value[field]
                for field in ("operation_id", "plan_digest", "installation_id")):
@@ -103,6 +119,21 @@ def _admission_binding(value: object) -> dict[str, object] | None:
     registered = value.get("registered_installation")
     schema = schema_value
     assert type(schema) is int  # narrowed by the closed schema check above
+    if schema == 3:
+        legacy = _legacy_provenance_binding(registered)
+        if legacy is None:
+            raise InstallationUpdateOperationError("execution admission binding is invalid")
+        candidate = _binding(value.get("prepared_candidate"))
+        if candidate is None:
+            raise InstallationUpdateOperationError("execution admission binding is invalid")
+        return {
+            "schema_version": schema,
+            "operation_id": str(value["operation_id"]),
+            "plan_digest": str(value["plan_digest"]),
+            "installation_id": str(value["installation_id"]),
+            "registered_installation": legacy,
+            "prepared_candidate": candidate,
+        }
     fields = _ADMISSION_RECORD_V1_FIELDS if schema == 1 else _ADMISSION_RECORD_V2_FIELDS
     if (not isinstance(registered, dict) or set(registered) != fields
             or not all(isinstance(registered.get(field), str) and registered[field]
@@ -148,6 +179,9 @@ def _provenance_binding(value: object) -> dict[str, object] | None:
     """Canonical pre-admission record proof captured with the OI-4b binding."""
     if value is None:
         return None
+    legacy = _legacy_provenance_binding(value)
+    if legacy is not None:
+        return legacy
     if (not isinstance(value, dict) or set(value) != _ADMISSION_RECORD_V1_FIELDS
             or not all(isinstance(value.get(field), str) and value[field]
                        for field in _ADMISSION_RECORD_V1_FIELDS - {"roles"})
@@ -156,7 +190,44 @@ def _provenance_binding(value: object) -> dict[str, object] | None:
     return dict(value)
 
 
+def _legacy_provenance_binding(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict) or set(value) != _LEGACY_PROVENANCE_FIELDS:
+        return None
+    if value.get("kind") != "LEGACY_ADOPTION" or not isinstance(value.get("decision_digest"), str):
+        raise InstallationUpdateOperationError("prepared legacy provenance is invalid")
+    try:
+        decision, _observation, _authorization = legacy_installation_adoption.validate_decision(value.get("decision"))
+    except legacy_installation_adoption.LegacyInstallationAdoptionError as error:
+        raise InstallationUpdateOperationError("prepared legacy provenance is invalid") from error
+    digest = "sha256:" + hashlib.sha256(_canonical(decision)).hexdigest()
+    if value["decision_digest"] != digest:
+        raise InstallationUpdateOperationError("prepared legacy provenance is invalid")
+    return {"kind": "LEGACY_ADOPTION", "decision": decision, "decision_digest": digest}
+
+
 def _current_record_provenance(plan: InstallationUpdatePlan) -> dict[str, object]:
+    if plan.legacy_adoption is not None:
+        try:
+            operational_installation_record.load(Path(plan.data_root))
+        except operational_installation_record.OperationalInstallationRecordNotFound:
+            pass
+        except operational_installation_record.OperationalInstallationRecordError as error:
+            raise InstallationUpdateOperationError("registered installation provenance is unavailable") from error
+        else:
+            raise InstallationUpdateOperationError("registered installation conflicts with legacy provenance")
+        try:
+            decision = legacy_installation_adoption.bound_decision(
+                Path(plan.data_root), operation_id=plan.operation_id,
+                target_version=plan.target_version, target_digest=plan.target_digest,
+                target_source_revision=plan.target_source_revision,
+            )
+            _canonical_decision, observation, _authorization = legacy_installation_adoption.validate_decision(decision)
+        except legacy_installation_adoption.LegacyInstallationAdoptionError as error:
+            raise InstallationUpdateOperationError("legacy installation provenance is unavailable") from error
+        if observation.payload() != plan.legacy_adoption:
+            raise InstallationUpdateOperationError("legacy installation changed before prepared candidate binding")
+        return {"kind": "LEGACY_ADOPTION", "decision": decision,
+                "decision_digest": "sha256:" + hashlib.sha256(_canonical(decision)).hexdigest()}
     try:
         record = operational_installation_record.load(Path(plan.data_root))
     except operational_installation_record.OperationalInstallationRecordError as error:
@@ -174,6 +245,11 @@ def _current_record_provenance(plan: InstallationUpdatePlan) -> dict[str, object
         "roles": record["roles"],
         "record_digest": "sha256:" + hashlib.sha256(_canonical(record)).hexdigest(),
     }
+
+
+def current_record_provenance(plan: InstallationUpdatePlan) -> dict[str, object]:
+    """Reopen the current registered or exact authorized legacy provenance."""
+    return _current_record_provenance(plan)
 
 
 def _normalize(value: object, *, expected: dict[str, object] | None = None,
@@ -290,6 +366,60 @@ def status(data_root: Path, operation_id: str) -> dict[str, object]:
             "execution_admission_digest": normalized.get("execution_admission_digest")}
 
 
+def reopen_plan(data_root: Path, operation_id: str) -> InstallationUpdatePlan:
+    """Reconstruct the exact immutable plan from its durable journal.
+
+    This accepts only the historical closed shape or that shape plus the one
+    explicit legacy-adoption field.  It never recalculates or rewrites the
+    plan bytes/digest retained by an older journal.
+    """
+    if _OPERATION.fullmatch(operation_id) is None:
+        raise InstallationUpdateOperationError("installation update operation ID is invalid")
+    path = Path(data_root).expanduser().resolve() / "operations" / operation_id / "operation.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallationUpdateOperationError("installation update operation is unreadable") from error
+    value = _normalize(raw, operation_id=operation_id)
+    payload = value["plan"]
+    assert isinstance(payload, dict)
+    fields = frozenset(payload)
+    if fields not in {_PLAN_FIELDS, _PLAN_FIELDS | {"legacy_adoption"}}:
+        raise InstallationUpdateOperationError("installation update plan payload is invalid")
+    if (not isinstance(payload.get("cleanup_targets"), list)
+            or not isinstance(payload.get("steps"), list)
+            or not all(isinstance(item, str) for item in payload["cleanup_targets"] + payload["steps"])):
+        raise InstallationUpdateOperationError("installation update plan payload is invalid")
+    candidate = dict(payload)
+    candidate["cleanup_targets"] = tuple(candidate["cleanup_targets"])
+    candidate["steps"] = tuple(candidate["steps"])
+    try:
+        plan = InstallationUpdatePlan(**candidate)
+    except TypeError as error:
+        raise InstallationUpdateOperationError("installation update plan payload is invalid") from error
+    root = Path(data_root).expanduser().resolve()
+    strings = (
+        plan.operation_id, plan.installation_id, plan.data_root, plan.current_version,
+        plan.current_digest, plan.target_version, plan.target_digest,
+        plan.target_source_revision, plan.artifact,
+    )
+    operation_root = root / "operations" / operation_id
+    expected_cleanup = tuple(str(operation_root / name) for name in ("build", "download", "pip-cache"))
+    if (not all(isinstance(item, str) and item for item in strings)
+            or plan.operation_id != operation_id or Path(plan.data_root).resolve() != root
+            or _VERSION.fullmatch(plan.current_version) is None
+            or _VERSION.fullmatch(plan.target_version) is None
+            or _DIGEST.fullmatch(plan.current_digest) is None
+            or _DIGEST.fullmatch(plan.target_digest) is None
+            or _REVISION.fullmatch(plan.target_source_revision) is None
+            or not Path(plan.artifact).is_absolute()
+            or plan.cleanup_targets != expected_cleanup or not plan.steps
+            or (plan.legacy_adoption is not None and not isinstance(plan.legacy_adoption, dict))):
+        raise InstallationUpdateOperationError("installation update plan payload is invalid")
+    _load(plan)
+    return plan
+
+
 def _prepared_candidate(plan: InstallationUpdatePlan, candidate: object, *, runner: object) -> dict[str, object]:
     """Re-verify a candidate and require the plan to name its staged wheel."""
     from . import installation_update_preparation
@@ -397,6 +527,12 @@ def bind_execution_admission(plan: InstallationUpdatePlan, admission: Mapping[st
             or candidate["plan_digest"] != value["plan_digest"]
             or candidate["prepared_candidate"] != value["prepared_candidate"]):
         raise InstallationUpdateOperationError("execution admission does not bind the exact prepared operation")
+    if candidate["schema_version"] == 3:
+        if (plan.legacy_adoption is None
+                or candidate["registered_installation"] != value["prepared_record_provenance"]):
+            raise InstallationUpdateOperationError("legacy execution admission does not bind prepared provenance")
+    elif plan.legacy_adoption is not None:
+        raise InstallationUpdateOperationError("legacy execution admission has the wrong evidence schema")
     existing = value.get("execution_admission")
     if existing is not None:
         if existing == candidate:

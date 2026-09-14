@@ -32,6 +32,8 @@ class InstallationUpdateActions:
     migrate: EvidenceAction
     activate: ActivationAction
     verify: EvidenceAction
+    expected_activation: Mapping[str, object] | None = None
+    quiesce_preflight: EvidenceAction | None = None
 
 
 def _evidence(value: Mapping[str, object], step: str) -> dict[str, object]:
@@ -48,10 +50,20 @@ def _activate(plan: InstallationUpdatePlan, action: ActivationAction) -> dict[st
             or replacement.get("source_revision") != plan.target_source_revision):
         raise InstallationUpdateExecutorError("activated installation does not match the exact target identity")
     try:
-        updated = operational_installation_record.replace_for_update(
-            Path(plan.data_root), expected_version=plan.current_version,
-            expected_artifact_digest=plan.current_digest, replacement=replacement,
-        )
+        if plan.legacy_adoption is None:
+            updated = operational_installation_record.replace_for_update(
+                Path(plan.data_root), expected_version=plan.current_version,
+                expected_artifact_digest=plan.current_digest, replacement=replacement,
+            )
+        else:
+            updated = operational_installation_record.record(
+                Path(plan.data_root), installation_id=str(replacement["installation_id"]),
+                version=str(replacement["version"]), channel=str(replacement["channel"]),
+                artifact_digest=str(replacement["artifact_digest"]), source_revision=str(replacement["source_revision"]),
+                interpreter=Path(str(replacement["interpreter"])), roles=replacement["roles"],
+                desired_state=str(replacement["desired_state"]), observed_state=str(replacement["observed_state"]),
+                verification=replacement["verification"], cleanup=replacement["cleanup"],
+            )
     except operational_installation_record.OperationalInstallationRecordError as error:
         raise InstallationUpdateExecutorError("installation update activation record is invalid") from error
     if (updated["version"] != plan.target_version
@@ -61,6 +73,53 @@ def _activate(plan: InstallationUpdatePlan, action: ActivationAction) -> dict[st
     return {"installation_id": updated["installation_id"], "interpreter": updated["interpreter"],
             "version": updated["version"], "artifact_digest": updated["artifact_digest"],
             "source_revision": updated["source_revision"]}
+
+
+def _recovered_activation(
+    plan: InstallationUpdatePlan,
+    expected_replacement: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Acknowledge an exact record write whose journal acknowledgement was lost."""
+    try:
+        expected = (
+            operational_installation_record.validate_record(expected_replacement)
+            if expected_replacement is not None else None
+        )
+    except operational_installation_record.OperationalInstallationRecordError as error:
+        raise InstallationUpdateExecutorError("installation update activation expectation is invalid") from error
+    if expected is not None and (
+        expected["installation_id"] != plan.installation_id
+        or expected["version"] != plan.target_version
+        or expected["artifact_digest"] != plan.target_digest
+        or expected["source_revision"] != plan.target_source_revision
+    ):
+        raise InstallationUpdateExecutorError("installation update activation expectation is invalid")
+    try:
+        record = operational_installation_record.load(Path(plan.data_root))
+    except operational_installation_record.OperationalInstallationRecordNotFound:
+        if plan.legacy_adoption is not None:
+            return None
+        raise InstallationUpdateExecutorError("registered installation disappeared during activation") from None
+    except operational_installation_record.OperationalInstallationRecordError as error:
+        raise InstallationUpdateExecutorError("installation update activation record is invalid") from error
+    if expected is not None and record == expected:
+        return {"installation_id": record["installation_id"], "interpreter": record["interpreter"],
+                "version": record["version"], "artifact_digest": record["artifact_digest"],
+                "source_revision": record["source_revision"]}
+    if (record["installation_id"] == plan.installation_id
+            and record["version"] == plan.current_version
+            and record["artifact_digest"] == plan.current_digest):
+        return None
+    if (expected is None
+            and record["installation_id"] == plan.installation_id
+            and record["version"] == plan.target_version
+            and record["artifact_digest"] == plan.target_digest
+            and record["source_revision"] == plan.target_source_revision):
+        # Original six-callback callers have no declarative replacement to
+        # compare. Never acknowledge the record on identifiers alone; retry
+        # their contractually idempotent activation callback instead.
+        return None
+    raise InstallationUpdateExecutorError("operational installation changed during activation recovery")
 
 
 def _verified(plan: InstallationUpdatePlan, action: EvidenceAction) -> dict[str, object]:
@@ -97,23 +156,33 @@ def execute(plan: InstallationUpdatePlan, actions: InstallationUpdateActions) ->
     but before its journal transition causes the same action to be retried.
     No action is reached while another operational update owns the lock.
     """
-    steps: tuple[tuple[str, EvidenceAction], ...] = (
-        ("INVENTORIED", actions.inventory), ("QUIESCED", actions.quiesce),
-        ("BACKED_UP", actions.backup), ("MIGRATED", actions.migrate),
-    )
-    predecessors = {"INVENTORIED": "PREPARED", "QUIESCED": "INVENTORIED",
-                    "BACKED_UP": "QUIESCED", "MIGRATED": "BACKED_UP"}
     try:
         with InstallationUpdateSession(plan) as session:
             current = status(Path(plan.data_root), plan.operation_id)
-            for state, action in steps:
-                if current["state"] == state:
-                    continue
-                if current["state"] == predecessors[state]:
-                    evidence = _inventory(plan, action) if state == "INVENTORIED" else _evidence(action(plan), state.lower())
-                    current = session.advance(state, evidence)
+            if current["state"] == "PREPARED":
+                current = session.advance(
+                    "INVENTORIED", _inventory(plan, actions.inventory),
+                )
+            if current["state"] == "INVENTORIED" and actions.quiesce_preflight is not None:
+                current = session.advance(
+                    "QUIESCING",
+                    _evidence(actions.quiesce_preflight(plan), "quiescence preflight"),
+                )
+            if current["state"] in {"INVENTORIED", "QUIESCING"}:
+                current = session.advance(
+                    "QUIESCED", _evidence(actions.quiesce(plan), "quiesced"),
+                )
+            for state, predecessor, action in (
+                ("BACKED_UP", "QUIESCED", actions.backup),
+                ("MIGRATED", "BACKED_UP", actions.migrate),
+            ):
+                if current["state"] == predecessor:
+                    current = session.advance(state, _evidence(action(plan), state.lower()))
             if current["state"] == "MIGRATED":
-                current = session.advance("ACTIVATED", _activate(plan, actions.activate))
+                recovered = _recovered_activation(plan, actions.expected_activation)
+                current = session.advance(
+                    "ACTIVATED", recovered if recovered is not None else _activate(plan, actions.activate),
+                )
             if current["state"] == "ACTIVATED":
                 current = session.advance("VERIFIED", _verified(plan, actions.verify))
             if current["state"] in {"VERIFIED", "CLEANUP_PENDING"}:

@@ -102,10 +102,10 @@ def record_status(installation: OperationalInstallation) -> Mapping[str, object]
     """
     root = Path(installation.data_root)
     path = root / operational_installation_record.FILENAME
-    if not path.exists():
-        return {"state": "UNREGISTERED", "path": str(path)}
     try:
         record = operational_installation_record.load(root)
+    except operational_installation_record.OperationalInstallationRecordNotFound:
+        return {"state": "UNREGISTERED", "path": str(path)}
     except operational_installation_record.OperationalInstallationRecordError as error:
         raise OperationalInstallationError("operational installation record is unreadable") from error
     if (record.get("installation_id") != installation.instance_id

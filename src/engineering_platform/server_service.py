@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import plistlib
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -76,13 +77,18 @@ def _installed_interpreter(candidate: str | Path | None = None) -> Path:
     return executable
 
 
-def plist_payload(paths: ServicePaths, interpreter: Path) -> dict[str, object]:
+def plist_payload(
+    paths: ServicePaths,
+    interpreter: Path,
+    *,
+    run_at_load: bool = True,
+) -> dict[str, object]:
     return {
         "Label": LABEL,
         "ProgramArguments": [str(interpreter), "-m", "engineering_platform.server", "serve", "--data-root", str(paths.data_root)],
         "WorkingDirectory": str(paths.data_root),
-        "RunAtLoad": True,
-        "KeepAlive": {"SuccessfulExit": False},
+        "RunAtLoad": run_at_load,
+        "KeepAlive": {"SuccessfulExit": False} if run_at_load else False,
         "ProcessType": "Background",
         "EnvironmentVariables": {
             "PATH": DEFAULT_PATH,
@@ -95,10 +101,14 @@ def plist_payload(paths: ServicePaths, interpreter: Path) -> dict[str, object]:
     }
 
 
-def write_plist(paths: ServicePaths, interpreter: Path) -> Path:
+def write_plist(paths: ServicePaths, interpreter: Path, *, run_at_load: bool = True) -> Path:
     paths.launch_agents_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths.log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    content = plistlib.dumps(plist_payload(paths, interpreter), fmt=plistlib.FMT_XML, sort_keys=True)
+    content = plistlib.dumps(
+        plist_payload(paths, interpreter, run_at_load=run_at_load),
+        fmt=plistlib.FMT_XML,
+        sort_keys=True,
+    )
     temporary = paths.plist_path.with_suffix(".plist.tmp")
     temporary.write_bytes(content)
     temporary.chmod(0o644)
@@ -108,19 +118,156 @@ def write_plist(paths: ServicePaths, interpreter: Path) -> Path:
 
 
 def configured_interpreter(data_root: Path, *, home: Path | None = None) -> Path | None:
-    """Read the owned service's fixed interpreter without consulting PATH."""
-    plist = default_paths(data_root, home).plist_path
+    """Read the interpreter only from the exact service/data-root binding."""
+    paths = default_paths(data_root, home)
+    plist = paths.plist_path
     if not plist.is_file():
         return None
     try:
         with plist.open("rb") as stream:
-            arguments = plistlib.load(stream).get("ProgramArguments")
+            payload = plistlib.load(stream)
     except (OSError, plistlib.InvalidFileException):
         return None
-    if (not isinstance(arguments, list) or len(arguments) < 3 or not isinstance(arguments[0], str)
-            or arguments[1:3] != ["-m", "engineering_platform.server"]):
+    arguments = payload.get("ProgramArguments") if isinstance(payload, dict) else None
+    environment = payload.get("EnvironmentVariables") if isinstance(payload, dict) else None
+    expected_root = str(paths.data_root)
+    if (
+        not isinstance(arguments, list)
+        or len(arguments) != 6
+        or not isinstance(arguments[0], str)
+        or payload.get("Label") != LABEL
+        or arguments[1:] != ["-m", "engineering_platform.server", "serve", "--data-root", expected_root]
+        or payload.get("WorkingDirectory") != expected_root
+        or not isinstance(environment, dict)
+        or environment.get("EP_SERVER_DATA_ROOT") != expected_root
+    ):
         return None
     return _installed_interpreter(arguments[0])
+
+
+def retain_update_quiescence(
+    data_root: Path,
+    *,
+    expected_interpreter: str | Path,
+    home: Path | None = None,
+) -> Mapping[str, str]:
+    """Persist the maintenance stop so login cannot reload the old runtime."""
+    paths = default_paths(data_root, home)
+    current = configured_interpreter(data_root, home=home)
+    expected = _installed_interpreter(expected_interpreter)
+    if current != expected:
+        raise ServerServiceError("EP Server service does not reference the expected operational interpreter.")
+    write_plist(paths, expected, run_at_load=False)
+    return {
+        "state": "UPDATE_QUIESCENCE_RETAINED",
+        "label": LABEL,
+        "plist": str(paths.plist_path),
+        "interpreter": str(expected),
+    }
+
+
+def _update_quiescence_retained(data_root: Path, *, home: Path | None = None) -> bool:
+    path = default_paths(data_root, home).plist_path
+    try:
+        with path.open("rb") as stream:
+            payload = plistlib.load(stream)
+    except (OSError, plistlib.InvalidFileException):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("RunAtLoad") is False
+        and payload.get("KeepAlive") is False
+    )
+
+
+def _launchctl_loaded_arguments(output: str) -> tuple[str, ...] | None:
+    """Extract the argv launchd reports for one loaded job."""
+    match = re.search(
+        r"(?ms)^\s*arguments\s*=\s*\{\s*\n(?P<arguments>.*?)^\s*\}\s*$",
+        output,
+    )
+    if match is None:
+        return None
+    return tuple(
+        line.strip()
+        for line in match.group("arguments").splitlines()
+        if line.strip()
+    )
+
+
+def _launchctl_loaded_value(output: str, key: str) -> str | None:
+    match = re.search(rf"(?m)^\s*{re.escape(key)}\s*=\s*(?P<value>.+?)\s*$", output)
+    return match.group("value") if match is not None else None
+
+
+def loaded_service_interpreter(
+    data_root: Path,
+    *,
+    expected_interpreters: Sequence[str | Path],
+    runner: Runner | None = None,
+) -> Path | None:
+    """Return one loaded, exact allowed binding or prove true absence."""
+    allowed = tuple(_installed_interpreter(candidate) for candidate in expected_interpreters)
+    if not allowed:
+        raise ServerServiceError("A loaded service binding requires an expected interpreter.")
+    result = _launchctl(("print", f"{_domain()}/{LABEL}"), runner)
+    if result.returncode:
+        error = (result.stderr or "").lower()
+        if any(marker in error for marker in ("could not find service", "no such process", "not found")):
+            return None
+        raise ServerServiceError("Unable to inspect the owned EP Server LaunchAgent during runtime replacement.")
+    root = data_root.resolve()
+    arguments = _launchctl_loaded_arguments(result.stdout or "")
+    program = _launchctl_loaded_value(result.stdout or "", "program")
+    working_directory = _launchctl_loaded_value(result.stdout or "", "working directory")
+    try:
+        observed = _installed_interpreter(arguments[0]) if arguments is not None else None
+    except (IndexError, ServerServiceError) as error:
+        raise ServerServiceError(
+            "Loaded EP Server LaunchAgent does not match an allowed runtime binding."
+        ) from error
+    if (
+        observed not in allowed
+        or program != str(observed)
+        or arguments != (
+            str(observed), "-m", "engineering_platform.server", "serve",
+            "--data-root", str(root),
+        )
+        or working_directory != str(root)
+    ):
+        raise ServerServiceError(
+            "Loaded EP Server LaunchAgent does not match an allowed runtime binding."
+        )
+    return observed
+
+
+def service_loaded(
+    *,
+    data_root: Path | None = None,
+    expected_interpreter: str | Path | None = None,
+    runner: Runner | None = None,
+) -> bool:
+    """Prove loaded or absent and optionally prove the loaded runtime binding.
+
+    The on-disk plist is not evidence for an already loaded job: launchd can
+    retain the prior definition after that file is rewritten.  Update callers
+    therefore bind the live inspection to the admitted interpreter/data root.
+    """
+    if (data_root is None) != (expected_interpreter is None):
+        raise ServerServiceError("A loaded service binding requires both interpreter and data root.")
+    if data_root is not None and expected_interpreter is not None:
+        return loaded_service_interpreter(
+            data_root,
+            expected_interpreters=(expected_interpreter,),
+            runner=runner,
+        ) is not None
+    result = _launchctl(("print", f"{_domain()}/{LABEL}"), runner)
+    if result.returncode == 0:
+        return True
+    error = (result.stderr or "").lower()
+    if any(marker in error for marker in ("could not find service", "no such process", "not found")):
+        return False
+    raise ServerServiceError("Unable to inspect the owned EP Server LaunchAgent during runtime replacement.")
 
 
 def install(data_root: Path, *, interpreter: str | Path | None = None, home: Path | None = None,
@@ -166,15 +313,50 @@ def replace_runtime(data_root: Path, *, expected_interpreter: str | Path, interp
     # If it follows the new write, the next retry observes the replacement and
     # only completes the idempotent bootstrap below.
     if current == expected:
-        result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
-        if result.returncode and "could not find service" not in (result.stderr or "").lower():
-            raise ServerServiceError("Unable to stop the owned EP Server LaunchAgent for runtime replacement.")
+        retained = _update_quiescence_retained(data_root, home=home)
+        # A login can load a RunAtLoad=False maintenance plist without
+        # starting its process.  The plist policy therefore cannot prove that
+        # the job is unloaded; boot it out when launchd still owns the job.
+        if not retained or service_loaded(
+            data_root=data_root,
+            expected_interpreter=expected,
+            runner=runner,
+        ):
+            result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
+            if result.returncode and not any(
+                marker in (result.stderr or "").lower()
+                for marker in ("could not find service", "no such process", "not found")
+            ):
+                raise ServerServiceError("Unable to stop the owned EP Server LaunchAgent for runtime replacement.")
         plist = write_plist(paths, replacement)
     else:
-        plist = paths.plist_path
+        # A crash may leave the replacement selected by a maintenance plist.
+        # A retained old job can race the earlier absence check and block the
+        # first bootstrap.  On resume, unload only that exact admitted old
+        # binding (never an unknown same-label job) before retrying.
+        loaded = loaded_service_interpreter(
+            data_root,
+            expected_interpreters=(expected, replacement),
+            runner=runner,
+        )
+        if loaded == expected:
+            result = _launchctl(("bootout", _domain(), str(paths.plist_path)), runner)
+            if result.returncode:
+                raise ServerServiceError(
+                    "Unable to stop the stale admitted EP Server LaunchAgent during activation recovery."
+                )
+        # Restore the normal boot policy before idempotently bootstrapping the
+        # replacement or acknowledging its already-loaded exact binding.
+        plist = write_plist(paths, replacement)
     result = _launchctl(("bootstrap", _domain(), str(plist)), runner)
     if result.returncode and "service already loaded" not in (result.stderr or "").lower():
         raise ServerServiceError("Unable to activate the replacement EP Server runtime.")
+    if not service_loaded(
+        data_root=data_root,
+        expected_interpreter=replacement,
+        runner=runner,
+    ):
+        raise ServerServiceError("Unable to verify the activated EP Server runtime binding.")
     return {"state": "replaced", "label": LABEL, "plist": str(plist), "interpreter": str(replacement)}
 
 

@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 import re
 
-from . import operational_installation_record
+from . import legacy_installation_adoption, operational_installation_record
 
 
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
@@ -32,9 +32,16 @@ class InstallationUpdatePlan:
     artifact: str
     cleanup_targets: tuple[str, ...]
     steps: tuple[str, ...]
+    legacy_adoption: dict[str, object] | None = None
 
     def payload(self) -> dict[str, object]:
-        return asdict(self)
+        value = asdict(self)
+        # Preserve pre-legacy journal bytes and their recorded digest.  The
+        # absent optional field is the sole historical compatibility case;
+        # non-empty legacy evidence is always explicit and immutable.
+        if value["legacy_adoption"] is None:
+            del value["legacy_adoption"]
+        return value
 
 
 def _digest(path: Path) -> str:
@@ -76,10 +83,25 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
             or _DIGEST.fullmatch(target_digest) is None or _REVISION.fullmatch(target_source_revision) is None):
         raise InstallationUpdatePlanError("update operation or target identity is invalid")
     root = Path(data_root).expanduser().resolve()
+    legacy = None
     try:
         current = operational_installation_record.load(root)
+    except operational_installation_record.OperationalInstallationRecordNotFound:
+        # A missing release record can enter only through one previously
+        # persisted, exact legacy decision.  It remains an observation—not a
+        # fabricated old release or a generally nullable source revision.
+        try:
+            observed = legacy_installation_adoption.bound_baseline(
+                root, operation_id=operation_id, target_version=target_version,
+                target_digest=target_digest, target_source_revision=target_source_revision,
+            )
+        except legacy_installation_adoption.LegacyInstallationAdoptionError as legacy_error:
+            raise InstallationUpdatePlanError("registered operational installation is unavailable") from legacy_error
+        current = {"installation_id": observed.instance_id, "version": observed.version,
+                   "artifact_digest": observed.artifact_digest}
+        legacy = observed.payload()
     except operational_installation_record.OperationalInstallationRecordError as error:
-        raise InstallationUpdatePlanError("registered operational installation is unavailable") from error
+        raise InstallationUpdatePlanError("registered operational installation is invalid") from error
     current_version = str(current["version"])
     current_semver, target_semver = _version(current_version, "registered operational"), _version(target_version, "target")
     if target_semver < current_semver:
@@ -90,7 +112,7 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
     if target_semver == current_semver:
         if target_digest != str(current["artifact_digest"]):
             raise InstallationUpdatePlanError("same release identity cannot use different artifact bytes")
-        if target_source_revision != str(current["source_revision"]):
+        if legacy is None and target_source_revision != str(current["source_revision"]):
             # Provenance is part of the release identity.  Reusing matching
             # bytes from a different source revision must not make a distinct
             # candidate look already installed or safely resumable.
@@ -110,4 +132,5 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
         cleanup_targets=cleanup,
         steps=("INSTALLATION_LOCK", "INVENTORY_AND_COMPATIBILITY", "EXACT_ARTIFACT",
                "QUIESCE", "BACKUP_AND_MIGRATION", "ACTIVATE", "VERIFY", "CLEANUP"),
+        legacy_adoption=legacy,
     )
