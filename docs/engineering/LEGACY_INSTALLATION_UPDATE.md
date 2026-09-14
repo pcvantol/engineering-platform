@@ -112,7 +112,7 @@ must name that same head before merge consideration.
 - Production-wheel contents: 155 allowlisted members and no runtime
   dependencies.
 - Installed full suite: 1,701 tests passed; 132 measured modules, none below
-  80.20%; aggregate branch-aware coverage 84.61318133646493%.
+  80.20%; aggregate branch-aware coverage 84.61%.
 - `installation_update_activation.py`: 81.69014084507042% branch-aware
   coverage.
 - Installed new-process legacy chain: six tests passed through public
