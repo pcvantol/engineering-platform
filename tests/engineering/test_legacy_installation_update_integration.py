@@ -182,7 +182,8 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
 
         return InstallationUpdateOperationalActions(inventory, quiesce, verify)
 
-    def test_authorized_legacy_baseline_runs_the_real_composition_and_reopens(self) -> None:
+    @patch("engineering_platform.server_service.platform.system", return_value="Darwin")
+    def test_authorized_legacy_baseline_runs_the_real_composition_and_reopens(self, _platform) -> None:  # type: ignore[no-untyped-def]
         with TemporaryDirectory() as temporary:
             root, home, _old_package, plan, candidate, admission, runner = self._prepared(Path(temporary))
             self.assertEqual(admission.schema_version, 3)
@@ -222,7 +223,8 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
                 "state": "COMPLETE", "target": "2.3.35", "legacy_source": None,
             })
 
-    def test_public_maintenance_commands_drive_the_full_legacy_update(self) -> None:
+    @patch("engineering_platform.server_service.platform.system", return_value="Darwin")
+    def test_public_maintenance_commands_drive_the_full_legacy_update(self, _platform) -> None:  # type: ignore[no-untyped-def]
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
             root, home = base / "runtime", base / "home"
@@ -359,7 +361,8 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
             self.assertEqual(installed["source_revision"], target_revision)
             self.assertFalse((root / "operations" / operation_id / "download").exists())
 
-    def test_service_switch_before_record_and_record_before_event_are_both_resumable(self) -> None:
+    @patch("engineering_platform.server_service.platform.system", return_value="Darwin")
+    def test_service_switch_before_record_and_record_before_event_are_both_resumable(self, _platform) -> None:  # type: ignore[no-untyped-def]
         with TemporaryDirectory() as temporary:
             root, home, _old_package, plan, candidate, admission, runner = self._prepared(Path(temporary))
             target = Path(candidate.interpreter)
@@ -395,7 +398,8 @@ class LegacyInstallationUpdateIntegrationTests(unittest.TestCase):
             self.assertEqual(result["state"], "COMPLETE")
             self.assertEqual(writes, 1)
 
-    def test_exact_target_record_before_activated_event_is_acknowledged_without_second_activation(self) -> None:
+    @patch("engineering_platform.server_service.platform.system", return_value="Darwin")
+    def test_exact_target_record_before_activated_event_is_acknowledged_without_second_activation(self, _platform) -> None:  # type: ignore[no-untyped-def]
         with TemporaryDirectory() as temporary:
             root, home, _old_package, plan, candidate, admission, runner = self._prepared(Path(temporary))
             target = Path(candidate.interpreter)
