@@ -47,7 +47,7 @@ from . import external_producer_binding
 from . import file_inbox
 from . import host_admin
 from . import installation_relocation
-from . import installation_update_plan, installation_update_operation
+from . import installation_update_plan, installation_update_operation, legacy_installation_adoption
 from . import operational_installation
 from . import product_installation_readback
 from . import local_repository_binding
@@ -6198,7 +6198,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -6223,6 +6223,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-version")
     parser.add_argument("--target-digest")
     parser.add_argument("--target-source-revision")
+    parser.add_argument("--preserved-wheel", type=Path)
+    parser.add_argument("--acknowledge-unknown-source-revision", action="store_true")
     parser.add_argument("--candidate-interpreter", action="append", type=Path, default=[])
     parser.add_argument("--service-reference", action="append", default=[])
     parser.add_argument("--declared-user-home", action="append", type=Path, default=[])
@@ -6504,6 +6506,34 @@ def main(argv: list[str] | None = None) -> int:
             result = system_server_service.machine_scope_inventory(
                 args.data_root, user_homes=args.declared_user_home,
             )
+        elif args.command in {"legacy-adoption-inspect", "legacy-adoption-authorize"}:
+            if args.preserved_wheel is None:
+                raise ServerConfigurationError("--preserved-wheel is required for legacy adoption")
+            # The maintenance entry deliberately uses the existing user-service
+            # resolver.  It neither starts the service nor re-labels it as a
+            # system service; unsupported topologies fail closed here.
+            selected = server_service.configured_interpreter(args.data_root)
+            if selected is None:
+                raise ServerConfigurationError("the existing EP user service is unavailable")
+            installation = operational_installation.resolve(args.data_root, interpreter=selected)
+            observed = legacy_installation_adoption.inspect(
+                installation=installation, service_label=server_service.LABEL,
+                service_interpreter=selected, preserved_wheel=args.preserved_wheel,
+            )
+            if args.command == "legacy-adoption-inspect":
+                result = observed.payload()
+            else:
+                if not all((args.operation_id, args.target_version, args.target_digest, args.target_source_revision)):
+                    raise ServerConfigurationError("--operation-id, --target-version, --target-digest and --target-source-revision are required for legacy adoption")
+                authorization = legacy_installation_adoption.LegacyAdoptionAuthorization(
+                    instance_id=observed.instance_id, data_root=observed.data_root,
+                    service_label=observed.service_label, interpreter=observed.interpreter,
+                    old_artifact_digest=observed.artifact_digest, target_version=args.target_version,
+                    target_artifact_digest=args.target_digest, target_source_revision=args.target_source_revision,
+                    operation_id=args.operation_id,
+                    acknowledge_unknown_source_revision=args.acknowledge_unknown_source_revision,
+                )
+                result = legacy_installation_adoption.adopt(observation=observed, authorization=authorization)
         elif args.command == "installation-update-plan":
             if not all((args.operation_id, args.artifact, args.target_version, args.target_digest, args.target_source_revision)):
                 raise ServerConfigurationError("--operation-id, --artifact, --target-version, --target-digest and --target-source-revision are required")
