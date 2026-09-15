@@ -17,7 +17,7 @@ import socket
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import call, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -548,6 +548,16 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             ) as execute_update, redirect_stdout(io.StringIO()):
                 self.assertEqual(server.main((command, "--data-root", str(self.root), "--operation-id", "update-0001")), 0)
                 execute_update.assert_called_once()
+
+    def test_update_prepare_requires_an_explicit_python314_builder(self) -> None:
+        artifact = Path(self.temporary.name) / "exact.whl"; artifact.write_bytes(b"wheel")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(server.main((
+                "installation-update-prepare", "--data-root", str(self.root),
+                "--operation-id", "update-0001", "--artifact", str(artifact),
+                "--target-version", "2.3.2", "--target-digest", "sha256:" + "a" * 64,
+                "--target-source-revision", "b" * 40,
+            )), 2)
 
     def test_public_update_operational_actions_inventory_quiesce_and_verify_exact_runtime(self) -> None:
         selected = Path(self.temporary.name) / "selected-python"; selected.write_text("#!\n"); selected.chmod(0o700)

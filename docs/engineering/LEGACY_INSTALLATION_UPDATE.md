@@ -42,7 +42,7 @@ engineering-platform-server installation-update-plan \
 engineering-platform-server installation-update-prepare \
   --data-root ROOT --operation-id OPERATION --artifact TARGET_WHEEL \
   --target-version VERSION --target-digest sha256:DIGEST \
-  --target-source-revision 40_HEX [--venv-builder PYTHON]
+  --target-source-revision 40_HEX --venv-builder ABSOLUTE_PYTHON_3_14
 
 engineering-platform-server installation-update-admit \
   --data-root ROOT --operation-id OPERATION
@@ -56,6 +56,12 @@ engineering-platform-server installation-update-resume \
 engineering-platform-server installation-update-status \
   --data-root ROOT --operation-id OPERATION
 ```
+
+The prepare boundary accepts only an absolute Python 3.14 launcher.  It proves
+the selected builder's major/minor version before creating any operation-owned
+state, then proves the newly created candidate launcher again before wheel
+installation.  An invoking server runtime, `PATH`, or a nearby Python 3.11/3.12
+launcher can therefore never select the update candidate implicitly.
 
 `prepare` stages the exact wheel below the operation root, creates and verifies
 the non-operational candidate, and durably binds candidate plus legacy
