@@ -99,3 +99,52 @@ class GitHubDraftReleaseHelperTests(unittest.TestCase):
         self.assertIn("target_commitish=" + SOURCE_SHA, arguments)
         self.assertIn("name=" + TITLE, arguments)
         self.assertIn("draft=true", arguments)
+
+    def test_upload_uses_the_github_uploads_endpoint_with_encoded_asset_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_curl = root / "curl"
+            invocation = root / "invocation.json"
+            receipt = root / "receipt.json"
+            receipt.write_text("receipt", encoding="utf-8")
+            fake_curl.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import os
+                    import sys
+                    from pathlib import Path
+
+                    Path(os.environ["INVOCATION"]).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o700)
+            result = subprocess.run(
+                ["bash", "-c", f"source '{HELPER}'; ep_draft_upload 389 '{receipt}' 'qualified receipt.json'"],
+                env={
+                    **os.environ,
+                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                    "GITHUB_REPOSITORY": "example/repository",
+                    "GH_TOKEN": "test-token",
+                    "INVOCATION": str(invocation),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            arguments = json.loads(invocation.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--request", arguments)
+        self.assertIn("POST", arguments)
+        self.assertIn("Authorization: Bearer test-token", arguments)
+        self.assertIn("--data-binary", arguments)
+        self.assertIn("@" + str(receipt), arguments)
+        self.assertIn(
+            "https://uploads.github.com/repos/example/repository/releases/389/assets?name=qualified%20receipt.json",
+            arguments,
+        )

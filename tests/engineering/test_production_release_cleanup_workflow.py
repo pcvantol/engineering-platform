@@ -192,6 +192,29 @@ def _write_fake_commands(directory: Path) -> None:
         encoding="utf-8",
     )
     gh.chmod(0o700)
+    curl = directory / "curl"
+    curl.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import os
+            from pathlib import Path
+            import shutil
+            import sys
+            from urllib.parse import parse_qs, urlparse
+
+            arguments = sys.argv[1:]
+            source = Path(next(value[1:] for value in arguments if value.startswith("@")))
+            asset_name = parse_qs(urlparse(arguments[-1]).query)["name"][0]
+            assets = Path(os.environ["FAKE_GH_ASSET_DIR"])
+            shutil.copy2(source, assets / asset_name)
+            log = Path(os.environ["FAKE_GH_LOG"])
+            log.write_text(log.read_text(encoding="utf-8") + f"upload {asset_name}\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    curl.chmod(0o700)
     rm = directory / "rm"
     rm.write_text(
         textwrap.dedent(
@@ -238,6 +261,7 @@ class ProductionReleaseCleanupWorkflowTests(unittest.TestCase):
             "VERSION": VERSION,
             "SOURCE_SHA": SOURCE_SHA,
             "GITHUB_REPOSITORY": "example/repository",
+            "GH_TOKEN": "fake-token",
             "FAKE_GH_ASSET_DIR": str(assets),
             "FAKE_GH_LOG": str(log),
             "FAKE_GH_DRAFT_FILE": str(draft),
