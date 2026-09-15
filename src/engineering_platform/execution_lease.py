@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import socket
 from threading import Event, Thread
+from time import sleep
 import uuid
 
 from .storage import EngineeringStorageError, open_storage
@@ -17,6 +18,7 @@ from .provider_process_identity import ProcessIdentity, verify_process_identity
 LEASE_VERSION = 1
 HEARTBEAT_INTERVAL_SECONDS = 15
 LEASE_TIMEOUT_SECONDS = 90
+_TRANSIENT_HEARTBEAT_DELAYS = (0.02,)
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
@@ -35,6 +37,15 @@ def _connection(root: Path, central_database: Path | None = None) -> sqlite3.Con
 
 class LeaseConflictError(EngineeringStorageError):
     """Raised when another non-expired host instance owns the run."""
+
+
+class LeaseHeartbeatError(EngineeringStorageError):
+    """Retain the failed renewal operation and its original safe cause."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__("active-run lease heartbeat renewal failed")
+        self.operation = "lease_heartbeat"
+        self.__cause__ = error
 
 
 @dataclass(frozen=True)
@@ -123,7 +134,7 @@ class LeaseHeartbeat:
             try:
                 self.lease = heartbeat(self.root, self.lease, central_database=self.central_database)
             except Exception as error:  # The expiry boundary remains fail-closed.
-                self.error = error
+                self.error = LeaseHeartbeatError(error)
                 return
 
     def stop(self) -> Lease:
@@ -164,16 +175,51 @@ def acquire(root: Path, run_id: str, *, identity: str, instance_id: str, process
 
 
 def heartbeat(root: Path, lease: Lease, *, timeout_seconds: int = LEASE_TIMEOUT_SECONDS, central_database: Path | None = None) -> Lease:
-    now = _now()
-    expiry = now + timedelta(seconds=timeout_seconds)
-    connection = _connection(root, central_database)
-    try:
-        updated = connection.execute("UPDATE execution_run_leases SET last_heartbeat_at=?,expires_at=?,updated_at=? WHERE lease_id=? AND run_id=? AND host_instance_id=? AND lease_state='ACTIVE'", (now.isoformat(), expiry.isoformat(), now.isoformat(), lease.lease_id, lease.run_id, lease.host_instance_id)).rowcount
-        if updated != 1:
-            raise LeaseConflictError("Execution Host no longer owns the active-run lease.")
-    finally:
-        connection.close()
-    return Lease(lease.lease_id, lease.run_id, lease.host_identity, lease.host_instance_id, lease.acquired_at, now.isoformat(), expiry.isoformat(), "ACTIVE")
+    """Renew only the still-valid, same-owner lease with one transient I/O retry."""
+    original_error: sqlite3.OperationalError | None = None
+    for delay in (0.0, *_TRANSIENT_HEARTBEAT_DELAYS):
+        connection: sqlite3.Connection | None = None
+        try:
+            if delay:
+                sleep(delay)
+            connection = _connection(root, central_database)
+            # Acquiring the writer lock may wait.  Measure the authority time
+            # only after that wait, otherwise an expired lease could be
+            # renewed using a timestamp from before the lock was available.
+            connection.execute("BEGIN IMMEDIATE")
+            now = _now()
+            expiry = now + timedelta(seconds=timeout_seconds)
+            updated = connection.execute(
+                "UPDATE execution_run_leases SET last_heartbeat_at=?,expires_at=?,updated_at=? "
+                "WHERE lease_id=? AND run_id=? AND host_instance_id=? AND lease_state='ACTIVE' AND expires_at>=?",
+                (now.isoformat(), expiry.isoformat(), now.isoformat(), lease.lease_id, lease.run_id,
+                 lease.host_instance_id, now.isoformat()),
+            ).rowcount
+            if updated != 1:
+                raise LeaseConflictError("Execution Host no longer owns the active-run lease.")
+            connection.execute("COMMIT")
+            return Lease(lease.lease_id, lease.run_id, lease.host_identity, lease.host_instance_id,
+                         lease.acquired_at, now.isoformat(), expiry.isoformat(), "ACTIVE")
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                try:
+                    connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            original_error = original_error or error
+            if delay == _TRANSIENT_HEARTBEAT_DELAYS[-1] or "disk i/o" not in str(error).casefold():
+                raise original_error
+        except Exception:
+            if connection is not None:
+                try:
+                    connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+    raise AssertionError("transient heartbeat retry loop did not return or raise")
 
 
 def release(root: Path, lease: Lease, *, central_database: Path | None = None) -> None:
