@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -49,6 +50,31 @@ class InstallationUpdateExecutorTests(unittest.TestCase):
             self.assertEqual(result["state"], "COMPLETE")
             self.assertEqual(calls, ["inventory", "quiesce", "backup", "migrate", "activate", "verify"])
             self.assertTrue(all(not Path(target).exists() for target in plan.cleanup_targets))
+            self.assertEqual(load(Path(temporary))["observed_state"], "ACTIVE")
+            self.assertEqual(load(Path(temporary))["verification"], {"result": "PASS"})
+            self.assertEqual(load(Path(temporary))["cleanup"], {"result": "COMPLETE"})
+
+    def test_completed_operation_reconciles_a_stale_pending_lifecycle_record(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = self._plan(root)
+            execute(plan, self._actions(plan, []))
+            completed = load(root)
+            stale = {
+                **completed,
+                "observed_state": "ACTIVATING",
+                "verification": {"result": "PENDING"},
+                "cleanup": {"result": "PENDING"},
+            }
+            (root / "operational-installation.json").write_text(
+                json.dumps(stale), encoding="utf-8",
+            )
+            calls: list[str] = []
+            self.assertEqual(execute(plan, self._actions(plan, calls))["state"], "COMPLETE")
+            self.assertEqual(calls, [])
+            self.assertEqual(load(root)["observed_state"], "ACTIVE")
+            self.assertEqual(load(root)["verification"], {"result": "PASS"})
+            self.assertEqual(load(root)["cleanup"], {"result": "COMPLETE"})
 
     def test_resume_skips_durable_pre_activation_steps(self) -> None:
         with TemporaryDirectory() as temporary:
