@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 from engineering_platform.operational_installation_record import (
  OperationalInstallationRecordError, OperationalInstallationRecordNotFound, load, record,
+ replace_update_lifecycle,
 )
 
 class OperationalInstallationRecordTests(unittest.TestCase):
@@ -48,3 +49,16 @@ class OperationalInstallationRecordTests(unittest.TestCase):
     with self.assertRaisesRegex(OperationalInstallationRecordError,"unreadable"):
      record(root,**data)
    self.assertEqual((root/"operational-installation.json").read_text(encoding="utf-8"),"{corrupt")
+
+ def test_update_lifecycle_replacement_preserves_identity_and_finalizes_only_allowed_facts(self):
+  with TemporaryDirectory() as temporary:
+   root=Path(temporary)/"data"; executable=Path(temporary)/"python"; executable.write_text(""); executable.chmod(0o755)
+   original=record(root,installation_id="instance",version="2.3.1",channel="stable",artifact_digest="sha256:"+"a"*64,source_revision="b"*40,interpreter=executable,roles={"server":"com.engineeringplatform.server"},desired_state="ACTIVE",observed_state="ACTIVATING",verification={"result":"PENDING"},cleanup={"result":"PENDING"})
+   finalized=replace_update_lifecycle(root,expected_version="2.3.1",expected_artifact_digest="sha256:"+"a"*64,expected_source_revision="b"*40,replacement={**original,"observed_state":"ACTIVE","verification":{"result":"PASS"},"cleanup":{"result":"COMPLETE"}})
+   self.assertEqual(finalized["cleanup"],{"result":"COMPLETE"})
+   self.assertEqual(load(root),finalized)
+   self.assertEqual(replace_update_lifecycle(root,expected_version="2.3.1",expected_artifact_digest="sha256:"+"a"*64,expected_source_revision="b"*40,replacement=finalized),finalized)
+   with self.assertRaisesRegex(OperationalInstallationRecordError,"identity"):
+    replace_update_lifecycle(root,expected_version="2.3.1",expected_artifact_digest="sha256:"+"a"*64,expected_source_revision="b"*40,replacement={**finalized,"channel":"other"})
+   with self.assertRaisesRegex(OperationalInstallationRecordError,"invalid"):
+    replace_update_lifecycle(root,expected_version="2.3.1",expected_artifact_digest="sha256:"+"a"*64,expected_source_revision="b"*40,replacement={**finalized,"verification":{"result":"PENDING"}})

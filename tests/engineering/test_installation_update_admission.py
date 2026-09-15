@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from engineering_platform import server_service
+from engineering_platform import installation_update_admission, server_service
 from engineering_platform.installation_update_admission import (
     ExecutionAdmission,
     InstallationUpdateAdmissionError,
@@ -71,6 +71,22 @@ class CandidateRunner:
 
 
 class InstallationUpdateAdmissionTests(unittest.TestCase):
+    def test_finalized_replacement_requires_exact_identity_and_final_lifecycle(self) -> None:
+        expected = {
+            "installation_id": "instance", "version": "2.3.58",
+            "observed_state": "ACTIVATING", "verification": {"result": "PENDING"},
+            "cleanup": {"result": "PENDING"},
+        }
+        self.assertTrue(installation_update_admission._finalized_replacement(
+            {**expected, "observed_state": "ACTIVE", "verification": {"result": "PASS"}, "cleanup": {"result": "COMPLETE"}},
+            expected,
+        ))
+        self.assertFalse(installation_update_admission._finalized_replacement(
+            {**expected, "installation_id": "other", "observed_state": "ACTIVE", "verification": {"result": "PASS"}, "cleanup": {"result": "COMPLETE"}},
+            expected,
+        ))
+        self.assertFalse(installation_update_admission._finalized_replacement(expected, expected))
+
     def _prepared(self, base: Path):
         root = base / "EP data root with spaces"
         current = root / "current" / "bin" / "python"
