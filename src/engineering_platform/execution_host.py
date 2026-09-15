@@ -1917,14 +1917,45 @@ class EngineeringRunner:
             validation = replace(validation, local_validation_iterations=iteration)
             self.store.save(validation)
             write_live_status(self.root, validation, validation.next_action)
+            try:
+                validation_context = load_validation_context(
+                    self.root, validation.run_id,
+                    currentness=validation.repair_iterations,
+                    central_database=self.store.central_database,
+                )
+            except EngineeringStorageError:
+                validation_context = None
+            if (
+                validation_context is not None
+                and isinstance(validation_context.get("controls"), dict)
+                and validation_context["controls"]
+                and not _required_validation_controls_pass(validation, validation_context)
+            ):
+                # The deterministic host receipts are the only authority for
+                # required controls.  Do not send a provider into a second,
+                # differently sandboxed execution merely to rediscover a
+                # failed (or unavailable) canonical command.
+                failed = AgentResult(
+                    "FAILED", branch=branch,
+                    diagnostic="A required host-owned validation control did not pass.",
+                )
+                validation = self._record_local_validation_audit(
+                    validation, result=failed, outcome="validation_failed", profile=profile,
+                )
+                return validation, failed
+            host_evidence = self._validation_assessment_evidence(validation_context)
             instruction = f"""
 
-Local repository validation gate — read-only measurement:
+Local repository validation gate — read-only assessment:
 - Stay on exactly `{branch}`. Do not merge or change scope.
-- Diff-derived validation profile: `{profile.tier}`. Required evidence: {"; ".join(profile.commands)}. If the diff is unavailable or scope becomes mixed, use the full required suite.
+- The host has already selected and executed the canonical required controls through its private validation scratch. Their candidate-bound command receipts below are authoritative.
+- Do not execute tests, scripts, package managers, Python, SQLite, tempfile probes, or any other validation command. Do not substitute, repeat, reinterpret, or create validation evidence. Set `validation_evidence` to `[]`.
+- Assess only whether the supplied host evidence is internally usable for this unchanged candidate. Return `COMPLETE` when it is; otherwise return `WAITING` or `FAILED` with a concise safe diagnostic.
 - Do not modify files, index, branch, commits, remotes, pull requests, or external state. The host enforces a read-only provider sandbox.
-- Execute and report the required controls with concrete validation evidence. Return `COMPLETE` only when they pass; otherwise return `WAITING` or `FAILED` with a concise safe diagnostic.
 - Do not create a pull request. First publication is a later host-owned gate after both mandatory reviews pass.
+
+Host-owned validation evidence (candidate-bound, command-terminal receipts):
+{json.dumps(host_evidence, sort_keys=True)}
 """
             try:
                 result = self._invoke_agent_with_timing(
@@ -1934,7 +1965,9 @@ Local repository validation gate — read-only measurement:
                     attempt=iteration,
                 )
                 validation = self._record_agent_execution_time(validation)
-                validation = self._record_validation_evidence(validation, result)
+                # Provider prose is assessment-only.  It can neither create
+                # nor amend host-owned required-control evidence.
+                result = replace(result, validation_evidence=())
                 validation = self._record_verified_result_commit(
                     validation,
                     result,
@@ -1943,14 +1976,8 @@ Local repository validation gate — read-only measurement:
                 )
                 self._persist_agent_usage(validation.run_id)
                 try:
-                    validation_context = load_validation_context(
-                        self.root, validation.run_id,
-                        currentness=validation.repair_iterations,
-                        central_database=self.store.central_database,
-                    )
                     after_validation = self.repository.inspect(self.root)
-                except (EngineeringStorageError, RunnerError):
-                    validation_context = None
+                except RunnerError:
                     after_validation = None
             except ProviderReadinessBlocked as blocked:
                 return blocked.state, implementation
@@ -1982,8 +2009,6 @@ Local repository validation gate — read-only measurement:
             )
             if (
                 result.terminal_state == "COMPLETE"
-                and result.validation_evidence
-                and not self._has_failed_validation_evidence(result)
                 and candidate_unchanged
                 and _required_validation_controls_pass(validation, validation_context)
             ):
@@ -1992,37 +2017,38 @@ Local repository validation gate — read-only measurement:
                     result, branch=branch, pull_request=None,
                     validation_evidence=implementation.validation_evidence + result.validation_evidence,
                 )
-            if result.terminal_state == "COMPLETE" and not self._has_failed_validation_evidence(result):
-                controls = validation_context.get("controls", {}) if isinstance(validation_context, dict) else {}
-                required = validation_context.get("required_validation_controls", ()) if isinstance(validation_context, dict) else ()
-                has_current_failure = any(
-                    isinstance(controls.get(control), dict)
-                    and controls[control].get("currentness") == validation.repair_iterations
-                    and controls[control].get("result") == "FAIL"
-                    for control in required
-                )
-                if not has_current_failure:
-                    validation = self._record_local_validation_audit(
-                        validation, result=result, outcome="agent_failed", profile=profile,
-                    )
-                    return self._save_terminal(
-                        validation, "BLOCKED", "required_validation_unresolved",
-                        "Local validation did not produce current successful terminal evidence for every required control.",
-                    ), implementation
             validation = self._record_local_validation_audit(validation, result=result, outcome="validation_failed", profile=profile)
-            if self._is_environmental_validation_instability(result):
-                return self._save_terminal(
-                    validation,
-                    "BLOCKED",
-                    "validation_infrastructure_recovery_required",
-                    "Required local validation is unstable: a failed required suite and a passing isolated rerun were recorded without an implementation correction. Preserve this run and create a separate validation-infrastructure recovery item.",
-                ), implementation
             if result.terminal_state == "COMPLETE":
                 result = replace(
                     result, terminal_state="FAILED",
                     diagnostic="A required current validation control did not pass.",
                 )
         return validation, result
+
+    @staticmethod
+    def _validation_assessment_evidence(context: object) -> dict[str, object]:
+        """Project only immutable host receipts for a read-only assessment."""
+        if not isinstance(context, dict):
+            return {"status": "UNAVAILABLE"}
+        controls = context.get("controls")
+        required = context.get("required_validation_controls")
+        if not isinstance(controls, dict) or not isinstance(required, tuple):
+            return {"status": "UNAVAILABLE"}
+        return {
+            "candidate_sha": context.get("candidate_sha"),
+            "profile_digest": context.get("profile_digest"),
+            "currentness": context.get("currentness"),
+            "controls": [
+                {
+                    "validation_id": control_id,
+                    "control_identity": controls.get(control_id, {}).get("control_identity") if isinstance(controls.get(control_id), dict) else None,
+                    "command_id": controls.get(control_id, {}).get("command_id") if isinstance(controls.get(control_id), dict) else None,
+                    "exit_code": controls.get(control_id, {}).get("exit_code") if isinstance(controls.get(control_id), dict) else None,
+                    "result": controls.get(control_id, {}).get("result") if isinstance(controls.get(control_id), dict) else None,
+                }
+                for control_id in required
+            ],
+        }
 
     def _run_quality_assurance(
         self, state: TransactionState, implementation: AgentResult, *, assurance_root: Path | None = None,

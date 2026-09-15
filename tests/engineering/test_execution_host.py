@@ -176,6 +176,11 @@ class FakeAgent:
     def _emit_required_validation_receipts(self, prompt: str, result: AgentResult) -> None:
         if "Local repository validation gate" not in prompt or not callable(self.command_callback):
             return
+        # Required controls are now executed by the deterministic host before
+        # this read-only assessment.  A provider turn must not manufacture a
+        # second set of command receipts for them.
+        if "Host-owned validation evidence" in prompt:
+            return
         failed = result.terminal_state != "COMPLETE" or EngineeringRunner._has_failed_validation_evidence(result)
         for ordinal, command in enumerate(("git diff --check", "python3 -m unittest discover"), start=1):
             command_id = f"fake-validation-{len(self.prompts)}-{ordinal}"
@@ -2864,7 +2869,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         assert context is not None
         self.assertEqual(context["controls"]["git_diff_check"]["result"], "PASS")
         self.assertEqual(context["controls"]["repository_suite"]["result"], "PASS")
-        self.assertIn("provider_observed_validation_format_or_diff", context["controls"])
+        self.assertNotIn("provider_observed_validation_format_or_diff", context["controls"])
 
     def test_fourth_shared_repair_dispatch_is_refused_before_provider_invocation(self) -> None:
         agent = FakeAgent(AgentResult("COMPLETE"))
@@ -2967,7 +2972,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
             PullRequestEvidence(701, "OPEN", True, True, head_branch="codex/implementation", base_branch="main"),
         ])
 
-        state = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None).run(
+        runner = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None)
+        runner.validation_executor = SimpleNamespace(
+            run=lambda _root, _command: DeterministicValidationResult(
+                exit_code=0, stdout="", stderr="", diagnostic_capture_available=True,
+            )
+        )
+        state = runner.run(
             self.prompt, run_id="failed-implementation-routes-locally", owner_authorized=True
         )
 
@@ -3020,7 +3031,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(len(blocked.local_validation_audit), 1)
         self.assertEqual({item["outcome"] for item in blocked.local_validation_audit}, {"validation_failed"})
 
-    def test_local_repository_validation_separates_proven_environment_instability(self) -> None:
+    def test_local_repository_validation_does_not_infer_environment_instability_from_provider_prose(self) -> None:
         agent = SequencedFakeAgent([
             AgentResult(
                 "WAITING", "codex/implementation",
@@ -3043,10 +3054,54 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
 
         self.assertEqual(result.pull_request, None)
-        self.assertEqual(blocked.phase, "BLOCKED")
-        self.assertEqual(blocked.next_action, "validation_infrastructure_recovery_required")
+        self.assertEqual(blocked.phase, "LOCAL_REPOSITORY_VALIDATION")
+        self.assertNotEqual(blocked.next_action, "validation_infrastructure_recovery_required")
         self.assertEqual(blocked.local_validation_iterations, 1)
-        self.assertIn("separate validation-infrastructure recovery item", blocked.diagnostic)
+        self.assertEqual(blocked.local_validation_audit[0]["outcome"], "validation_failed")
+
+    def test_local_validation_provider_assesses_host_receipts_without_creating_controls(self) -> None:
+        run_id = "host-receipt-assessment"
+        profile = execution_host.classify(())
+        bindings = execution_host.profile_control_bindings(profile, repository_root=self.root)
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier=profile.tier,
+            validation_profile_version=execution_host.VALIDATION_PROFILE_VERSION,
+            required_validation_controls=profile.required_controls,
+            candidate_sha="a" * 40, currentness=0,
+            recorded_at="2026-09-15T12:00:00+00:00", control_bindings=bindings,
+            profile_reference=f"validation-profile-registry:{profile.tier}@{execution_host.VALIDATION_PROFILE_VERSION}",
+            profile_selection_source="diff_classification",
+        )
+        for ordinal, binding in enumerate(bindings, start=1):
+            command_id = f"{run_id}-{ordinal}"
+            record_validation_command_invocation(
+                self.root, run_id=run_id, validation_id=str(binding["validation_id"]),
+                command_id=command_id, category=str(binding["category"]),
+                control_identity=str(binding["control_identity"]), required_for_profile=True,
+                started_at="2026-09-15T12:00:00+00:00", currentness=0,
+            )
+            record_validation_command_terminal(
+                self.root, run_id=run_id, command_id=command_id,
+                completed_at="2026-09-15T12:00:01+00:00", exit_code=0,
+            )
+        agent = FakeAgent(AgentResult(
+            "COMPLETE", "codex/implementation",
+            validation_evidence=({"command": "python3 -m unittest discover", "result": "passed"},),
+        ))
+        repository = FakeRepository(branch="codex/implementation")
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="codex/implementation", owner_authorized=True)
+        with patch.object(runner, "_execute_required_validation_controls", side_effect=lambda current: current):
+            validated, result = runner._run_local_repository_validation(
+                state, AgentResult("COMPLETE", "codex/implementation")
+            )
+        context = load_validation_context(self.root, run_id, currentness=0)
+        assert context is not None
+        self.assertEqual(validated.local_validation_audit[-1]["outcome"], "validated")
+        self.assertEqual(result.validation_evidence, ())
+        self.assertIn("Host-owned validation evidence", agent.prompts[-1])
+        self.assertIn("Do not execute tests", agent.prompts[-1])
+        self.assertEqual(set(context["controls"]), {"git_diff_check", "repository_suite"})
 
     def test_runtime_failure_replaces_a_stale_operator_merge_terminal_condition(self) -> None:
         class UsageLimitedAgent:
