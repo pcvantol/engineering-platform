@@ -39,6 +39,21 @@ def _successful_reviewer_agents(value: object) -> list[dict[str, object]]:
     return reviewers if all(item.get("status") == "completed" for item in reviewers) else []
 
 
+def _run_workspace_preflight(root: Path, run_id: object) -> dict[str, object]:
+    """Return workspace-preflight evidence only when it belongs to this run.
+
+    The dashboard may retain the most recent workspace preflight for technical
+    diagnostics, but the active-run card must never borrow a branch result
+    from another run.
+    """
+    if not isinstance(run_id, str) or not run_id:
+        return {}
+    preflight = latest_workspace_preflight(root)
+    if not isinstance(preflight, dict) or preflight.get("run_id") != run_id:
+        return {}
+    return preflight
+
+
 def _active_runner_checkpoint(root: Path) -> tuple[dict[str, object], dict[str, object]] | None:
     """Return a current checkpoint only while its recorded runner group exists.
 
@@ -349,6 +364,7 @@ def status(root: Path) -> bytes:
     try:
         if live is None:
             raise ValueError("No canonical live status")
+        run_workspace_preflight = _run_workspace_preflight(root, live.get("run_id"))
         live_liveness = lease_liveness(root, live.get("run_id"))
         if runner_liveness is not None and runner_liveness.get("state") == "LIVE":
             live_liveness = {**live_liveness, **runner_liveness}
@@ -392,8 +408,15 @@ def status(root: Path) -> bytes:
                 "predecessor_recovery_action": watcher.get("predecessor_recovery_action"),
                 "execution_mode": live.get("execution_mode"),
                 "target_repository": live.get("target_repository"),
+                "github_repository": live.get("github_repository"),
                 "checkout_path": live.get("checkout_path"),
+                # This is the observed branch from the preflight owned by the
+                # displayed run; active_branch remains the current checkout.
+                "target_branch": run_workspace_preflight.get("branch"),
                 "active_branch": live.get("active_branch"),
+                "candidate_sha": live.get("candidate_sha"),
+                "repair_iteration": live.get("repair_iteration"),
+                "workspace_preflight": run_workspace_preflight,
                 # Only a wholly successful specialist review survives its
                 # live phase as historical evidence for this active run. A
                 # partial, failed or stale reviewer projection remains hidden.

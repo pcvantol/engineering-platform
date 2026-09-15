@@ -62,6 +62,7 @@ from engineering_platform.execution_host import (
     write_codex_usage,
     write_live_status,
 )
+from engineering_platform.live_status import _github_repository
 from engineering_platform.platform_version import (
     EngineeringPlatformCompatibilityError,
     EngineeringPlatformManifest,
@@ -3738,6 +3739,18 @@ class LocalAgentRunnerTest(unittest.TestCase):
         write_live_status(self.root, finalization, "create_finalization")
         historical = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
         self.assertEqual(historical["reviewer_agents"], completed)
+
+    @patch("engineering_platform.live_status.GitProvider")
+    def test_live_status_uses_only_a_valid_host_observed_github_remote_for_pr_links(self, provider: object) -> None:
+        provider.return_value.execute.return_value = SimpleNamespace(
+            returncode=0, stdout="git@github.com:pcvantol/forge.git\n",
+        )
+        self.assertEqual(_github_repository(self.root), "pcvantol/forge")
+
+        provider.return_value.execute.return_value = SimpleNamespace(
+            returncode=0, stdout="https://example.invalid/pcvantol/forge.git\n",
+        )
+        self.assertIsNone(_github_repository(self.root))
 
     def test_live_action_name_is_filesystem_only_and_clears_when_terminal(self) -> None:
         state = TransactionState("live-action", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
