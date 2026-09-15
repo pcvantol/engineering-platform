@@ -259,11 +259,16 @@ class StrictValidationContractTest(unittest.TestCase):
         self.assertIsNone(_validation_profile_digest({
             "profile_digest": "invalid", "candidate_sha": CANDIDATE, "currentness": 1,
         }))
-        self.assertFalse(_required_validation_controls_pass(state, None))
+        self.assertFalse(_required_validation_controls_pass(state, None, expected_candidate_sha=CANDIDATE))
         missing_candidate = deepcopy(context)
         missing_candidate["candidate_sha"] = None
         self.assertFalse(_required_validation_controls_pass(
-            replace(state, assurance_profile=None), missing_candidate,
+            replace(state, assurance_profile=None), missing_candidate, expected_candidate_sha=CANDIDATE,
+        ))
+        # The host's independently inspected candidate is authoritative;
+        # internally consistent receipts for A cannot qualify B.
+        self.assertFalse(_required_validation_controls_pass(
+            state, context, expected_candidate_sha="b" * 40,
         ))
         self.assertFalse(_has_current_local_validation_evidence(
             replace(state, local_validation_audit=()), context,

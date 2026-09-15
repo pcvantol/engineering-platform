@@ -309,23 +309,29 @@ class TransactionState:
             raise StateError("checkpoint local validation audit is invalid or unsafe")
         repair_audit_fields = audit_fields | {"repair_id", "origin", "input_candidate_sha", "dispatch_id"}
         repair_delivery_scope_fields = repair_audit_fields | {"pre_repair_pull_request"}
+        repair_delivery_authority_fields = repair_delivery_scope_fields | {"repair_branch", "repair_base", "first_pr_authorized"}
         if (
             not isinstance(state.repair_audit, tuple)
             or len(state.repair_audit) > 3
             or any(
-                not isinstance(item, dict) or set(item) not in (audit_fields, repair_audit_fields, repair_delivery_scope_fields)
+                not isinstance(item, dict) or set(item) not in (audit_fields, repair_audit_fields, repair_delivery_scope_fields, repair_delivery_authority_fields)
                 or not all(isinstance(value, str) and value and len(value) <= MAX_DIAGNOSTIC_LENGTH and value == redact_diagnostic(value) for value in item.values())
                 or not item["iteration"].isdigit() or int(item["iteration"]) < 1
                 or item["outcome"] not in {"planned", "submitted_for_recheck", "agent_failed", "agent_timed_out"}
                 or (item["commit_sha"] != "not_recorded" and not re.fullmatch(r"[0-9a-f]{40}", item["commit_sha"]))
-                or (set(item) in (repair_audit_fields, repair_delivery_scope_fields) and (
+                or (set(item) in (repair_audit_fields, repair_delivery_scope_fields, repair_delivery_authority_fields) and (
                     not re.fullmatch(r"repair:[A-Za-z0-9_.:-]+:[1-3]", item["repair_id"])
                     or item["origin"] not in {"validation", "quality", "security", "hosted", "finalization"}
                     or (item["input_candidate_sha"] != "not_recorded" and not re.fullmatch(r"[0-9a-f]{40}", item["input_candidate_sha"]))
                 ))
-                or (set(item) == repair_delivery_scope_fields and (
+                or (set(item) in (repair_delivery_scope_fields, repair_delivery_authority_fields) and (
                     item["pre_repair_pull_request"] != "none"
                     and not (item["pre_repair_pull_request"].isdigit() and int(item["pre_repair_pull_request"]) >= 1)
+                ))
+                or (set(item) == repair_delivery_authority_fields and (
+                    (item["pre_repair_pull_request"] != "none" and item["first_pr_authorized"] != "no")
+                    or (item["pre_repair_pull_request"] == "none" and item["first_pr_authorized"] not in {"yes", "no"})
+                    or item["repair_branch"] == "none" or item["repair_base"] != "main"
                 ))
                 for item in state.repair_audit
             )
