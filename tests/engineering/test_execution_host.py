@@ -3189,6 +3189,66 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(observed, ["Codex plant de volgende stap", "Codex voert een opdracht uit"])
         self.assertNotIn("secret", " ".join(observed))
 
+    def test_codex_client_stops_its_owned_process_group_when_activity_callback_fails(self) -> None:
+        class Provider:
+            process: subprocess.Popen[str] | None = None
+
+            def spawn_invocation(self, *_: object, **__: object) -> subprocess.Popen[str]:
+                self.process = subprocess.Popen(
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys,time; print('{\"type\":\"item.started\",\"item\":{\"type\":\"reasoning\"}}'); sys.stdout.flush(); time.sleep(60)",
+                    ),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                return self.process
+
+        provider = Provider()
+        boundaries: list[dict[str, int] | None] = []
+        client = CodexCliClient(provider=provider)  # type: ignore[arg-type]
+        client.set_process_callback(boundaries.append)
+        client.set_activity_callback(lambda _: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")))
+
+        with self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O error"):
+            client._run_invocation(("codex", "exec", "--json"), self.root)
+
+        self.assertIsNotNone(provider.process)
+        self.assertIsNotNone(provider.process.poll())
+        self.assertTrue(client.provider_process_cleanup_confirmed())
+        self.assertEqual(len(boundaries), 2)
+        self.assertIsNone(boundaries[-1])
+
+    @patch("engineering_platform.execution_executor.os.getpgid", return_value=4321)
+    @patch("engineering_platform.execution_executor.os.killpg")
+    def test_codex_client_preserves_process_boundary_when_stop_is_unconfirmed(self, _: object, __: object) -> None:
+        class Process:
+            pid = 1234
+            stdout = iter((
+                '{"type":"item.started","item":{"type":"reasoning"}}\n',
+            ))
+
+            def wait(self, timeout: float | None = None) -> int:
+                raise subprocess.TimeoutExpired("codex", timeout)
+
+        class Provider:
+            def spawn_invocation(self, *_: object, **__: object) -> Process:
+                return Process()
+
+        boundaries: list[dict[str, int] | None] = []
+        client = CodexCliClient(provider=Provider())  # type: ignore[arg-type]
+        client.set_process_callback(boundaries.append)
+        client.set_activity_callback(lambda _: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")))
+
+        with self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O error"):
+            client._run_invocation(("codex", "exec", "--json"), self.root)
+
+        self.assertFalse(client.provider_process_cleanup_confirmed())
+        self.assertEqual(boundaries, [{"pid": 1234, "process_group": 4321}])
+
     @patch("engineering_platform.execution_host.os.getpgid", return_value=4321)
     @patch("engineering_platform.execution_host.subprocess.Popen")
     def test_codex_client_streams_a_safe_transient_action_name_separately(self, popen: object, _: object) -> None:
@@ -3252,7 +3312,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             with self.assertRaises(CodexHandoffTimeout):
                 client._run_invocation(("codex", "exec", "--json"), self.root)
 
-        self.assertEqual(killpg.call_args.args, (4321, signal.SIGTERM))
+        self.assertIn(call(4321, signal.SIGTERM), killpg.call_args_list)
         self.assertFalse(process.terminated)
 
     def test_live_status_retains_only_completed_reviewers_after_capability_review(self) -> None:
