@@ -71,9 +71,13 @@ ep_draft_download() {
 }
 
 ep_draft_upload() {
-  local release_id="$1" input="$2" asset_name="$3"
-  gh api --hostname uploads.github.com --method POST -H 'Content-Type: application/octet-stream' \
-    "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$asset_name" --input "$input" >/dev/null
+  local release_id="$1" input="$2" asset_name="$3" encoded_name
+  encoded_name="$(python3 -c 'from urllib.parse import quote; import sys; print(quote(sys.argv[1], safe=""))' "$asset_name")"
+  curl --fail --silent --show-error --request POST \
+    -H "Authorization: Bearer ${GH_TOKEN:?GH_TOKEN is required for draft asset upload}" \
+    -H 'Content-Type: application/octet-stream' \
+    --data-binary "@$input" \
+    "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$encoded_name" >/dev/null
 }
 
 ep_publish_draft() {
