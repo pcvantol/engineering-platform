@@ -145,6 +145,14 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertIn('source tools/qualification/github_draft_release.sh', workflow)
         self.assertIn('ep_draft_download "$DRAFT_ID" "$QUALIFIED"', workflow)
         self.assertIn('DRAFT_ASSET_NAMES="$(ep_draft_asset_names "$DRAFT_ID")"', workflow)
+        publish_job = workflow[
+            workflow.index("  publish-pypi:") : workflow.index(
+                "  registry-readback-and-published-evidence:"
+            )
+        ]
+        self.assertIn("contents: write", publish_job)
+        self.assertIn("id-token: write", publish_job)
+        self.assertIn('DRAFT_ID="$(ep_draft_release_id)"', publish_job)
         self.assertIn("A successful exact asset listing is required before an existing", workflow)
         self.assertIn("require_unpublished_pypi_identity", workflow)
         self.assertLess(
