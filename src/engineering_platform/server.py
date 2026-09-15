@@ -198,6 +198,16 @@ def _http_json_openapi_document() -> dict[str, object]:
                     },
                 },
             },
+            "/api/health": {
+                "get": {
+                    "summary": "Read aggregated Engineering Platform component health (compatibility alias)",
+                    "description": "Compatibility alias for /health. It is platform-scoped and never requires a selected Console project.",
+                    "responses": {
+                        "200": {"description": "Critical Platform Components are healthy"},
+                        "503": {"description": "One or more critical Platform Components are degraded"},
+                    },
+                },
+            },
             "/healthz": {
                 "get": {
                     "summary": "Read server health and readiness",
@@ -4725,7 +4735,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path == "/api/events":
             self._stream_no_project_console_events()
             return True
-        if request.path == "/health":
+        if request.path in {"/health", "/api/health"}:
             report = status(self.server.data_root)  # type: ignore[attr-defined]
             self._send(200 if report["healthy"] else 503, report, str(report["instance_id"]))
             return True
@@ -5149,7 +5159,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # Platform health is deliberately independent of the browser's
         # selected project preference, so the same components remain visible
         # in both Console modes.
-        if method == "do_GET" and request.path == "/health":
+        if method == "do_GET" and request.path in {"/health", "/api/health"}:
             report = status(self.server.data_root)  # type: ignore[attr-defined]
             self._send(200 if report["healthy"] else 503, report, str(report["instance_id"]))
             return
