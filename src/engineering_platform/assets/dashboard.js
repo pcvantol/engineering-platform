@@ -7808,7 +7808,8 @@ function promptDetailExecutionSections(history) {
   const dynamicRows = [];
   const dynamicDiagnosticField = (label, source) => {
     const original = executionContextValue(source), value = formatDiagnostic(original || t("detail.not_recorded"));
-    const field = detailField(label, value, true);
+    const field = detailField(label, value);
+    field.classList.add("prompt-detail-diagnostic");
     if (dynamicDiagnosticSource(original)) dynamicRows.push({ source: original, element: field.lastElementChild, format: formatDiagnosticProjection });
     return field;
   };

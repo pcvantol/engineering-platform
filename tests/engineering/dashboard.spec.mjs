@@ -2416,6 +2416,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Blokkadereden");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("The verified blocking reason belongs to this run.");
+    await expect(page.locator(".prompt-detail-diagnostic > span:last-child")).toHaveCSS("font-family", /system-ui/);
     const localizedDismissedAt = await page.evaluate(
       () => formatTimestamp("2026-08-27T14:08:24.218289+00:00"),
     );
