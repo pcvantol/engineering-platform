@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Mapping
+from typing import Callable, Mapping
 import re
 
 from .installation_update_plan import InstallationUpdatePlan
@@ -586,7 +586,7 @@ def transition(plan: InstallationUpdatePlan, state: str, evidence: Mapping[str, 
     return value
 
 
-def cleanup(plan: InstallationUpdatePlan) -> dict[str, object]:
+def cleanup(plan: InstallationUpdatePlan, *, after_cleanup: Callable[[], None] | None = None) -> dict[str, object]:
     """Remove only exact operation-owned temporary paths after verification.
 
     The operation journal, backup evidence, data root, caches outside the
@@ -615,6 +615,8 @@ def cleanup(plan: InstallationUpdatePlan) -> dict[str, object]:
         if value["state"] == "VERIFIED":
             transition(plan, "CLEANUP_PENDING", evidence)
         raise InstallationUpdateOperationError("installation update cleanup is pending")
+    if after_cleanup is not None:
+        after_cleanup()
     return transition(plan, "COMPLETE", {"removed_targets": [str(path) for path in targets]})
 
 
@@ -645,10 +647,10 @@ class InstallationUpdateSession:
             raise InstallationUpdateOperationError("installation update session does not own the lock")
         return transition(self.plan, state, evidence)
 
-    def cleanup(self) -> dict[str, object]:
+    def cleanup(self, *, after_cleanup: Callable[[], None] | None = None) -> dict[str, object]:
         if not self._owned:
             raise InstallationUpdateOperationError("installation update session does not own the lock")
-        return cleanup(self.plan)
+        return cleanup(self.plan, after_cleanup=after_cleanup)
 
     def bind_prepared_candidate(self, candidate: object, *, runner: object) -> dict[str, object]:
         """Durably bind a verified non-operational candidate under this lock."""

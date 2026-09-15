@@ -84,6 +84,17 @@ class InstallationUpdateOperationTests(unittest.TestCase):
                 self.assertEqual(create(update)["state"], "CLEANUP_PENDING")
                 self.assertTrue(outside.exists())
 
+    def test_cleanup_runs_finalizer_only_after_all_owned_paths_are_removed(self):
+        with TemporaryDirectory() as temporary:
+            update = plan(Path(temporary)); completed: list[str] = []
+            with InstallationUpdateSession(update) as session:
+                for state in ("INVENTORIED", "QUIESCED", "BACKED_UP", "MIGRATED", "ACTIVATED", "VERIFIED"):
+                    session.advance(state, {})
+                for target in update.cleanup_targets:
+                    Path(target).mkdir(parents=True)
+                self.assertEqual(session.cleanup(after_cleanup=lambda: completed.append("finalized"))["state"], "COMPLETE")
+            self.assertEqual(completed, ["finalized"])
+
     def test_status_exposes_identity_and_pending_cleanup_without_mutation(self):
         with TemporaryDirectory() as temporary:
             update = plan(Path(temporary)); create(update)

@@ -147,6 +147,36 @@ def replace_for_update(data_root: Path, *, expected_version: str,
     return candidate
 
 
+def replace_update_lifecycle(data_root: Path, *, expected_version: str,
+                             expected_artifact_digest: str,
+                             expected_source_revision: str,
+                             replacement: Mapping[str, object]) -> dict[str, object]:
+    """Atomically advance only lifecycle facts for one activated release.
+
+    The installation-update session already owns serialization.  This narrower
+    compare-and-swap is deliberately unavailable to activation callers: it
+    preserves every identity and configuration field while allowing verified
+    runtime and completed-cleanup facts to become durable after activation.
+    """
+    root, path = Path(data_root).resolve(), Path(data_root).resolve() / FILENAME
+    candidate, existing = validate_record(replacement), load(root)
+    if (existing["version"] != expected_version
+            or existing["artifact_digest"] != expected_artifact_digest
+            or existing["source_revision"] != expected_source_revision):
+        raise OperationalInstallationRecordError("operational installation record changed before lifecycle finalization")
+    immutable = _FIELDS - {"observed_state", "verification", "cleanup"}
+    if any(candidate[field] != existing[field] for field in immutable):
+        raise OperationalInstallationRecordError("operational installation lifecycle finalization changed installation identity")
+    if (candidate["observed_state"] != "ACTIVE"
+            or candidate["verification"] != {"result": "PASS"}
+            or candidate["cleanup"] not in ({"result": "PENDING"}, {"result": "COMPLETE"})):
+        raise OperationalInstallationRecordError("operational installation lifecycle finalization is invalid")
+    if candidate == existing:
+        return existing
+    _write(path, candidate)
+    return candidate
+
+
 def load(data_root: Path) -> dict[str, object]:
     path = Path(data_root).resolve() / FILENAME
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
