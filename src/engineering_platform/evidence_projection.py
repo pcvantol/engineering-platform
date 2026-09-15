@@ -113,8 +113,9 @@ def project_output(command: Iterable[str], output: str, exit_code: int) -> Evide
 class ToolProxyEnvironment:
     """Temporary PATH proxy. It retains no output after the invocation ends."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, deny_delivery_mutations: bool = False) -> None:
         self._temporary: TemporaryDirectory[str] | None = None
+        self._deny_delivery_mutations = deny_delivery_mutations
 
     def __enter__(self) -> Mapping[str, str]:
         self._temporary = TemporaryDirectory(prefix="engineering-platform-evidence-")
@@ -149,6 +150,10 @@ class ToolProxyEnvironment:
         environment["ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH"] = environment.get("PATH", os.defpath)
         environment["PATH"] = f"{directory}{os.pathsep}{environment['ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH']}"
         environment["ENGINEERING_PLATFORM_CONTEXT_ESCALATION_FILE"] = str(directory / "context-escalations.jsonl")
+        if self._deny_delivery_mutations:
+            # This is deliberately an invocation-scoped capability boundary,
+            # not a prompt convention.  The validation adapter opts into it.
+            environment["ENGINEERING_PLATFORM_DENY_DELIVERY_MUTATIONS"] = "1"
         return environment
 
     def __exit__(self, *_: object) -> None:
@@ -172,6 +177,9 @@ class ToolProxyEnvironment:
 def proxy_main(name: str | None = None) -> None:
     """Run the proxied command and emit only its bounded invocation-local view."""
     name = name or Path(sys.argv[0]).name
+    if os.environ.get("ENGINEERING_PLATFORM_DENY_DELIVERY_MUTATIONS") == "1" and _is_delivery_mutation(name, sys.argv[1:]):
+        sys.stderr.write("Read-only assessment tool policy refused a delivery mutation.\n")
+        raise SystemExit(126)
     original_path = os.environ.get("ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH", os.defpath)
     executable = shutil.which(name, path=original_path)
     if executable is None:
@@ -186,6 +194,21 @@ def proxy_main(name: str | None = None) -> None:
     else:
         sys.stdout.write(project_output((name, *sys.argv[1:]), raw, completed.returncode).text)
     raise SystemExit(completed.returncode)
+
+
+def _is_delivery_mutation(name: str, arguments: Iterable[str]) -> bool:
+    """Recognize the small Git/GitHub write surface relevant to assessment.
+
+    This runs inside the PATH interposer, so it remains effective even if a
+    caller accidentally grants an owner-authorized lifecycle flag elsewhere.
+    It intentionally permits read-only inspection and CI-status observation.
+    """
+    args = tuple(arguments)
+    if name == "gh":
+        return len(args) >= 2 and args[0] == "pr" and args[1] in {"create", "edit", "ready", "merge"}
+    if name != "git" or not args:
+        return False
+    return args[0] in {"commit", "push", "switch", "checkout", "branch", "merge", "reset", "rebase"}
 
 
 def context_escalation_main(_: str | None = None) -> None:
