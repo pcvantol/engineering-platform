@@ -1015,6 +1015,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertTrue(report["ready"])
         with urlopen(f"http://127.0.0.1:{port}/health") as response:
             platform_health = json.loads(response.read().decode("utf-8"))
+        with urlopen(f"http://127.0.0.1:{port}/api/health") as response:
+            health_alias = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
+        self.assertEqual(health_alias, platform_health)
         self.assertEqual(platform_health["health"], "ok")
         self.assertEqual(platform_health["product_version"], server._console_platform_version())
         runtime_identity = platform_health["runtime_identity"]
@@ -1815,6 +1819,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         document = server._http_json_openapi_document()
 
         self.assertEqual(document["openapi"], "3.0.3")
+        health_alias = document["paths"]["/api/health"]["get"]
+        self.assertIn("compatibility alias", health_alias["summary"])
+        self.assertIn("never requires a selected Console project", health_alias["description"])
         submission = document["paths"]["/v1/projects/{project_id}/submissions"]["post"]
         self.assertEqual(submission["security"], [{"consumerBearer": []}])
         self.assertIn("application/json", submission["requestBody"]["content"])
@@ -2177,6 +2184,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         # It must never turn into an implicit first-project projection.
         for path in (
             "/health",
+            "/api/health",
             "/api/configuration",
             "/api/provider-login-status",
             "/api/execution-runtime-status",
@@ -2232,7 +2240,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         # every Platform route.  Status payload presentation can differ, but
         # the health path must never become a project/check-out delegate.
         for path in (
-            "/health", "/api/platform-status", "/api/dashboard-snapshot",
+            "/health", "/api/health", "/api/platform-status", "/api/dashboard-snapshot",
             "/api/status", "/api/provider-login-status",
             "/api/execution-runtime-status",
             "/api/components/ep_server/details", "/api/components/platform_database/details",

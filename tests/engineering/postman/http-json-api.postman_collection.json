@@ -13,6 +13,11 @@
       "event": [{"listen": "test", "script": {"exec": ["pm.test('critical component health is degraded before runtime start', () => pm.response.to.have.status(503));"]}}]
     },
     {
+      "name": "Aggregated platform health compatibility alias before runtime starts",
+      "request": {"method": "GET", "url": "{{baseUrl}}/api/health"},
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('critical component health compatibility alias is degraded before runtime start', () => pm.response.to.have.status(503));"]}}]
+    },
+    {
       "name": "Health",
       "request": {"method": "GET", "url": "{{baseUrl}}/healthz"},
       "event": [{"listen": "test", "script": {"exec": ["pm.test('health is available', () => pm.response.to.have.status(200));"]}}]

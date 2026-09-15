@@ -19,7 +19,7 @@ class ConsoleRouteOwnershipTest(unittest.TestCase):
         self.assertEqual(route_owner("GET", "/api/host-admin/diagnostics").owner, HOST_ADMIN)
 
     def test_platform_routes_keep_owner_when_project_is_selected(self) -> None:
-        for method, path in (("GET", "/api/provider-login-status"), ("POST", "/api/provider-login/repair"), ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"), ("GET", "/api/components/file_inbox_ingress/details"), ("POST", "/api/components/dashboard_relay/restart"), ("GET", "/api/logs/all"), ("GET", "/api/configuration")):
+        for method, path in (("GET", "/api/health"), ("GET", "/api/provider-login-status"), ("POST", "/api/provider-login/repair"), ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"), ("GET", "/api/components/file_inbox_ingress/details"), ("POST", "/api/components/dashboard_relay/restart"), ("GET", "/api/logs/all"), ("GET", "/api/configuration")):
             self.assertEqual(route_owner(method, path).owner, PLATFORM, path)
 
     def test_central_advisory_analysis_routes_are_project_scoped(self) -> None:
