@@ -391,9 +391,25 @@ jobs:
           VERSION: ${{ needs.release-context.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir registry-readback
-          python3 -m pip download --disable-pip-version-check --no-cache-dir --no-deps --only-binary=:all: --index-url https://pypi.org/simple --dest registry-readback "engineering-platform==$VERSION"
-          python3 -m pip download --disable-pip-version-check --no-cache-dir --no-deps --no-binary=:all: --index-url https://pypi.org/simple --dest registry-readback "engineering-platform==$VERSION"
+          # PyPI accepts publication before every index endpoint serves both
+          # distributions. Retry that short propagation interval, but keep the
+          # later byte-for-byte comparison as a non-retryable integrity gate.
+          attempt=1
+          max_attempts=12
+          until {
+            rm -rf registry-readback
+            mkdir registry-readback
+            python3 -m pip download --disable-pip-version-check --no-cache-dir --no-deps --only-binary=:all: --index-url https://pypi.org/simple --dest registry-readback "engineering-platform==$VERSION" &&
+              python3 -m pip download --disable-pip-version-check --no-cache-dir --no-deps --no-binary=:all: --index-url https://pypi.org/simple --dest registry-readback "engineering-platform==$VERSION"
+          }; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "PyPI did not expose both distributions after $max_attempts attempts." >&2
+              exit 1
+            fi
+            echo "PyPI readback is not yet indexable; retrying in 10 seconds (attempt $attempt/$max_attempts)." >&2
+            attempt=$((attempt + 1))
+            sleep 10
+          done
           PYTHONPATH=src python3 - <<'PY'
           from hashlib import sha256
           import json
