@@ -113,12 +113,38 @@ def _write_fake_commands(directory: Path) -> None:
             import sys
 
             arguments = sys.argv[1:]
+            assets = Path(os.environ["FAKE_GH_ASSET_DIR"])
+            log = Path(os.environ["FAKE_GH_LOG"])
+            if arguments and arguments[0] == "api":
+                query = next((value for value in arguments if value.startswith("repos/")), "")
+                if "releases?" in query:
+                    print("1")
+                elif "assets?name=" in query:
+                    source = Path(arguments[-1])
+                    name = query.split("assets?name=", 1)[1]
+                    shutil.copy2(source, assets / name)
+                    log.write_text(log.read_text(encoding="utf-8") + f"upload {name}\\n", encoding="utf-8")
+                elif "/assets/" in query:
+                    name = query.rsplit("/", 1)[1]
+                    sys.stdout.buffer.write((assets / name).read_bytes())
+                elif "PATCH" in arguments:
+                    Path(os.environ["FAKE_GH_DRAFT_FILE"]).write_text("false\\n", encoding="utf-8")
+                    print("false")
+                elif "--jq" in arguments:
+                    expression = arguments[arguments.index("--jq") + 1]
+                    if "assets[].name" in expression:
+                        print("\\n".join(path.name for path in sorted(assets.iterdir()) if path.is_file()))
+                    else:
+                        import re
+                        match = re.search(r'\\.name == "([^"]+)"', expression)
+                        print(match.group(1) if match else "")
+                else:
+                    print("1")
+                raise SystemExit(0)
             if len(arguments) < 2 or arguments[0] != "release":
                 raise SystemExit("fake gh accepts only release commands")
             action = arguments[1]
             values = arguments[2:]
-            assets = Path(os.environ["FAKE_GH_ASSET_DIR"])
-            log = Path(os.environ["FAKE_GH_LOG"])
             if action == "download":
                 pattern = values[values.index("--pattern") + 1]
                 if pattern == os.environ.get("FAKE_GH_UNDOWNLOADABLE_ASSET"):
@@ -181,6 +207,8 @@ def _write_fake_commands(directory: Path) -> None:
 class ProductionReleaseCleanupWorkflowTests(unittest.TestCase):
     def _prepare_workspace(self, root: Path, *, dangling_dist: bool = False) -> bytes:
         shutil.copytree(ROOT / "src", root / "src")
+        (root / "tools" / "qualification").mkdir(parents=True)
+        shutil.copy2(ROOT / "tools" / "qualification" / "github_draft_release.sh", root / "tools" / "qualification")
         (root / "runner-temp").mkdir()
         return _write_published_input(root, dangling_dist=dangling_dist)
 
@@ -203,6 +231,7 @@ class ProductionReleaseCleanupWorkflowTests(unittest.TestCase):
             "OPERATION_ID": OPERATION_ID,
             "VERSION": VERSION,
             "SOURCE_SHA": SOURCE_SHA,
+            "GITHUB_REPOSITORY": "example/repository",
             "FAKE_GH_ASSET_DIR": str(assets),
             "FAKE_GH_LOG": str(log),
             "FAKE_GH_DRAFT_FILE": str(draft),
@@ -222,7 +251,7 @@ class ProductionReleaseCleanupWorkflowTests(unittest.TestCase):
         cleanup = _cleanup_script()
 
         self.assertIn('PENDING_READBACK_DIR="$(mktemp -d "$RUNNER_TEMP/ep-pending-readback-XXXXXX")"', cleanup)
-        self.assertIn('PENDING_ASSET_NAMES="$(gh release view "$TAG" --json assets --jq \'.assets[].name\')"', cleanup)
+        self.assertIn('PENDING_ASSET_NAMES="$(ep_draft_asset_names "$DRAFT_ID")"', cleanup)
         self.assertIn('if printf \'%s\\n\' "$PENDING_ASSET_NAMES" | grep -Fqx -- "$PENDING"; then', cleanup)
         self.assertIn("pending_receipt_present=1", cleanup)
         self.assertIn("published_bytes != canonical_bytes(published)", cleanup)
@@ -236,7 +265,7 @@ class ProductionReleaseCleanupWorkflowTests(unittest.TestCase):
         self.assertIn('test -e "$1" || test -L "$1"', cleanup)
         self.assertIn('"$PENDING_READBACK_DIR"', cleanup)
         self.assertIn('"pending-readback"', cleanup)
-        self.assertIn('gh release download "$TAG" --pattern "$PENDING" --output - | cmp "$PENDING" -', cleanup)
+        self.assertIn('ep_draft_download "$DRAFT_ID" "$PENDING"', cleanup)
         self.assertIn('gh release download "$TAG" --pattern "$RECEIPT" --output - | cmp "$RECEIPT" -', cleanup)
         self.assertNotIn("COMPLETE_READBACK_DIR", cleanup)
         self.assertNotIn("cleanup-complete.json", cleanup)
