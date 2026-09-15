@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from engineering_platform.storage import sqlite_connection
 
 from pathlib import Path
@@ -2879,13 +2880,83 @@ class LocalAgentRunnerTest(unittest.TestCase):
         runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), github, FakeAgent(AgentResult("COMPLETE")), lambda _: None)
 
         accepted = runner._accept_repair_pull_request(
-            state, AgentResult("COMPLETE", branch, 81, commit_sha=sha), {"pre_repair_pull_request": "none"},
+            state, AgentResult("COMPLETE", branch, 81, commit_sha=sha), {
+                "pre_repair_pull_request": "none", "first_pr_authorized": "yes",
+                "repair_branch": branch, "repair_base": "main",
+            },
         )
 
         self.assertIsInstance(accepted, tuple)
         repaired, result = accepted
         self.assertEqual(repaired.pull_request, 81)
         self.assertEqual(result.pull_request, 81)
+
+    def test_repair_first_pr_cannot_replace_the_reserved_branch(self) -> None:
+        state = TransactionState("repair-branch-scope", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/authorized-repair")
+        other, sha = "codex/unreserved-other-branch", "a" * 40
+        github = FakeGitHub([PullRequestEvidence(83, "OPEN", True, True, head_branch=other, base_branch="main", head_sha=sha)])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=other), github, FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+
+        rejected = runner._accept_repair_pull_request(
+            state, AgentResult("COMPLETE", other, 83, commit_sha=sha), {
+                "pre_repair_pull_request": "none", "first_pr_authorized": "yes",
+                "repair_branch": "codex/authorized-repair", "repair_base": "main",
+            },
+        )
+
+        self.assertIsInstance(rejected, TransactionState)
+        self.assertEqual(rejected.next_action, "repair_pull_request_unverified")
+
+    def test_legacy_repair_plan_without_first_pr_intent_fails_closed(self) -> None:
+        state = TransactionState("repair-legacy-intent", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/legacy")
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch="codex/legacy"), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+
+        blocked = runner._accept_repair_pull_request(
+            state, AgentResult("COMPLETE", "codex/legacy", 84, commit_sha="a" * 40), {},
+        )
+
+        self.assertIsInstance(blocked, TransactionState)
+        self.assertEqual(blocked.next_action, "repair_scope_intent_missing")
+
+    def test_submitted_repair_plan_remains_resumable(self) -> None:
+        state = TransactionState(
+            "repair-resume-plan", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+            branch="codex/resume", repair_iterations=1,
+            repair_audit=({
+                "iteration": "1", "observed_at": "now", "failed_checks": "quality", "proposed_action": "repair",
+                "agent_summary": "received", "commit_sha": "a" * 40, "outcome": "submitted_for_recheck",
+                "repair_id": "repair:repair-resume-plan:1", "origin": "quality", "input_candidate_sha": "not_recorded",
+                "dispatch_id": "repair-resume-plan:repair:1", "pre_repair_pull_request": "none",
+                "repair_branch": "codex/resume", "repair_base": "main", "first_pr_authorized": "yes",
+            },),
+        )
+
+        self.assertIsNotNone(EngineeringRunner(self.root, self.store, FakeRepository(branch="codex/resume"), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)._repair_plan(state))
+
+    def test_verified_first_pr_is_saved_before_read_only_validation(self) -> None:
+        branch, sha = "codex/persist-first-pr", "a" * 40
+        state = TransactionState(
+            "repair-persist-first-pr", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+            branch=branch, repair_iterations=1,
+            repair_audit=({
+                "iteration": "1", "observed_at": "now", "failed_checks": "quality", "proposed_action": "repair",
+                "agent_summary": "planned", "commit_sha": "not_recorded", "outcome": "planned",
+                "repair_id": "repair:repair-persist-first-pr:1", "origin": "quality", "input_candidate_sha": "not_recorded",
+                "dispatch_id": "repair-persist-first-pr:repair:1", "pre_repair_pull_request": "none",
+                "repair_branch": branch, "repair_base": "main", "first_pr_authorized": "yes",
+            },),
+        )
+        pull = PullRequestEvidence(85, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=sha)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), FakeGitHub([pull]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+
+        def stop_after_observing_binding(current: TransactionState, result: AgentResult) -> tuple[TransactionState, AgentResult]:
+            self.assertEqual(self.store.load(current.run_id).pull_request, 85)
+            return replace(current, phase="BLOCKED", terminal=True), result
+
+        with patch.object(runner, "_run_local_repository_validation", side_effect=stop_after_observing_binding):
+            blocked = runner._advance_after_repair_agent_result(state, AgentResult("COMPLETE", branch, 85, commit_sha=sha))
+
+        self.assertEqual(blocked.pull_request, 85)
 
     def test_pre_pr_repair_requalifies_candidate_before_existing_publication_gate(self) -> None:
         """Candidate B without a PR reaches the normal first-PR owner gate."""
