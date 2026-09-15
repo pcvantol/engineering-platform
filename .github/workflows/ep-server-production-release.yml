@@ -213,9 +213,8 @@ jobs:
           VERSION: ${{ needs.release-context.outputs.version }}
         run: |
           set -euo pipefail
-          TAG="engineering-platform-v$VERSION"
           QUALIFIED="engineering-platform-release-qualified-$VERSION-$SOURCE_SHA.json"
-          export EP_RELEASE_TAG="$TAG" EP_RELEASE_SOURCE_SHA="$SOURCE_SHA" EP_RELEASE_TITLE="Engineering Platform $VERSION"
+          export EP_RELEASE_TAG="engineering-platform-v$VERSION" EP_RELEASE_SOURCE_SHA="$SOURCE_SHA" EP_RELEASE_TITLE="Engineering Platform $VERSION"
           source tools/qualification/github_draft_release.sh
           cp "release-operation/operations/$OPERATION_ID.json" "$QUALIFIED"
           if DRAFT_ID="$(ep_draft_release_id 2>/dev/null)"; then
@@ -227,8 +226,8 @@ jobs:
               exit 1
             }
             case "$status_code" in
-              404) gh release create "$TAG" "$QUALIFIED" --draft --target "$SOURCE_SHA" --title "Engineering Platform $VERSION"
-                   DRAFT_ID="$(ep_draft_release_id)"
+              404) DRAFT_ID="$(ep_create_draft_release)"
+                   ep_draft_upload "$DRAFT_ID" "$QUALIFIED" "$QUALIFIED"
                    ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
                    cmp "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED" ;;
               200) echo 'Existing PyPI publication has no durable original EP release receipt.' >&2; exit 1 ;;

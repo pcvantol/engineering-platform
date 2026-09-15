@@ -7,11 +7,48 @@ set -euo pipefail
 ep_draft_release_id() {
   local ids=()
   while IFS= read -r id; do ids+=("$id"); done < <(
-    gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \
-      '.[] | select(.draft == true and .tag_name == env.EP_RELEASE_TAG and .target_commitish == env.EP_RELEASE_SOURCE_SHA and .name == env.EP_RELEASE_TITLE) | .id'
+    # `gh api --jq` evaluates gojq without the workflow shell environment, so
+    # `env.EP_RELEASE_*` silently selects no draft.  Query the REST collection
+    # and select the immutable release ID from the draft's own source and name.
+    # A draft release may not yet be addressable by its eventual tag.
+    gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | python3 -c '
+import json
+import os
+import sys
+
+payload = sys.stdin.read()
+decoder = json.JSONDecoder()
+releases = []
+while payload.strip():
+    payload = payload.lstrip()
+    page, offset = decoder.raw_decode(payload)
+    if not isinstance(page, list):
+        raise SystemExit("GitHub releases API returned a non-list page")
+    releases.extend(page)
+    payload = payload[offset:]
+
+for release in releases:
+    if (
+        release.get("draft") is True
+        and release.get("target_commitish") == os.environ["EP_RELEASE_SOURCE_SHA"]
+        and release.get("name") == os.environ["EP_RELEASE_TITLE"]
+    ):
+        print(release["id"])
+'
   )
-  test "${#ids[@]}" -eq 1 || { echo "Expected exactly one matching durable draft release; found ${#ids[@]}." >&2; return 1; }
+  test "${#ids[@]}" -eq 1 || { echo "Expected exactly one matching durable draft release identity; found ${#ids[@]}." >&2; return 1; }
   printf '%s\n' "${ids[0]}"
+}
+
+ep_create_draft_release() {
+  # Create the draft through the REST API and retain its actual immutable ID.
+  # The eventual tag is release metadata, not the handle used while it is draft.
+  gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+    -f "tag_name=$EP_RELEASE_TAG" \
+    -f "target_commitish=$EP_RELEASE_SOURCE_SHA" \
+    -f "name=$EP_RELEASE_TITLE" \
+    -F draft=true \
+    --jq '.id'
 }
 
 ep_draft_asset_id() {
