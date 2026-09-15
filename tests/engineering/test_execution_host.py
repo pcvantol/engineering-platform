@@ -2958,6 +2958,135 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(blocked.pull_request, 85)
 
+    def test_local_validation_preserves_a_verified_repair_pr_in_its_real_checkpoint(self) -> None:
+        """The read-only provider result is not the lifecycle PR binding."""
+        branch, sha, pull_number = "codex/validation-keeps-pr", "a" * 40, 118
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(branch=branch), FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE", branch)), lambda _: None,
+        )
+        runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
+        state = TransactionState(
+            "validation-keeps-pr", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+            branch=branch, pull_request=pull_number, repair_iterations=1,
+        )
+
+        validated, result = runner._run_local_repository_validation(
+            state, AgentResult("COMPLETE", branch, pull_number, commit_sha=sha),
+        )
+
+        self.assertEqual(validated.pull_request, pull_number)
+        self.assertEqual(self.store.load(state.run_id).pull_request, pull_number)
+        self.assertIsNone(result.pull_request)
+        self.assertEqual(validated.implementation_head_sha, sha)
+
+    def test_validation_profile_failure_keeps_verified_repair_pr_and_candidate(self) -> None:
+        branch, sha, pull_number = "codex/validation-failure-keeps-pr", "a" * 40, 118
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(branch=branch), FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE", branch)), lambda _: None,
+        )
+        state = TransactionState(
+            "validation-failure-keeps-pr", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+            branch=branch, pull_request=pull_number, repair_iterations=1,
+        )
+        with patch("engineering_platform.execution_host.record_validation_profile", side_effect=execution_host.EngineeringStorageError("offline")):
+            blocked, _ = runner._run_local_repository_validation(
+                state, AgentResult("COMPLETE", branch, pull_number, commit_sha=sha),
+            )
+
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "validation_profile_persistence")
+        self.assertEqual((blocked.pull_request, blocked.branch, blocked.implementation_head_sha), (pull_number, branch, sha))
+        self.assertEqual(self.store.load(state.run_id).pull_request, pull_number)
+
+    def test_same_durable_first_pr_replay_is_idempotent_but_scope_mismatch_is_blocked(self) -> None:
+        branch, sha, pull_number = "codex/replay-first-pr", "a" * 40, 118
+        receipt = {
+            "iteration": "1", "observed_at": "now", "failed_checks": "quality", "proposed_action": "repair",
+            "agent_summary": "received", "commit_sha": sha, "outcome": "submitted_for_recheck",
+            "repair_id": "repair:replay-first-pr:1", "origin": "quality", "input_candidate_sha": "not_recorded",
+            "dispatch_id": "replay-first-pr:repair:1", "pre_repair_pull_request": "none",
+            "repair_branch": branch, "repair_base": "main", "first_pr_authorized": "yes",
+        }
+        state = TransactionState(
+            "replay-first-pr", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch=branch,
+            pull_request=pull_number, repair_iterations=1, repair_audit=(receipt,),
+        )
+        pull = PullRequestEvidence(pull_number, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=sha)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), FakeGitHub([pull]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+
+        accepted = runner._accept_repair_pull_request(state, AgentResult("COMPLETE", branch, pull_number, commit_sha=sha), receipt)
+        self.assertIsInstance(accepted, tuple)
+        self.assertEqual(accepted[0].repair_iterations, 1)
+
+        wrong = runner._accept_repair_pull_request(state, AgentResult("COMPLETE", "codex/other", pull_number, commit_sha=sha), receipt)
+        self.assertIsInstance(wrong, TransactionState)
+        self.assertEqual(wrong.next_action, "repair_pull_request_unverified")
+
+        newer_sha = "b" * 40
+        runner.repository.evidence = RepositoryEvidence("pcvantol/djconnect", branch, newer_sha, True)
+        runner.github = FakeGitHub([PullRequestEvidence(pull_number, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=newer_sha)])
+        stale = runner._advance_after_repair_agent_result(
+            state, AgentResult("COMPLETE", branch, pull_number, commit_sha=newer_sha),
+        )
+        self.assertEqual(stale.next_action, "bounded_scope_conflict")
+        self.assertEqual(stale.repair_audit[-1]["commit_sha"], sha)
+
+    def test_repair_delivery_authority_checkpoint_validates_pre_repair_pr_format(self) -> None:
+        state = TransactionState("repair-authority-parser", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", repair_iterations=1)
+        audit = {
+            "iteration": "1", "observed_at": "now", "failed_checks": "quality", "proposed_action": "repair",
+            "agent_summary": "planned", "commit_sha": "not_recorded", "outcome": "planned",
+            "repair_id": "repair:repair-authority-parser:1", "origin": "quality", "input_candidate_sha": "not_recorded",
+            "dispatch_id": "repair-authority-parser:repair:1", "pre_repair_pull_request": "none",
+            "repair_branch": "codex/parser", "repair_base": "main", "first_pr_authorized": "yes",
+        }
+        raw = {**state.to_dict(), "repair_audit": [audit]}
+        self.assertEqual(TransactionState.from_dict(raw).repair_audit[0]["pre_repair_pull_request"], "none")
+        bound = {**audit, "pre_repair_pull_request": "118", "first_pr_authorized": "no"}
+        self.assertEqual(TransactionState.from_dict({**raw, "repair_audit": [bound]}).repair_audit[0]["pre_repair_pull_request"], "118")
+        for invalid in ("not-a-pr", "0", "-1", "", 118):
+            with self.assertRaises(StateError):
+                TransactionState.from_dict({**raw, "repair_audit": [{**audit, "pre_repair_pull_request": invalid}]})
+        with self.assertRaises(StateError):
+            TransactionState.from_dict({**raw, "repair_audit": [{**audit, "pre_repair_pull_request": "118", "first_pr_authorized": "yes"}]})
+        legacy = {key: audit[key] for key in (
+            "iteration", "observed_at", "failed_checks", "proposed_action", "agent_summary", "commit_sha", "outcome",
+        )}
+        self.assertEqual(TransactionState.from_dict({**raw, "repair_audit": [legacy]}).repair_audit[0], legacy)
+
+    def test_resume_routes_a_durably_bound_repair_without_a_new_repair_invocation(self) -> None:
+        branch, sha, pull_number = "codex/resume-bound-repair", "a" * 40, 118
+        receipt = {
+            "iteration": "1", "observed_at": "now", "failed_checks": "quality", "proposed_action": "repair",
+            "agent_summary": "received", "commit_sha": sha, "outcome": "submitted_for_recheck",
+            "repair_id": "repair:resume-bound-repair:1", "origin": "quality", "input_candidate_sha": "not_recorded",
+            "dispatch_id": "resume-bound-repair:repair:1", "pre_repair_pull_request": "none",
+            "repair_branch": branch, "repair_base": "main", "first_pr_authorized": "yes",
+        }
+        persisted = TransactionState(
+            "resume-bound-repair", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch=branch,
+            pull_request=pull_number, repair_iterations=1, repair_audit=(receipt,),
+        )
+        self.store.save(persisted)
+        agent = FakeAgent(AgentResult("COMPLETE", branch))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), FakeGitHub([]), agent, lambda _: None)
+        lease = SimpleNamespace(run_id=persisted.run_id)
+        heartbeat = SimpleNamespace(start=lambda: None, stop=lambda: lease)
+        observed: list[AgentResult] = []
+        with patch.object(runner, "_provider_readiness_gate", side_effect=lambda state, **_: state), \
+             patch.object(runner, "_verify_engineering_platform"), \
+             patch("engineering_platform.execution_host.acquire_lease", return_value=lease), \
+             patch("engineering_platform.execution_host.LeaseHeartbeat", return_value=heartbeat), \
+             patch("engineering_platform.execution_host.release_lease"), \
+             patch.object(runner, "_advance_after_repair_agent_result", side_effect=lambda state, result: observed.append(result) or state):
+            resumed = runner.run(self.prompt, run_id=persisted.run_id, resume=True)
+
+        self.assertEqual(resumed.repair_iterations, 1)
+        self.assertEqual((observed[0].branch, observed[0].pull_request, observed[0].commit_sha), (branch, pull_number, sha))
+        self.assertEqual(agent.prompts, [])
+
     def test_pre_pr_repair_requalifies_candidate_before_existing_publication_gate(self) -> None:
         """Candidate B without a PR reaches the normal first-PR owner gate."""
         branch, sha = "codex/repair-publish-after-assurance", "a" * 40

@@ -324,7 +324,7 @@ class TransactionState:
                     or item["origin"] not in {"validation", "quality", "security", "hosted", "finalization"}
                     or (item["input_candidate_sha"] != "not_recorded" and not re.fullmatch(r"[0-9a-f]{40}", item["input_candidate_sha"]))
                 ))
-                or (set(item) == repair_delivery_scope_fields and (
+                or (set(item) in (repair_delivery_scope_fields, repair_delivery_authority_fields) and (
                     item["pre_repair_pull_request"] != "none"
                     and not (item["pre_repair_pull_request"].isdigit() and int(item["pre_repair_pull_request"]) >= 1)
                 ))

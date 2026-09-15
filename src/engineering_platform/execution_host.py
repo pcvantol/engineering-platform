@@ -1157,6 +1157,8 @@ class EngineeringRunner:
             return None
         if "repair_id" in plan and plan["repair_id"] != f"repair:{state.run_id}:{state.repair_iterations}":
             return None
+        if "dispatch_id" in plan and plan["dispatch_id"] != f"{state.run_id}:repair:{state.repair_iterations}":
+            return None
         return plan
 
     def _accept_repair_pull_request(
@@ -1179,8 +1181,25 @@ class EngineeringRunner:
             return repair, result
         if plan.get("first_pr_authorized") != "yes":
             return self._save_terminal(repair, "BLOCKED", "repair_scope_intent_missing", "Repair did not have recorded authority to bind a first pull request.")
-        if repair.pull_request is not None:
+        # A checkpoint may have crossed the durable first-PR boundary before
+        # this process stopped.  Replaying that *same* acknowledged result is
+        # not a PR replacement.  The receipt in the current repair audit is
+        # the durable operation identity; require it as well as freshly
+        # observed candidate/PR scope before continuing.
+        replay = repair.pull_request == result.pull_request
+        if repair.pull_request is not None and not replay:
             return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair attempted to replace a pull request bound after its repair plan was recorded.")
+        receipt = repair.repair_audit[-1] if repair.repair_audit else {}
+        if replay and (
+            plan.get("repair_id") != f"repair:{repair.run_id}:{repair.repair_iterations}"
+            or plan.get("dispatch_id") != f"{repair.run_id}:repair:{repair.repair_iterations}"
+            or plan.get("commit_sha") != result.commit_sha
+            or receipt.get("outcome") != "submitted_for_recheck"
+            or receipt.get("repair_id") != plan.get("repair_id")
+            or receipt.get("dispatch_id") != plan.get("dispatch_id")
+            or receipt.get("commit_sha") != result.commit_sha
+        ):
+            return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair replay lacks the durable result binding for the existing pull request.")
         try:
             observed = self.github.pull_request(result.pull_request)
             candidate = self.repository.inspect(self.root)
@@ -1206,14 +1225,25 @@ class EngineeringRunner:
         if plan is None:
             return self._save_terminal(repair, "BLOCKED", "repair_plan_missing", "Repair result cannot be resumed without its persisted repair plan.")
         failed_checks, objective = plan["failed_checks"], plan["proposed_action"]
-        repair = self._record_repair_audit(
-            repair, failed_checks=failed_checks, objective=objective, result=result,
-            outcome="agent_failed" if result.terminal_state in {"BLOCKED", "FAILED"} else "submitted_for_recheck",
-        )
-        self.store.save(repair)
         if result.terminal_state in {"BLOCKED", "FAILED"}:
+            repair = self._record_repair_audit(
+                repair, failed_checks=failed_checks, objective=objective, result=result, outcome="agent_failed",
+            )
+            self.store.save(repair)
             return self._save_terminal(repair, result.terminal_state, "external_action_required", result.diagnostic)
-        accepted = self._accept_repair_pull_request(repair, result, plan)
+        # Replay must authenticate the immutable, pre-existing receipt before
+        # any audit projection can be updated.  Otherwise an incoming result
+        # could overwrite its candidate SHA and make comparison tautological.
+        replay = plan.get("pre_repair_pull_request") == "none" and repair.pull_request is not None
+        if replay:
+            accepted = self._accept_repair_pull_request(repair, result, plan)
+        else:
+            repair = self._record_repair_audit(
+                repair, failed_checks=failed_checks, objective=objective, result=result,
+                outcome="submitted_for_recheck",
+            )
+            self.store.save(repair)
+            accepted = self._accept_repair_pull_request(repair, result, plan)
         if isinstance(accepted, TransactionState):
             return accepted
         repair, result = accepted
@@ -1255,6 +1285,23 @@ class EngineeringRunner:
         except RunnerError:
             return self._save_terminal(reviewed, "BLOCKED", "repair_candidate_unavailable", "Repaired Managed candidate could not be inspected after assurance.")
         return self._continue_after_quality_control(reviewed, reviewed_result, evidence)
+
+    def _durable_repair_result_for_validation_resume(self, state: TransactionState) -> AgentResult | None:
+        """Project an acknowledged repair receipt into the pending read-only gate."""
+        plan = self._repair_plan(state)
+        if plan is None or state.pull_request is None:
+            return None
+        sha = plan.get("commit_sha")
+        branch = plan.get("repair_branch")
+        if (
+            plan.get("outcome") != "submitted_for_recheck"
+            or plan.get("pre_repair_pull_request") != "none"
+            or plan.get("first_pr_authorized") != "yes"
+            or not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+            or not isinstance(branch, str) or branch != state.branch
+        ):
+            return None
+        return AgentResult("COMPLETE", branch=branch, pull_request=state.pull_request, commit_sha=sha)
 
     def _record_local_validation_audit(self, state: TransactionState, *, result: AgentResult | None, outcome: str, profile: ValidationProfile) -> TransactionState:
         """Append one bounded local-validation iteration without sharing PR repair budget."""
@@ -1928,11 +1975,21 @@ class EngineeringRunner:
                 state, "BLOCKED", "local_validation_scope",
                 "Local validation requires the exact clean implementation branch and candidate SHA.",
             ), implementation
+        # ``pull_request`` is EP-owned lifecycle evidence.  The read-only
+        # validation provider has no authority to create or amend it, but a
+        # verified repair PR must survive this checkpoint (and every terminal
+        # error written from it).
+        resuming_validation = (
+            state.phase == "LOCAL_REPOSITORY_VALIDATION"
+            and state.implementation_head_sha == candidate.head_sha
+            and state.branch == branch
+        )
         validation = replace(
-            state, phase="LOCAL_REPOSITORY_VALIDATION", branch=branch, pull_request=None,
+            state, phase="LOCAL_REPOSITORY_VALIDATION", branch=branch,
             implementation_head_sha=candidate.head_sha,
-            next_action="run_local_repository_validation", local_validation_iterations=0,
-            local_validation_audit=(),
+            next_action="run_local_repository_validation",
+            local_validation_iterations=state.local_validation_iterations if resuming_validation else 0,
+            local_validation_audit=state.local_validation_audit if resuming_validation else (),
         )
         # The first validation is a measurement, never a corrective provider
         # turn.  A failed measurement is routed through ``_repair`` by the
@@ -1943,32 +2000,45 @@ class EngineeringRunner:
             except OSError:
                 profile = classify(())
             try:
-                record_validation_profile(
-                    self.root, run_id=validation.run_id, selected_validation_tier=profile.tier,
-                    validation_profile_version=VALIDATION_PROFILE_VERSION,
-                    required_validation_controls=profile.required_controls,
-                    profile_reference=f"validation-profile-registry:{profile.tier}@{VALIDATION_PROFILE_VERSION}",
-                    profile_selection_source="diff_classification",
-                    control_bindings=profile_control_bindings(profile, repository_root=self.root),
-                    candidate_sha=candidate.head_sha,
-                    currentness=validation.repair_iterations,
-                    recorded_at=datetime.now(timezone.utc).isoformat(),
+                existing_context = load_validation_context(
+                    self.root, validation.run_id, currentness=validation.repair_iterations,
                     central_database=self.store.central_database,
-                )
-            except (EngineeringStorageError, ValidationProfileResolutionError):
-                return self._save_terminal(
-                    validation, "BLOCKED", "validation_profile_persistence",
-                    "Required validation profile evidence could not be persisted."
-                ), implementation
+                ) if resuming_validation else None
+            except EngineeringStorageError:
+                existing_context = None
+            controls_already_current = (
+                existing_context is not None
+                and _required_validation_controls_pass(validation, existing_context)
+            )
+            if not controls_already_current:
+                try:
+                    record_validation_profile(
+                        self.root, run_id=validation.run_id, selected_validation_tier=profile.tier,
+                        validation_profile_version=VALIDATION_PROFILE_VERSION,
+                        required_validation_controls=profile.required_controls,
+                        profile_reference=f"validation-profile-registry:{profile.tier}@{VALIDATION_PROFILE_VERSION}",
+                        profile_selection_source="diff_classification",
+                        control_bindings=profile_control_bindings(profile, repository_root=self.root),
+                        candidate_sha=candidate.head_sha,
+                        currentness=validation.repair_iterations,
+                        recorded_at=datetime.now(timezone.utc).isoformat(),
+                        central_database=self.store.central_database,
+                    )
+                except (EngineeringStorageError, ValidationProfileResolutionError):
+                    return self._save_terminal(
+                        validation, "BLOCKED", "validation_profile_persistence",
+                        "Required validation profile evidence could not be persisted."
+                    ), implementation
             # The profile is candidate-bound evidence, not a suggestion for
             # the read-only provider.  Execute its exact host-owned controls
             # before asking the provider for its bounded validation summary.
             # Without these receipts, a provider can truthfully describe a
             # passing check while strict qualification correctly rejects it
             # because no current canonical control evidence exists.
-            validation = self._execute_required_validation_controls(validation)
-            if validation.terminal:
-                return validation, implementation
+            if not controls_already_current:
+                validation = self._execute_required_validation_controls(validation)
+                if validation.terminal:
+                    return validation, implementation
             validation = replace(validation, local_validation_iterations=iteration)
             self.store.save(validation)
             write_live_status(self.root, validation, validation.next_action)
@@ -2597,6 +2667,35 @@ First implementation pull-request publication gate:
             finally:
                 # Terminal and operator-wait saves release their own lease.
                 # A direct passive return must also leave no synthetic owner.
+                if self.active_lease is not None and self.active_lease.run_id == state.run_id:
+                    if self.lease_heartbeat is not None:
+                        self.active_lease = self.lease_heartbeat.stop()
+                        self.lease_heartbeat = None
+                    release_lease(self.root, self.active_lease, central_database=self.store.central_database)
+                    self.active_lease = None
+        if resume and state is not None and state.phase in {"REPAIR_AGENT", "LOCAL_REPOSITORY_VALIDATION"} and state.pull_request is not None:
+            # Resume an already-bound repair at its real validation gate.  A
+            # fresh-run path here would create an unrelated provider turn.
+            if Path(state.prompt_path) != prompt_path:
+                raise RunnerError("checkpoint conflicts with current prompt")
+            result = self._durable_repair_result_for_validation_resume(state)
+            if result is None:
+                return self._save_terminal(state, "BLOCKED", "repair_result_receipt_missing", "Repair validation cannot resume without its durable bound result receipt.")
+            state = self._provider_readiness_gate(state, require_codex=True, require_github=True)
+            if state.next_action == "provider_auth_repair_required":
+                return state
+            self._verify_engineering_platform()
+            self.transaction = ExecutionTransaction(state=state, target_repository=self.root)
+            try:
+                self.active_lease = acquire_lease(self.root, state.run_id, identity=self.host_identity, instance_id=self.host_instance_id, process_id=os.getpid(), central_database=self.store.central_database)
+            except LeaseConflictError as error:
+                raise RunnerError("active-run ownership conflict; execution is refused") from error
+            self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
+            self.transaction = self.transaction.with_lease(self.active_lease)
+            self.lease_heartbeat.start()
+            try:
+                return self._advance_after_repair_agent_result(state, result)
+            finally:
                 if self.active_lease is not None and self.active_lease.run_id == state.run_id:
                     if self.lease_heartbeat is not None:
                         self.active_lease = self.lease_heartbeat.stop()
