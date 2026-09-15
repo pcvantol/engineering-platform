@@ -53,6 +53,8 @@ class LegacyAndCandidateRunner:
 
     def __call__(self, command, **_kwargs):  # type: ignore[no-untyped-def]
         command = tuple(command)
+        if command[1:3] == ("-I", "-c") and "version_info" in command[-1]:
+            return subprocess.CompletedProcess(command, 0, "3.14\n", "")
         if command[2:4] == ("-m", "venv"):
             interpreter = Path(command[-1]) / "bin" / "python"
             interpreter.parent.mkdir(parents=True, exist_ok=True)

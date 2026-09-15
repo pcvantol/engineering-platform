@@ -34,6 +34,7 @@ from .operational_installation_lock import (
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 _MARKER_FILENAME = "candidate-runtime.json"
 _CANDIDATE_DIRECTORY = "candidate-venv"
+_REQUIRED_PYTHON = (3, 14)
 
 
 class InstallationUpdatePreparationError(ValueError):
@@ -364,13 +365,41 @@ def staged_execution_plan(
     return rebound
 
 
-def _base_interpreter(value: str | Path) -> Path:
+def _python_version(interpreter: Path, *, runner: Runner, label: str) -> tuple[int, int]:
+    """Read a Python launcher's major/minor version without consulting PATH."""
+    command = (
+        str(interpreter), "-I", "-c",
+        "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+    )
+    try:
+        completed = runner(command, capture_output=True, text=True, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise InstallationUpdatePreparationError(f"{label} Python version is unavailable") from error
+    if completed.returncode != 0:
+        raise InstallationUpdatePreparationError(f"{label} Python version is unavailable")
+    match = re.fullmatch(r"(\d+)\.(\d+)\s*", completed.stdout)
+    if match is None:
+        raise InstallationUpdatePreparationError(f"{label} Python version is invalid")
+    return int(match.group(1)), int(match.group(2))
+
+
+def _required_python(interpreter: Path, *, runner: Runner, label: str) -> None:
+    observed = _python_version(interpreter, runner=runner, label=label)
+    if observed != _REQUIRED_PYTHON:
+        required = ".".join(map(str, _REQUIRED_PYTHON))
+        actual = ".".join(map(str, observed))
+        raise InstallationUpdatePreparationError(f"{label} must be Python {required}, not Python {actual}")
+
+
+def _base_interpreter(value: str | Path, *, runner: Runner) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute() or not candidate.is_file() or not os.access(candidate, os.X_OK):
         raise InstallationUpdatePreparationError("candidate venv builder must be an absolute executable interpreter")
     # Preserve a virtual-environment launcher spelling if the explicit builder
     # itself is a venv; resolving it would silently select its base Python.
-    return candidate.absolute()
+    builder = candidate.absolute()
+    _required_python(builder, runner=runner, label="candidate venv builder")
+    return builder
 
 
 def _run(runner: Runner, command: tuple[str, ...], *, environment: Mapping[str, str], label: str) -> None:
@@ -409,6 +438,7 @@ def _create_or_recover_venv(paths: _OperationPaths, *, builder: Path, runner: Ru
     launcher_directory = paths.interpreter.parent
     if launcher_directory.is_symlink() or not launcher_directory.is_dir() or not paths.interpreter.is_file():
         raise InstallationUpdatePreparationError("candidate venv did not provide its interpreter")
+    _required_python(paths.interpreter, runner=runner, label="candidate venv interpreter")
 
 
 def _package_in_candidate(paths: _OperationPaths, identity: Mapping[str, str], plan: InstallationUpdatePlan) -> dict[str, str]:
@@ -476,7 +506,7 @@ def prepare_candidate(
     service, run a migration, or call the update executor.
     """
     paths = _paths(plan)
-    builder = _base_interpreter(venv_builder)
+    builder = _base_interpreter(venv_builder, runner=runner)
     lock = OperationalInstallationLock(paths.root)
     try:
         lock.acquire(plan.operation_id)
