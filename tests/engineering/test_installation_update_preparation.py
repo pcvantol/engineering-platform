@@ -4,6 +4,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -34,6 +35,7 @@ class CandidateRunner:
         self.identity_missing_after_install = False
         self.installed = False
         self.calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+        self.python_version = (3, 14)
 
     @property
     def venv_calls(self) -> list[tuple[tuple[str, ...], dict[str, object]]]:
@@ -46,6 +48,9 @@ class CandidateRunner:
     def __call__(self, command, **kwargs):  # type: ignore[no-untyped-def]
         invocation = tuple(command)
         self.calls.append((invocation, dict(kwargs)))
+        if invocation[1:3] == ("-I", "-c") and "version_info" in invocation[-1]:
+            version = ".".join(map(str, self.python_version))
+            return subprocess.CompletedProcess(invocation, 0, version + "\n", "")
         if invocation[2:4] == ("-m", "venv"):
             candidate = Path(invocation[-1])
             if "--clear" in invocation:
@@ -104,6 +109,12 @@ class InstallationUpdatePreparationTests(unittest.TestCase):
         builder.write_text("#!/bin/sh\n", encoding="utf-8")
         builder.chmod(0o700)
         return builder
+
+    def _python314(self) -> Path:
+        builder = shutil.which("python3.14")
+        if builder is None:
+            self.skipTest("Python 3.14 is required for candidate-venv integration")
+        return Path(builder)
 
     def _plan(self, root: Path, wheel: Path, *, operation_id: str = "update-0001"):
         current = root / "current runtime" / "bin" / "python"
@@ -189,7 +200,7 @@ class InstallationUpdatePreparationTests(unittest.TestCase):
             self._minimal_wheel(wheel, "2.3.2")
             plan = self._plan(root, wheel)
 
-            prepared = prepare_candidate(plan, venv_builder=Path(sys.executable))
+            prepared = prepare_candidate(plan, venv_builder=self._python314())
 
             self.assertEqual(prepared.package["version"], "2.3.2")
             self.assertTrue(Path(prepared.package["package"]).is_relative_to(Path(prepared.candidate_venv)))
@@ -199,7 +210,7 @@ class InstallationUpdatePreparationTests(unittest.TestCase):
             # identity rather than resolving it outside the operation root.
             self.assertEqual(verify_prepared_candidate(plan, candidate=prepared), prepared)
             wheel.unlink()
-            self.assertEqual(prepare_candidate(plan, venv_builder=Path(sys.executable)), prepared)
+            self.assertEqual(prepare_candidate(plan, venv_builder=self._python314()), prepared)
             execution_plan = staged_execution_plan(plan, candidate=prepared)
             with InstallationUpdateSession(execution_plan) as session:
                 session.bind_prepared_candidate(prepared, runner=subprocess.run)
@@ -218,7 +229,8 @@ class InstallationUpdatePreparationTests(unittest.TestCase):
             with self.assertRaisesRegex(InstallationUpdatePreparationError, "source artifact changed"):
                 prepare_candidate(plan, venv_builder=self._builder(base), runner=runner)
             self.assertFalse((root / "operations" / plan.operation_id).exists())
-            self.assertEqual(runner.calls, [])
+            self.assertEqual(runner.venv_calls, [])
+            self.assertEqual(runner.pip_calls, [])
 
             # The durable staged wheel is also re-hashed on every resume; a
             # corrupt local cache cannot be silently installed or replaced.
@@ -461,8 +473,14 @@ class InstallationUpdatePreparationTests(unittest.TestCase):
             paths = update_preparation._paths(plan)
             paths.operation.mkdir(parents=True)
 
+            runner = CandidateRunner(target_version=plan.target_version)
             with self.assertRaisesRegex(InstallationUpdatePreparationError, "absolute executable"):
-                update_preparation._base_interpreter("relative-python")
+                update_preparation._base_interpreter("relative-python", runner=runner)
+
+            runner.python_version = (3, 11)
+            with self.assertRaisesRegex(InstallationUpdatePreparationError, "must be Python 3.14, not Python 3.11"):
+                update_preparation._base_interpreter(self._builder(base), runner=runner)
+            self.assertFalse(paths.candidate.exists())
 
             def cannot_start(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
                 raise OSError("not executable")

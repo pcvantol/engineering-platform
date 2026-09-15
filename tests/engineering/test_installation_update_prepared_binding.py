@@ -35,6 +35,8 @@ class CandidateRunner:
 
     def __call__(self, command, **_kwargs):  # type: ignore[no-untyped-def]
         invocation = tuple(command)
+        if invocation[1:3] == ("-I", "-c") and "version_info" in invocation[-1]:
+            return subprocess.CompletedProcess(invocation, 0, "3.14\n", "")
         if invocation[2:4] == ("-m", "venv"):
             interpreter = Path(invocation[-1]) / "bin" / "python"
             interpreter.parent.mkdir(parents=True, exist_ok=True)

@@ -6722,8 +6722,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "installation-update-plan":
                 result = update_plan.payload()
             else:
+                if args.venv_builder is None:
+                    raise ServerConfigurationError("--venv-builder is required and must identify Python 3.14")
                 candidate = installation_update_preparation.prepare_candidate(
-                    update_plan, venv_builder=args.venv_builder or Path(sys.executable),
+                    update_plan, venv_builder=args.venv_builder,
                 )
                 update_plan = installation_update_preparation.staged_execution_plan(
                     update_plan, candidate=candidate,
