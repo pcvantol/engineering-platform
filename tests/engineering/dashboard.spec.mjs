@@ -2692,12 +2692,13 @@ test.describe("Engineering Status browser smoke", () => {
         watcherCard = grid.querySelector("#watcher")?.closest(".card");
       if (!identity || !context || !watcherCard) return null;
       const identityBox = identity.getBoundingClientRect(), contextBox = context.getBoundingClientRect();
-      return { identityX: identityBox.x, identityY: identityBox.y, contextX: contextBox.x, contextY: contextBox.y, watcherCardId: watcherCard.id };
+      return { identityX: identityBox.x, identityY: identityBox.y, identityWidth: identityBox.width, contextX: contextBox.x, contextY: contextBox.y, contextWidth: contextBox.width, watcherCardId: watcherCard.id };
     });
     expect(identityAndContext).not.toBeNull();
     expect(identityAndContext.watcherCardId).toBe("executionIdentity");
     expect(identityAndContext.contextX).toBe(identityAndContext.identityX);
     expect(identityAndContext.contextY).toBeGreaterThan(identityAndContext.identityY);
+    expect(identityAndContext.contextWidth).toBeGreaterThan(identityAndContext.identityWidth * 1.9);
 
     await expect(page.locator(".execution-lifecycle")).toHaveCSS("background-color", "rgb(27, 41, 49)");
     await expect(page.locator("#executionContext")).toHaveCSS("background-color", "rgb(27, 41, 49)");
