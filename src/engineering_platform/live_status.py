@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Mapping
 
@@ -15,6 +16,10 @@ from .providers import GitProvider
 from .execution_activity import cumulative_activity, live_worktree_snapshot
 
 _REVIEWER_PROJECTION_PHASE = "CAPABILITY_REVIEW"
+_GITHUB_ORIGIN = re.compile(
+    r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repository>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+)
 
 
 def _successful_reviewer_agents(value: object) -> list[dict[str, object]]:
@@ -25,6 +30,20 @@ def _successful_reviewer_agents(value: object) -> list[dict[str, object]]:
     if not reviewers or len(reviewers) != len(value):
         return []
     return reviewers if all(item.get("status") == "completed" for item in reviewers) else []
+
+
+def _github_repository(checkout: Path) -> str | None:
+    """Return only a host-observed GitHub repository identity for PR links."""
+    try:
+        result = GitProvider().execute(checkout, "git", "remote", "get-url", "origin")
+    except OSError:
+        return None
+    if result.returncode:
+        return None
+    match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
+    if match is None:
+        return None
+    return f"{match['owner']}/{match['repository']}"
 
 
 def write_live_status(
@@ -172,8 +191,15 @@ def write_live_status(
         "resume_command": None if terminal_phase else f"engineering-execution-host {state.prompt_path} --run-id {state.run_id} --resume",
         "execution_mode": state.execution_mode,
         "target_repository": checkout.name if state.execution_mode == "GENESIS" else state.repository,
+        # This is an observed remote identity used only to link already-bound
+        # PR evidence. It never grants repository or delivery authority.
+        "github_repository": _github_repository(checkout),
         "checkout_path": str(checkout),
         "active_branch": observed_branch or state.branch or "unavailable",
+        # The candidate is host-verified lifecycle evidence, not an assertion
+        # that it is delivered or independently assured.
+        "candidate_sha": state.last_verified_sha,
+        "repair_iteration": state.repair_iterations,
         # Reviewer progress is phase-scoped, while a fully successful review
         # remains compact historical evidence during the rest of this active
         # run. The dashboard renders that retained list as completed, never as

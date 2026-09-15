@@ -1863,6 +1863,8 @@ function renderExecutionContext(context, execution = {}) {
     [t("detail.target_checkout"), execution.checkout_path],
     [t("detail.target_branch"), execution.target_branch],
     [t("ui.active_branch"), execution.active_branch],
+    [t("detail.candidate_sha"), execution.candidate_sha],
+    [t("detail.repair_iteration"), execution.repair_iteration],
   ].filter(([, value]) => executionContextValue(value));
   if (!context || typeof context !== "object") {
     card.replaceChildren(
@@ -2386,18 +2388,24 @@ function lifecycleFlow(projection, { historical = false } = {}) {
   return section;
 }
 function activeRunPullRequestEntries(execution) {
-  const repository = String(execution?.target_repository || "").trim();
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return [];
+  const repository = String(execution?.github_repository || execution?.target_repository || "").trim();
+  const githubRepository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)
+    ? repository : null;
+  const seen = new Set();
   return [
+    ["bound", execution?.pull_request],
     ["implementation", execution?.implementation_pr],
     ["finalization", execution?.finalization_pr],
   ].flatMap(([role, value]) => {
     const number = Number(value);
-    if (!Number.isInteger(number) || number <= 0) return [];
+    if (!Number.isInteger(number) || number <= 0 || seen.has(number)) return [];
+    seen.add(number);
     return [{
       role,
       number,
-      url: `https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/pull/${number}`,
+      url: githubRepository
+        ? `https://github.com/${githubRepository.split("/").map(encodeURIComponent).join("/")}/pull/${number}`
+        : null,
     }];
   });
 }
@@ -2408,19 +2416,22 @@ function renderActivePullRequests(execution, lifecycle) {
   const entries = activeRunPullRequestEntries(execution);
   if (!entries.length) return;
   const labels = {
+    bound: t("detail.bound_pull_request"),
     implementation: t("detail.implementation_pull_request"),
     finalization: t("detail.finalization_pull_request"),
   };
   const fields = entries.map((entry) => {
     const field = detailField(labels[entry.role], "");
-    const link = document.createElement("a");
-    link.className = "prompt-detail-pr-link";
-    link.href = entry.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = `#${entry.number} ↗`;
-    link.setAttribute("aria-label", `${labels[entry.role]} #${entry.number}`);
-    field.lastElementChild.replaceChildren(link);
+    const value = entry.url ? document.createElement("a") : document.createElement("span");
+    value.className = "prompt-detail-pr-link";
+    value.textContent = `#${entry.number}${entry.url ? " ↗" : ""}`;
+    value.setAttribute("aria-label", `${labels[entry.role]} #${entry.number}`);
+    if (entry.url) {
+      value.href = entry.url;
+      value.target = "_blank";
+      value.rel = "noopener noreferrer";
+    }
+    field.lastElementChild.replaceChildren(value);
     return field;
   });
   const card = promptDetailCard(

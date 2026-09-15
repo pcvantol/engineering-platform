@@ -67,6 +67,9 @@ class DashboardStateTest(unittest.TestCase):
                     {
                         "run_id": "run-1",
                         "phase": "EXECUTE_AGENT",
+                        "github_repository": "pcvantol/forge",
+                        "candidate_sha": "a" * 40,
+                        "repair_iteration": 1,
                         "transient_action": "Inspect the configuration boundary",
                         "workspace_progress": {
                             "modified": 3,
@@ -76,6 +79,13 @@ class DashboardStateTest(unittest.TestCase):
                         },
                     }
                 ),
+                encoding="utf-8",
+            )
+            (status / "workspace_preflight.json").write_text(
+                json.dumps({
+                    "run_id": "run-1", "outcome": "PASS", "branch": "main",
+                    "canonical_target_path": "/workspace/forge",
+                }),
                 encoding="utf-8",
             )
             StateStore(root / ".engineering" / "engineering-runs").save(
@@ -94,7 +104,34 @@ class DashboardStateTest(unittest.TestCase):
             payload["workspace_progress"],
             {"modified": 3, "created": 2, "deleted": 1, "codex_commands_executed": 17},
         )
+        self.assertEqual(payload["target_branch"], "main")
+        self.assertEqual(payload["github_repository"], "pcvantol/forge")
+        self.assertEqual(payload["candidate_sha"], "a" * 40)
+        self.assertEqual(payload["workspace_preflight"]["canonical_target_path"], "/workspace/forge")
         self.assertEqual(payload["lifecycle"]["live_activity"], "Inspect the configuration boundary")
+
+    def test_status_does_not_project_a_workspace_branch_from_another_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "run-current", "phase": "EXECUTE_AGENT"}),
+                encoding="utf-8",
+            )
+            (status / "workspace_preflight.json").write_text(
+                json.dumps({"run_id": "run-old", "outcome": "PASS", "branch": "wrong-branch"}),
+                encoding="utf-8",
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState("run-current", "repo", "prompt.md", "EXECUTE_AGENT")
+            )
+            acquire(root, "run-current", identity="test-host", instance_id="test-instance")
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertIsNone(payload.get("target_branch"))
+        self.assertEqual(payload["workspace_preflight"], {})
 
     def test_status_keeps_only_a_successful_review_as_historical_active_run_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

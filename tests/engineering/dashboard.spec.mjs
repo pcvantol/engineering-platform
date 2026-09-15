@@ -3855,6 +3855,36 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#lifecycleDetailModal")).toBeVisible();
   });
 
+  test("shows a bound repair PR with its host-observed candidate before delivery", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "LOCAL_REPOSITORY_VALIDATION",
+      run_id: "inbox-bound-repair-pr", execution_mode: "MANAGED",
+      target_repository: "forge", github_repository: "pcvantol/forge",
+      checkout_path: "/Users/example/Library/Application Support/Engineering Platform Workspaces/forge",
+      target_branch: "main", active_branch: "codex/repair", candidate_sha: "a".repeat(40),
+      repair_iteration: 1, pull_request: 118,
+      lifecycle: {
+        available: true, run_id: "inbox-bound-repair-pr", terminal_state: "ACTIVE",
+        steps: [{ id: "validation", presentation_key: "lifecycle.step.execute_agent", state: "ACTIVE" }],
+      },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    const context = page.locator("#executionContext");
+    await expect(context).toContainText("main");
+    await expect(context).toContainText("codex/repair");
+    await expect(context).toContainText("a".repeat(40));
+    await expect(context).toContainText("1");
+    const pullRequests = page.locator("#activeRunPullRequests");
+    await expect(pullRequests).toBeVisible();
+    await expect(pullRequests).toContainText("Gebonden pull request");
+    await expect(pullRequests.locator("a")).toHaveCount(1);
+    await expect(pullRequests.locator("a")).toHaveAttribute("href", "https://github.com/pcvantol/forge/pull/118");
+    await expect(pullRequests).not.toContainText("Implementatie-pullrequest");
+  });
+
   test("renders only the merge boundaries recorded for the lifecycle", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
