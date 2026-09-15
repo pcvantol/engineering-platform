@@ -3146,6 +3146,32 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(validated.local_validation_audit[-1]["outcome"], "validated")
         self.assertEqual(result.terminal_state, "COMPLETE")
 
+    def test_prebound_pr_resume_reconciles_p_to_candidate_b_before_validation(self) -> None:
+        branch, candidate_b, pull_number = "codex/prebound-reconcile", "b" * 40, 118
+        plan = {
+            "iteration": "1", "observed_at": "now", "failed_checks": "quality", "proposed_action": "repair",
+            "agent_summary": "received", "commit_sha": candidate_b, "outcome": "submitted_for_recheck",
+            "repair_id": "repair:prebound-reconcile:1", "origin": "quality", "input_candidate_sha": "a" * 40,
+            "dispatch_id": "prebound-reconcile:repair:1", "pre_repair_pull_request": "118",
+            "repair_branch": branch, "repair_base": "main", "first_pr_authorized": "no",
+        }
+        state = TransactionState(
+            "prebound-reconcile", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch=branch,
+            pull_request=pull_number, repair_iterations=1, repair_audit=(plan,),
+        )
+        repository = FakeRepository(branch=branch)
+        repository.evidence = RepositoryEvidence("pcvantol/djconnect", branch, candidate_b, True)
+        matching = PullRequestEvidence(pull_number, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=candidate_b)
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([matching]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+        accepted = runner._accept_repair_pull_request(state, AgentResult("COMPLETE", branch, pull_number, commit_sha=candidate_b), plan)
+        self.assertIsInstance(accepted, tuple)
+
+        stale = PullRequestEvidence(pull_number, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha="a" * 40)
+        runner.github = FakeGitHub([stale])
+        rejected = runner._accept_repair_pull_request(state, AgentResult("COMPLETE", branch, pull_number, commit_sha=candidate_b), plan)
+        self.assertIsInstance(rejected, TransactionState)
+        self.assertEqual(rejected.next_action, "repair_pull_request_unverified")
+
     def test_pre_pr_repair_requalifies_candidate_before_existing_publication_gate(self) -> None:
         """Candidate B without a PR reaches the normal first-PR owner gate."""
         branch, sha = "codex/repair-publish-after-assurance", "a" * 40

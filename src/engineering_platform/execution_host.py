@@ -1176,6 +1176,30 @@ class EngineeringRunner:
                 return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the bounded pull request.")
             if repair.pull_request not in {None, int(reserved)}:
                 return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair state conflicts with its reserved pull request.")
+            # A resumed repair on an already-bound PR may qualify a new
+            # candidate B, but it may never detach P from that candidate.
+            # Complete modern reservations carry the branch/base/SHA needed
+            # to reconcile P before validation or delivery resumes.  Older
+            # records without that scope retain their legacy preservation
+            # behavior and cannot gain first-PR authority from this path.
+            expected_branch = plan.get("repair_branch")
+            expected_base = plan.get("repair_base")
+            expected_sha = result.commit_sha
+            if expected_branch is not None or expected_base is not None or expected_sha is not None:
+                try:
+                    observed = self.github.pull_request(int(reserved))
+                    candidate = self.repository.inspect(self.root)
+                except RunnerError:
+                    return self._save_terminal(repair, "BLOCKED", "repair_pull_request_unverified", "The bound pull request could not be independently reconciled to the repaired candidate.")
+                if (
+                    expected_branch is None or expected_base is None or expected_sha is None
+                    or result.branch not in {None, expected_branch}
+                    or observed.number != int(reserved) or observed.state != "OPEN"
+                    or observed.base_branch != expected_base or observed.head_branch != expected_branch
+                    or observed.head_sha != expected_sha or candidate.branch != expected_branch
+                    or candidate.head_sha != expected_sha or candidate.repository != repair.repository or not candidate.clean
+                ):
+                    return self._save_terminal(repair, "BLOCKED", "repair_pull_request_unverified", "The bound pull request did not match the repaired repository candidate.")
             return repair, replace(result, pull_request=int(reserved))
         if result.pull_request is None:
             return repair, result
