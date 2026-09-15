@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 import tempfile
+from time import sleep
 
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
@@ -22,6 +23,7 @@ SCHEMA_VERSION = 1
 PHASES = frozenset({"INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "LOCAL_REPOSITORY_VALIDATION", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP", "COMPLETE", "BLOCKED", "FAILED"})
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_DIAGNOSTIC_LENGTH = 500
+_TRANSIENT_CHECKPOINT_DELAYS = (0.02,)
 MAX_COMMIT_EVIDENCE_RECORDS = 48
 COMMIT_EVIDENCE_FIELDS = frozenset({"phase", "observed_at", "commit_sha", "description"})
 COMMIT_EVIDENCE_TIMESTAMP_PATTERN = re.compile(
@@ -571,9 +573,12 @@ class StateStore:
         path = self.path_for(state.run_id)
         canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
         previous_phase: str | None = None
-        try:
-            connection = self._open(create=True)
+        for delay in (0.0, *_TRANSIENT_CHECKPOINT_DELAYS):
+            connection: sqlite3.Connection | None = None
             try:
+                if delay:
+                    sleep(delay)
+                connection = self._open(create=True)
                 connection.execute("BEGIN IMMEDIATE")
                 prior = connection.execute(
                     "SELECT phase FROM engineering_transactions WHERE run_id=?", (state.run_id,)
@@ -589,13 +594,30 @@ class StateStore:
                     (state.run_id, state.phase, canonical),
                 )
                 connection.execute("COMMIT")
+                break
+            except sqlite3.OperationalError as error:
+                if connection is not None:
+                    try:
+                        connection.execute("ROLLBACK")
+                    except sqlite3.DatabaseError:
+                        pass
+                if delay == _TRANSIENT_CHECKPOINT_DELAYS[-1] or "disk i/o" not in str(error).casefold():
+                    raise
+                continue
+            except (EngineeringStorageError, OSError) as error:
+                raise StateError("canonical engineering storage could not save checkpoint") from error
             except Exception:
-                connection.execute("ROLLBACK")
+                if connection is not None:
+                    try:
+                        connection.execute("ROLLBACK")
+                    except sqlite3.DatabaseError:
+                        pass
                 raise
             finally:
-                connection.close()
-        except (EngineeringStorageError, OSError) as error:
-            raise StateError("canonical engineering storage could not save checkpoint") from error
+                if connection is not None:
+                    connection.close()
+        else:
+            raise StateError("canonical engineering storage could not save checkpoint")
         if self._lifecycle_logger is not None:
             from .component_logging import log_event
             log_event(
