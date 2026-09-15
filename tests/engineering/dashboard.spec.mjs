@@ -2185,7 +2185,7 @@ test.describe("Engineering Status browser smoke", () => {
       await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {}));
       await expect(page.locator(".field").filter({ hasText: DASHBOARD_MESSAGES[language]["ui.execution_status"] })).toHaveCount(1);
       await expect(page.locator("#watcher")).toHaveText(DASHBOARD_MESSAGES[language]["state.WATCHER_IDLE"]);
-      await expect(page.locator("#watcher").locator("xpath=preceding-sibling::span")).not.toHaveText(DASHBOARD_MESSAGES[language]["ui.watcher"]);
+      await expect(page.locator("#watcher").locator("xpath=ancestor::p[contains(@class, 'field')][1]//span[contains(@class, 'label')]")).toHaveText(DASHBOARD_MESSAGES[language]["ui.execution_status"]);
     }
   });
 
