@@ -322,6 +322,10 @@ class CodexCliClient:
         self._command_callback: Callable[..., None] | None = None
         self._workspace_progress_callback: Callable[[dict[str, int]], None] | None = None
         self._handoff_deadline_callback: Callable[[], bool] | None = None
+        # A process boundary remains published until this client has observed
+        # the owned session disappear.  A callback failure must not make an
+        # otherwise live provider look as though it has already exited.
+        self._provider_process_cleanup_confirmed = True
 
     def _runtime_metadata(self) -> dict[str, str]:
         metadata = {"runtime_provider": "codex_cli"}
@@ -342,6 +346,33 @@ class CodexCliClient:
     def set_process_callback(self, callback: Callable[[dict[str, int] | None], None] | None) -> None:
         """Set the owned foreground Codex-process sink for runtime metrics."""
         self._process_callback = callback
+
+    def provider_process_cleanup_confirmed(self) -> bool:
+        """Whether the last streamed provider session was observed to exit."""
+        return self._provider_process_cleanup_confirmed
+
+    @staticmethod
+    def _terminate_owned_process_group(process: subprocess.Popen[str]) -> bool:
+        """Request a bounded stop for this invocation's own session only."""
+        try:
+            process_group = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return True
+        try:
+            os.killpg(process_group, signal.SIGTERM)
+        except ProcessLookupError:
+            return True
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return False
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        return False
 
     def set_runtime_metadata_callback(
         self, callback: Callable[[dict[str, str]], None] | None
@@ -665,6 +696,7 @@ class CodexCliClient:
         ):
             return self.provider.invoke(root, command, environment=environment)
         process = self.provider.spawn_invocation(root, command, environment=environment)
+        self._provider_process_cleanup_confirmed = False
         if self._process_callback is not None:
             try:
                 self._process_callback({"pid": process.pid, "process_group": os.getpgid(process.pid)})
@@ -735,12 +767,23 @@ class CodexCliClient:
                         self._command_callback(*command_event)
             if handoff_timed_out.is_set():
                 raise CodexHandoffTimeout("Agent did not return after the host-owned PR hand-off deadline.")
-            return subprocess.CompletedProcess(command, process.wait(), "".join(lines), "")
+            returncode = process.wait()
+            self._provider_process_cleanup_confirmed = True
+            return subprocess.CompletedProcess(command, returncode, "".join(lines), "")
+        except BaseException:
+            # Every invocation owns a fresh process session.  Callback and
+            # host failures therefore have one narrow, safe stop boundary;
+            # leaving this loop must never orphan an output-producing child.
+            self._provider_process_cleanup_confirmed = self._terminate_owned_process_group(process)
+            raise
         finally:
             watchdog_stop.set()
             if watchdog_thread is not None:
                 watchdog_thread.join(timeout=1)
-            if self._process_callback is not None:
+            close_stdout = getattr(process.stdout, "close", None)
+            if callable(close_stdout):
+                close_stdout()
+            if self._process_callback is not None and self._provider_process_cleanup_confirmed:
                 self._process_callback(None)
 
 

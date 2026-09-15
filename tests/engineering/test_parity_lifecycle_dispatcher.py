@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from engineering_platform import local_repository_binding, parity_lifecycle_dispatcher, server, submission_service
@@ -121,6 +122,35 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             env=environment,
         )
         self.assertEqual(json.loads(completed.stdout), False)
+
+    def test_early_failure_records_primary_sqlite_exception_metadata(self) -> None:
+        class SqliteFailure(sqlite3.OperationalError):
+            sqlite_errorcode = 10
+            sqlite_errorname = "SQLITE_IOERR"
+
+        dispatcher = ParityLifecycleDispatcher(self.data)
+        evidence = self.data / "artifacts" / "projects" / "alpha" / "runs" / "run-primary-sqlite"
+        evidence.mkdir(mode=0o700, parents=True)
+        def raise_sqlite() -> None:
+            raise SqliteFailure("disk I/O error")
+        try:
+            raise_sqlite()
+        except SqliteFailure as error:
+            recorded_error = error
+        dispatcher._record_early_runner_failure(
+            submission_id="sub-primary-sqlite", run_id="run-primary-sqlite",
+            context=SimpleNamespace(project_id="alpha", repository_id="alpha"),
+            error=recorded_error, stage="PRECHECKPOINT",
+        )
+
+        record = json.loads((evidence / "early-runner-failure.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["error_type"], "SqliteFailure")
+        self.assertEqual(record["cause"]["operation"], None)
+        self.assertEqual(record["cause"]["error_type"], "SqliteFailure")
+        self.assertEqual(record["cause"]["error_module"], __name__)
+        self.assertEqual(record["cause"]["sqlite_errorcode"], 10)
+        self.assertEqual(record["cause"]["sqlite_errorname"], "SQLITE_IOERR")
+        self.assertEqual(record["cause"]["source_location"]["function"], "raise_sqlite")
 
     def _submission(self, project: str, prompt: str = "Validate only.") -> str:
         with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
