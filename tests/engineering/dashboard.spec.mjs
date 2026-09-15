@@ -4509,7 +4509,6 @@ test.describe("Engineering Status browser smoke", () => {
         ["Maximum provider invocation cumulative input", "300"],
         ["Actual single-request context size", "Unavailable"],
         ["Active context size", "Unavailable"],
-        ["Speed state", "Unknown"],
         ["Usage authority", "Provider-observed"],
       ]);
   });

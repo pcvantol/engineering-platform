@@ -7917,7 +7917,6 @@ function promptDetailUsageSection(usage) {
     active_context_size: t("detail.active_context_size"),
     estimated_credits: t("detail.estimated_credits"),
     estimated_eur: t("detail.estimated_eur"),
-    speed_state: t("detail.speed_state"),
     usage_authority: t("detail.usage_authority"),
   };
   const visible = Object.entries(usage).filter(([key, value]) => labels[key] && value !== null && typeof value !== "object");
@@ -7925,7 +7924,6 @@ function promptDetailUsageSection(usage) {
     if (["actual_single_request_context_size", "active_context_size"].includes(key) && value === "UNAVAILABLE") {
       return t("format.unavailable");
     }
-    if (key === "speed_state") return t(`provider_usage.speed.${String(value).toLowerCase()}`, {}, String(value));
     if (key === "usage_authority") return t(`provider_usage.authority.${String(value).toLowerCase()}`, {}, String(value));
     return value;
   };
