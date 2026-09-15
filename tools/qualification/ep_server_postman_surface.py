@@ -29,6 +29,7 @@ CASES: tuple[Case, ...] = (
     Case("Console JavaScript asset", "GET", "/assets/dashboard.js", 200),
     Case("Console favicon", "GET", "/favicon.ico", 200),
     Case("Platform health", "GET", "/health", 503),
+    Case("Platform health compatibility alias", "GET", "/api/health", 503),
     Case("Platform projection", "GET", "/api/platform-status", 200),
     Case("Dashboard snapshot", "GET", "/api/dashboard-snapshot", 200),
     Case("Status alias", "GET", "/api/status", 200),
