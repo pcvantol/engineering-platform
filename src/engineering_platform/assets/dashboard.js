@@ -7913,17 +7913,12 @@ function promptDetailUsageSection(usage) {
     usage_snapshot_count: t("detail.usage_snapshot_count"),
     intermediate_usage_delta_available: t("detail.intermediate_usage_delta_available"),
     maximum_incremental_input_tokens: t("detail.maximum_incremental_input_tokens"),
-    actual_single_request_context_size: t("detail.actual_single_request_context_size"),
-    active_context_size: t("detail.active_context_size"),
     estimated_credits: t("detail.estimated_credits"),
     estimated_eur: t("detail.estimated_eur"),
     usage_authority: t("detail.usage_authority"),
   };
   const visible = Object.entries(usage).filter(([key, value]) => labels[key] && value !== null && typeof value !== "object");
   const displayValue = (key, value) => {
-    if (["actual_single_request_context_size", "active_context_size"].includes(key) && value === "UNAVAILABLE") {
-      return t("format.unavailable");
-    }
     if (key === "usage_authority") return t(`provider_usage.authority.${String(value).toLowerCase()}`, {}, String(value));
     return value;
   };

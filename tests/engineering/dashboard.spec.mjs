@@ -4492,7 +4492,6 @@ test.describe("Engineering Status browser smoke", () => {
         max_input_tokens_per_invocation: 300,
         actual_single_request_context_size: "UNAVAILABLE",
         active_context_size: "UNAVAILABLE",
-        speed_state: "UNKNOWN",
         usage_authority: "AUTHORITATIVE",
       },
     }));
@@ -4507,8 +4506,6 @@ test.describe("Engineering Status browser smoke", () => {
       .toEqual([
         ["Run cumulative input tokens", "400"],
         ["Maximum provider invocation cumulative input", "300"],
-        ["Actual single-request context size", "Unavailable"],
-        ["Active context size", "Unavailable"],
         ["Usage authority", "Provider-observed"],
       ]);
   });
