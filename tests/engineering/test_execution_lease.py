@@ -3,15 +3,18 @@ from __future__ import annotations
 from engineering_platform.storage import sqlite_connection
 
 from pathlib import Path
+from datetime import timedelta
 import json
 import os
 import sqlite3
 import tempfile
+from threading import Event, Thread
+from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
 
 from engineering_platform.agent_state import StateStore, TransactionState
-from engineering_platform.execution_lease import LeaseConflictError, LeaseHeartbeat, LeaseHeartbeatError, acquire, heartbeat, history, liveness, reconcile_stale, release
+from engineering_platform.execution_lease import Lease, LeaseConflictError, LeaseHeartbeat, LeaseHeartbeatError, _now, acquire, heartbeat, history, liveness, reconcile_stale, release
 from engineering_platform.storage import open_storage
 from engineering_platform import server
 
@@ -283,6 +286,132 @@ class ExecutionLeaseTest(unittest.TestCase):
         with self.assertRaises(LeaseConflictError):
             heartbeat(self.root, lease)
         self.assertEqual(liveness(self.root, lease.run_id)["state"], "STALE")
+
+    def test_heartbeat_rejects_lease_that_expires_while_waiting_for_writer_lock(self) -> None:
+        """A real SQLite writer wait must not retain authority from before it."""
+        database = (self.root / ".engineering" / "engineering.db").resolve()
+        lease = acquire(
+            self.root, "inbox-lease", identity="host", instance_id="instance-a", central_database=database,
+        )
+        expires_at = _now() + timedelta(seconds=0.2)
+        with open_storage(self.root) as connection:
+            connection.execute(
+                "UPDATE execution_run_leases SET expires_at=? WHERE lease_id=?",
+                (expires_at.isoformat(), lease.lease_id),
+            )
+            before = connection.execute(
+                "SELECT last_heartbeat_at,expires_at FROM execution_run_leases WHERE lease_id=?", (lease.lease_id,)
+            ).fetchone()
+
+        # Connection A holds the real SQLite writer lock while heartbeat uses
+        # its own connection and blocks on BEGIN IMMEDIATE.
+        blocker = sqlite3.connect(database, isolation_level=None)
+        blocker.execute("PRAGMA busy_timeout=10000")
+        blocker.execute("BEGIN IMMEDIATE")
+        started = Event()
+        lock_attempted = Event()
+        outcome: list[object] = []
+        import engineering_platform.execution_lease as execution_lease
+        original_connection = execution_lease._connection
+
+        def traced_connection(*arguments: object, **keywords: object) -> sqlite3.Connection:
+            connection = original_connection(*arguments, **keywords)
+            class LockAttemptConnection:
+                def execute(self, statement: str, *parameters: object) -> object:
+                    if statement == "BEGIN IMMEDIATE":
+                        lock_attempted.set()
+                    return connection.execute(statement, *parameters)
+
+                def close(self) -> None:
+                    connection.close()
+
+            return LockAttemptConnection()  # type: ignore[return-value]
+
+        def renew() -> None:
+            started.set()
+            try:
+                outcome.append(heartbeat(self.root, lease, central_database=database))
+            except Exception as error:
+                outcome.append(error)
+
+        with patch("engineering_platform.execution_lease._connection", side_effect=traced_connection):
+            worker = Thread(target=renew)
+            worker.start()
+            self.assertTrue(started.wait(1))
+            # The trace callback fires for heartbeat's actual BEGIN IMMEDIATE,
+            # while connection A still owns the writer lock.
+            self.assertTrue(lock_attempted.wait(1))
+            deadline = monotonic() + 2
+            while _now() <= expires_at and monotonic() < deadline:
+                sleep(0.01)
+            self.assertGreater(_now(), expires_at)
+            blocker.execute("COMMIT")
+            blocker.close()
+            worker.join(2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], LeaseConflictError)
+        with open_storage(self.root) as connection:
+            after = connection.execute(
+                "SELECT last_heartbeat_at,expires_at FROM execution_run_leases WHERE lease_id=?", (lease.lease_id,)
+            ).fetchone()
+            count = connection.execute(
+                "SELECT COUNT(*) FROM execution_run_leases WHERE run_id=?", (lease.run_id,)
+            ).fetchone()[0]
+        self.assertEqual(after, before)
+        self.assertEqual(count, 1)
+
+    def test_heartbeat_renews_after_writer_lock_releases_while_lease_is_still_valid(self) -> None:
+        database = (self.root / ".engineering" / "engineering.db").resolve()
+        lease = acquire(
+            self.root, "inbox-lease", identity="host", instance_id="instance-a", central_database=database,
+        )
+        blocker = sqlite3.connect(database, isolation_level=None)
+        blocker.execute("PRAGMA busy_timeout=10000")
+        blocker.execute("BEGIN IMMEDIATE")
+        started = Event()
+        lock_attempted = Event()
+        outcome: list[object] = []
+        import engineering_platform.execution_lease as execution_lease
+        original_connection = execution_lease._connection
+
+        def traced_connection(*arguments: object, **keywords: object) -> sqlite3.Connection:
+            connection = original_connection(*arguments, **keywords)
+            class LockAttemptConnection:
+                def execute(self, statement: str, *parameters: object) -> object:
+                    if statement == "BEGIN IMMEDIATE":
+                        lock_attempted.set()
+                    return connection.execute(statement, *parameters)
+
+                def close(self) -> None:
+                    connection.close()
+
+            return LockAttemptConnection()  # type: ignore[return-value]
+
+        def renew() -> None:
+            started.set()
+            try:
+                outcome.append(heartbeat(self.root, lease, central_database=database))
+            except Exception as error:
+                outcome.append(error)
+
+        with patch("engineering_platform.execution_lease._connection", side_effect=traced_connection):
+            worker = Thread(target=renew)
+            worker.start()
+            self.assertTrue(started.wait(1))
+            self.assertTrue(lock_attempted.wait(1))
+            blocker.execute("COMMIT")
+            blocker.close()
+            worker.join(2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], Lease)
+        renewed = outcome[0]
+        assert isinstance(renewed, Lease)
+        self.assertEqual(renewed.lease_id, lease.lease_id)
+        self.assertGreater(renewed.expires_at, lease.expires_at)
 
     def test_background_heartbeat_retains_operation_and_original_cause(self) -> None:
         lease = acquire(self.root, "inbox-lease", identity="host", instance_id="instance-a")
