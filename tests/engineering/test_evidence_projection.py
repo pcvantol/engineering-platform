@@ -134,6 +134,23 @@ class EvidenceProjectionTests(unittest.TestCase):
         self.assertIn("GIT_EVIDENCE_BOUNDED", git.text)
         self.assertIn("GITHUB_EVIDENCE_BOUNDED", github.text)
 
+    def test_read_only_assessment_proxy_refuses_github_delivery_actions(self) -> None:
+        with TemporaryDirectory() as temporary:
+            executable_directory = Path(temporary) / "bin"
+            executable_directory.mkdir()
+            _write_fixture_launcher(executable_directory / "gh", "raise SystemExit(0)")
+            with ToolProxyEnvironment(deny_delivery_mutations=True) as environment:
+                environment["ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
+                refused = subprocess.run(  # nosec B603 -- controlled fixture
+                    ("gh", "pr", "ready", "120"), capture_output=True, check=False, env=environment, text=True,
+                )
+                observed = subprocess.run(  # nosec B603 -- controlled fixture
+                    ("gh", "pr", "view", "120"), capture_output=True, check=False, env=environment, text=True,
+                )
+            self.assertEqual(refused.returncode, 126)
+            self.assertIn("refused", refused.stderr)
+            self.assertEqual(observed.returncode, 0)
+
     def test_unknown_or_exact_source_output_is_not_silently_summarized(self) -> None:
         raw = "exact source\n" * 1000
         projected = project_output(("sed", "-n", "1,100p", "source.py"), raw, 0)

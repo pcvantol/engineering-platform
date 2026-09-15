@@ -520,6 +520,7 @@ class CodexCliClient:
         self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
+        assessment_contract = getattr(self, "_validation_contract", False)
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -572,6 +573,19 @@ class CodexCliClient:
                 },
             },
         }
+        if assessment_contract:
+            # A local-validation turn is an assessment of host receipts, not
+            # a delivery turn.  Keep the legacy PR echo only as a bounded
+            # compatibility signal; lifecycle fields are projected by EP.
+            schema = {
+                "type": "object", "additionalProperties": False,
+                "required": ["terminal_state", "diagnostic", "pull_request"],
+                "properties": {
+                    "terminal_state": {"type": "string", "enum": ["COMPLETE", "WAITING", "FAILED", "BLOCKED"]},
+                    "diagnostic": {"type": "string", "maxLength": 500},
+                    "pull_request": {"type": ["integer", "null"]},
+                },
+            }
         with tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", suffix=".json", delete=False
         ) as handle:
@@ -592,7 +606,7 @@ class CodexCliClient:
                 command.extend(("--add-dir", str(extra_root)))
             command.extend(("--output-schema", str(schema_path), prompt))
             started = time.monotonic()
-            proxy = ToolProxyEnvironment()
+            proxy = ToolProxyEnvironment(deny_delivery_mutations=assessment_contract)
             with proxy as environment:
                 completed = self._run_invocation(tuple(command), root, environment)
             self.last_context_escalations = proxy.context_escalations()
@@ -623,7 +637,15 @@ class CodexCliClient:
             )
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
-            result = AgentResult(**raw)
+            if assessment_contract:
+                if not isinstance(raw, dict):
+                    raise TypeError("validation assessment must be an object")
+                result = AgentResult(
+                    str(raw["terminal_state"]), pull_request=raw["pull_request"],
+                    diagnostic=raw["diagnostic"],
+                )
+            else:
+                result = AgentResult(**raw)
             if not isinstance(result.validation_evidence, (list, tuple)) or not isinstance(result.quality_evidence, (list, tuple)):
                 raise TypeError("execution evidence must be a list")
             if result.validation_disposition not in {"product_failure", "environmental_instability"}:
@@ -671,10 +693,12 @@ class CodexCliClient:
         if hasattr(self, "_sandbox_override"):
             raise RunnerError("nested validation sandbox override is invalid")
         self._sandbox_override = "read-only"
+        self._validation_contract = True
         try:
             return self.invoke(root, prompt)
         finally:
             del self._sandbox_override
+            del self._validation_contract
 
     def _run_invocation(
         self, command: tuple[str, ...], root: Path, environment: Mapping[str, str] | None = None

@@ -1342,6 +1342,38 @@ class EngineeringRunner:
             empty_summary="Agent invocation did not return a validation summary.",
         ),))
 
+    def _accept_validation_pr_reference(
+        self, state: TransactionState, result: AgentResult, candidate: RepositoryEvidence,
+    ) -> tuple[AgentResult, str | None]:
+        """Accept only a pre-bound PR echo from a read-only assessment.
+
+        The number in provider output is never lifecycle authority.  It is a
+        compatibility reference and has to match independently observed,
+        candidate-bound EP state before it can be normalized away.
+        """
+        reported = result.pull_request
+        if reported is None:
+            return result, None
+        bound = state.pull_request or state.implementation_pull_request
+        if bound is None:
+            return result, "unexpected_validation_pull_request"
+        if reported != bound:
+            return result, "unexpected_validation_pull_request"
+        try:
+            observed = self.github.pull_request(bound)
+        except RunnerError:
+            return result, "validation_pull_request_unverified"
+        if (
+            observed.number != bound or observed.state not in {"OPEN", "MERGED"}
+            or observed.head_branch != candidate.branch or observed.head_sha != candidate.head_sha
+            or candidate.repository != state.repository
+        ):
+            return result, "validation_pull_request_scope_conflict"
+        # The host keeps the binding in TransactionState.  Removing this echo
+        # from the executable result makes it impossible for a later delivery
+        # transition to mistake assessment metadata for creation authority.
+        return replace(result, pull_request=None), None
+
     @staticmethod
     def _is_environmental_validation_instability(result: AgentResult) -> bool:
         """Require explicit classification and contradictory bounded test evidence.
@@ -2148,12 +2180,25 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             if result.branch and result.branch != branch:
                 validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
                 return self._save_terminal(validation, "BLOCKED", "local_validation_scope", "Local validation changed the bounded implementation branch."), implementation
-            if result.pull_request:
-                validation = self._record_local_validation_audit(validation, result=result, outcome="validated", profile=profile)
+            normalized_result, reference_error = self._accept_validation_pr_reference(
+                validation, result, candidate,
+            )
+            if reference_error is not None:
+                rejected = replace(
+                    result, diagnostic=(
+                        "Read-only assessment referenced an unbound or candidate-incompatible pull request."
+                        if reference_error != "validation_pull_request_unverified"
+                        else "Read-only assessment pull-request reference could not be independently verified."
+                    ),
+                )
+                validation = self._record_local_validation_audit(
+                    validation, result=rejected, outcome="assessment_rejected", profile=profile,
+                )
                 return self._save_terminal(
-                    validation, "BLOCKED", "implementation_pr_before_assurance",
-                    "Read-only local validation returned a pull request before mandatory assurance.",
+                    validation, "BLOCKED", reference_error,
+                    rejected.diagnostic,
                 ), implementation
+            result = normalized_result
             candidate_unchanged = (
                 after_validation is not None
                 and after_validation.clean

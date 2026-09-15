@@ -3125,8 +3125,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         repository = FakeRepository(branch=branch)
         repository.evidence = RepositoryEvidence("pcvantol/djconnect", branch, candidate_b, True)
         runner = EngineeringRunner(
-            self.root, self.store, repository, FakeGitHub([]),
-            FakeAgent(AgentResult("COMPLETE", branch)), lambda _: None,
+            self.root, self.store, repository,
+            FakeGitHub([PullRequestEvidence(118, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=candidate_b)]),
+            FakeAgent(AgentResult("COMPLETE", branch, 118)), lambda _: None,
         )
         runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
         state = TransactionState(
@@ -3146,6 +3147,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(validated.pull_request, 118)
         self.assertEqual(validated.local_validation_audit[-1]["outcome"], "validated")
         self.assertEqual(result.terminal_state, "COMPLETE")
+        self.assertIsNone(result.pull_request)
 
     def test_prebound_pr_resume_reconciles_p_to_candidate_b_before_validation(self) -> None:
         branch, candidate_b, pull_number = "codex/prebound-reconcile", "b" * 40, 118
@@ -3319,9 +3321,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertTrue(state.commit_evidence, state.diagnostic)
         self.assertEqual(state.phase, "BLOCKED", state.diagnostic)
         self.assertTrue(state.terminal)
-        self.assertEqual(state.next_action, "implementation_pr_before_assurance")
+        self.assertEqual(state.next_action, "unexpected_validation_pull_request")
         self.assertEqual(state.local_validation_iterations, 1)
-        self.assertEqual(state.local_validation_audit[0]["outcome"], "validated")
+        self.assertEqual(state.local_validation_audit[0]["outcome"], "assessment_rejected")
         self.assertEqual(len(agent.prompts), 2)
         self.assertIn("Local repository validation gate", agent.prompts[1])
 
