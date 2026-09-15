@@ -3896,11 +3896,12 @@ def _central_console_chat_context(
         row = connection.execute(
             """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,
                       d.submission_id,s.repository_id,s.producer_id,s.producer_type,
-                      s.producer_version,s.prompt,h.prompt_title
+                      s.producer_version,s.prompt,
+                      COALESCE(h.prompt_title,s.engineering_action_id,s.submission_id,r.run_id) AS prompt_title
                    FROM ep_execution_runs AS r
                    JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
                    JOIN ep_submissions AS s ON s.submission_id=d.submission_id
-                   JOIN prompt_execution_history AS h ON h.run_id=r.run_id
+                   LEFT JOIN prompt_execution_history AS h ON h.run_id=r.run_id
                   WHERE r.project_id=? AND d.project_id=? AND r.run_id=?
                     AND r.state IN ('COMPLETE','BLOCKED','FAILED')""",
             (project_id, project_id, run_id),
@@ -3913,6 +3914,7 @@ def _central_console_chat_context(
     except UnicodeDecodeError:
         report_text = "Niet beschikbaar."
     transcript = _central_console_chat_history(data_root, project_id, run_id) or []
+    diagnostic = _central_console_terminal_execution_diagnostic(data_root, run_id)
     conversation = [
         {
             "role": str(entry["role"]),
@@ -3938,6 +3940,7 @@ def _central_console_chat_context(
         },
         "submitted_prompt": _central_chat_text(row["prompt"], limit=4_000),
         "verified_engineering_report": _central_chat_text(report_text, limit=6_000),
+        "terminal_diagnostic": _central_chat_text(diagnostic, limit=1_000),
         "conversation": conversation,
     }
 
@@ -3955,9 +3958,7 @@ def _central_console_append_chat_message(
     cutoff = (datetime.now(timezone.utc) - timedelta(days=CHAT_RETENTION_DAYS)).isoformat()
     with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
-            """SELECT 1 FROM ep_parity_lifecycle_dispatches AS d
-                 JOIN prompt_execution_history AS h ON h.run_id=d.run_id
-                WHERE d.project_id=? AND d.run_id=?""",
+            "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND run_id=?",
             (project_id, run_id),
         ).fetchone()
         if belongs is None:
@@ -3997,9 +3998,7 @@ def _central_console_clear_chat_history(data_root: Path, project_id: str, run_id
     """Clear only the selected project's advisory transcript, never run evidence."""
     with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
-            """SELECT 1 FROM ep_parity_lifecycle_dispatches AS d
-                 JOIN prompt_execution_history AS h ON h.run_id=d.run_id
-                WHERE d.project_id=? AND d.run_id=?""",
+            "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND run_id=?",
             (project_id, run_id),
         ).fetchone()
         if belongs is None:
