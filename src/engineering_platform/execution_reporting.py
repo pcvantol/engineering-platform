@@ -908,6 +908,7 @@ def format_terminal_management_summary(state: TransactionState) -> str:
             f"Terminal checkpoint: {state.phase}.",
             f"Codex execution: {codex}.",
             f"Implementation: branch={state.implementation_branch}; PR={state.implementation_pull_request}; merge={state.implementation_merge_commit}.",
+            f"Observed repair work: branch={state.branch}; PR={state.pull_request}; commits={len(state.commit_evidence)}.",
             f"Finalization: branch={state.finalization_branch}; PR={state.finalization_pull_request}; merge={state.finalization_merge_commit}.",
             "No release, deployment or publication was performed.",
         )
@@ -920,6 +921,11 @@ def _blocked_management_outcome(state: TransactionState) -> str:
         return (
             "BLOCKED — implementation merge was verified, but Finalization and "
             "end reconciliation did not complete."
+        )
+    if state.pull_request is not None or state.commit_evidence:
+        return (
+            "BLOCKED — source work or a draft pull request was observed, but PR binding or "
+            "final candidate qualification did not complete; no delivery is claimed."
         )
     return "BLOCKED — no engineering changes were executed or delivered."
 
