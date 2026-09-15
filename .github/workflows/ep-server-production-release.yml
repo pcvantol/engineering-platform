@@ -265,7 +265,9 @@ jobs:
     if: needs.retain-qualified-release-operation.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # The qualified operation is retained in a private draft release. This
+      # job must read that draft receipt before it can publish to PyPI.
+      contents: write
       # PyPI Trusted Publishing exchanges this ephemeral GitHub OIDC token
       # for a project- and workflow-bound publication credential.
       id-token: write
