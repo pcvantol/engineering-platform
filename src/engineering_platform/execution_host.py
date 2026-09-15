@@ -1342,8 +1342,35 @@ class EngineeringRunner:
             empty_summary="Agent invocation did not return a validation summary.",
         ),))
 
+    def _validation_pr_expectation(
+        self, state: TransactionState, candidate: RepositoryEvidence,
+    ) -> tuple[PullRequestEvidence | None, str | None]:
+        """Read the owning PR before assessment; never derive it from output."""
+        bindings = {value for value in (state.pull_request, state.implementation_pull_request) if value is not None}
+        if len(bindings) > 1:
+            return None, "validation_pull_request_binding_conflict"
+        if not bindings:
+            return None, None
+        number = bindings.pop()
+        try:
+            observed = self.github.pull_request(number)
+        except RunnerError:
+            return None, "validation_pull_request_unverified"
+        expected_base = "main"
+        plan = self._repair_plan(state)
+        if isinstance(plan, dict) and isinstance(plan.get("repair_base"), str):
+            expected_base = plan["repair_base"]
+        if (
+            observed.number != number or observed.state != "OPEN"
+            or observed.head_branch != candidate.branch or observed.head_sha != candidate.head_sha
+            or observed.base_branch != expected_base or candidate.repository != state.repository
+        ):
+            return None, "validation_pull_request_scope_conflict"
+        return observed, None
+
     def _accept_validation_pr_reference(
         self, state: TransactionState, result: AgentResult, candidate: RepositoryEvidence,
+        expected: PullRequestEvidence | None,
     ) -> tuple[AgentResult, str | None]:
         """Accept only a pre-bound PR echo from a read-only assessment.
 
@@ -1354,21 +1381,10 @@ class EngineeringRunner:
         reported = result.pull_request
         if reported is None:
             return result, None
-        bound = state.pull_request or state.implementation_pull_request
-        if bound is None:
+        if expected is None:
             return result, "unexpected_validation_pull_request"
-        if reported != bound:
+        if reported != expected.number:
             return result, "unexpected_validation_pull_request"
-        try:
-            observed = self.github.pull_request(bound)
-        except RunnerError:
-            return result, "validation_pull_request_unverified"
-        if (
-            observed.number != bound or observed.state not in {"OPEN", "MERGED"}
-            or observed.head_branch != candidate.branch or observed.head_sha != candidate.head_sha
-            or candidate.repository != state.repository
-        ):
-            return result, "validation_pull_request_scope_conflict"
         # The host keeps the binding in TransactionState.  Removing this echo
         # from the executable result makes it impossible for a later delivery
         # transition to mistake assessment metadata for creation authority.
@@ -2129,12 +2145,19 @@ class EngineeringRunner:
                 )
                 return validation, failed
             host_evidence = self._validation_assessment_evidence(validation_context)
+            expected_pr, expectation_error = self._validation_pr_expectation(validation, candidate)
+            if expectation_error is not None:
+                failed = AgentResult("FAILED", branch=branch, diagnostic="The bound pull request could not be verified before read-only assessment.")
+                validation = self._record_local_validation_audit(
+                    validation, result=failed, outcome="assessment_rejected", profile=profile,
+                )
+                return self._save_terminal(validation, "BLOCKED", expectation_error, failed.diagnostic), implementation
             instruction = f"""
 
 Local repository validation gate — read-only assessment:
 - Stay on exactly `{branch}`. Do not merge or change scope.
 - The host has already selected and executed the canonical required controls through its private validation scratch. Their candidate-bound command receipts below are authoritative.
-- Do not execute tests, scripts, package managers, Python, SQLite, tempfile probes, or any other validation command. Do not substitute, repeat, reinterpret, or create validation evidence. Set `validation_evidence` to `[]`.
+- Do not execute tests, scripts, package managers, Python, SQLite, tempfile probes, or any other validation command. Do not substitute, repeat, reinterpret, or create validation evidence.
 - Assess only whether the supplied host evidence is internally usable for this unchanged candidate. Return `COMPLETE` when it is; otherwise return `WAITING` or `FAILED` with a concise safe diagnostic.
 - Do not modify files, index, branch, commits, remotes, pull requests, or external state. The host enforces a read-only provider sandbox.
 - Do not create a pull request. First publication is a later host-owned gate after both mandatory reviews pass.
@@ -2180,14 +2203,18 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             if result.branch and result.branch != branch:
                 validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
                 return self._save_terminal(validation, "BLOCKED", "local_validation_scope", "Local validation changed the bounded implementation branch."), implementation
+            observed_pr, post_expectation_error = self._validation_pr_expectation(validation, candidate)
+            if post_expectation_error is None and expected_pr is not None and observed_pr != expected_pr:
+                post_expectation_error = "validation_pull_request_scope_conflict"
             normalized_result, reference_error = self._accept_validation_pr_reference(
-                validation, result, candidate,
+                validation, result, candidate, expected_pr,
             )
-            if reference_error is not None:
+            if post_expectation_error is not None or reference_error is not None:
+                error_code = post_expectation_error or reference_error
                 rejected = replace(
                     result, diagnostic=(
                         "Read-only assessment referenced an unbound or candidate-incompatible pull request."
-                        if reference_error != "validation_pull_request_unverified"
+                        if error_code not in {"validation_pull_request_unverified", "validation_pull_request_scope_conflict"}
                         else "Read-only assessment pull-request reference could not be independently verified."
                     ),
                 )
@@ -2195,7 +2222,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                     validation, result=rejected, outcome="assessment_rejected", profile=profile,
                 )
                 return self._save_terminal(
-                    validation, "BLOCKED", reference_error,
+                    validation, "BLOCKED", error_code,
                     rejected.diagnostic,
                 ), implementation
             result = normalized_result

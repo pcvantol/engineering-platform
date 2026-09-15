@@ -1373,6 +1373,7 @@ class ClientContractTest(unittest.TestCase):
                 "commit_sha": "c" * 40,
             }
         )
+        assessment_message = json.dumps({"terminal_state": "COMPLETE", "diagnostic": "safe", "pull_request": 12})
         review_output = "\n".join((
             json.dumps({"type": "turn.started", "metadata": {"model": "gpt-5.6-terra"}}),
             json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 25, "output_tokens": 10}}),
@@ -1381,7 +1382,7 @@ class ClientContractTest(unittest.TestCase):
         run.side_effect = [
             subprocess.CompletedProcess(("codex",), 0, review_output, ""),
             subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
-            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
+            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": assessment_message}}), ""),
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1397,6 +1398,26 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(validation.pull_request, 12)
         self.assertIn("read-only", run.call_args_list[2].args[0])
         self.assertFalse(hasattr(client, "_sandbox_override"))
+
+    @patch("engineering_platform.execution_host.subprocess.run")
+    def test_codex_validation_contract_rejects_malformed_local_results(self, run: object) -> None:
+        invalid = (
+            {"terminal_state": "COMPLETE", "diagnostic": "ok"},
+            {"terminal_state": "COMPLETE", "diagnostic": "ok", "pull_request": True},
+            {"terminal_state": "COMPLETE", "diagnostic": "ok", "pull_request": 1.5},
+            {"terminal_state": "UNKNOWN", "diagnostic": "ok", "pull_request": None},
+            {"terminal_state": "COMPLETE", "diagnostic": 7, "pull_request": None},
+            {"terminal_state": "COMPLETE", "diagnostic": "ok", "pull_request": None, "branch": "codex/x"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            client = CodexCliClient(CodexCliProvider())
+            for payload in invalid:
+                message = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}})
+                run.return_value = subprocess.CompletedProcess(("codex",), 0, message, "")
+                with self.assertRaises(CodexInvocationError):
+                    client.validate(Path(temporary), "assessment")
+                self.assertFalse(hasattr(client, "_sandbox_override"))
+                self.assertFalse(hasattr(client, "_validation_contract"))
 
     @patch("engineering_platform.execution_host.time.monotonic", side_effect=(10.0, 12.75))
     @patch("engineering_platform.execution_host.subprocess.run")
@@ -2963,7 +2984,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         """The read-only provider result is not the lifecycle PR binding."""
         branch, sha, pull_number = "codex/validation-keeps-pr", "a" * 40, 118
         runner = EngineeringRunner(
-            self.root, self.store, FakeRepository(branch=branch), FakeGitHub([]),
+            self.root, self.store, FakeRepository(branch=branch), FakeGitHub([
+                PullRequestEvidence(pull_number, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=sha),
+            ]),
             FakeAgent(AgentResult("COMPLETE", branch)), lambda _: None,
         )
         runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)

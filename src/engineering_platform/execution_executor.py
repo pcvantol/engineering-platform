@@ -50,6 +50,27 @@ _UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): [^(]+ \(([^)]+)\)$", re.MULTIL
 _UNITTEST_COUNTS = re.compile(r"FAILED \((?P<details>[^)]*)\)")
 _UNITTEST_COUNT = re.compile(r"\b(?P<name>failures|errors)=(?P<count>\d+)\b")
 _TURN_ABORTED = re.compile(r'"type"\s*:\s*"turn_aborted"[^\n]*"reason"\s*:\s*"interrupted"', re.IGNORECASE)
+_ASSESSMENT_STATES = frozenset({"COMPLETE", "WAITING", "FAILED", "BLOCKED"})
+
+
+def _parse_validation_assessment(raw: object) -> AgentResult:
+    """Validate the small read-only contract before projecting AgentResult.
+
+    JSON Schema constrains cooperative providers, but terminal lifecycle code
+    must fail closed for malformed, old, or adapter-produced output too.
+    """
+    if not isinstance(raw, dict) or set(raw) != {"terminal_state", "diagnostic", "pull_request"}:
+        raise TypeError("validation assessment fields are invalid")
+    state, diagnostic, pull_request = raw["terminal_state"], raw["diagnostic"], raw["pull_request"]
+    if not isinstance(state, str) or state not in _ASSESSMENT_STATES:
+        raise TypeError("validation assessment terminal state is invalid")
+    if not isinstance(diagnostic, str) or len(diagnostic) > 500:
+        raise TypeError("validation assessment diagnostic is invalid")
+    if pull_request is not None and (
+        not isinstance(pull_request, int) or isinstance(pull_request, bool) or pull_request < 1
+    ):
+        raise TypeError("validation assessment pull request is invalid")
+    return AgentResult(state, pull_request=pull_request, diagnostic=diagnostic)
 
 
 def provider_turn_interruption(stdout: str, stderr: str) -> str | None:
@@ -638,12 +659,7 @@ class CodexCliClient:
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
             if assessment_contract:
-                if not isinstance(raw, dict):
-                    raise TypeError("validation assessment must be an object")
-                result = AgentResult(
-                    str(raw["terminal_state"]), pull_request=raw["pull_request"],
-                    diagnostic=raw["diagnostic"],
-                )
+                result = _parse_validation_assessment(raw)
             else:
                 result = AgentResult(**raw)
             if not isinstance(result.validation_evidence, (list, tuple)) or not isinstance(result.quality_evidence, (list, tuple)):
@@ -671,7 +687,7 @@ class CodexCliClient:
             if result.diagnostic is not None:
                 result = replace(result, diagnostic=redact_diagnostic(result.diagnostic))
             return result
-        except (IndexError, json.JSONDecodeError, TypeError) as error:
+        except (IndexError, KeyError, json.JSONDecodeError, TypeError) as error:
             interruption = provider_turn_interruption(completed.stdout, completed.stderr)
             raise CodexInvocationError(
                 "Provider turn interrupted before returning the required structured terminal result."

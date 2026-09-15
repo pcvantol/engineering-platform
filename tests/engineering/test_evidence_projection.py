@@ -139,6 +139,7 @@ class EvidenceProjectionTests(unittest.TestCase):
             executable_directory = Path(temporary) / "bin"
             executable_directory.mkdir()
             _write_fixture_launcher(executable_directory / "gh", "raise SystemExit(0)")
+            _write_fixture_launcher(executable_directory / "git", "raise SystemExit(0)")
             with ToolProxyEnvironment(deny_delivery_mutations=True) as environment:
                 environment["ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
                 refused = subprocess.run(  # nosec B603 -- controlled fixture
@@ -147,9 +148,13 @@ class EvidenceProjectionTests(unittest.TestCase):
                 observed = subprocess.run(  # nosec B603 -- controlled fixture
                     ("gh", "pr", "view", "120"), capture_output=True, check=False, env=environment, text=True,
                 )
+                api = subprocess.run(("gh", "api", "--method", "PATCH", "/repos/o/r/pulls/120"), capture_output=True, check=False, env=environment, text=True)  # nosec B603
+                push = subprocess.run(("git", "-C", temporary, "push"), capture_output=True, check=False, env=environment, text=True)  # nosec B603
             self.assertEqual(refused.returncode, 126)
             self.assertIn("refused", refused.stderr)
             self.assertEqual(observed.returncode, 0)
+            self.assertEqual(api.returncode, 126)
+            self.assertEqual(push.returncode, 126)
 
     def test_unknown_or_exact_source_output_is_not_silently_summarized(self) -> None:
         raw = "exact source\n" * 1000

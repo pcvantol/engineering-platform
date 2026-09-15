@@ -186,7 +186,11 @@ def proxy_main(name: str | None = None) -> None:
         raise SystemExit(f"Evidence proxy could not resolve {name}.")
     completed = subprocess.run(  # nosec B603
         (executable, *sys.argv[1:]), text=True, capture_output=True,
-        env={**os.environ, "PATH": original_path}, check=False,
+        # Retain the interposer for descendants.  Restoring only the original
+        # PATH let a proxied interpreter launch an unmediated `gh` child.
+        # The original path remains separately available for this launcher's
+        # own executable resolution above, avoiding recursive proxy loops.
+        env=os.environ.copy(), check=False,
     )
     raw = f"{completed.stdout}{completed.stderr}"
     if os.environ.get("ENGINEERING_PLATFORM_EVIDENCE_EXPAND") == "1":
@@ -205,10 +209,16 @@ def _is_delivery_mutation(name: str, arguments: Iterable[str]) -> bool:
     """
     args = tuple(arguments)
     if name == "gh":
-        return len(args) >= 2 and args[0] == "pr" and args[1] in {"create", "edit", "ready", "merge"}
+        if len(args) >= 2 and args[0] == "pr" and args[1] in {"create", "edit", "ready", "merge"}:
+            return True
+        return bool(args and args[0] == "api" and any(value in {"PATCH", "POST", "PUT", "DELETE"} for value in args))
     if name != "git" or not args:
         return False
-    return args[0] in {"commit", "push", "switch", "checkout", "branch", "merge", "reset", "rebase"}
+    # Git accepts global options before the command (`git -C repo push`).
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        index += 2 if args[index] in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"} else 1
+    return index < len(args) and args[index] in {"commit", "push", "switch", "checkout", "branch", "merge", "reset", "rebase"}
 
 
 def context_escalation_main(_: str | None = None) -> None:
