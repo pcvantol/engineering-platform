@@ -1015,6 +1015,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertTrue(report["ready"])
         with urlopen(f"http://127.0.0.1:{port}/health") as response:
             platform_health = json.loads(response.read().decode("utf-8"))
+        with urlopen(f"http://127.0.0.1:{port}/api/health") as response:
+            health_alias = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
+        self.assertEqual(health_alias, platform_health)
         self.assertEqual(platform_health["health"], "ok")
         self.assertEqual(platform_health["product_version"], server._console_platform_version())
         runtime_identity = platform_health["runtime_identity"]
