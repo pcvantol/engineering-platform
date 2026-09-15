@@ -5684,6 +5684,16 @@ test.describe("Engineering Status browser smoke", () => {
       document.querySelector("#promptHistory").open = true;
       r({ last_executed_run: "inbox-actions", watcher_state: "WATCHER_IDLE" }, {});
     });
+    // The dashboard stylesheet is served separately from the document shell.
+    // Wait for its fixed-table rule before measuring cells so a cold browser
+    // cannot observe the transient automatic layout used while CSS loads.
+    await expect(page.locator("#promptHistory .log-table")).toHaveCSS("table-layout", "fixed");
+    const titleCell = page.locator("#promptHistoryRows tr").first().locator("td").nth(2);
+    // Rendering the history can replace the row after the snapshot refresh.
+    // Measure only after that replacement has settled on the compact width.
+    await expect.poll(async () => Math.round(await titleCell.evaluate(
+      (element) => element.getBoundingClientRect().width,
+    ))).toBeLessThanOrEqual(384);
     const actions = page.locator("#promptHistoryRows .prompt-history-actions").first();
     await expect(actions).toHaveCSS("flex-wrap", "nowrap");
     const layout = await actions.evaluate((element) => ({
