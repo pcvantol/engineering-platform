@@ -37,6 +37,7 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("GET",), r"/(?:favicon\.ico|apple-touch-icon(?:-precomposed)?\.png)", PLATFORM, "console_shell", "Console icons"),
     ConsoleRoute(("GET",), r"/assets/[A-Za-z0-9_./-]+", PLATFORM, "console_shell", "Installed Console assets"),
     ConsoleRoute(("GET",), r"/health", PLATFORM, "platform_components", "Platform Components health", True),
+    ConsoleRoute(("GET",), r"/api/health", PLATFORM, "platform_components", "Platform Components health compatibility alias", True),
     ConsoleRoute(("GET",), r"/api/platform-status", PLATFORM, "platform_components", "Platform Components projection", True),
     ConsoleRoute(("GET",), r"/api/(?:dashboard-snapshot|status|events)", PLATFORM, "platform_components", "Platform status projection or stream", True),
     ConsoleRoute(("GET",), rf"/api/components/{PLATFORM_COMPONENT_ROUTE_PATTERN}/details", PLATFORM, "platform_components", "Component detail popout", True),

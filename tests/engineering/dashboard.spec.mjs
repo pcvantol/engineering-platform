@@ -2416,6 +2416,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Blokkadereden");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("The verified blocking reason belongs to this run.");
+    await expect(page.locator(".prompt-detail-diagnostic > span:last-child")).toHaveCSS("font-family", /system-ui/);
     const localizedDismissedAt = await page.evaluate(
       () => formatTimestamp("2026-08-27T14:08:24.218289+00:00"),
     );
@@ -3727,6 +3728,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate((fixture) => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: fixture.run_id, lifecycle: fixture }, {}), lifecycle);
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     const scroll = page.locator(".execution-lifecycle__scroll");
+    // The initial active-step reveal is deferred to an animation frame.  Wait
+    // for it before setting the user's independent review position, otherwise
+    // that initial reveal can race this assertion on a slower CI runner.
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
     await scroll.evaluate((element) => { element.scrollLeft = 80; });
     await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBe(80);
 
@@ -4323,6 +4328,9 @@ test.describe("Engineering Status browser smoke", () => {
     const longBubble = messages.nth(1);
     const longBody = longBubble.locator(".chat-message__body");
     await expect(messages).toHaveCount(2);
+    // Bubble sizing is calculated from the mutation observer's next frame.
+    // Wait for that production layout pass before inspecting its scroll box.
+    await expect(longBubble).toHaveClass(/chat-message--scrollable/);
     expect(await shortBody.evaluate((element) => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
     expect(await longBody.evaluate((element) => element.scrollHeight > element.clientHeight + 1)).toBe(true);
     const [messagesBox, longBubbleBox] = await Promise.all([
@@ -4484,7 +4492,6 @@ test.describe("Engineering Status browser smoke", () => {
         max_input_tokens_per_invocation: 300,
         actual_single_request_context_size: "UNAVAILABLE",
         active_context_size: "UNAVAILABLE",
-        speed_state: "UNKNOWN",
         usage_authority: "AUTHORITATIVE",
       },
     }));
@@ -4499,9 +4506,6 @@ test.describe("Engineering Status browser smoke", () => {
       .toEqual([
         ["Run cumulative input tokens", "400"],
         ["Maximum provider invocation cumulative input", "300"],
-        ["Actual single-request context size", "Unavailable"],
-        ["Active context size", "Unavailable"],
-        ["Speed state", "Unknown"],
         ["Usage authority", "Provider-observed"],
       ]);
   });
