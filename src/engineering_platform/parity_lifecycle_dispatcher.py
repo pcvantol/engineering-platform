@@ -661,6 +661,19 @@ class ParityLifecycleDispatcher:
                                      run_id: str, error: Exception, stage: str = "RUNNER_INITIALIZATION") -> None:
         """Persist only the missing pre-checkpoint explanation, never a run state."""
         message = _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(error), limit=500))
+        cause = error.__cause__
+        operation = getattr(cause, "operation", None)
+        root_cause = cause.__cause__ if cause is not None and cause.__cause__ is not None else cause
+        cause_payload = None
+        if root_cause is not None:
+            cause_payload = {
+                "operation": operation if isinstance(operation, str) else None,
+                "error_type": type(root_cause).__name__,
+                "error_module": type(root_cause).__module__,
+                "message": _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(root_cause), limit=500)),
+                "sqlite_errorcode": getattr(root_cause, "sqlite_errorcode", None),
+                "sqlite_errorname": getattr(root_cause, "sqlite_errorname", None),
+            }
         component = code = None
         if message.startswith("HISTORICAL_ADMISSION_BLOCKED|"):
             _, component, code, message = message.split("|", 3)
@@ -669,7 +682,7 @@ class ParityLifecycleDispatcher:
                    "repository_id": context.repository_id, "run_id": run_id,
                    "failure_stage": stage, "error_type": type(error).__name__,
                    "diagnostic_code": "RUNNER_EARLY_FAILURE" if stage == "RUNNER_INITIALIZATION" else "PRECHECKPOINT_FAILURE", "message": message,
-                   "admission_component": component, "component_code": code,
+                   "admission_component": component, "component_code": code, "cause": cause_payload,
                    "recorded_at": _utcnow()}
         path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         path.chmod(0o600)

@@ -1057,6 +1057,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with patch("engineering_platform.server.os.kill") as kill:
             self.assertTrue(server._alive(123))
         kill.assert_called_once_with(123, 0)
+        # This test owns a deliberately stale receipt.  Do not let its fake
+        # PID escape into the generic service-stop teardown path.
+        (self.root / server.SERVER_RUNTIME_FILENAME).unlink()
 
     def test_initialize_rejects_an_invalid_persisted_runtime_identity(self) -> None:
         self.root.mkdir(parents=True)
