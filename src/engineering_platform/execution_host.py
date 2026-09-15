@@ -245,7 +245,7 @@ def _validation_profile_digest(validation_context: object) -> str | None:
 
 
 def _required_validation_controls_pass(
-    state: TransactionState, validation_context: object,
+    state: TransactionState, validation_context: object, *, expected_candidate_sha: str | None,
 ) -> bool:
     """Require the exact current ordinal's candidate-bound terminal receipts."""
     if not isinstance(validation_context, dict):
@@ -254,11 +254,10 @@ def _required_validation_controls_pass(
     # can describe candidate A while a repair is qualifying candidate B; it
     # must not make B's freshly recorded host receipts look stale.  Assurance
     # currentness is checked separately when B reaches that later gate.
-    candidate = validation_context.get("candidate_sha")
-    if not isinstance(candidate, str):
+    if not isinstance(expected_candidate_sha, str) or re.fullmatch(r"[0-9a-f]{40}", expected_candidate_sha) is None:
         return False
     return strict_required_controls_pass(
-        validation_context, candidate_sha=candidate,
+        validation_context, candidate_sha=expected_candidate_sha,
         currentness=state.repair_iterations,
     )
 
@@ -279,7 +278,7 @@ def _has_current_local_validation_evidence(
         digest is not None
         and profile.get("validation_profile_digest") == digest
         and profile.get("candidate_sha") == validation_context.get("candidate_sha")
-        and _required_validation_controls_pass(state, validation_context)
+        and _required_validation_controls_pass(state, validation_context, expected_candidate_sha=profile.get("candidate_sha"))
     )
 
 
@@ -2037,7 +2036,7 @@ class EngineeringRunner:
                 existing_context = None
             controls_already_current = (
                 existing_context is not None
-                and _required_validation_controls_pass(validation, existing_context)
+                and _required_validation_controls_pass(validation, existing_context, expected_candidate_sha=candidate.head_sha)
             )
             if not controls_already_current:
                 try:
@@ -2083,7 +2082,7 @@ class EngineeringRunner:
                 validation_context is not None
                 and isinstance(validation_context.get("controls"), dict)
                 and validation_context["controls"]
-                and not _required_validation_controls_pass(validation, validation_context)
+                and not _required_validation_controls_pass(validation, validation_context, expected_candidate_sha=candidate.head_sha)
             ):
                 # The deterministic host receipts are the only authority for
                 # required controls.  Do not send a provider into a second,
@@ -2164,7 +2163,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             if (
                 result.terminal_state == "COMPLETE"
                 and candidate_unchanged
-                and _required_validation_controls_pass(validation, validation_context)
+                and _required_validation_controls_pass(validation, validation_context, expected_candidate_sha=candidate.head_sha)
             ):
                 validation = self._record_local_validation_audit(validation, result=result, outcome="validated", profile=profile)
                 return validation, replace(

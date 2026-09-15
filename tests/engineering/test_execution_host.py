@@ -2854,7 +2854,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             AgentResult("COMPLETE", branch, commit_sha=sha,
                         validation_evidence=({"command": "canonical suite", "result": "passed"},)),
         ])
-        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch=branch, base_branch="main")])
+        github = FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=sha)])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), github, agent, lambda _: None)
         runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
         state = TransactionState("repair-rereview", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
