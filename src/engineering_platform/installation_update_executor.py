@@ -135,6 +135,26 @@ def _verified(plan: InstallationUpdatePlan, action: EvidenceAction) -> dict[str,
     return evidence
 
 
+def _finalize_record_lifecycle(plan: InstallationUpdatePlan, *, cleanup: str) -> None:
+    """Synchronize the canonical installation record with durable update facts."""
+    try:
+        record = operational_installation_record.load(Path(plan.data_root))
+        replacement = {
+            **record,
+            "observed_state": "ACTIVE",
+            "verification": {"result": "PASS"},
+            "cleanup": {"result": cleanup},
+        }
+        operational_installation_record.replace_update_lifecycle(
+            Path(plan.data_root), expected_version=plan.target_version,
+            expected_artifact_digest=plan.target_digest,
+            expected_source_revision=plan.target_source_revision,
+            replacement=replacement,
+        )
+    except operational_installation_record.OperationalInstallationRecordError as error:
+        raise InstallationUpdateExecutorError("installation update lifecycle record is invalid") from error
+
+
 def _inventory(plan: InstallationUpdatePlan, action: EvidenceAction) -> dict[str, object]:
     """Recheck wheel bytes before accepting the owning inventory evidence."""
     try:
@@ -186,7 +206,16 @@ def execute(plan: InstallationUpdatePlan, actions: InstallationUpdateActions) ->
             if current["state"] == "ACTIVATED":
                 current = session.advance("VERIFIED", _verified(plan, actions.verify))
             if current["state"] in {"VERIFIED", "CLEANUP_PENDING"}:
-                current = session.cleanup()
+                _finalize_record_lifecycle(plan, cleanup="PENDING")
+                current = session.cleanup(
+                    after_cleanup=lambda: _finalize_record_lifecycle(plan, cleanup="COMPLETE"),
+                )
+            if current["state"] == "COMPLETE":
+                # A crash after journal completion in an older release left a
+                # truthful operation next to a stale pending installation
+                # record.  Reconciliation is idempotent and never reruns a
+                # service, migration, or cleanup action.
+                _finalize_record_lifecycle(plan, cleanup="COMPLETE")
             return current
     except InstallationUpdateOperationError as error:
         raise InstallationUpdateExecutorError("installation update execution failed") from error

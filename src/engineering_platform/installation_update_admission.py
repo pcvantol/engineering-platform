@@ -274,6 +274,21 @@ def _expected_replacement(
         raise InstallationUpdateAdmissionError("execution admission target record is invalid") from error
 
 
+def _finalized_replacement(record: Mapping[str, object] | None,
+                           expected: Mapping[str, object] | None) -> bool:
+    """Accept only the post-verification lifecycle of the exact target record."""
+    if record is None or expected is None:
+        return False
+    lifecycle = {"observed_state", "verification", "cleanup"}
+    if any(record.get(field) != expected.get(field) for field in set(expected) - lifecycle):
+        return False
+    return (
+        record.get("observed_state") == "ACTIVE"
+        and record.get("verification") == {"result": "PASS"}
+        and record.get("cleanup") == {"result": "COMPLETE"}
+    )
+
+
 def _validate_legacy_admission_identity(
     plan: InstallationUpdatePlan,
     admission: ExecutionAdmission,
@@ -413,8 +428,13 @@ def admitted_candidate(
                 raise InstallationUpdateAdmissionError("activated installation does not bind the admitted legacy candidate")
             elif server_service.configured_interpreter(Path(plan.data_root), home=service_home) != Path(candidate.interpreter):
                 raise InstallationUpdateAdmissionError("activated service does not bind the admitted legacy candidate")
-        elif state in {"ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE"}:
+        elif state == "ACTIVATED":
             if record != expected:
+                raise InstallationUpdateAdmissionError("activated installation does not bind the admitted legacy candidate")
+            if server_service.configured_interpreter(Path(plan.data_root), home=service_home) != Path(candidate.interpreter):
+                raise InstallationUpdateAdmissionError("activated service does not bind the admitted legacy candidate")
+        elif state in {"VERIFIED", "CLEANUP_PENDING", "COMPLETE"}:
+            if record != expected and not _finalized_replacement(record, expected):
                 raise InstallationUpdateAdmissionError("activated installation does not bind the admitted legacy candidate")
             if server_service.configured_interpreter(Path(plan.data_root), home=service_home) != Path(candidate.interpreter):
                 raise InstallationUpdateAdmissionError("activated service does not bind the admitted legacy candidate")
@@ -440,9 +460,13 @@ def admitted_candidate(
             _require_pre_activation_provenance(
                 plan, admission, _verify_pre_activation_record(plan, candidate, record),
             )
-    elif state in {"ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE"}:
+    elif state == "ACTIVATED":
         expected = _expected_replacement(plan, admission, candidate)
         if expected is None or record != expected:
+            raise InstallationUpdateAdmissionError("activated installation does not bind the admitted candidate")
+    elif state in {"VERIFIED", "CLEANUP_PENDING", "COMPLETE"}:
+        expected = _expected_replacement(plan, admission, candidate)
+        if expected is None or (record != expected and not _finalized_replacement(record, expected)):
             raise InstallationUpdateAdmissionError("activated installation does not bind the admitted candidate")
     else:
         raise InstallationUpdateAdmissionError("execution admission operation is invalid")
