@@ -3288,6 +3288,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
       run_id: "responsive-current-run",
+      prompt_title: "Aligned execution cards",
       lifecycle: {
         available: true,
         run_id: "responsive-current-run",
