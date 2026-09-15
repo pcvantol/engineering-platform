@@ -144,6 +144,13 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertIn('ep_draft_upload "$DRAFT_ID" "$QUALIFIED" "$QUALIFIED"', workflow)
         self.assertIn('source tools/qualification/github_draft_release.sh', workflow)
         self.assertIn('ep_draft_download "$DRAFT_ID" "$QUALIFIED"', workflow)
+        self.assertIn('DRAFT_ASSET_NAMES="$(ep_draft_asset_names "$DRAFT_ID")"', workflow)
+        self.assertIn("A successful exact asset listing is required before an existing", workflow)
+        self.assertIn("require_unpublished_pypi_identity", workflow)
+        self.assertLess(
+            workflow.index('DRAFT_ASSET_NAMES="$(ep_draft_asset_names "$DRAFT_ID")"'),
+            workflow.index('ep_draft_upload "$DRAFT_ID" "$QUALIFIED" "$QUALIFIED"'),
+        )
         self.assertIn("Existing PyPI publication has no durable original EP release receipt", workflow)
         self.assertIn('cmp "release-input/release-operation/operations/$OPERATION_ID.json"', workflow)
         self.assertIn("Qualify the actual registry wheel outside the source checkout", workflow)

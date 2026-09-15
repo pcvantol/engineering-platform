@@ -217,22 +217,38 @@ jobs:
           export EP_RELEASE_TAG="engineering-platform-v$VERSION" EP_RELEASE_SOURCE_SHA="$SOURCE_SHA" EP_RELEASE_TITLE="Engineering Platform $VERSION"
           source tools/qualification/github_draft_release.sh
           cp "release-operation/operations/$OPERATION_ID.json" "$QUALIFIED"
-          if DRAFT_ID="$(ep_draft_release_id 2>/dev/null)"; then
-            ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
-            cmp "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
-          else
+          require_unpublished_pypi_identity() {
             status_code="$(curl --silent --show-error --location --output pypi.json --write-out '%{http_code}' "https://pypi.org/pypi/engineering-platform/$VERSION/json")" || {
               echo 'PyPI identity lookup failed before durable operation retention.' >&2
               exit 1
             }
             case "$status_code" in
-              404) DRAFT_ID="$(ep_create_draft_release)"
-                   ep_draft_upload "$DRAFT_ID" "$QUALIFIED" "$QUALIFIED"
-                   ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
-                   cmp "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED" ;;
+              404) ;;
               200) echo 'Existing PyPI publication has no durable original EP release receipt.' >&2; exit 1 ;;
               *) echo "Unexpected PyPI identity lookup status: $status_code" >&2; exit 1 ;;
             esac
+          }
+          if DRAFT_ID="$(ep_draft_release_id 2>/dev/null)"; then
+            # A successful exact asset listing is required before an existing
+            # draft without this receipt may be resumed.  This covers an
+            # interrupted prior receipt upload without treating a failed
+            # readback as evidence of absence.
+            DRAFT_ASSET_NAMES="$(ep_draft_asset_names "$DRAFT_ID")"
+            if printf '%s\n' "$DRAFT_ASSET_NAMES" | grep -Fqx -- "$QUALIFIED"; then
+              ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
+              cmp "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
+            else
+              require_unpublished_pypi_identity
+              ep_draft_upload "$DRAFT_ID" "$QUALIFIED" "$QUALIFIED"
+              ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
+              cmp "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
+            fi
+          else
+            require_unpublished_pypi_identity
+            DRAFT_ID="$(ep_create_draft_release)"
+            ep_draft_upload "$DRAFT_ID" "$QUALIFIED" "$QUALIFIED"
+            ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
+            cmp "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
           fi
           rm -f pypi.json "$QUALIFIED"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
