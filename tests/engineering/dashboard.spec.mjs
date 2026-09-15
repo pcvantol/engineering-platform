@@ -2687,16 +2687,17 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator(".execution-lifecycle")).toHaveCount(1);
     await expect(page.locator("#executionContext")).toHaveCount(1);
 
-    const statusAndContext = await page.locator("#currentRun .current-run__grid").evaluate((grid) => {
-      const status = [...grid.children].find((child) => child.querySelector?.("#watcher"));
-      const context = grid.querySelector("#executionContext");
-      if (!status || !context) return null;
-      const statusBox = status.getBoundingClientRect(), contextBox = context.getBoundingClientRect();
-      return { statusX: statusBox.x, statusY: statusBox.y, contextX: contextBox.x, contextY: contextBox.y };
+    const identityAndContext = await page.locator("#currentRun .current-run__grid").evaluate((grid) => {
+      const identity = grid.querySelector("#executionIdentity"), context = grid.querySelector("#executionContext"),
+        watcherCard = grid.querySelector("#watcher")?.closest(".card");
+      if (!identity || !context || !watcherCard) return null;
+      const identityBox = identity.getBoundingClientRect(), contextBox = context.getBoundingClientRect();
+      return { identityX: identityBox.x, identityY: identityBox.y, contextX: contextBox.x, contextY: contextBox.y, watcherCardId: watcherCard.id };
     });
-    expect(statusAndContext).not.toBeNull();
-    expect(statusAndContext.statusY).toBe(statusAndContext.contextY);
-    expect(statusAndContext.statusX).toBeLessThan(statusAndContext.contextX);
+    expect(identityAndContext).not.toBeNull();
+    expect(identityAndContext.watcherCardId).toBe("executionIdentity");
+    expect(identityAndContext.contextX).toBe(identityAndContext.identityX);
+    expect(identityAndContext.contextY).toBeGreaterThan(identityAndContext.identityY);
 
     await expect(page.locator(".execution-lifecycle")).toHaveCSS("background-color", "rgb(27, 41, 49)");
     await expect(page.locator("#executionContext")).toHaveCSS("background-color", "rgb(27, 41, 49)");
