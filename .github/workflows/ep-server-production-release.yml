@@ -215,22 +215,22 @@ jobs:
           set -euo pipefail
           TAG="engineering-platform-v$VERSION"
           QUALIFIED="engineering-platform-release-qualified-$VERSION-$SOURCE_SHA.json"
+          export EP_RELEASE_TAG="$TAG" EP_RELEASE_SOURCE_SHA="$SOURCE_SHA" EP_RELEASE_TITLE="Engineering Platform $VERSION"
+          source tools/qualification/github_draft_release.sh
           cp "release-operation/operations/$OPERATION_ID.json" "$QUALIFIED"
-          if gh release view "$TAG" --json targetCommitish >/dev/null 2>&1; then
-            test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_SHA"
-            mkdir "$RUNNER_TEMP/ep-qualified-readback"
-            if ! gh release download "$TAG" --pattern "$QUALIFIED" --dir "$RUNNER_TEMP/ep-qualified-readback"; then
-              echo 'Existing EP release lacks its original durable qualified-operation receipt.' >&2
-              exit 1
-            fi
-            cmp "$QUALIFIED" "$RUNNER_TEMP/ep-qualified-readback/$QUALIFIED"
+          if DRAFT_ID="$(ep_draft_release_id 2>/dev/null)"; then
+            ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
+            cmp "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
           else
             status_code="$(curl --silent --show-error --location --output pypi.json --write-out '%{http_code}' "https://pypi.org/pypi/engineering-platform/$VERSION/json")" || {
               echo 'PyPI identity lookup failed before durable operation retention.' >&2
               exit 1
             }
             case "$status_code" in
-              404) gh release create "$TAG" "$QUALIFIED" --draft --target "$SOURCE_SHA" --title "Engineering Platform $VERSION" ;;
+              404) gh release create "$TAG" "$QUALIFIED" --draft --target "$SOURCE_SHA" --title "Engineering Platform $VERSION"
+                   DRAFT_ID="$(ep_draft_release_id)"
+                   ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
+                   cmp "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED" ;;
               200) echo 'Existing PyPI publication has no durable original EP release receipt.' >&2; exit 1 ;;
               *) echo "Unexpected PyPI identity lookup status: $status_code" >&2; exit 1 ;;
             esac
@@ -313,10 +313,12 @@ jobs:
           PY
           TAG="engineering-platform-v$VERSION"
           QUALIFIED="engineering-platform-release-qualified-$VERSION-$SOURCE_SHA.json"
-          mkdir "$RUNNER_TEMP/ep-qualified-readback"
-          gh release download "$TAG" --pattern "$QUALIFIED" --dir "$RUNNER_TEMP/ep-qualified-readback"
+          export EP_RELEASE_TAG="$TAG" EP_RELEASE_SOURCE_SHA="$SOURCE_SHA" EP_RELEASE_TITLE="Engineering Platform $VERSION"
+          source tools/qualification/github_draft_release.sh
+          DRAFT_ID="$(ep_draft_release_id)"
+          ep_draft_download "$DRAFT_ID" "$QUALIFIED" "$RUNNER_TEMP/$QUALIFIED"
           cmp "release-input/release-operation/operations/$OPERATION_ID.json" \
-            "$RUNNER_TEMP/ep-qualified-readback/$QUALIFIED"
+            "$RUNNER_TEMP/$QUALIFIED"
       - id: existing
         name: Refuse an existing version with different artifact bytes
         env:
@@ -451,12 +453,13 @@ jobs:
           TAG="engineering-platform-v$VERSION"
           RECEIPT="engineering-platform-release-published-$VERSION-$SOURCE_SHA.json"
           cp "release-input/release-operation/operations/$OPERATION_ID.json" "$RECEIPT"
-          test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_SHA"
-          mkdir "$RUNNER_TEMP/ep-published-readback"
-          if gh release download "$TAG" --pattern "$RECEIPT" --dir "$RUNNER_TEMP/ep-published-readback"; then
-            cmp "$RECEIPT" "$RUNNER_TEMP/ep-published-readback/$RECEIPT"
+          export EP_RELEASE_TAG="$TAG" EP_RELEASE_SOURCE_SHA="$SOURCE_SHA" EP_RELEASE_TITLE="Engineering Platform $VERSION"
+          source tools/qualification/github_draft_release.sh
+          DRAFT_ID="$(ep_draft_release_id)"
+          if ep_draft_download "$DRAFT_ID" "$RECEIPT" "$RUNNER_TEMP/$RECEIPT"; then
+            cmp "$RECEIPT" "$RUNNER_TEMP/$RECEIPT"
           else
-            gh release upload "$TAG" "$RECEIPT"
+            ep_draft_upload "$DRAFT_ID" "$RECEIPT" "$RECEIPT"
           fi
           rm -f "$RECEIPT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -493,6 +496,9 @@ jobs:
         run: |
           set -euo pipefail
           TAG="engineering-platform-v$VERSION"
+          export EP_RELEASE_TAG="$TAG" EP_RELEASE_SOURCE_SHA="$SOURCE_SHA" EP_RELEASE_TITLE="Engineering Platform $VERSION"
+          source tools/qualification/github_draft_release.sh
+          DRAFT_ID="$(ep_draft_release_id)"
           PUBLISHED_RECEIPT="engineering-platform-release-published-$VERSION-$SOURCE_SHA.json"
           PENDING="engineering-platform-cleanup-pending-$VERSION-$SOURCE_SHA.json"
           RECEIPT="engineering-platform-release-complete-$VERSION-$SOURCE_SHA.json"
@@ -513,7 +519,7 @@ jobs:
           }
           trap cleanup_pending_readback EXIT
           mkdir published-readback
-          gh release download "$TAG" --pattern "$PUBLISHED_RECEIPT" --dir published-readback
+          ep_draft_download "$DRAFT_ID" "$PUBLISHED_RECEIPT" "published-readback/$PUBLISHED_RECEIPT"
           cmp "published-input/release-operation/operations/$OPERATION_ID.json" "published-readback/$PUBLISHED_RECEIPT"
           # A prior cleanup failure remains durable history rather than an
           # incidental failed runner.  Reload it before retrying cleanup so a
@@ -525,10 +531,10 @@ jobs:
           # First obtain the release's complete asset identity list; only a
           # successful list that omits this exact name permits a fresh cleanup
           # attempt from PUBLISHED.  A listed receipt must be readable.
-          PENDING_ASSET_NAMES="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          PENDING_ASSET_NAMES="$(ep_draft_asset_names "$DRAFT_ID")"
           pending_receipt_present=0
           if printf '%s\n' "$PENDING_ASSET_NAMES" | grep -Fqx -- "$PENDING"; then
-            gh release download "$TAG" --pattern "$PENDING" --dir "$PENDING_READBACK_DIR"
+            ep_draft_download "$DRAFT_ID" "$PENDING" "$PENDING_READBACK_DIR/$PENDING"
             test -f "$PENDING_READBACK_DIR/$PENDING"
             PYTHONPATH=src python3 - "$OPERATION_ID" \
               "published-input/release-operation/operations/$OPERATION_ID.json" \
@@ -651,11 +657,12 @@ jobs:
               store.release(operation_id)
           PY
             cp "published-input/release-operation/operations/$OPERATION_ID.json" "$PENDING"
-            gh release upload "$TAG" "$PENDING"
+            ep_draft_upload "$DRAFT_ID" "$PENDING" "$PENDING"
             # The initial readback directory is a declared cleanup target.
             # Confirm a newly-uploaded receipt over stdout so confirmation
             # cannot recreate that target after it was proven absent.
-            gh release download "$TAG" --pattern "$PENDING" --output - | cmp "$PENDING" -
+            ep_draft_download "$DRAFT_ID" "$PENDING" "$PENDING_READBACK_DIR/$PENDING"
+            cmp "$PENDING" "$PENDING_READBACK_DIR/$PENDING"
             rm -f -- "$PENDING" cleanup-pending.json
             if target_exists "$PENDING" || target_exists cleanup-pending.json; then
               echo 'Temporary cleanup-pending evidence remains after durable confirmation.' >&2
@@ -667,10 +674,7 @@ jobs:
           # gone.  Later receipt confirmation is stream-only, so disarm the
           # failure-path trap before terminalizing the operation.
           PENDING_READBACK_DIR=""
-          if test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true; then
-            gh release edit "$TAG" --draft=false
-          fi
-          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = false
+          ep_publish_draft "$DRAFT_ID"
           PYTHONPATH=src python3 - "$OPERATION_ID" <<'PY'
           import sys
           from pathlib import Path
