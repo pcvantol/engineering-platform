@@ -56,9 +56,9 @@ class GitHubDraftReleaseHelperTests(unittest.TestCase):
     def test_create_returns_the_github_release_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            fake_gh = root / "gh"
+            fake_curl = root / "curl"
             invocation = root / "invocation.json"
-            fake_gh.write_text(
+            fake_curl.write_text(
                 textwrap.dedent(
                     """\
                     #!/usr/bin/env python3
@@ -68,12 +68,12 @@ class GitHubDraftReleaseHelperTests(unittest.TestCase):
                     from pathlib import Path
 
                     Path(os.environ["INVOCATION"]).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
-                    print("389004833")
+                    print(json.dumps({"id": 389004833}))
                     """
                 ),
                 encoding="utf-8",
             )
-            fake_gh.chmod(0o700)
+            fake_curl.chmod(0o700)
             result = subprocess.run(
                 ["bash", "-c", f"source '{HELPER}'; ep_create_draft_release"],
                 env={
@@ -83,6 +83,7 @@ class GitHubDraftReleaseHelperTests(unittest.TestCase):
                     "EP_RELEASE_TAG": "engineering-platform-v2.3.57",
                     "EP_RELEASE_SOURCE_SHA": SOURCE_SHA,
                     "EP_RELEASE_TITLE": TITLE,
+                    "GH_TOKEN": "test-token",
                     "INVOCATION": str(invocation),
                 },
                 text=True,
@@ -94,11 +95,45 @@ class GitHubDraftReleaseHelperTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "389004833\n")
-        self.assertIn("repos/example/repository/releases", arguments)
-        self.assertIn("tag_name=engineering-platform-v2.3.57", arguments)
-        self.assertIn("target_commitish=" + SOURCE_SHA, arguments)
-        self.assertIn("name=" + TITLE, arguments)
-        self.assertIn("draft=true", arguments)
+        self.assertIn("https://api.github.com/repos/example/repository/releases", arguments)
+        self.assertIn("Authorization: Bearer test-token", arguments)
+        self.assertIn("Accept: application/vnd.github+json", arguments)
+        self.assertIn("X-GitHub-Api-Version: 2022-11-28", arguments)
+        payload = json.loads(arguments[arguments.index("--data") + 1])
+        self.assertEqual(
+            payload,
+            {
+                "tag_name": "engineering-platform-v2.3.57",
+                "target_commitish": SOURCE_SHA,
+                "name": TITLE,
+                "draft": True,
+            },
+        )
+
+    def test_create_rejects_an_empty_or_non_json_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_curl = root / "curl"
+            fake_curl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_curl.chmod(0o700)
+            result = subprocess.run(
+                ["bash", "-c", f"source '{HELPER}'; ep_create_draft_release"],
+                env={
+                    **os.environ,
+                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                    "GITHUB_REPOSITORY": "example/repository",
+                    "EP_RELEASE_TAG": "engineering-platform-v2.3.57",
+                    "EP_RELEASE_SOURCE_SHA": SOURCE_SHA,
+                    "EP_RELEASE_TITLE": TITLE,
+                    "GH_TOKEN": "test-token",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("draft release creation returned invalid JSON", result.stderr)
 
     def test_upload_uses_the_github_uploads_endpoint_with_encoded_asset_name(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
