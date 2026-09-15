@@ -2086,6 +2086,10 @@ class InstallationBoundaryTests(unittest.TestCase):
                 "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,updated_at) VALUES(?,?,?,?,?)",
                 (run_id, "COMPLETE", "Central terminal run", "completed", "completed"),
             )
+            # A Forge run can block before the legacy prompt-history writer.
+            # Its dispatch, submission and run binding are still sufficient
+            # read-only chat authority.
+            connection.execute("DELETE FROM prompt_execution_history WHERE run_id=?", (run_id,))
         with patch("engineering_platform.server.respond_with_context", return_value="Veilig antwoord.") as respond:
             answer, messages = server._central_console_chat_response(
                 self.root, project_id, run_id, "Wat is de status?",
@@ -2094,6 +2098,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual([entry["text"] for entry in messages], ["Wat is de status?", "Veilig antwoord."])
         context = respond.call_args.args[1]
         self.assertEqual(context["execution"]["run_id"], run_id)
+        self.assertEqual(context["execution"]["title"], submission_id)
         self.assertEqual(context["submitted_prompt"], "bounded submitted prompt")
         self.assertNotIn("repository", context)
         self.assertIsNone(server._central_console_chat_context(self.root, "other-project", run_id))
