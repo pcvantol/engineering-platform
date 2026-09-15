@@ -141,6 +141,8 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertLess(workflow.index("  registry-readback-and-published-evidence:"), workflow.index("  record-release-complete:"))
         self.assertIn("operation_id=ep-release-$VERSION-$SOURCE_SHA", workflow)
         self.assertIn('gh release create "$TAG" "$QUALIFIED" --draft --target "$SOURCE_SHA"', workflow)
+        self.assertIn('source tools/qualification/github_draft_release.sh', workflow)
+        self.assertIn('ep_draft_download "$DRAFT_ID" "$QUALIFIED"', workflow)
         self.assertIn("Existing PyPI publication has no durable original EP release receipt", workflow)
         self.assertIn('cmp "release-input/release-operation/operations/$OPERATION_ID.json"', workflow)
         self.assertIn("Qualify the actual registry wheel outside the source checkout", workflow)
@@ -159,7 +161,7 @@ class PlatformProductizationTest(unittest.TestCase):
             workflow.index("store.complete("),
         )
         self.assertLess(
-            workflow.index('gh release edit "$TAG" --draft=false'),
+            workflow.index('ep_publish_draft "$DRAFT_ID"'),
             workflow.index("store.complete("),
         )
         self.assertIn("group: engineering-platform-production-release", workflow)
