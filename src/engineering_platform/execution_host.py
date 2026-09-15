@@ -250,11 +250,11 @@ def _required_validation_controls_pass(
     """Require the exact current ordinal's candidate-bound terminal receipts."""
     if not isinstance(validation_context, dict):
         return False
-    profile = state.assurance_profile
-    candidate = (
-        profile.get("candidate_sha") if isinstance(profile, dict)
-        else validation_context.get("candidate_sha")
-    )
+    # Local validation owns its candidate identity.  A prior assurance profile
+    # can describe candidate A while a repair is qualifying candidate B; it
+    # must not make B's freshly recorded host receipts look stale.  Assurance
+    # currentness is checked separately when B reaches that later gate.
+    candidate = validation_context.get("candidate_sha")
     if not isinstance(candidate, str):
         return False
     return strict_required_controls_pass(
@@ -1293,10 +1293,15 @@ class EngineeringRunner:
             return None
         sha = plan.get("commit_sha")
         branch = plan.get("repair_branch")
+        reserved = plan.get("pre_repair_pull_request")
+        first_pr = reserved == "none" and plan.get("first_pr_authorized") == "yes"
+        existing_pr = (
+            isinstance(reserved, str) and reserved.isdigit() and int(reserved) >= 1
+            and int(reserved) == state.pull_request and plan.get("first_pr_authorized") == "no"
+        )
         if (
             plan.get("outcome") != "submitted_for_recheck"
-            or plan.get("pre_repair_pull_request") != "none"
-            or plan.get("first_pr_authorized") != "yes"
+            or not (first_pr or existing_pr)
             or not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None
             or not isinstance(branch, str) or branch != state.branch
         ):

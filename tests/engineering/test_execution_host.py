@@ -3087,6 +3087,65 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual((observed[0].branch, observed[0].pull_request, observed[0].commit_sha), (branch, pull_number, sha))
         self.assertEqual(agent.prompts, [])
 
+    def test_resume_routes_a_prebound_pr_repair_without_a_new_repair_invocation(self) -> None:
+        branch, sha, pull_number = "codex/resume-existing-pr", "b" * 40, 118
+        receipt = {
+            "iteration": "1", "observed_at": "now", "failed_checks": "quality", "proposed_action": "repair",
+            "agent_summary": "received", "commit_sha": sha, "outcome": "submitted_for_recheck",
+            "repair_id": "repair:resume-existing-pr:1", "origin": "quality", "input_candidate_sha": "a" * 40,
+            "dispatch_id": "resume-existing-pr:repair:1", "pre_repair_pull_request": "118",
+            "repair_branch": branch, "repair_base": "main", "first_pr_authorized": "no",
+        }
+        persisted = TransactionState(
+            "resume-existing-pr", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch=branch,
+            pull_request=pull_number, repair_iterations=1, repair_audit=(receipt,),
+        )
+        self.store.save(persisted)
+        agent = FakeAgent(AgentResult("COMPLETE", branch))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), FakeGitHub([]), agent, lambda _: None)
+        lease = SimpleNamespace(run_id=persisted.run_id)
+        heartbeat = SimpleNamespace(start=lambda: None, stop=lambda: lease)
+        observed: list[AgentResult] = []
+        with patch.object(runner, "_provider_readiness_gate", side_effect=lambda state, **_: state), \
+             patch.object(runner, "_verify_engineering_platform"), \
+             patch("engineering_platform.execution_host.acquire_lease", return_value=lease), \
+             patch("engineering_platform.execution_host.LeaseHeartbeat", return_value=heartbeat), \
+             patch("engineering_platform.execution_host.release_lease"), \
+             patch.object(runner, "_advance_after_repair_agent_result", side_effect=lambda state, result: observed.append(result) or state):
+            resumed = runner.run(self.prompt, run_id=persisted.run_id, resume=True)
+
+        self.assertEqual(resumed.repair_iterations, 1)
+        self.assertEqual((observed[0].branch, observed[0].pull_request, observed[0].commit_sha), (branch, pull_number, sha))
+        self.assertEqual(agent.prompts, [])
+
+    def test_repair_candidate_b_uses_its_own_host_validation_identity_not_assurance_a(self) -> None:
+        """A's assurance profile cannot invalidate B's current host receipts."""
+        branch, candidate_a, candidate_b = "codex/repair-candidate-b", "a" * 40, "b" * 40
+        repository = FakeRepository(branch=branch)
+        repository.evidence = RepositoryEvidence("pcvantol/djconnect", branch, candidate_b, True)
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE", branch)), lambda _: None,
+        )
+        runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
+        state = TransactionState(
+            "repair-candidate-b", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+            branch=branch, pull_request=118, repair_iterations=1,
+            assurance_profile={"version": "validation-profile@1.0", "digest": "sha256:" + "c" * 64,
+                               "candidate_sha": candidate_a, "criteria_digest": "sha256:" + "d" * 64},
+        )
+
+        validated, result = runner._run_local_repository_validation(
+            state, AgentResult("COMPLETE", branch, 118, commit_sha=candidate_b),
+        )
+
+        context = load_validation_context(self.root, state.run_id, currentness=1)
+        assert context is not None
+        self.assertEqual(context["candidate_sha"], candidate_b)
+        self.assertEqual(validated.pull_request, 118)
+        self.assertEqual(validated.local_validation_audit[-1]["outcome"], "validated")
+        self.assertEqual(result.terminal_state, "COMPLETE")
+
     def test_pre_pr_repair_requalifies_candidate_before_existing_publication_gate(self) -> None:
         """Candidate B without a PR reaches the normal first-PR owner gate."""
         branch, sha = "codex/repair-publish-after-assurance", "a" * 40
