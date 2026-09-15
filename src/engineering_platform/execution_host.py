@@ -1140,7 +1140,7 @@ class EngineeringRunner:
             # The reservation identity is immutable.  A retry/recovery updates
             # the recorded outcome but cannot consume a second repair round.
             if "repair_id" in previous:
-                record.update({key: previous[key] for key in ("repair_id", "origin", "input_candidate_sha", "dispatch_id")})
+                record.update({key: previous[key] for key in ("repair_id", "origin", "input_candidate_sha", "dispatch_id", "pre_repair_pull_request") if key in previous})
             return replace(state, repair_audit=state.repair_audit[:-1] + (record,))
         return replace(state, repair_audit=state.repair_audit + (record,))
 
@@ -1155,6 +1155,38 @@ class EngineeringRunner:
             return None
         return plan
 
+    def _accept_repair_pull_request(
+        self, repair: TransactionState, result: AgentResult, plan: dict[str, str],
+    ) -> tuple[TransactionState, AgentResult] | TransactionState:
+        """Bind a repair result only in the delivery phase reserved before it ran."""
+        # Older persisted plans predate the explicit field.  Their already
+        # checkpointed binding is still authoritative; do not reinterpret it
+        # as permission to create a first PR.
+        reserved = plan.get("pre_repair_pull_request", str(repair.pull_request) if repair.pull_request else "none")
+        if reserved != "none":
+            if result.pull_request not in {None, int(reserved)}:
+                return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the bounded pull request.")
+            return repair, replace(result, pull_request=int(reserved))
+        if result.pull_request is None:
+            return repair, result
+        if repair.pull_request is not None:
+            return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair attempted to replace a pull request bound after its repair plan was recorded.")
+        try:
+            observed = self.github.pull_request(result.pull_request)
+            candidate = self.repository.inspect(self.root)
+        except RunnerError:
+            return self._save_terminal(repair, "BLOCKED", "repair_pull_request_unverified", "The first pull request returned by repair could not be independently verified.")
+        expected_branch = result.branch or repair.branch
+        expected_sha = result.commit_sha or candidate.head_sha
+        if (
+            observed.number != result.pull_request or observed.state != "OPEN"
+            or observed.base_branch != "main" or observed.head_branch != expected_branch
+            or observed.head_sha != expected_sha or candidate.branch != expected_branch
+            or candidate.head_sha != expected_sha or not candidate.clean
+        ):
+            return self._save_terminal(repair, "BLOCKED", "repair_pull_request_unverified", "The first pull request returned by repair did not match the bounded repository candidate.")
+        return replace(repair, pull_request=observed.number), replace(result, pull_request=observed.number)
+
     def _advance_after_repair_agent_result(self, repair: TransactionState, result: AgentResult) -> TransactionState:
         """Revalidate and re-review every repaired candidate before delivery."""
         plan = self._repair_plan(repair)
@@ -1168,8 +1200,10 @@ class EngineeringRunner:
         self.store.save(repair)
         if result.terminal_state in {"BLOCKED", "FAILED"}:
             return self._save_terminal(repair, result.terminal_state, "external_action_required", result.diagnostic)
-        if result.pull_request not in {None, repair.pull_request}:
-            return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the bounded pull request.")
+        accepted = self._accept_repair_pull_request(repair, result, plan)
+        if isinstance(accepted, TransactionState):
+            return accepted
+        repair, result = accepted
         repaired_result = replace(
             result,
             branch=result.branch or repair.branch,
@@ -1195,6 +1229,10 @@ class EngineeringRunner:
         )
         if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
             return reviewed
+        if reviewed.pull_request is None and reviewed.owner_authorized:
+            reviewed, reviewed_result = self._publish_first_implementation_pull_request(reviewed, reviewed_result)
+            if reviewed.terminal:
+                return reviewed
         try:
             evidence = self.repository.inspect(self.root)
         except RunnerError:
@@ -3407,6 +3445,7 @@ First implementation pull-request publication gate:
             "origin": origin,
             "input_candidate_sha": input_candidate,
             "dispatch_id": f"{repair.run_id}:repair:{repair.repair_iterations}",
+            "pre_repair_pull_request": str(state.pull_request) if state.pull_request else "none",
         })
         repair = replace(repair, repair_audit=repair.repair_audit[:-1] + (reservation,))
         self.store.save(repair)

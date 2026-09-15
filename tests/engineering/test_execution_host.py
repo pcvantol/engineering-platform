@@ -2871,6 +2871,54 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(context["controls"]["repository_suite"]["result"], "PASS")
         self.assertNotIn("provider_observed_validation_format_or_diff", context["controls"])
 
+    def test_pre_pr_repair_binds_a_verified_first_pull_request(self) -> None:
+        """A first PR is a phase transition, not replacement of an old PR."""
+        branch, sha = "codex/repair-first-pr", "a" * 40
+        state = TransactionState("repair-first-pr", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch=branch)
+        github = FakeGitHub([PullRequestEvidence(81, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=sha)])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), github, FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+
+        accepted = runner._accept_repair_pull_request(
+            state, AgentResult("COMPLETE", branch, 81, commit_sha=sha), {"pre_repair_pull_request": "none"},
+        )
+
+        self.assertIsInstance(accepted, tuple)
+        repaired, result = accepted
+        self.assertEqual(repaired.pull_request, 81)
+        self.assertEqual(result.pull_request, 81)
+
+    def test_pre_pr_repair_requalifies_candidate_before_existing_publication_gate(self) -> None:
+        """Candidate B without a PR reaches the normal first-PR owner gate."""
+        branch, sha = "codex/repair-publish-after-assurance", "a" * 40
+        pull = PullRequestEvidence(82, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=sha)
+        agent = SequencedFakeAgent([
+            AgentResult("COMPLETE", branch, commit_sha=sha),
+            AgentResult("COMPLETE", branch, commit_sha=sha),
+            AgentResult("COMPLETE", branch, 82, commit_sha=sha),
+        ])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch=branch), FakeGitHub([pull]), agent, lambda _: None)
+        runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
+        state = TransactionState("repair-publish-after-assurance", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch=branch, owner_authorized=True)
+
+        advanced = runner._repair(state, "quality review findings failed. Repair these bounded findings: finding-1")
+
+        self.assertEqual(advanced.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(advanced.pull_request, 82)
+        self.assertEqual(len(agent.prompts), 3)
+        self.assertIn("First implementation pull-request publication gate", agent.prompts[-1])
+
+    def test_repair_with_bound_pr_rejects_a_different_returned_pr(self) -> None:
+        state = TransactionState("repair-preserve-pr", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/repair", pull_request=17)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch="codex/repair"), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+
+        rejected = runner._accept_repair_pull_request(
+            state, AgentResult("COMPLETE", "codex/repair", 18, commit_sha="a" * 40), {"pre_repair_pull_request": "17"},
+        )
+
+        self.assertIsInstance(rejected, TransactionState)
+        self.assertEqual(rejected.phase, "BLOCKED")
+        self.assertEqual(rejected.next_action, "bounded_scope_conflict")
+
     def test_fourth_shared_repair_dispatch_is_refused_before_provider_invocation(self) -> None:
         agent = FakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
@@ -5008,6 +5056,23 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "Completed work: implementation merge was verified; this is not a complete delivery.",
             body,
         )
+        self.assertNotIn("BLOCKED — no engineering changes were executed or delivered.", body)
+        self.assertTrue(terminal_report_matches_state(body, state))
+
+    def test_blocked_report_keeps_observed_unqualified_repair_work_visible(self) -> None:
+        state = TransactionState(
+            "blocked-observed-repair", "pcvantol/djconnect", str(self.prompt), "BLOCKED",
+            branch="codex/repair-observed", pull_request=912, terminal=True,
+            commit_evidence=(verified_commit_evidence_record(
+                phase="REPAIR_AGENT", observed_at="2026-01-01T00:00:00+00:00",
+                commit_sha="a" * 40, description="pull_request_repair_commit_verified",
+            ),),
+        )
+
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+
+        self.assertIn("source work or a draft pull request was observed", body)
+        self.assertIn("Observed repair work: branch=codex/repair-observed; PR=912; commits=1.", body)
         self.assertNotIn("BLOCKED — no engineering changes were executed or delivered.", body)
         self.assertTrue(terminal_report_matches_state(body, state))
 
