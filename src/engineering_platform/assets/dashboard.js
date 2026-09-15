@@ -2244,7 +2244,7 @@ function lifecycleRepairEvidence(step) {
       dynamicField(t("detail.failed_checks"), item.failed_checks),
       dynamicField(t("detail.proposed_action"), item.proposed_action),
       dynamicField(t("detail.ai_repair_summary"), item.agent_summary),
-      lifecycleDetailField(t("detail.commit"), String(item.commit_sha || t("detail.not_recorded"))),
+      lifecycleDetailField(t("detail.commit"), item.commit_sha === "not_recorded" ? t("detail.not_recorded") : String(item.commit_sha || t("detail.not_recorded"))),
       lifecycleDetailField(t("detail.outcome"), t("lifecycle.repair_outcome." + outcome, {}, outcome || t("detail.not_recorded"))),
     );
     section.append(heading, grid);

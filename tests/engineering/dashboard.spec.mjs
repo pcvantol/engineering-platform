@@ -2185,7 +2185,7 @@ test.describe("Engineering Status browser smoke", () => {
       await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {}));
       await expect(page.locator(".field").filter({ hasText: DASHBOARD_MESSAGES[language]["ui.execution_status"] })).toHaveCount(1);
       await expect(page.locator("#watcher")).toHaveText(DASHBOARD_MESSAGES[language]["state.WATCHER_IDLE"]);
-      await expect(page.locator("#watcher").locator("xpath=preceding-sibling::span")).not.toHaveText(DASHBOARD_MESSAGES[language]["ui.watcher"]);
+      await expect(page.locator("#watcher").locator("xpath=ancestor::p[contains(@class, 'field')][1]//span[contains(@class, 'label')]")).toHaveText(DASHBOARD_MESSAGES[language]["ui.execution_status"]);
     }
   });
 
@@ -2687,16 +2687,18 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator(".execution-lifecycle")).toHaveCount(1);
     await expect(page.locator("#executionContext")).toHaveCount(1);
 
-    const statusAndContext = await page.locator("#currentRun .current-run__grid").evaluate((grid) => {
-      const status = [...grid.children].find((child) => child.querySelector?.("#watcher"));
-      const context = grid.querySelector("#executionContext");
-      if (!status || !context) return null;
-      const statusBox = status.getBoundingClientRect(), contextBox = context.getBoundingClientRect();
-      return { statusX: statusBox.x, statusY: statusBox.y, contextX: contextBox.x, contextY: contextBox.y };
+    const identityAndContext = await page.locator("#currentRun .current-run__grid").evaluate((grid) => {
+      const identity = grid.querySelector("#executionIdentity"), context = grid.querySelector("#executionContext"),
+        watcherCard = grid.querySelector("#watcher")?.closest(".card");
+      if (!identity || !context || !watcherCard) return null;
+      const identityBox = identity.getBoundingClientRect(), contextBox = context.getBoundingClientRect();
+      return { identityX: identityBox.x, identityY: identityBox.y, identityWidth: identityBox.width, contextX: contextBox.x, contextY: contextBox.y, contextWidth: contextBox.width, watcherCardId: watcherCard.id };
     });
-    expect(statusAndContext).not.toBeNull();
-    expect(statusAndContext.statusY).toBe(statusAndContext.contextY);
-    expect(statusAndContext.statusX).toBeLessThan(statusAndContext.contextX);
+    expect(identityAndContext).not.toBeNull();
+    expect(identityAndContext.watcherCardId).toBe("executionIdentity");
+    expect(identityAndContext.contextX).toBe(identityAndContext.identityX);
+    expect(identityAndContext.contextY).toBeGreaterThan(identityAndContext.identityY);
+    expect(identityAndContext.contextWidth).toBeGreaterThan(identityAndContext.identityWidth * 1.9);
 
     await expect(page.locator(".execution-lifecycle")).toHaveCSS("background-color", "rgb(27, 41, 49)");
     await expect(page.locator("#executionContext")).toHaveCSS("background-color", "rgb(27, 41, 49)");
@@ -3288,6 +3290,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
       run_id: "responsive-current-run",
+      prompt_title: "Aligned execution cards",
       lifecycle: {
         available: true,
         run_id: "responsive-current-run",
@@ -3566,6 +3569,28 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
+    await expect(modal.locator(".lifecycle-detail-modal__quality-evidence .lifecycle-detail-modal__phase-list span").first()).toHaveCSS("text-align", "start");
+  });
+
+  test("localizes repair audit sentinel values", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "localized-repair-audit",
+      lifecycle: { available: true, run_id: "localized-repair-audit", terminal_state: "ACTIVE", steps: [{
+        id: "repair", presentation_key: "lifecycle.step.repair_agent", state: "ACTIVE",
+        repair_audit: [{ iteration: "1", failed_checks: "Review finding", proposed_action: "Repair it", agent_summary: "", commit_sha: "not_recorded", outcome: "planned" }],
+      }] },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator(".execution-lifecycle__node"));
+    const modal = page.locator("#lifecycleDetailModal");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["detail.not_recorded"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.repair_outcome.planned"]);
+    await expect(modal).not.toContainText("not_recorded");
+    await expect(modal).not.toContainText("planned");
   });
 
   test("translates dynamic quality evidence with the bounded Codex translation route", async ({ page }) => {
