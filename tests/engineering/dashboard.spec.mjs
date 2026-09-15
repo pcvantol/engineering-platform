@@ -8380,7 +8380,9 @@ test.describe("Engineering Status browser smoke", () => {
     // while a transient layout update settles.
     await rows.nth(1).hover({ force: true });
     const hoverRowSurface = await rows.nth(1).locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    expect(new Set(hoverRowSurface).size).toBe(1);
+    // The frozen first column keeps its category tint while the remaining
+    // cells receive the common hover fill.
+    expect(new Set(hoverRowSurface).size).toBe(2);
     expect(hoverRowSurface[0]).not.toBe("rgba(0, 0, 0, 0)");
     await rows.nth(0).click();
     await rows.nth(2).click({ modifiers: ["Meta"] });
@@ -9488,7 +9490,9 @@ test.describe("Engineering Status browser smoke", () => {
     const firstPromptHistoryRow = page.locator("#promptHistoryRows .prompt-history-row").first();
     await firstPromptHistoryRow.hover();
     const promptHistoryHover = await firstPromptHistoryRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    expect(new Set(promptHistoryHover).size).toBe(1);
+    // The frozen first column retains its category tint; the data cells share
+    // the hover fill.
+    expect(new Set(promptHistoryHover).size).toBe(2);
     expect(promptHistoryHover[0]).not.toBe("rgba(0, 0, 0, 0)");
     await expect(page.locator("#promptHistoryRows tr").first().locator("td")).toHaveCount(9);
     await expect(page.locator("#promptHistoryPagination")).toContainText("Pagina 1 van 3 · 26 uitvoeringen");
