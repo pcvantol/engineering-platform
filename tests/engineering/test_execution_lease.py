@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from engineering_platform.agent_state import StateStore, TransactionState
-from engineering_platform.execution_lease import LeaseConflictError, LeaseHeartbeat, acquire, heartbeat, history, liveness, reconcile_stale, release
+from engineering_platform.execution_lease import LeaseConflictError, LeaseHeartbeat, LeaseHeartbeatError, acquire, heartbeat, history, liveness, reconcile_stale, release
 from engineering_platform.storage import open_storage
 from engineering_platform import server
 
@@ -176,6 +176,124 @@ class ExecutionLeaseTest(unittest.TestCase):
         stopped = pulse.stop()
         self.assertIsNone(pulse.error)
         self.assertEqual(stopped.lease_id, lease.lease_id)
+
+    def test_heartbeat_retries_one_transient_io_error_while_same_lease_is_valid(self) -> None:
+        lease = acquire(self.root, "inbox-lease", identity="host", instance_id="instance-a")
+        import engineering_platform.execution_lease as execution_lease
+        original_connection = execution_lease._connection
+        attempts = 0
+
+        class FailFirstUpdate:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self.connection = connection
+
+            def execute(self, statement: str, *arguments: object) -> object:
+                if statement.startswith("UPDATE execution_run_leases"):
+                    raise sqlite3.OperationalError("disk I/O error")
+                return self.connection.execute(statement, *arguments)
+
+            def close(self) -> None:
+                self.connection.close()
+
+        def connect(*arguments: object, **keywords: object) -> sqlite3.Connection:
+            nonlocal attempts
+            attempts += 1
+            connection = original_connection(*arguments, **keywords)
+            return FailFirstUpdate(connection) if attempts == 1 else connection  # type: ignore[return-value]
+
+        with patch("engineering_platform.execution_lease._connection", side_effect=connect), \
+             patch("engineering_platform.execution_lease.sleep") as delay:
+            renewed = heartbeat(self.root, lease)
+        self.assertEqual(attempts, 2)
+        delay.assert_called_once_with(0.02)
+        self.assertEqual(renewed.lease_id, lease.lease_id)
+        self.assertEqual(renewed.host_instance_id, lease.host_instance_id)
+
+    def test_checkpoint_and_heartbeat_share_sqlite_without_duplicate_run_or_lease(self) -> None:
+        """A transient lease write is retried while checkpoint work stays canonical."""
+        lease = acquire(self.root, "inbox-lease", identity="host", instance_id="instance-a")
+        store = StateStore(self.root / ".engineering" / "engineering-runs")
+        store.save(TransactionState("inbox-lease", "repo", "prompt.md", "EXECUTE_AGENT"))
+        import engineering_platform.execution_lease as execution_lease
+        original_connection = execution_lease._connection
+        attempts = 0
+
+        class FailFirstUpdate:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self.connection = connection
+
+            def execute(self, statement: str, *arguments: object) -> object:
+                if statement.startswith("UPDATE execution_run_leases"):
+                    raise sqlite3.OperationalError("disk I/O error")
+                return self.connection.execute(statement, *arguments)
+
+            def close(self) -> None:
+                self.connection.close()
+
+        def connect(*arguments: object, **keywords: object) -> sqlite3.Connection:
+            nonlocal attempts
+            attempts += 1
+            connection = original_connection(*arguments, **keywords)
+            return FailFirstUpdate(connection) if attempts == 1 else connection  # type: ignore[return-value]
+
+        with patch("engineering_platform.execution_lease._connection", side_effect=connect), \
+             patch("engineering_platform.execution_lease.sleep"):
+            renewed = heartbeat(self.root, lease)
+        store.save(TransactionState("inbox-lease", "repo", "prompt.md", "LOCAL_REPOSITORY_VALIDATION"))
+        self.assertEqual(store.load("inbox-lease").phase, "LOCAL_REPOSITORY_VALIDATION")
+        self.assertEqual(liveness(self.root, "inbox-lease")["state"], "LIVE")
+        self.assertEqual(renewed.lease_id, lease.lease_id)
+        with open_storage(self.root) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_run_leases WHERE run_id=?", (lease.run_id,)).fetchone()[0], 1)
+
+    def test_heartbeat_preserves_initial_transient_error_when_retry_also_fails(self) -> None:
+        lease = acquire(self.root, "inbox-lease", identity="host", instance_id="instance-a")
+        import engineering_platform.execution_lease as execution_lease
+        original_connection = execution_lease._connection
+        attempts = 0
+
+        class FailUpdate:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self.connection = connection
+
+            def execute(self, statement: str, *arguments: object) -> object:
+                if statement.startswith("UPDATE execution_run_leases"):
+                    raise sqlite3.OperationalError(f"disk I/O error {attempts}")
+                return self.connection.execute(statement, *arguments)
+
+            def close(self) -> None:
+                self.connection.close()
+
+        def connect(*arguments: object, **keywords: object) -> sqlite3.Connection:
+            nonlocal attempts
+            attempts += 1
+            return FailUpdate(original_connection(*arguments, **keywords))  # type: ignore[return-value]
+
+        with patch("engineering_platform.execution_lease._connection", side_effect=connect), \
+             patch("engineering_platform.execution_lease.sleep") as delay:
+            with self.assertRaisesRegex(sqlite3.OperationalError, "error 1"):
+                heartbeat(self.root, lease)
+        self.assertEqual(attempts, 2)
+        delay.assert_called_once_with(0.02)
+
+    def test_heartbeat_never_renews_an_expired_lease(self) -> None:
+        lease = acquire(self.root, "inbox-lease", identity="host", instance_id="instance-a")
+        with open_storage(self.root) as connection:
+            connection.execute("UPDATE execution_run_leases SET expires_at='2020-01-01T00:00:00+00:00' WHERE lease_id=?", (lease.lease_id,))
+        with self.assertRaises(LeaseConflictError):
+            heartbeat(self.root, lease)
+        self.assertEqual(liveness(self.root, lease.run_id)["state"], "STALE")
+
+    def test_background_heartbeat_retains_operation_and_original_cause(self) -> None:
+        lease = acquire(self.root, "inbox-lease", identity="host", instance_id="instance-a")
+        pulse = LeaseHeartbeat(self.root, lease, interval_seconds=1)
+        with patch("engineering_platform.execution_lease.heartbeat", side_effect=sqlite3.OperationalError("disk I/O error")), \
+             patch.object(pulse._stop, "wait", side_effect=[False, True]):
+            pulse._run()
+        self.assertIsInstance(pulse.error, LeaseHeartbeatError)
+        assert pulse.error is not None
+        self.assertEqual(pulse.error.operation, "lease_heartbeat")
+        self.assertIsInstance(pulse.error.__cause__, sqlite3.OperationalError)
 
     def test_history_retains_released_lease_evidence(self) -> None:
         lease = acquire(self.root, "inbox-lease", identity="host", instance_id="instance-a")
