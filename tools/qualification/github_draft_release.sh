@@ -41,14 +41,33 @@ for release in releases:
 }
 
 ep_create_draft_release() {
-  # Create the draft through the REST API and retain its actual immutable ID.
-  # The eventual tag is release metadata, not the handle used while it is draft.
-  gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
-    -f "tag_name=$EP_RELEASE_TAG" \
-    -f "target_commitish=$EP_RELEASE_SOURCE_SHA" \
-    -f "name=$EP_RELEASE_TITLE" \
-    -F draft=true \
-    --jq '.id'
+  # Do not use `gh api --jq` here.  A truncated create response from GitHub
+  # is otherwise reduced to its opaque "unexpected end of JSON input" error,
+  # despite this being the release operation's durable pre-publication step.
+  # Keep the actual GitHub draft ID as the handle while it remains a draft.
+  local payload response
+  payload="$(python3 -c 'import json, sys; print(json.dumps({"tag_name": sys.argv[1], "target_commitish": sys.argv[2], "name": sys.argv[3], "draft": True}))' \
+    "$EP_RELEASE_TAG" "$EP_RELEASE_SOURCE_SHA" "$EP_RELEASE_TITLE")"
+  response="$(curl --fail --silent --show-error --request POST \
+    -H "Authorization: Bearer ${GH_TOKEN:?GH_TOKEN is required for draft release creation}" \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2022-11-28' \
+    -H 'Content-Type: application/json' \
+    --data "$payload" \
+    "https://api.github.com/repos/$GITHUB_REPOSITORY/releases")"
+  printf '%s' "$response" | python3 -c '
+import json
+import sys
+
+try:
+    release = json.load(sys.stdin)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"draft release creation returned invalid JSON: {error}")
+release_id = release.get("id") if isinstance(release, dict) else None
+if not isinstance(release_id, int) or release_id <= 0:
+    raise SystemExit("draft release creation response has no valid immutable release id")
+print(release_id)
+'
 }
 
 ep_draft_asset_id() {
