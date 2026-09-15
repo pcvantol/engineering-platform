@@ -660,20 +660,30 @@ class ParityLifecycleDispatcher:
     def _record_early_runner_failure(self, *, submission_id: str, context: ParityProjectContext,
                                      run_id: str, error: Exception, stage: str = "RUNNER_INITIALIZATION") -> None:
         """Persist only the missing pre-checkpoint explanation, never a run state."""
+        def location(exception: BaseException) -> dict[str, object] | None:
+            frame = exception.__traceback__
+            while frame is not None and frame.tb_next is not None:
+                frame = frame.tb_next
+            if frame is None:
+                return None
+            function = frame.tb_frame.f_code.co_name
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,119}", function):
+                return None
+            return {"function": function, "line": frame.tb_lineno}
+
         message = _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(error), limit=500))
         cause = error.__cause__
         operation = getattr(cause, "operation", None)
-        root_cause = cause.__cause__ if cause is not None and cause.__cause__ is not None else cause
-        cause_payload = None
-        if root_cause is not None:
-            cause_payload = {
-                "operation": operation if isinstance(operation, str) else None,
-                "error_type": type(root_cause).__name__,
-                "error_module": type(root_cause).__module__,
-                "message": _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(root_cause), limit=500)),
-                "sqlite_errorcode": getattr(root_cause, "sqlite_errorcode", None),
-                "sqlite_errorname": getattr(root_cause, "sqlite_errorname", None),
-            }
+        root_cause = cause.__cause__ if cause is not None and cause.__cause__ is not None else (cause or error)
+        cause_payload = {
+            "operation": operation if isinstance(operation, str) else None,
+            "error_type": type(root_cause).__name__,
+            "error_module": type(root_cause).__module__,
+            "message": _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(root_cause), limit=500)),
+            "sqlite_errorcode": getattr(root_cause, "sqlite_errorcode", None),
+            "sqlite_errorname": getattr(root_cause, "sqlite_errorname", None),
+            "source_location": location(root_cause),
+        }
         component = code = None
         if message.startswith("HISTORICAL_ADMISSION_BLOCKED|"):
             _, component, code, message = message.split("|", 3)
