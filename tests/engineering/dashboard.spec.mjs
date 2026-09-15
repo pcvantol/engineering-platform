@@ -3569,6 +3569,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
+    await expect(modal.locator(".lifecycle-detail-modal__quality-evidence .lifecycle-detail-modal__phase-list span").first()).toHaveCSS("text-align", "start");
   });
 
   test("translates dynamic quality evidence with the bounded Codex translation route", async ({ page }) => {
