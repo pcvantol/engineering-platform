@@ -107,6 +107,7 @@ def _write_fake_commands(directory: Path) -> None:
         textwrap.dedent(
             """\
             #!/usr/bin/env python3
+            import json
             import os
             from pathlib import Path
             import shutil
@@ -118,7 +119,12 @@ def _write_fake_commands(directory: Path) -> None:
             if arguments and arguments[0] == "api":
                 query = next((value for value in arguments if value.startswith("repos/")), "")
                 if "releases?" in query:
-                    print("1")
+                    print(json.dumps([{
+                        "id": 1,
+                        "draft": Path(os.environ["FAKE_GH_DRAFT_FILE"]).read_text(encoding="utf-8").strip() == "true",
+                        "target_commitish": os.environ["SOURCE_SHA"],
+                        "name": f"Engineering Platform {os.environ['VERSION']}",
+                    }]))
                 elif "assets?name=" in query:
                     source = Path(arguments[-1])
                     name = query.split("assets?name=", 1)[1]
