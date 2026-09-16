@@ -306,6 +306,7 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
     snapshot_checks = qualification_source.get("pr_checks", {}) if qualification_source else {}
     implementation = snapshot_checks.get("IMPLEMENTATION", {}) if qualification_source and isinstance(snapshot_checks, dict) else checks.get("IMPLEMENTATION", {})
     finalization = snapshot_checks.get("FINALIZATION", {}) if qualification_source and isinstance(snapshot_checks, dict) else checks.get("FINALIZATION", {})
+    reconciliation = snapshot_checks.get("RECONCILIATION", {}) if qualification_source and isinstance(snapshot_checks, dict) else checks.get("RECONCILIATION", {})
     objective = _safe_objective(submission[3] if submission else {})
     validation_only = action_intent == "VALIDATION_ONLY"
     persisted_required_validation = qualification_source.get("validation_profile", UNAVAILABLE) if qualification_source else qualification_validation or UNAVAILABLE
@@ -337,8 +338,14 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
                      "finalization_pr": "NOT_REQUIRED" if validation_only else _value(qualification_source.get("finalization_pr") if qualification_source else checkpoint.get("finalization_pull_request") or finalization.get("pr_number")), "finalization_pr_current_state": "NOT_REQUIRED" if validation_only else _value(finalization.get("pr_state")),
                      "finalization_merge_state": _value(finalization.get("merge_state")), "finalization_merge_commit": _value(finalization.get("merge_commit") if qualification_source else checkpoint.get("finalization_merge_commit") or finalization.get("merge_commit")),
                      "finalization_required_checks_state": _value(finalization.get("required_checks_state")), "finalization_merge_gate": "EXPECTED_OPERATOR_GATE" if phase == "WAIT_FOR_FINALIZATION_MERGE" else UNAVAILABLE,
+                     "reconciliation_pr": "NOT_REQUIRED" if validation_only else _value(qualification_source.get("reconciliation_pr") if qualification_source else checkpoint.get("reconciliation_pull_request") or reconciliation.get("pr_number")),
+                     "reconciliation_pr_current_state": "NOT_REQUIRED" if validation_only else _value(reconciliation.get("pr_state")),
+                     "reconciliation_merge_state": _value(reconciliation.get("merge_state")),
+                     "reconciliation_required_checks_state": _value(reconciliation.get("required_checks_state")),
+                     "reconciliation_merge_gate": "EXPECTED_OPERATOR_GATE" if phase == "WAIT_FOR_RECONCILIATION_MERGE" else UNAVAILABLE,
                      "implementation_delivery": _value(qualification_source.get("implementation_delivery")),
                      "finalization_delivery": _value(qualification_source.get("finalization_delivery")),
+                     "reconciliation_delivery": _value(qualification_source.get("reconciliation_delivery")),
                      "run_delivery_commit": _value(checkpoint.get("implementation_head_sha") or checkpoint.get("last_verified_sha")), "current_repository_head": _value(checkpoint.get("last_verified_sha")), "delivery_commit_head_relationship": UNAVAILABLE},
         "validation": {"engineering_platform_qualification": UNAVAILABLE, "controls": validation_controls,
                        "required_validation": persisted_required_validation,

@@ -124,7 +124,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 65
+SERVER_STORE_SCHEMA_VERSION = 66
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -1941,6 +1941,25 @@ def _migrate_schema_65(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=65")
 
 
+def _migrate_schema_66(connection: sqlite3.Connection) -> None:
+    """Add the protected reconciliation PR gate and check evidence."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema65")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+        "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66)))"
+    )
+    connection.execute(
+        "INSERT INTO ep_installations SELECT instance_id,created_at,66 "
+        "FROM ep_installations_schema65"
+    )
+    connection.execute("DROP TABLE ep_installations_schema65")
+    storage.install_central_reconciliation_pr_evidence_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(66)")
+    connection.execute("UPDATE engineering_metadata SET value='66' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=66")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -1966,6 +1985,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (63, _migrate_schema_63),
     (64, _migrate_schema_64),
     (65, _migrate_schema_65),
+    (66, _migrate_schema_66),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)

@@ -30,13 +30,17 @@ AUTHORITIES = frozenset(
         "UNKNOWN_AUTHORITY",
     }
 )
-GATE_TYPES = frozenset({"IMPLEMENTATION_MERGE_APPROVAL", "FINALIZATION_MERGE_APPROVAL"})
+GATE_TYPES = frozenset({
+    "IMPLEMENTATION_MERGE_APPROVAL",
+    "FINALIZATION_MERGE_APPROVAL",
+    "RECONCILIATION_MERGE_APPROVAL",
+})
 GATE_STATUSES = frozenset({"NOT_REQUIRED", "WAITING", "SATISFIED", "UNAVAILABLE"})
 VALIDATION_STATES = frozenset(
     {"PASS", "FAIL", "NOT_EXECUTED", "NOT_APPLICABLE", "UNAVAILABLE", "WAITING"}
 )
 PR_CHECK_STATES = frozenset({"PASS", "FAIL", "WAITING", "UNAVAILABLE"})
-PR_ROLES = frozenset({"IMPLEMENTATION", "FINALIZATION"})
+PR_ROLES = frozenset({"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"})
 
 
 def _connection(root: Path, central_database: Path | None) -> sqlite3.Connection:
@@ -256,6 +260,7 @@ def terminal_snapshot(
     worktree_state: str,
     active_blocker: str,
     recovery_required: str,
+    reconciliation_pr: int | None = None,
     retry_parent: str | None = None,
     resume_parent: str | None = None,
     submission_id: str | None = None,
@@ -358,6 +363,7 @@ def terminal_snapshot(
         "submission_id": submission_id or "UNAVAILABLE",
         "implementation_pr": implementation_pr,
         "finalization_pr": finalization_pr,
+        "reconciliation_pr": reconciliation_pr,
         "gates": [{"gate_type": row[0], "status": row[1], "related_pr": row[2]} for row in gates],
         "actions": [{"action": row[0], "authority": row[1]} for row in actions],
         "validation_current": validation,
@@ -385,7 +391,10 @@ def terminal_snapshot(
         ),
         "observed_at": _now(),
     }
-    for role, pr_number in (("IMPLEMENTATION", implementation_pr), ("FINALIZATION", finalization_pr)):
+    deliveries = [("IMPLEMENTATION", implementation_pr), ("FINALIZATION", finalization_pr)]
+    if reconciliation_pr is not None:
+        deliveries.append(("RECONCILIATION", reconciliation_pr))
+    for role, pr_number in deliveries:
         check = pr_checks.get(role, {})
         snapshot[f"{role.lower()}_delivery"] = (
             "COMPLETE"
@@ -474,6 +483,11 @@ def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
             reasons.append("IMPLEMENTATION_MERGE_GATE_UNPROVEN")
         if gate.get("FINALIZATION_MERGE_APPROVAL") != "SATISFIED":
             reasons.append("FINALIZATION_MERGE_GATE_UNPROVEN")
+        if snapshot.get("reconciliation_pr") is not None:
+            if snapshot.get("reconciliation_delivery") != "COMPLETE":
+                reasons.append("RECONCILIATION_DELIVERY_UNPROVEN")
+            if gate.get("RECONCILIATION_MERGE_APPROVAL") != "SATISFIED":
+                reasons.append("RECONCILIATION_MERGE_GATE_UNPROVEN")
     autonomous = {
         row.get("action")
         for row in snapshot.get("actions", [])
@@ -498,7 +512,10 @@ def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
         reasons.append("EVIDENCE_CONFLICT")
     if snapshot.get("pr_check_projection_conflict"):
         reasons.append("EVIDENCE_CONFLICT")
-    for role in (() if validation_only else ("IMPLEMENTATION", "FINALIZATION")):
+    roles = ["IMPLEMENTATION", "FINALIZATION"]
+    if snapshot.get("reconciliation_pr") is not None:
+        roles.append("RECONCILIATION")
+    for role in (() if validation_only else roles):
         if snapshot.get(f"{role.lower()}_pr") is not None:
             check = snapshot.get("pr_checks", {}).get(role, {})
             if check.get("required_checks_state") != "PASS":

@@ -23,7 +23,7 @@ import sys
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
 CENTRAL_OPERATIONAL_DATABASE_FILENAME = "epdata.sqlite"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 44
+ENGINEERING_STORAGE_SCHEMA_VERSION = 45
 STORE_AUTHORITY_POINTER = "store-authority.json"
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
@@ -1322,6 +1322,53 @@ def _schema_v44(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v45(connection: sqlite3.Connection) -> None:
+    """Add the protected reconciliation PR role without rewriting evidence."""
+    connection.execute(
+        "CREATE TABLE managed_governance_gates_schema45 ("
+        "run_id TEXT NOT NULL,gate_type TEXT NOT NULL CHECK(gate_type IN "
+        "('IMPLEMENTATION_MERGE_APPROVAL','FINALIZATION_MERGE_APPROVAL','RECONCILIATION_MERGE_APPROVAL')),"
+        "gate_authority TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN "
+        "('NOT_REQUIRED','WAITING','SATISFIED','UNAVAILABLE')),"
+        "requested_at TEXT NOT NULL,resolved_at TEXT,resolution_actor TEXT,related_pr INTEGER,"
+        "phase TEXT NOT NULL,PRIMARY KEY(run_id,gate_type))"
+    )
+    connection.execute(
+        "INSERT INTO managed_governance_gates_schema45 "
+        "SELECT run_id,gate_type,gate_authority,status,requested_at,resolved_at,"
+        "resolution_actor,related_pr,phase FROM managed_governance_gates"
+    )
+    connection.execute("DROP TABLE managed_governance_gates")
+    connection.execute(
+        "ALTER TABLE managed_governance_gates_schema45 RENAME TO managed_governance_gates"
+    )
+    connection.execute("DROP INDEX managed_pr_check_observations_run_lookup")
+    connection.execute(
+        "CREATE TABLE managed_pr_check_observations_schema45 ("
+        "id INTEGER PRIMARY KEY,run_id TEXT NOT NULL,pr_number INTEGER NOT NULL,"
+        "pr_role TEXT NOT NULL CHECK(pr_role IN ('IMPLEMENTATION','FINALIZATION','RECONCILIATION')),"
+        "pr_state TEXT NOT NULL,merge_state TEXT NOT NULL,merge_commit TEXT,"
+        "required_checks_state TEXT NOT NULL CHECK(required_checks_state IN "
+        "('PASS','FAIL','WAITING','UNAVAILABLE')),evidence_ref TEXT NOT NULL,"
+        "observed_at TEXT NOT NULL,currentness INTEGER NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO managed_pr_check_observations_schema45 "
+        "SELECT id,run_id,pr_number,pr_role,pr_state,merge_state,merge_commit,"
+        "required_checks_state,evidence_ref,observed_at,currentness "
+        "FROM managed_pr_check_observations"
+    )
+    connection.execute("DROP TABLE managed_pr_check_observations")
+    connection.execute(
+        "ALTER TABLE managed_pr_check_observations_schema45 "
+        "RENAME TO managed_pr_check_observations"
+    )
+    connection.execute(
+        "CREATE INDEX managed_pr_check_observations_run_lookup "
+        "ON managed_pr_check_observations(run_id,pr_role,currentness,id)"
+    )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1413,6 +1460,7 @@ MIGRATIONS: dict[int, Migration] = {
     42: _schema_v42,
     43: _schema_v43,
     44: _schema_v44,
+    45: _schema_v45,
 }
 
 
@@ -2775,6 +2823,11 @@ def install_central_execution_artifact_binding_schema(connection: sqlite3.Connec
     untouched; the dedicated EP columns preserve the authoritative binding.
     """
     _schema_v44(connection)
+
+
+def install_central_reconciliation_pr_evidence_schema(connection: sqlite3.Connection) -> None:
+    """Install the retained-host reconciliation PR role in CENTRAL."""
+    _schema_v45(connection)
 
 
 def activate_storage_schema(root: Path) -> sqlite3.Connection:

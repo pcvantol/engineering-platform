@@ -671,6 +671,61 @@ class EngineeringStorageTest(unittest.TestCase):
                     b"test",
                 )
 
+    def test_schema_forty_five_preserves_old_rows_and_adds_reconciliation_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with open_storage(root) as connection:
+                connection.execute(
+                    "INSERT INTO managed_governance_gates("
+                    "run_id,gate_type,gate_authority,status,requested_at,related_pr,phase) "
+                    "VALUES('migration-run','IMPLEMENTATION_MERGE_APPROVAL','OPERATOR',"
+                    "'SATISFIED','now',41,'MERGE')"
+                )
+                connection.execute(
+                    "INSERT INTO managed_pr_check_observations("
+                    "run_id,pr_number,pr_role,pr_state,merge_state,merge_commit,"
+                    "required_checks_state,evidence_ref,observed_at,currentness) "
+                    "VALUES('migration-run',41,'IMPLEMENTATION','MERGED','MERGED',?,"
+                    "'PASS','github','now',0)",
+                    ("a" * 40,),
+                )
+                MIGRATIONS[45](connection)
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT gate_type,status,related_pr FROM managed_governance_gates "
+                        "WHERE run_id='migration-run'"
+                    ).fetchall(),
+                    [("IMPLEMENTATION_MERGE_APPROVAL", "SATISFIED", 41)],
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT pr_role,required_checks_state FROM managed_pr_check_observations "
+                        "WHERE run_id='migration-run'"
+                    ).fetchall(),
+                    [("IMPLEMENTATION", "PASS")],
+                )
+                connection.execute(
+                    "INSERT INTO managed_governance_gates("
+                    "run_id,gate_type,gate_authority,status,requested_at,related_pr,phase) "
+                    "VALUES('migration-run','RECONCILIATION_MERGE_APPROVAL','OPERATOR',"
+                    "'WAITING','now',43,'WAIT_FOR_OPERATOR_MERGE')"
+                )
+                connection.execute(
+                    "INSERT INTO managed_pr_check_observations("
+                    "run_id,pr_number,pr_role,pr_state,merge_state,required_checks_state,"
+                    "evidence_ref,observed_at,currentness) VALUES("
+                    "'migration-run',43,'RECONCILIATION','OPEN','NOT_MERGED','PASS',"
+                    "'github','now',0)"
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "INSERT INTO managed_pr_check_observations("
+                        "run_id,pr_number,pr_role,pr_state,merge_state,required_checks_state,"
+                        "evidence_ref,observed_at,currentness) VALUES("
+                        "'migration-run',44,'UNSCOPED','OPEN','NOT_MERGED','PASS',"
+                        "'github','now',0)"
+                    )
+
     def test_schema_twenty_five_repairs_early_usage_snapshot_table(self) -> None:
         """A database that recorded v24 before uncached counters can report."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -707,6 +762,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=42")
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=43")
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=44")
+                connection.execute("DELETE FROM engineering_schema_migrations WHERE version=45")
             with activate_storage_schema(root) as connection:
                 columns = {
                     row[1]

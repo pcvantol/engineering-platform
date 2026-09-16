@@ -33,7 +33,10 @@ class FinalizationCoordinator:
         if not callable(operation):
             return save_terminal(cleanup, "BLOCKED", "cleanup_unavailable", "Cleanup client is unavailable; resume with repository cleanup evidence.")
         try:
-            result = operation(root, (cleanup.implementation_branch, cleanup.finalization_branch))
+            branches = (cleanup.implementation_branch, cleanup.finalization_branch)
+            if cleanup.transaction_kind == "RECONCILIATION":
+                branches += (cleanup.branch,)
+            result = operation(root, branches)
         except RunnerError as error:
             return save_terminal(cleanup, "BLOCKED", "repository_cleanup_required", str(error))
         return save_terminal(

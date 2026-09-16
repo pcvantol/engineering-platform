@@ -150,7 +150,7 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         path = intended_path("MANAGED", "RECONCILIATION", None)
         self.assertEqual(
             path,
-            ("START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE", "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL"),
+            ("START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE", "RECONCILE_AGENT", "WAIT_FOR_RECONCILIATION_MERGE", "REPOSITORY_CLEANUP", "TERMINAL"),
         )
         self.assertIn("EXECUTE_AGENT", path)
         self.assertIn("WAIT_FOR_OPERATOR_MERGE", path)
@@ -165,7 +165,7 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(by_id["RECONCILE_AGENT"]["state"], "ACTIVE")
         self.assertEqual(by_id["EXECUTE_AGENT"]["state"], "SKIPPED")
         self.assertEqual(by_id["FINALIZE_AGENT"]["state"], "SKIPPED")
-        self.assertNotIn("WAIT_FOR_RECONCILIATION_MERGE", by_id)
+        self.assertEqual(by_id["WAIT_FOR_RECONCILIATION_MERGE"]["state"], "PENDING")
 
     def test_required_check_polling_stays_on_the_visible_merge_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

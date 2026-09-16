@@ -397,6 +397,7 @@ def _commit_strategy(state: TransactionState, bundle: TerminalEvidenceBundle) ->
         f"- Implementation merge: `{state.implementation_merge_commit or 'not recorded'}`",
         f"- Finalization PR: `{state.finalization_pull_request or 'not recorded'}`",
         f"- Finalization merge: `{state.finalization_merge_commit or 'not recorded'}`",
+        f"- Reconciliation PR: `{state.reconciliation_pull_request or 'not recorded'}`",
     )
 
 
@@ -1080,6 +1081,7 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
     snapshot = managed_autonomy_snapshot(
         root, run_id=state.run_id, execution_outcome=state.phase,
         implementation_pr=state.implementation_pull_request, finalization_pr=state.finalization_pull_request,
+        reconciliation_pr=state.reconciliation_pull_request,
         repository_state="MERGED_RECONCILED" if state.phase == "COMPLETE" and (state.finalization_merge_commit or state.action_intent == "VALIDATION_ONLY") else "UNAVAILABLE",
         workspace_state="WORKSPACE_READY" if state.phase == "COMPLETE" and bundle.worktree_state == "clean" else "UNAVAILABLE",
         main_origin_sync="YES" if bundle.target_branch == "main" else "UNAVAILABLE",
@@ -1503,6 +1505,7 @@ def generate_terminal_report(
             "## Pull Requests",
             f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`",
             f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`",
+            f"- Reconciliation: branch `{state.branch if state.transaction_kind == 'RECONCILIATION' else None}`, PR `{state.reconciliation_pull_request}`",
             "",
             *_retry_relationship(state),
             "## Initial Repository Assessment",
@@ -1600,7 +1603,7 @@ def generate_terminal_report(
             "## Metrics",
             f"- Codex CLI execution time: {state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'} seconds",
             f"- Repair iterations: {state.repair_iterations}",
-            f"- PRs created: {sum(value is not None for value in (state.implementation_pull_request, state.finalization_pull_request))}",
+            f"- PRs created: {sum(value is not None for value in (state.implementation_pull_request, state.finalization_pull_request, state.reconciliation_pull_request))}",
             f"- Merges performed: {sum(value is not None for value in (state.implementation_merge_commit, state.finalization_merge_commit))}",
             "",
         )

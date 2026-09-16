@@ -82,7 +82,7 @@ from .reviewer_evidence import ReviewerEvidence
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
 from .execution_errors import ProviderReadinessBlocked
-from .execution_timeout_policy import FINALIZATION, REPAIR, agent_timeout
+from .execution_timeout_policy import END_RECONCILIATION, FINALIZATION, REPAIR, agent_timeout
 from .provider_readiness import failures as provider_readiness_failures
 from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
 from .execution_repository import GhCliClient as ProviderGhCliClient, SubprocessRepositoryClient as ProviderRepositoryClientImpl
@@ -125,6 +125,7 @@ from .component_logging import component_logger, record_technical_diagnostic, sh
 
 # Compatibility exports for integrations that already import these names.
 FINALIZATION_PR_HANDOFF_MAX_SECONDS = FINALIZATION.seconds
+RECONCILIATION_PR_HANDOFF_MAX_SECONDS = END_RECONCILIATION.seconds
 REPAIR_AGENT_MAX_SECONDS = REPAIR.seconds
 
 # A repair remains scoped to its original PR, but it must also have a finite
@@ -305,11 +306,12 @@ def assemble_prompt(
     )
     authority = (
         """This is the sole automatic post-Finalization reconciliation. You may only update
-the four canonical rolling records, commit them directly to the already synchronized `main`,
-and push that one commit. Do not create a branch or pull request. Do not change runtime code,
-authority, lifecycle, retry, validation, provider, Forge, queue, or delivery semantics. Return
-`COMPLETE`, `repository_reconciled`, and the pushed main commit SHA only after verifying a clean
-workspace and that `main` contains that exact commit."""
+the four canonical rolling records on the exact checkpointed reconciliation branch, commit and
+push that branch, and create one draft pull request to `main`. Do not change runtime code,
+authority, lifecycle, retry, validation, provider, Forge, queue, or delivery semantics. Do not
+merge the pull request or push directly to `main`. Return `COMPLETE`, `repository_reconciled`,
+the branch, pull-request number, and exact candidate commit SHA only after verifying a clean
+workspace."""
         if state and state.transaction_kind == "RECONCILIATION"
         else
         """The runner holds explicit owner authorization for this exact bounded transaction. You may create, commit and push one bounded branch and draft pull request, or repair that same pull request. The runner may mark that pull request ready for review, but only the human operator may merge it. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective."""
@@ -1090,7 +1092,7 @@ class EngineeringRunner:
     def _managed_pr_check(self, state: TransactionState, pr: PullRequestEvidence) -> None:
         """Persist current GitHub required-check evidence separately from historical waits."""
         role = state.transaction_kind
-        if role not in {"IMPLEMENTATION", "FINALIZATION"}:
+        if role not in {"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"}:
             return
         check_state = "PASS" if pr.checks_terminal and pr.checks_passed else "FAIL" if pr.checks_terminal else "WAITING"
         try:
@@ -2731,6 +2733,8 @@ First implementation pull-request publication gate:
             return self._advance_after_repair_agent_result(state, result)
         if lifecycle_phase == "FINALIZE_AGENT":
             return self._advance_after_finalization_agent_result(state, result)
+        if lifecycle_phase == "RECONCILE_AGENT":
+            return self._advance_after_reconciliation_agent_result(state, result)
         return self._save_terminal(state, "BLOCKED", "recovered_provider_phase_invalid", "Recovered provider result has an unsupported lifecycle phase.")
 
     def run(
@@ -2898,7 +2902,7 @@ First implementation pull-request publication gate:
         recovered_resume = (
             isinstance(recovery_snapshot, dict)
             and recovery_snapshot.get("state") == "RECOVERED"
-            and recovery_snapshot.get("lifecycle_phase") in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT"}
+            and recovery_snapshot.get("lifecycle_phase") in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT"}
         )
         try:
             persisted_submission = load_submission_for_run(self.root, state.run_id, central_database=self.store.central_database)
@@ -3281,6 +3285,8 @@ First implementation pull-request publication gate:
             state = self._record_agent_execution_time(state)
             self.console_detail = error.console_detail
             return self._terminalize_provider_invocation_error(state, error)
+        if state.transaction_kind == "RECONCILIATION":
+            return self._advance_after_reconciliation_agent_result(state, result)
         return self._advance_after_primary_agent_result(state, result, evidence)
 
     def _active_genesis_transaction(self, target: Path, run_id: str) -> str | None:
@@ -3397,10 +3403,7 @@ First implementation pull-request publication gate:
                 next_action="create_finalization",
             )
         if state.transaction_kind == "RECONCILIATION" and not state.reconciliation_pull_request:
-            return replace(
-                state, phase="RECONCILE_AGENT", last_verified_sha=evidence.head_sha,
-                next_action="create_reconciliation",
-            )
+            return self._recover_reconciliation_pull_request(state, evidence)
         if (
             state.transaction_kind == "FINALIZATION"
             and state.finalization_merge_commit
@@ -3478,6 +3481,54 @@ First implementation pull-request publication gate:
         write_live_status(self.root, recovered, recovered.next_action)
         return self._poll(recovered)
 
+    def _recover_reconciliation_pull_request(
+        self, state: TransactionState, evidence: RepositoryEvidence,
+    ) -> TransactionState:
+        """Recover only the PR bound to the durable reconciliation branch."""
+        if state.reconciliation_pull_request:
+            return replace(
+                state, pull_request=state.reconciliation_pull_request,
+                phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks",
+            )
+        if (
+            not state.branch
+            or state.branch == "main"
+            or not state.finalization_merge_commit
+            or evidence.branch not in {"main", state.branch}
+            or not evidence.clean
+            or not self.repository.main_contains(self.root, state.finalization_merge_commit)
+        ):
+            return self._save_terminal(
+                state, "BLOCKED", "reconciliation_recovery_evidence_required",
+                "Reconciliation recovery requires its checkpointed branch and a verified Finalization merge.",
+            )
+        candidate = self.github.pull_request_for_head_branch(state.branch)
+        if candidate is None:
+            return self._save_terminal(
+                state, "BLOCKED", "reconciliation_recovery_evidence_required",
+                "No reconciliation pull request matches the checkpointed branch; no replacement was created.",
+            )
+        if (
+            candidate.head_branch != state.branch
+            or candidate.base_branch != "main"
+            or candidate.state not in {"OPEN", "MERGED"}
+        ):
+            return self._save_terminal(
+                state, "BLOCKED", "reconciliation_recovery_evidence_invalid",
+                "Reconciliation pull request evidence does not match the checkpointed branch and main base.",
+            )
+        recovered = replace(
+            state, pull_request=candidate.number,
+            reconciliation_pull_request=candidate.number,
+            phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks",
+            last_verified_sha=evidence.head_sha,
+            latest_repository_evidence=_repository_summary(evidence),
+            latest_github_evidence=_pull_request_summary(candidate),
+        )
+        self.store.save(recovered)
+        write_live_status(self.root, recovered, recovered.next_action)
+        return self._poll(recovered)
+
     def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
         if state.pull_request:
             state = self._provider_readiness_gate(
@@ -3497,32 +3548,10 @@ First implementation pull-request publication gate:
                 "Agent result referenced a pull request without a transaction branch; the current main branch cannot be reused as execution evidence.",
             )
         if not state.pull_request:
-            if state.transaction_kind == "RECONCILIATION" and result and result.pull_request:
+            if state.transaction_kind == "RECONCILIATION" and result:
                 return self._save_terminal(
-                    state, "BLOCKED", "reconciliation_pull_request_forbidden",
-                    "Automatic reconciliation must commit directly to main and must not create a pull request.",
-                )
-            if state.transaction_kind == "RECONCILIATION" and result and result.terminal_state == "COMPLETE":
-                evidence = self.repository.inspect(self.root)
-                if (
-                    result.terminal_condition == "repository_reconciled"
-                    and result.commit_sha
-                    and evidence.clean
-                    and evidence.branch == "main"
-                    and evidence.head_sha == result.commit_sha
-                    and evidence.main_contains_head
-                ):
-                    reconciled = replace(state, last_verified_sha=result.commit_sha)
-                    reconciled = self._append_verified_commit_evidence(
-                        reconciled,
-                        phase="RECONCILE_AGENT",
-                        commit_sha=result.commit_sha,
-                        description="end_reconciliation_commit_verified",
-                    )
-                    return self._cleanup(reconciled)
-                return self._save_terminal(
-                    state, "BLOCKED", "automatic_reconciliation_evidence_required",
-                    "Automatic reconciliation requires a clean main checkout containing its reported commit.",
+                    state, "BLOCKED", "reconciliation_pr_required",
+                    "Automatic reconciliation requires its checkpointed pull request before cleanup.",
                 )
             if result and result.terminal_state == "COMPLETE":
                 evidence = self.repository.inspect(self.root)
@@ -3885,12 +3914,7 @@ First implementation pull-request publication gate:
         return self._poll(finalization, result)
 
     def _start_automatic_reconciliation(self, state: TransactionState) -> TransactionState:
-        """Apply the bounded rolling-record update after Finalization merges.
-
-        This is deliberately a direct, post-merge `main` commit: it has no PR,
-        review, approval, or operator merge boundary. Its scope is enforced by
-        the supplied reconciliation prompt and the exact commit evidence below.
-        """
+        """Apply the bounded rolling-record update through a protected PR."""
         synchronize = getattr(self.repository, "synchronize_main", None)
         if callable(synchronize):
             synchronize(self.root)
@@ -3900,22 +3924,37 @@ First implementation pull-request publication gate:
                 state,
                 "End reconciliation is waiting for a clean, synchronized main checkout.",
             )
+        expected_branch = (
+            state.branch
+            if state.transaction_kind == "RECONCILIATION" and state.branch != "main"
+            else None
+        ) or f"codex/reconcile-{state.run_id}"
         reconciliation = replace(
             state, phase="RECONCILE_AGENT", transaction_kind="RECONCILIATION",
-            branch=None, pull_request=None, reconciliation_pull_request=None,
-            next_action="reconcile_rolling_records_on_main", waiting_for_merge_since=None,
+            branch=expected_branch, pull_request=None, reconciliation_pull_request=None,
+            next_action="create_reconciliation_pull_request", waiting_for_merge_since=None,
             latest_repository_evidence=_repository_summary(evidence),
         )
         self._managed_action(reconciliation, "AUTOMATIC_RECONCILIATION")
         self.store.save(reconciliation)
         write_live_status(self.root, reconciliation, reconciliation.next_action)
+        reconciliation_span = self._start_phase(state.run_id, "RECONCILIATION")
+        handoff_started = time.monotonic()
+        set_handoff_deadline = getattr(self.agent, "set_handoff_deadline_callback", None)
+        if callable(set_handoff_deadline):
+            set_handoff_deadline(
+                lambda: time.monotonic() - handoff_started
+                >= RECONCILIATION_PR_HANDOFF_MAX_SECONDS
+            )
         try:
             result = self._invoke_agent_with_timing(
                 reconciliation,
                 assemble_prompt(
                     Path(reconciliation.prompt_path), reconciliation,
                     managed_target=self.root if reconciliation.execution_mode == "MANAGED" else None,
-                ) + "\n\nReconcile only the four canonical rolling current-state records after the verified Finalization merge. Preserve immutable Prompt History.",
+                )
+                + "\n\nReconcile only the four canonical rolling current-state records after the verified Finalization merge. "
+                f"Preserve immutable Prompt History and create one draft pull request on exactly `{expected_branch}`.",
             )
             reconciliation = self._record_agent_execution_time(reconciliation)
             reconciliation = self._record_validation_evidence(reconciliation, result)
@@ -3926,12 +3965,63 @@ First implementation pull-request publication gate:
                 description="end_reconciliation_commit_verified",
             )
             self._persist_agent_usage(reconciliation.run_id)
+        except CodexHandoffTimeout:
+            complete_phase(self.root, reconciliation_span, outcome="FAILED")
+            reconciliation = self._record_agent_execution_time(reconciliation)
+            return self._recover_reconciliation_pull_request(
+                reconciliation, self.repository.inspect(self.root)
+            )
         except ProviderReadinessBlocked as blocked:
+            complete_phase(self.root, reconciliation_span, outcome="BLOCKED")
             return blocked.state
         except CodexInvocationError as error:
+            complete_phase(
+                self.root, reconciliation_span,
+                outcome="INTERRUPTED" if error.provider_turn_interrupted else "FAILED",
+            )
             reconciliation = self._record_agent_execution_time(reconciliation)
             self.console_detail = error.console_detail
             return self._terminalize_provider_invocation_error(reconciliation, error)
+        finally:
+            if callable(set_handoff_deadline):
+                set_handoff_deadline(None)
+        complete_phase(self.root, reconciliation_span)
+        return self._advance_after_reconciliation_agent_result(reconciliation, result)
+
+    def _advance_after_reconciliation_agent_result(
+        self, reconciliation: TransactionState, result: AgentResult,
+    ) -> TransactionState:
+        """Bind a live or recovered reconciliation result to its one PR."""
+        if result.terminal_state in {"BLOCKED", "FAILED"} or not result.pull_request:
+            return self._save_terminal(
+                reconciliation,
+                result.terminal_state
+                if result.terminal_state in {"BLOCKED", "FAILED"}
+                else "BLOCKED",
+                "reconciliation_pr_required",
+                result.diagnostic or "Reconciliation pull request was not created.",
+            )
+        expected_branch = reconciliation.branch
+        if not expected_branch or expected_branch == "main" or result.branch != expected_branch:
+            return self._save_terminal(
+                reconciliation, "BLOCKED", "reconciliation_branch_mismatch",
+                "Reconciliation returned a pull request outside the durable reconciliation branch.",
+            )
+        reconciliation = replace(
+            reconciliation,
+            phase="WAIT_FOR_TERMINAL_EVIDENCE",
+            pull_request=result.pull_request,
+            reconciliation_pull_request=result.pull_request,
+            terminal_condition="repository_reconciled",
+            next_action="poll_required_checks",
+        )
+        self.store.save(reconciliation)
+        write_live_status(self.root, reconciliation, reconciliation.next_action)
+        evidence = self.github.pull_request(result.pull_request)
+        if evidence.state == "MERGED":
+            return self._poll(reconciliation, result)
+        self.github.normalize_markdown_body(result.pull_request)
+        self.github.ready(result.pull_request)
         return self._poll(reconciliation, result)
 
     def _save_terminal(
