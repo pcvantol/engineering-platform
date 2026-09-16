@@ -37,7 +37,10 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
 
         managed = agent.invoke(self.root, "implement the approved work")
         publication = agent.invoke(self.root, "First implementation pull-request publication gate")
-        reconciled = agent.invoke(self.root, "the sole automatic post-finalization reconciliation")
+        reconciled = agent.invoke(
+            self.root,
+            "the sole automatic post-finalization reconciliation; create one draft pull request on exactly `codex/reconcile-run-a`",
+        )
         genesis = agent.invoke(self.root, f"Execution mode: Genesis\nTarget repository: {self.root}")
 
         self.assertEqual(process[0]["pid"], os.getpid())
@@ -45,6 +48,7 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
         self.assertIsNone(managed.pull_request)
         self.assertEqual(publication.pull_request, 1)
         self.assertEqual(reconciled.terminal_condition, "repository_reconciled")
+        self.assertEqual((reconciled.branch, reconciled.pull_request), ("codex/reconcile-run-a", 1))
         self.assertEqual(genesis.terminal_condition, "local_commit_reconciled")
         self.assertEqual(genesis.repository_path, str(self.root.resolve()))
         self.assertTrue(agent.available())
@@ -56,6 +60,12 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
         self.assertEqual(agent._finalization_branch(prompt), "qualification-finalize")
         with self.assertRaisesRegex(RuntimeError, "QUALIFICATION_FINALIZATION_BRANCH_UNAVAILABLE"):
             agent._finalization_branch("no branch")
+        self.assertEqual(
+            agent._reconciliation_branch("Create one draft pull request on exactly `codex/reconcile-run-a`."),
+            "codex/reconcile-run-a",
+        )
+        with self.assertRaisesRegex(RuntimeError, "QUALIFICATION_RECONCILIATION_BRANCH_UNAVAILABLE"):
+            agent._reconciliation_branch("no branch")
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(agent._github_write_target(self.root))
         with patch.dict(os.environ, {
@@ -127,13 +137,25 @@ class DeterministicQualificationRuntimeTests(unittest.TestCase):
             finalization = agent._create_github_managed_handoff(
                 self.root, finalization=True, prompt="Finalization PR on exactly `qualification-finalize`."
             )
+            reconciliation = agent._create_github_managed_handoff(
+                self.root,
+                reconciliation=True,
+                prompt="Create one draft pull request on exactly `codex/reconcile-run-a`.",
+            )
         self.assertEqual((handoff.branch, handoff.pull_request), ("qualification-managed", 17))
         self.assertEqual((publication.branch, publication.pull_request), ("qualification-managed", 17))
         self.assertEqual(recovery.branch, "qualification-managed-recovery")
         self.assertEqual(finalization.branch, "qualification-finalize")
+        self.assertEqual((reconciliation.branch, reconciliation.pull_request), ("codex/reconcile-run-a", 17))
         self.assertTrue((self.root / ".engineering-platform" / "managed-github-e2e-proof.json").is_file())
         self.assertTrue((self.root / ".engineering-platform" / "managed-github-e2e-finalization-proof.json").is_file())
-        self.assertGreaterEqual(run.call_count, 28)
+        for name in ("ARCHITECT_SESSION.md", "BOOTSTRAP.md", "HANDOFF.md", "README.md"):
+            self.assertIn("Qualification reconciliation: `codex/reconcile-run-a`.", (self.root / name).read_text())
+        self.assertTrue(any(
+            call.args[0][:3] == ("gh", "pr", "create") and "--draft" in call.args[0]
+            for call in run.call_args_list
+        ))
+        self.assertGreaterEqual(run.call_count, 36)
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "QUALIFICATION_GITHUB_WRITE_CONFIGURATION_INVALID"):
                 agent._create_github_managed_handoff(self.root)
