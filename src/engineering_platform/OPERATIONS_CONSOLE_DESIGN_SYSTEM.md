@@ -242,6 +242,9 @@ the exact reported runtime profile, the dashboard may use their persisted
 phase timings for the current and remaining operational phases. Operator merge
 and external-check waiting are excluded; the result remains a range, never a
 promise or scheduler input.
+When the upper bound has elapsed while the phase is still active, the card must
+stop showing a synthetic one-minute range and state that the estimate was
+exceeded and the remaining time is uncertain.
 
 ### Execution lifecycle flow
 

@@ -7624,6 +7624,55 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#executionEstimateMeta")).toContainText("3 vergelijkbare voltooide uitvoeringen");
   });
 
+  test("stops reporting one minute once a phase-aware range is exhausted", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      current_phase: "EXECUTE_AGENT",
+      run_id: "expired-phase-duration-run",
+      prompt_characters: 1000,
+    }, {
+      duration_estimate: {
+        sample_count: 3,
+        phase_aware: true,
+        phase_sample_count: 3,
+        remaining_lower_seconds: 0,
+        remaining_upper_seconds: 0,
+      },
+    }));
+
+    await expect(page.locator("#executionEstimate")).toHaveText(
+      "Schatting overschreden; resterende tijd onzeker",
+    );
+    await expect(page.locator("#executionEstimate")).not.toContainText("1–1");
+    await expect(page.locator("#executionEstimateMeta")).toContainText(
+      "De eerdere bandbreedte is verstreken",
+    );
+  });
+
+  test("stops reporting one minute once the coarse range is exhausted", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      current_phase: "EXECUTE_AGENT",
+      run_id: "expired-coarse-duration-run",
+      prompt_characters: 1000,
+    }, {
+      prompt_started: { started_at: new Date(Date.now() - 32 * 60 * 1000).toISOString() },
+      duration_estimate: {},
+    }));
+
+    await expect(page.locator("#executionEstimate")).toHaveText(
+      "Schatting overschreden; resterende tijd onzeker",
+    );
+    await expect(page.locator("#executionEstimate")).not.toContainText("1–1");
+    await expect(page.locator("#executionEstimateMeta")).toContainText("minuten verstreken");
+  });
+
   test("shows the elapsed duration explanation only once without learned history", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
