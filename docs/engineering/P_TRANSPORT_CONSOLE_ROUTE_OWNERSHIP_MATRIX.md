@@ -161,8 +161,12 @@ Tailnet device → Tailscale IPv4 :8765 → Dashboard relay → 127.0.0.1 EP Ser
 ```
 
 The Server's relay component projection proves only this access path. It is
-healthy when the loopback Server Console and its relay are healthy; it must neither start
-nor require the historical `inbox_watcher` LaunchAgent. A missing watcher is
+healthy only when the loopback Server Console and the Relay LaunchAgent are
+live **and** an HTTP request to the validated local Tailscale IPv4 endpoint
+successfully traverses the relay. The component detail exposes that exact
+`http://<tailscale-ip>:8765/` endpoint and the independent functional result;
+an active process alone is not a healthy relay. It must neither start nor
+require the historical `inbox_watcher` LaunchAgent. A missing watcher is
 therefore never a reason for the relay endpoint to return `503`.
 
 File Inbox health, retry state and quarantine count are instead exposed by

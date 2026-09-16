@@ -869,7 +869,12 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         launchd.return_value.runtime_details.return_value = LaunchdRuntimeDetails(
             "com.engineeringplatform.dashboard-relay", True, False, None, "1", 0, None,
         )
-        component = server._dashboard_relay_component(server_running=True)
+        with patch("engineering_platform.server.server_relay.relay_access_observation", return_value={
+            "tailscale_ipv4": "100.108.178.11",
+            "relay_endpoint": "http://100.108.178.11:8765/",
+            "relay_reachable": False,
+        }):
+            component = server._dashboard_relay_component(server_running=True)
         self.assertFalse(component["healthy"])
         self.assertEqual(component["detail_code"], "DASHBOARD_RELAY_PROCESS_INACTIVE")
 
@@ -1838,7 +1843,14 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.initialize(self.root)
         with patch("engineering_platform.server._runtime", return_value={"pid": 73}), patch(
             "engineering_platform.server._alive", return_value=True
-        ), patch("engineering_platform.server.LaunchdProvider") as launchd:
+        ), patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
+            "engineering_platform.server.server_relay.relay_access_observation",
+            return_value={
+                "tailscale_ipv4": "100.108.178.11",
+                "relay_endpoint": "http://100.108.178.11:8765/",
+                "relay_reachable": True,
+            },
+        ):
             launchd.return_value.runtime_status.return_value = ProviderStatus(
                 "launchd", "configured", True, "LaunchAgent process is active"
             )
@@ -1851,10 +1863,19 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(component["lifecycle_state"], "RUNNING")
         self.assertEqual(component["uptime_seconds"], 30)
         self.assertEqual(component["detail_code"], "DASHBOARD_RELAY_TAILSCALE_AVAILABLE")
+        self.assertEqual(component["relay_endpoint"], "http://100.108.178.11:8765/")
+        self.assertTrue(component["relay_reachable"])
 
         with patch("engineering_platform.server._runtime", return_value={"pid": 73}), patch(
             "engineering_platform.server._alive", return_value=True
-        ), patch("engineering_platform.server.LaunchdProvider") as launchd:
+        ), patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
+            "engineering_platform.server.server_relay.relay_access_observation",
+            return_value={
+                "tailscale_ipv4": "100.108.178.11",
+                "relay_endpoint": "http://100.108.178.11:8765/",
+                "relay_reachable": False,
+            },
+        ):
             launchd.return_value.runtime_status.return_value = ProviderStatus(
                 "launchd", "configured", False, "LaunchAgent is not loaded"
             )
@@ -1865,6 +1886,47 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertFalse(component["healthy"])
         self.assertEqual(component["status_code"], "DASHBOARD_RELAY_UNAVAILABLE")
         self.assertEqual(component["detail_code"], "DASHBOARD_RELAY_LAUNCH_AGENT_UNLOADED")
+
+    def test_dashboard_relay_running_process_requires_a_reachable_tailnet_endpoint(self) -> None:
+        runtime = ProviderStatus("launchd", "configured", True, "LaunchAgent process is active")
+        details = LaunchdRuntimeDetails(
+            "com.engineeringplatform.dashboard-relay", True, True, 654, None, 1024, 30,
+        )
+        with patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
+            "engineering_platform.server.server_relay.relay_access_observation",
+            return_value={
+                "tailscale_ipv4": "100.108.178.11",
+                "relay_endpoint": "http://100.108.178.11:8765/",
+                "relay_reachable": False,
+            },
+        ):
+            launchd.return_value.runtime_status.return_value = runtime
+            launchd.return_value.runtime_details.return_value = details
+            component = server._dashboard_relay_component(server_running=True)
+
+        self.assertFalse(component["healthy"])
+        self.assertEqual(component["detail_code"], "DASHBOARD_RELAY_ENDPOINT_UNREACHABLE")
+        self.assertEqual(component["relay_endpoint"], "http://100.108.178.11:8765/")
+
+    def test_dashboard_relay_reports_a_missing_tailscale_address(self) -> None:
+        runtime = ProviderStatus("launchd", "configured", True, "LaunchAgent process is active")
+        details = LaunchdRuntimeDetails(
+            "com.engineeringplatform.dashboard-relay", True, True, 654, None, 1024, 30,
+        )
+        with patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
+            "engineering_platform.server.server_relay.relay_access_observation",
+            return_value={
+                "tailscale_ipv4": None,
+                "relay_endpoint": None,
+                "relay_reachable": False,
+            },
+        ):
+            launchd.return_value.runtime_status.return_value = runtime
+            launchd.return_value.runtime_details.return_value = details
+            component = server._dashboard_relay_component(server_running=True)
+
+        self.assertFalse(component["healthy"])
+        self.assertEqual(component["detail_code"], "DASHBOARD_RELAY_TAILSCALE_UNAVAILABLE")
 
     def test_only_the_canonical_relay_lifecycle_can_be_restarted(self) -> None:
         server.initialize(self.root)

@@ -6955,6 +6955,8 @@ test.describe("Engineering Status browser smoke", () => {
     expect(rendered).not.toContain("Geen toelichting");
     for (const language of SUPPORTED_LOCALES) {
       expect(DASHBOARD_MESSAGES[language]["component.detail.DASHBOARD_RELAY_TAILSCALE_AVAILABLE"]).toBeTruthy();
+      expect(DASHBOARD_MESSAGES[language]["component.detail.DASHBOARD_RELAY_TAILSCALE_UNAVAILABLE"]).toBeTruthy();
+      expect(DASHBOARD_MESSAGES[language]["component.detail.DASHBOARD_RELAY_ENDPOINT_UNREACHABLE"]).toBeTruthy();
       expect(DASHBOARD_MESSAGES[language]["component.detail.EP_SERVER_ENDPOINT"]).toBeTruthy();
     }
   });
@@ -7944,6 +7946,33 @@ test.describe("Engineering Status browser smoke", () => {
     });
     expect(geometry.containerWidth).toBe(390);
     expect(Math.abs(geometry.leftGutter - geometry.rightGutter)).toBeLessThanOrEqual(1);
+  });
+
+  test("shows clickable relay access and its independent functional health", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "dashboard_relay",
+      healthy: false,
+      version: "2.3.65",
+      tailscale_ipv4: "100.108.178.11",
+      relay_endpoint: "http://100.108.178.11:8765/",
+      relay_reachable: false,
+      launchd: { label: "com.engineeringplatform.dashboard-relay", loaded: true, active: true },
+      installation: {},
+    }));
+
+    const endpoint = page.locator("#componentModalContent .component-modal__endpoint");
+    await expect(endpoint).toHaveAttribute("href", "http://100.108.178.11:8765/");
+    await expect(endpoint).toHaveAttribute("target", "_blank");
+    await expect(endpoint).toHaveAttribute("rel", "noopener noreferrer");
+    const language = await page.locator("html").getAttribute("lang");
+    await expect(page.locator("#componentModalContent")).toContainText(
+      DASHBOARD_MESSAGES[language]["component.relay_access"],
+    );
+    await expect(page.locator("#componentModalContent")).toContainText("100.108.178.11");
+    await expect(page.locator("#componentModalContent")).toContainText(
+      DASHBOARD_MESSAGES[language]["component.relay_unreachable"],
+    );
   });
 
   test("uses a neutral hover fill for the component-detail close action", async ({ page }) => {

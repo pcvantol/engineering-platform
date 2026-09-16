@@ -8,17 +8,26 @@ let loopbackAddress = "127.0.0.1"
 func tailscaleAddress() -> String? {
     let process = Process()
     let output = Pipe()
+    let reader = output.fileHandleForReading
+    let writer = output.fileHandleForWriting
+    defer {
+        reader.closeFile()
+        writer.closeFile()
+    }
     process.executableURL = URL(fileURLWithPath: "/usr/local/bin/tailscale")
     process.arguments = ["ip", "-4"]
     process.standardOutput = output
     do {
         try process.run()
+        // The child owns its duplicated descriptor. Closing the parent's
+        // write end prevents retries from retaining one pipe per attempt.
+        writer.closeFile()
         process.waitUntilExit()
     } catch {
         return nil
     }
     guard process.terminationStatus == 0,
-          let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8),
+          let text = String(data: reader.readDataToEndOfFile(), encoding: .utf8),
           let value = text.split(whereSeparator: \.isNewline).first
     else { return nil }
     return String(value)
