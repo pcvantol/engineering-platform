@@ -19,6 +19,12 @@ submission and producer identity through the linked submission record plus:
 Dual parentage is rejected. Existing historical runs receive no synthetic
 record and therefore remain `UNAVAILABLE`/`EVIDENCE_INSUFFICIENT`.
 
+For runs created by the protected-reconciliation contract, qualification also
+requires the exact reconciliation PR, terminal required-check evidence and a
+satisfied `RECONCILIATION_MERGE_APPROVAL` gate. Historical qualification
+snapshots that predate this contract are not backfilled with a third PR or
+fabricated merge evidence.
+
 ## Provider-dispatch admission
 
 Provider-backed work has one fail-closed boundary:

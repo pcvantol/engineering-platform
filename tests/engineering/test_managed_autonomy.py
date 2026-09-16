@@ -91,6 +91,7 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         for gate, pr in (
             ("IMPLEMENTATION_MERGE_APPROVAL", 101),
             ("FINALIZATION_MERGE_APPROVAL", 102),
+            ("RECONCILIATION_MERGE_APPROVAL", 103),
         ):
             record_gate(
                 root,
@@ -112,7 +113,7 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         append_validation_observation(
             root, run_id=run, control="git_diff_check", state="PASS", required=True, currentness=2
         )
-        for role, pr in (("IMPLEMENTATION", 101), ("FINALIZATION", 102)):
+        for role, pr in (("IMPLEMENTATION", 101), ("FINALIZATION", 102), ("RECONCILIATION", 103)):
             append_pr_check_observation(
                 root, run_id=run, pr_number=pr, pr_role=role, pr_state="MERGED",
                 merge_commit="a" * 40, required_checks_state="PASS",
@@ -124,6 +125,7 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
             execution_outcome="COMPLETE",
             implementation_pr=101,
             finalization_pr=102,
+            reconciliation_pr=103,
             repository_state="MERGED_RECONCILED",
             workspace_state="WORKSPACE_READY",
             main_origin_sync="YES",
@@ -138,7 +140,7 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
             snapshot = self._qualified(Path(directory))
         self.assertEqual(snapshot["managed_autonomy_qualification"], "QUALIFIED")
         self.assertEqual(snapshot["unplanned_manual_intervention_count"], 0)
-        self.assertEqual(snapshot["expected_operator_gate_count"], 2)
+        self.assertEqual(snapshot["expected_operator_gate_count"], 3)
         self.assertGreater(snapshot["autonomous_ep_action_count"], 0)
         self.assertGreater(snapshot["external_platform_event_count"], 0)
         self.assertEqual(snapshot["fresh_submission"], "YES")
@@ -146,11 +148,36 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["resume_parent"], "NONE")
         self.assertEqual(snapshot["pr_checks"]["IMPLEMENTATION"]["required_checks_state"], "PASS")
         self.assertEqual(snapshot["pr_checks"]["FINALIZATION"]["required_checks_state"], "PASS")
+        self.assertEqual(snapshot["pr_checks"]["RECONCILIATION"]["required_checks_state"], "PASS")
         self.assertEqual(snapshot["implementation_delivery"], "COMPLETE")
         self.assertEqual(snapshot["finalization_delivery"], "COMPLETE")
+        self.assertEqual(snapshot["reconciliation_delivery"], "COMPLETE")
         self.assertEqual(snapshot["execution_mode"], "MANAGED")
         self.assertEqual(snapshot["required_validation_state"], "PASS")
         self.assertFalse(snapshot["validation_projection_conflict"])
+
+    def test_reconciliation_pr_requires_its_own_satisfied_operator_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._qualified(root)
+            record_gate(
+                root, run_id="inbox-managed-proof",
+                gate_type="RECONCILIATION_MERGE_APPROVAL", status="WAITING",
+                related_pr=103, phase="WAIT_FOR_OPERATOR_MERGE",
+            )
+            snapshot = terminal_snapshot(
+                root, run_id="inbox-managed-proof", execution_outcome="COMPLETE",
+                implementation_pr=101, finalization_pr=102, reconciliation_pr=103,
+                repository_state="MERGED_RECONCILED", workspace_state="WORKSPACE_READY",
+                main_origin_sync="YES", worktree_state="CLEAN", active_blocker="NONE",
+                recovery_required="NO", lineage_available=True,
+            )
+
+        self.assertEqual(snapshot["managed_autonomy_qualification"], "EVIDENCE_INSUFFICIENT")
+        self.assertIn(
+            "RECONCILIATION_MERGE_GATE_UNPROVEN",
+            snapshot["qualification_failure_reasons"],
+        )
 
     def test_recovered_run_qualification_uses_only_ordinary_terminal_gates(self) -> None:
         cases = (

@@ -44,7 +44,9 @@ class GitHubClient(Protocol):
     def ready(self, number: int) -> None: ...
     def normalize_markdown_body(self, number: int) -> bool: ...
     def merge(self, number: int) -> None: ...
-    def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence: ...
+    def create_or_recover_pull_request(
+        self, branch: str, base: str, title: str, body: str, *, draft: bool = False,
+    ) -> PullRequestEvidence: ...
     def qualification_for_exact_head(self, number: int, head_sha: str) -> dict[str, object]: ...
     def version_preparation_writer(self) -> dict[str, object]: ...
 
@@ -250,7 +252,9 @@ class GhCliClient:
             raise RunnerError("Finalization recovery found more than one pull request for its checkpointed branch.")
         return self.pull_request(numbers[0])
 
-    def create_or_recover_pull_request(self, branch: str, base: str, title: str, body: str) -> PullRequestEvidence:
+    def create_or_recover_pull_request(
+        self, branch: str, base: str, title: str, body: str, *, draft: bool = False,
+    ) -> PullRequestEvidence:
         """Create one bounded PR or recover the sole existing branch identity."""
         existing = self.pull_request_for_head_branch(branch)
         if existing is not None:
@@ -258,7 +262,13 @@ class GhCliClient:
                 raise RunnerError("Version preparation branch already has a pull request for another base.")
             return existing
         try:
-            raw = self._github("pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body)
+            arguments = [
+                "pr", "create", "--head", branch, "--base", base,
+                "--title", title, "--body", body,
+            ]
+            if draft:
+                arguments.append("--draft")
+            raw = self._github(*arguments)
         except RuntimeError as error:
             # A successful create may lose its acknowledgement.  Only recover
             # the deterministic branch identity; never create a second PR.

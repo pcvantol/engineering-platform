@@ -254,6 +254,12 @@ def complete_github_managed_run(
     if not isinstance(finalization_pr, dict) or not isinstance(finalization_pr.get("number"), int):
         raise RuntimeError("MANAGED_GITHUB_FINALIZATION_PR_INVALID")
     merge_github_pull_request(repository, finalization_pr["number"])
+    reconciliation_branch = f"codex/reconcile-{run_id}"
+    reconciliation = wait_github_handoff(checkout, repository, reconciliation_branch)
+    reconciliation_pr = reconciliation["pull_request"]
+    if not isinstance(reconciliation_pr, dict) or not isinstance(reconciliation_pr.get("number"), int):
+        raise RuntimeError("MANAGED_GITHUB_RECONCILIATION_PR_INVALID")
+    merge_github_pull_request(repository, reconciliation_pr["number"])
     _, terminal_run_id = wait_terminal(server, data_root, submission_id)
     if terminal_run_id != run_id:
         raise RuntimeError("MANAGED_GITHUB_RUN_ID_CHANGED")
@@ -262,6 +268,7 @@ def complete_github_managed_run(
         **receipt,
         "implementation": implementation,
         "finalization": finalization,
+        "reconciliation": reconciliation,
     }
 
 

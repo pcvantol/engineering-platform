@@ -365,8 +365,11 @@ records, management/repository summaries, prompt navigation/history and
 lifecycle evidence. It cannot add capabilities, change runtime behavior,
 select new roadmap work, release, deploy or publish.
 
-The runner marks both PRs ready for review, polls until checks are terminal,
-and merges only green PRs under the recorded authorization. A failed required
+After Finalization merges, the runner creates one deterministic reconciliation
+branch and draft PR containing only the four canonical rolling records. It does
+not push that commit directly to protected `main`. The runner marks all three
+PRs ready for review and polls until checks are terminal. Every merge remains
+an operator-owned gate. A failed required
 check starts a bounded repair cycle on the same PR; its check name and repair
 count are safe diagnostic evidence. Missing permission, unsatisfied review,
 out-of-scope merge conflict or another external dependency remains blocked
@@ -374,16 +377,16 @@ with a bounded reason and resume guidance. Waiting, queued CI and transient
 API failures remain non-terminal.
 
 On full authorized completion the console emits one management summary with
-the implementation/Finalization PRs and merge commits, repair count, authority
+the implementation, Finalization and reconciliation PR evidence, repair count, authority
 boundary and confirmation that no release, deployment or publication occurred.
 It does not expose prompt content.
 
 ## Repository cleanup
 
-After merged Finalization evidence is contained in `main`, the runner enters
+After merged reconciliation evidence is contained in `main`, the runner enters
 `REPOSITORY_CLEANUP` before it can report `COMPLETE`. It fetches with
 `git fetch --prune`, checks out and fast-forwards `main`, and evaluates only
-the implementation and Finalization branches recorded for that transaction.
+the implementation, Finalization and reconciliation branches recorded for that transaction.
 It first uses ordinary deletion. If Git refuses solely because a squash merge
 made the transaction branch non-ancestral, reconciled PR/main evidence and
 checkpoint ownership authorize a safe local force deletion for that exact

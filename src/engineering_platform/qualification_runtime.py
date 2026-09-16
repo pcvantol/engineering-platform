@@ -47,8 +47,21 @@ class DeterministicQualificationAgent:
         if callable(self._process_callback):
             self._process_callback({"pid": os.getpid(), "process_group": os.getpgrp()})
         if "sole automatic post-finalization reconciliation" in prompt.lower():
+            branch = self._reconciliation_branch(prompt)
+            if self._github_write_target(root):
+                return self._create_github_managed_handoff(
+                    root,
+                    reconciliation=True,
+                    prompt=prompt,
+                )
             sha = subprocess.run(("git", "-C", str(root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
-            return AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha=sha)
+            return AgentResult(
+                "COMPLETE",
+                branch=branch,
+                pull_request=1,
+                terminal_condition="repository_reconciled",
+                commit_sha=sha,
+            )
         if "execution mode: genesis" in prompt.lower():
             target = next(
                 (line.split(":", 1)[1].strip() for line in prompt.splitlines()
@@ -92,6 +105,17 @@ class DeterministicQualificationAgent:
         return match.group(1)
 
     @staticmethod
+    def _reconciliation_branch(prompt: str) -> str:
+        match = re.search(
+            r"draft pull request on exactly `([^`]+)`",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            raise RuntimeError("QUALIFICATION_RECONCILIATION_BRANCH_UNAVAILABLE")
+        return match.group(1)
+
+    @staticmethod
     def _github_write_target(root: Path) -> bool:
         """Limit the external seam to its exact approved origin only."""
         if os.environ.get("EP_QUALIFICATION_GITHUB_WRITE_FLOW") != "1":
@@ -105,7 +129,8 @@ class DeterministicQualificationAgent:
 
     @staticmethod
     def _create_github_managed_handoff(
-        root: Path, *, finalization: bool = False, publication: bool = False, prompt: str = ""
+        root: Path, *, finalization: bool = False, publication: bool = False,
+        reconciliation: bool = False, prompt: str = "",
     ) -> AgentResult:
         """Create one bounded dummy-repository branch and GitHub PR.
 
@@ -122,6 +147,8 @@ class DeterministicQualificationAgent:
             # must exercise that contract exactly; inventing a fixture branch
             # makes a successful remote PR unrecoverable by the host.
             branch = DeterministicQualificationAgent._finalization_branch(prompt)
+        elif reconciliation:
+            branch = DeterministicQualificationAgent._reconciliation_branch(prompt)
         elif "controlled recovery qualification" in prompt.lower():
             # A second Managed transaction in the same fixture must retain a
             # distinct remote handoff identity after the armed interruption.
@@ -138,23 +165,50 @@ class DeterministicQualificationAgent:
         # Both remote hand-off gates need an actual, bounded proof commit.
         # In particular, the first-publication path otherwise creates a PR for
         # a branch identical to main, which GitHub correctly rejects.
-        proof_name = (
-            "managed-github-e2e-finalization-proof.json"
-            if finalization
-            else "managed-github-e2e-proof.json"
-        )
-        proof = root / ".engineering-platform" / proof_name
-        proof.write_text(json.dumps({
-            "branch": branch,
-            "kind": "EP_MANAGED_GITHUB_E2E",
-            "stage": "FINALIZATION" if finalization else "IMPLEMENTATION",
-            "version": 1,
-        }, sort_keys=True) + "\n", encoding="utf-8")
-        run("git", "-C", str(root), "add", str(proof.relative_to(root)))
-        run("git", "-C", str(root), "commit", "-m", "test: record managed GitHub qualification handoff")
+        if reconciliation:
+            for name in ("ARCHITECT_SESSION.md", "BOOTSTRAP.md", "HANDOFF.md", "README.md"):
+                record = root / name
+                prior = record.read_text(encoding="utf-8") if record.is_file() else f"# {name.removesuffix('.md')}\n"
+                record.write_text(
+                    prior.rstrip() + f"\n\nQualification reconciliation: `{branch}`.\n",
+                    encoding="utf-8",
+                )
+            run(
+                "git", "-C", str(root), "add",
+                "ARCHITECT_SESSION.md", "BOOTSTRAP.md", "HANDOFF.md", "README.md",
+            )
+            run("git", "-C", str(root), "commit", "-m", "docs: reconcile managed GitHub qualification")
+        else:
+            proof_name = (
+                "managed-github-e2e-finalization-proof.json"
+                if finalization
+                else "managed-github-e2e-proof.json"
+            )
+            proof = root / ".engineering-platform" / proof_name
+            proof.write_text(json.dumps({
+                "branch": branch,
+                "kind": "EP_MANAGED_GITHUB_E2E",
+                "stage": "FINALIZATION" if finalization else "IMPLEMENTATION",
+                "version": 1,
+            }, sort_keys=True) + "\n", encoding="utf-8")
+            run("git", "-C", str(root), "add", str(proof.relative_to(root)))
+            run("git", "-C", str(root), "commit", "-m", "test: record managed GitHub qualification handoff")
         run("git", "-C", str(root), "push", "--set-upstream", "origin", branch)
-        title = "test: managed GitHub qualification finalization" if finalization else "test: managed GitHub qualification"
-        run("gh", "pr", "create", "--repo", repository, "--head", branch, "--base", "main", "--title", title, "--body", "Explicitly authorized Engineering Platform dummy-repository qualification.")
+        title = (
+            "docs: managed GitHub qualification reconciliation"
+            if reconciliation
+            else "test: managed GitHub qualification finalization"
+            if finalization
+            else "test: managed GitHub qualification"
+        )
+        create = [
+            "gh", "pr", "create", "--repo", repository, "--head", branch,
+            "--base", "main", "--title", title,
+            "--body", "Explicitly authorized Engineering Platform dummy-repository qualification.",
+        ]
+        if reconciliation:
+            create.append("--draft")
+        run(*create)
         number = int(run("gh", "pr", "view", branch, "--repo", repository, "--json", "number", "--jq", ".number"))
         sha = run("git", "-C", str(root), "rev-parse", "HEAD")
         return AgentResult("COMPLETE", branch=branch, pull_request=number, commit_sha=sha)

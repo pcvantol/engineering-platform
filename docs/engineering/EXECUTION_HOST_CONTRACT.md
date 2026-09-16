@@ -85,7 +85,10 @@ operator-owned. A green, open pull request is persisted as
 `WAIT_FOR_OPERATOR_MERGE`; it is not a failed execution and it must keep its
 Inbox position until the operator merges it or explicitly aborts the hand-off.
 The watcher reconciles that same durable state after a later restart or browser
-session and continues Finalization only after GitHub reports the merge. Review
+session and continues Finalization or the final four-record reconciliation only
+after GitHub reports the corresponding merge. Reconciliation has its own
+deterministic branch, required checks and operator-owned PR merge; it never
+pushes its commit directly to protected `main`. Review
 invocations remain `read-only`.
 
 When GitHub confirms a merge, the watcher replaces its

@@ -41,6 +41,7 @@ CLASSIFIED_FALLBACKS = {
     "provider_interruption.py": "HISTORICAL_COMPATIBILITY_ONLY",
     "provider_recovery.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "provider_usage.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
+    "reconciliation_adoption.py": "CENTRAL_BOUND_EXECUTION_RECOVERY",
     "status_model.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "storage.py": "HISTORICAL_FORENSIC_STORAGE_IMPLEMENTATION",
     "server_console_services.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
