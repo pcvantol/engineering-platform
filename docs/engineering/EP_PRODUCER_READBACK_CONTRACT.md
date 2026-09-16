@@ -1,4 +1,4 @@
-# EP producer readback v1.2 and terminal-evidence v1.3 contract
+# EP producer readback v1.2 and terminal-evidence v1.4 contract
 
 `v1.2` is the consumer-visible, authenticated readback contract for a
 canonical EP submission.  It belongs to the existing EP Server HTTP JSON API;
@@ -16,6 +16,26 @@ GET /v1/producer-compatibility
 The response identifies the EP instance and product version and lists the
 producer-readback and terminal-evidence contract versions. It has no project,
 submission, queue, provider, repair or execution side effect.
+
+Forge's normal peer preflight uses the authenticated form of the same route:
+
+```
+GET /v1/producer-compatibility
+Authorization: Bearer <EP-issued scoped credential>
+EP-Project-ID: <project_id>
+EP-Repository-ID: <repository_id>
+```
+
+Both scope headers are required together. EP resolves the bearer verifier to
+its own active consumer registration and project; it never accepts a caller
+supplied consumer identity. A successful `v1.1` declaration reports that
+EP-derived consumer, active project, exact authority repository, `BOUND` local
+repository attachment and `AUTHORIZED` submission scope. A credential for a
+different active consumer in the same project therefore reports that different
+consumer. Forge must compare it with its own durable expectation before every
+new submission. Missing or invalid credentials return `401`; project or
+repository scope mismatch returns `403`. The public request without either
+scope header remains the side-effect-free `v1.0` declaration.
 
 ```
 GET /v1/projects/{project_id}/submissions/{submission_id}

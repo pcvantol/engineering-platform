@@ -229,7 +229,12 @@ class ComponentLoggingTest(unittest.TestCase):
                 connection.execute("DROP TRIGGER ep_technical_diagnostics_immutable_delete")
                 connection.execute("DROP INDEX ep_technical_diagnostics_created_lookup")
                 connection.execute("DROP TABLE ep_technical_diagnostics")
-                connection.execute("DELETE FROM engineering_schema_migrations WHERE version=63")
+                connection.execute(
+                    "DELETE FROM engineering_schema_migrations WHERE version>=63"
+                )
+                connection.execute("DROP INDEX ep_consumer_credential_recovery_scope_lookup")
+                connection.execute("DROP INDEX ep_consumer_credential_recovery_active_scope")
+                connection.execute("DROP TABLE ep_consumer_credential_recovery_operations")
                 connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(62)")
                 connection.execute("UPDATE engineering_metadata SET value='62' WHERE key='installation.schema_version'")
                 connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema63_fixture")
@@ -247,10 +252,10 @@ class ComponentLoggingTest(unittest.TestCase):
             with sqlite_connection(central) as connection:
                 self.assertEqual(connection.execute(
                     "SELECT MAX(version) FROM engineering_schema_migrations"
-                ).fetchone()[0], 63)
+                ).fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
                 self.assertEqual(connection.execute(
                     "SELECT schema_version FROM ep_installations WHERE instance_id=?", (identity.instance_id,)
-                ).fetchone()[0], 63)
+                ).fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
                 self.assertIn("ep_technical_diagnostics", {
                     row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
                 })

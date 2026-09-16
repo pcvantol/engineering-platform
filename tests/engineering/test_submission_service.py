@@ -30,6 +30,11 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             now = "2026-01-01T00:00:00+00:00"
             connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)", ("djconnect", "{}", "ACTIVE", now, now))
             connection.execute("INSERT INTO ep_repository_registrations VALUES(?,?,?,?,?,?,?)", ("djconnect", "djconnect", "djconnect", "authority", "{}", now, now))
+            connection.execute(
+                "INSERT INTO ep_local_repository_bindings(project_id,repository_id,local_root,state,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                ("djconnect", "djconnect", str(self.root / "workspace"), "BOUND", now, now),
+            )
             self.credential = submission_service.issue_consumer_credential(connection, consumer_id="cli", project_id="djconnect")["credential"]
             connection.execute("INSERT INTO ep_operator_capabilities VALUES(?,?,?,?,?)", ("cli", "djconnect", "QUEUE_HOLD_RESUME", now, None))
             connection.execute("INSERT INTO ep_operator_capabilities VALUES(?,?,?,?,?)", ("cli", "djconnect", "QUEUE_DECLINE", now, None))
@@ -486,6 +491,45 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             compatibility = json.loads(response.read())
         self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2"], "terminal_evidence": ["1.4"]})
         self.assertEqual(compatibility["producer"]["id"], "engineering-platform")
+        scoped = Request(
+            f"http://127.0.0.1:{self.port}/v1/producer-compatibility",
+            headers={
+                "Authorization": f"Bearer {self.credential}",
+                "EP-Project-ID": "djconnect",
+                "EP-Repository-ID": "djconnect",
+            },
+        )
+        with urlopen(scoped) as response:  # nosec B310
+            authenticated = json.loads(response.read())
+        self.assertEqual(authenticated["contract_version"], "1.1")
+        self.assertEqual(authenticated["authentication"], {
+            "consumer_id": "cli", "consumer_status": "ACTIVE",
+            "project_id": "djconnect", "project_status": "ACTIVE",
+            "repository_id": "djconnect", "repository_role": "authority",
+            "local_repository_binding": "BOUND",
+            "submission_authorization": "AUTHORIZED",
+        })
+        # The consumer identity is derived from the credential.  A caller
+        # cannot turn an expected Forge identity into apparent EP evidence:
+        # a second, valid credential in the same project is reported as its
+        # own consumer even though the requested project/repository coincide.
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            other_same_scope = submission_service.issue_consumer_credential(
+                connection, consumer_id="other-same-project", project_id="djconnect",
+            )["credential"]
+        with urlopen(Request(
+            f"http://127.0.0.1:{self.port}/v1/producer-compatibility",
+            headers={
+                "Authorization": f"Bearer {other_same_scope}",
+                "EP-Project-ID": "djconnect",
+                "EP-Repository-ID": "djconnect",
+            },
+        )) as response:  # nosec B310
+            other_authenticated = json.loads(response.read())
+        self.assertEqual(
+            other_authenticated["authentication"]["consumer_id"],
+            "other-same-project",
+        )
         payload = self.payload("readback")
         payload.update({"producer": {"id": "forge", "type": "FORGE", "version": "2.7.2"},
                         "correlation_id": "forge-correlation-1", "mission_id": "mission-1",
