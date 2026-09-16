@@ -26,7 +26,7 @@ from .codex_observability import codex_final_message as _codex_final_message, ex
 from .evidence_projection import ToolProxyEnvironment
 from .execution_context import additional_workspace_write_roots
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
-from .execution_timeout_policy import SPECIALIST_REVIEW
+from .execution_timeout_policy import AUTONOMOUS_QUALITY_CONTROL, SPECIALIST_REVIEW
 from .execution_models import AgentResult
 from .platform_version import detected_codex_cli_version
 from .provider_usage import churn_from_jsonl, usage_from_jsonl, usage_snapshots_from_jsonl
@@ -44,13 +44,20 @@ _CODEX_USAGE_LIMIT = re.compile(
 )
 _QUALITY_EVIDENCE_ACTIVITIES = frozenset({"REFACTOR", "TEST_COVERAGE", "DOCUMENTATION", "VALIDATION", "NO_CHANGE_REQUIRED"})
 MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS = 8_000
-REVIEWER_INVOCATION_TIMEOUT_SECONDS = SPECIALIST_REVIEW.seconds
+MANDATORY_ASSURANCE_REVIEWERS = frozenset({"quality", "security"})
 _VALIDATION_STREAM_LIMIT = MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS // 2
 _UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): [^(]+ \(([^)]+)\)$", re.MULTILINE)
 _UNITTEST_COUNTS = re.compile(r"FAILED \((?P<details>[^)]*)\)")
 _UNITTEST_COUNT = re.compile(r"\b(?P<name>failures|errors)=(?P<count>\d+)\b")
 _TURN_ABORTED = re.compile(r'"type"\s*:\s*"turn_aborted"[^\n]*"reason"\s*:\s*"interrupted"', re.IGNORECASE)
 _ASSESSMENT_STATES = frozenset({"COMPLETE", "WAITING", "FAILED", "BLOCKED"})
+
+
+def _reviewer_invocation_timeout_seconds(selection: ReviewerSelection) -> int:
+    """Apply the autonomous assurance boundary only to mandatory reviewers."""
+    if selection.reviewer in MANDATORY_ASSURANCE_REVIEWERS:
+        return AUTONOMOUS_QUALITY_CONTROL.seconds
+    return SPECIALIST_REVIEW.seconds
 
 
 def _parse_validation_assessment(raw: object) -> AgentResult:
@@ -490,7 +497,7 @@ class CodexCliClient:
                     "--output-schema",
                     str(schema_path),
                         reviewer_prompt(selection, objective, evidence),
-                    ), environment=environment, timeout=REVIEWER_INVOCATION_TIMEOUT_SECONDS,
+                    ), environment=environment, timeout=_reviewer_invocation_timeout_seconds(selection),
                 )
             self.last_context_escalations = proxy.context_escalations()
             self.last_execution_seconds = round(time.monotonic() - started, 3)

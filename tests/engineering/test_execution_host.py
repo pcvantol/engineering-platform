@@ -1405,6 +1405,33 @@ class ClientContractTest(unittest.TestCase):
         self.assertNotIn("--ignore-rules", run.call_args_list[1].args[0])
         self.assertFalse(hasattr(client, "_sandbox_override"))
 
+    def test_codex_client_uses_autonomous_quality_timeout_only_for_mandatory_assurance(self) -> None:
+        review_message = json.dumps(
+            {"contract_version": "1.0", "contribution": "reviewed", "recommendations": [], "findings": []}
+        )
+        review_output = json.dumps(
+            {"type": "item.completed", "item": {"type": "agent_message", "text": review_message}}
+        )
+
+        class Provider:
+            def __init__(self) -> None:
+                self.timeouts: list[float | None] = []
+
+            def invoke(self, _: Path, arguments: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                self.timeouts.append(kwargs.get("timeout"))  # type: ignore[arg-type]
+                return subprocess.CompletedProcess(arguments, 0, review_output, "")
+
+        provider = Provider()
+        with tempfile.TemporaryDirectory() as temporary:
+            client = CodexCliClient(provider)  # type: ignore[arg-type]
+            for reviewer in ("validation", "quality", "security"):
+                result = client.review(
+                    Path(temporary), ReviewerSelection(reviewer, "bounded", 1.0), "objective"
+                )
+                self.assertFalse(result.failed)
+
+        self.assertEqual(provider.timeouts, [5 * 60, 10 * 60, 10 * 60])
+
     @unittest.skipUnless(
         os.environ.get("ENGINEERING_PLATFORM_QUALIFY_CODEX_RULE_ISOLATION") == "1",
         "requires the managed authenticated Codex CLI",
