@@ -349,10 +349,22 @@ function phaseAwareRange(estimate) {
   if (estimate?.phase_aware !== true || samples < 2 || !Number.isFinite(lower) || !Number.isFinite(upper)) return null;
   return [Math.max(1, Math.round(lower / 60)), Math.max(1, Math.ceil(upper / 60))];
 }
+function exceededEstimateContext(durationEstimate, elapsedContext = "") {
+  const values = [elapsedContext, t("estimate.exceeded_context")];
+  if (hasHistoricalEstimate(durationEstimate)) values.push(historicalContext(durationEstimate, ""));
+  return values.filter(Boolean).join("\n");
+}
 function estimate(x, durationEstimate = {}) {
   const phase = x.current_phase || "";
   const phaseRange = phaseAwareRange(durationEstimate);
   if (["INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT", "FINALIZE_AGENT", "REPOSITORY_CLEANUP"].includes(phase) && phaseRange) {
+    const remainingUpperSeconds = Number(durationEstimate?.remaining_upper_seconds);
+    if (Number.isFinite(remainingUpperSeconds) && remainingUpperSeconds <= 0) {
+      return {
+        summary: t("estimate.exceeded"),
+        context: exceededEstimateContext(durationEstimate),
+      };
+    }
     const [minimum, maximum] = phaseRange;
     return {
       summary: t("estimate.remaining", { minimum, maximum }),
@@ -375,6 +387,12 @@ function estimate(x, durationEstimate = {}) {
       remainingMinimum = Math.max(1, minimum - elapsed),
       remainingMaximum = Math.max(remainingMinimum, maximum - elapsed);
     const elapsedContext = t("estimate.elapsed", { elapsed, minutes: pluralMinutes(elapsed) });
+    if (maximum - elapsed <= 0) {
+      return {
+        summary: t("estimate.exceeded"),
+        context: exceededEstimateContext(durationEstimate, elapsedContext),
+      };
+    }
     return {
       summary: t("estimate.remaining", { minimum: remainingMinimum, maximum: remainingMaximum }),
       context: hasHistoricalEstimate(durationEstimate)
