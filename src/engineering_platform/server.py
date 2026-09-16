@@ -28,9 +28,9 @@ import subprocess  # nosec B404
 import sys
 import time
 from threading import Lock, RLock, Timer
-from typing import Mapping, Protocol
+from typing import Callable, Mapping, Protocol
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 from uuid import uuid4
 
@@ -61,6 +61,7 @@ from . import (
     operational_installation_record,
 )
 from . import operational_installation
+from . import owner_credential_recovery
 from . import product_installation_readback
 from . import local_repository_binding
 from . import project_topology
@@ -122,7 +123,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 63
+SERVER_STORE_SCHEMA_VERSION = 64
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -183,9 +184,18 @@ def _http_json_openapi_document() -> dict[str, object]:
         "paths": {
             "/v1/producer-compatibility": {
                 "get": {
-                    "summary": "Read the immutable producer compatibility declaration",
-                    "description": "Read-only installation identity and supported producer contracts; it never admits or executes a submission.",
-                    "responses": {"200": {"description": "Compatibility declaration v1.0"}},
+                    "summary": "Read producer compatibility and optional authenticated consumer binding",
+                    "description": "Without scope headers this returns the public installation declaration v1.0. With EP-Project-ID and EP-Repository-ID it requires a scoped bearer and returns v1.1 with EP-derived consumer identity and submission scope; it never admits or executes a submission.",
+                    "security": [{}, {"consumerBearer": []}],
+                    "parameters": [
+                        {"name": "EP-Project-ID", "in": "header", "required": False, "schema": {"type": "string"}},
+                        {"name": "EP-Repository-ID", "in": "header", "required": False, "schema": {"type": "string"}},
+                    ],
+                    "responses": {
+                        "200": {"description": "Public v1.0 or authenticated scoped v1.1 compatibility declaration"},
+                        "401": {"description": "Scoped declaration credential is absent or invalid"},
+                        "403": {"description": "Credential or repository does not match the requested scope"},
+                    },
                 },
             },
             "/health": {
@@ -551,6 +561,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_control_provenance",
         "ep_consumer_credentials",
         "ep_consumer_registrations",
+        "ep_consumer_credential_recovery_operations",
         "ep_project_registrations",
         "ep_execution_runs",
         "ep_execution_leases",
@@ -585,6 +596,8 @@ SERVER_REQUIRED_INDEXES = frozenset(
     {
         "ep_consumer_credentials_scope_lookup",
         "ep_consumer_registrations_status_lookup",
+        "ep_consumer_credential_recovery_active_scope",
+        "ep_consumer_credential_recovery_scope_lookup",
         "ep_project_registrations_status_lookup",
         "ep_execution_runs_project_lookup",
         "ep_control_provenance_subject_lookup",
@@ -798,6 +811,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     _install_forge_planning_context_schema(connection)
     _install_execution_host_evidence_schema(connection)
     _install_technical_diagnostics_schema(connection)
+    owner_credential_recovery.install_schema(connection)
 
     connection.execute(
         "INSERT INTO engineering_schema_migrations(version) VALUES(?)",
@@ -1859,6 +1873,22 @@ def _migrate_schema_63(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=63")
 
 
+def _migrate_schema_64(connection: sqlite3.Connection) -> None:
+    """Add durable installed-owner Forge credential recovery operations."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema63")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+        "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64)))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,64 FROM ep_installations_schema63")
+    connection.execute("DROP TABLE ep_installations_schema63")
+    owner_credential_recovery.install_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(64)")
+    connection.execute("UPDATE engineering_metadata SET value='64' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=64")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -1882,6 +1912,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (61, _migrate_schema_61),
     (62, _migrate_schema_62),
     (63, _migrate_schema_63),
+    (64, _migrate_schema_64),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -4554,15 +4585,24 @@ def _no_project_platform_projection(data_root: Path) -> dict[str, object]:
     }
 
 
-def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
-    """Authenticate an existing scoped CENTRAL consumer credential."""
+def _authenticated_consumer_scope(
+    connection: sqlite3.Connection, token: object,
+) -> tuple[str, str] | None:
+    """Resolve one active credential to EP-owned consumer and project identity."""
     if not isinstance(token, str) or not token or len(token) > 4096:
         return None
-    row = connection.execute("""SELECT c.consumer_id FROM ep_consumer_credentials c
+    row = connection.execute("""SELECT c.consumer_id,c.project_id FROM ep_consumer_credentials c
         JOIN ep_consumer_registrations r ON r.consumer_id=c.consumer_id AND r.project_id=c.project_id
-        WHERE c.verifier=? AND c.project_id=? AND c.revoked_at IS NULL
-        AND (c.expires_at IS NULL OR c.expires_at>CURRENT_TIMESTAMP) AND r.status='ACTIVE'""", (verifier(token), project_id)).fetchone()
-    return str(row[0]) if row else None
+        WHERE c.verifier=? AND c.revoked_at IS NULL
+        AND (c.expires_at IS NULL OR c.expires_at>CURRENT_TIMESTAMP)
+        AND r.status='ACTIVE'""", (verifier(token),)).fetchone()
+    return (str(row[0]), str(row[1])) if row else None
+
+
+def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
+    """Authenticate an existing scoped CENTRAL consumer credential."""
+    scope = _authenticated_consumer_scope(connection, token)
+    return scope[0] if scope is not None and scope[1] == project_id else None
 
 
 def _operator_capability(connection: sqlite3.Connection, token: object, project_id: str, capability: str) -> str | None:
@@ -5853,11 +5893,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, _http_json_openapi_document())
             return
         if request.path == "/v1/producer-compatibility":
-            # This is an installation identity and contract declaration only.
-            # It performs no project lookup, admission, execution, or provider
-            # interaction, so consumers can preflight before POSTing a request.
             identity = initialize(self.server.data_root).instance_id  # type: ignore[attr-defined]
-            self._send(200, {
+            declaration: dict[str, object] = {
                 "contract_version": "1.0",
                 "producer": {"id": "engineering-platform", "version": CURRENT_PLATFORM_VERSION},
                 "instance": {"id": identity},
@@ -5865,7 +5902,69 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     "producer_readback": [submission_service.PRODUCER_READBACK_CONTRACT_VERSION],
                     "terminal_evidence": [submission_service.TERMINAL_EVIDENCE_CONTRACT_VERSION],
                 },
-            }, identity)
+            }
+            project_id = self.headers.get("EP-Project-ID")
+            repository_id = self.headers.get("EP-Repository-ID")
+            # Preserve the public v1.0 declaration for existing consumers.
+            # The normal Forge composition opts into v1.1 by supplying both
+            # scope headers; EP then derives identity from the bearer rather
+            # than echoing a caller-provided consumer ID.
+            if project_id is None and repository_id is None:
+                self._send(200, declaration, identity)
+                return
+            if not project_id or not repository_id:
+                self._send(400, {"error": "INCOMPLETE_CONSUMER_SCOPE"})
+                return
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with storage.sqlite_connection(
+                    self.server.data_root / SERVER_DATABASE_FILENAME  # type: ignore[attr-defined]
+                ) as connection:
+                    consumer_scope = _authenticated_consumer_scope(connection, token)
+                    if consumer_scope is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    consumer_id, authenticated_project_id = consumer_scope
+                    if authenticated_project_id != project_id:
+                        self._send(403, {"error": "CONSUMER_PROJECT_SCOPE_MISMATCH"})
+                        return
+                    project = connection.execute(
+                        "SELECT status FROM ep_project_registrations WHERE project_id=?",
+                        (project_id,),
+                    ).fetchone()
+                    repository = connection.execute(
+                        "SELECT role FROM ep_repository_registrations "
+                        "WHERE project_id=? AND repository_id=?",
+                        (project_id, repository_id),
+                    ).fetchone()
+                    local_binding = connection.execute(
+                        "SELECT state FROM ep_local_repository_bindings "
+                        "WHERE project_id=? AND repository_id=?",
+                        (project_id, repository_id),
+                    ).fetchone()
+                    if (
+                        project is None or str(project[0]) != "ACTIVE"
+                        or repository is None or str(repository[0]) != "authority"
+                        or local_binding is None or str(local_binding[0]) != "BOUND"
+                    ):
+                        self._send(403, {"error": "REPOSITORY_SCOPE_NOT_AUTHORIZED"})
+                        return
+                    declaration["contract_version"] = "1.1"
+                    declaration["authentication"] = {
+                        "consumer_id": consumer_id,
+                        "consumer_status": "ACTIVE",
+                        "project_id": authenticated_project_id,
+                        "project_status": "ACTIVE",
+                        "repository_id": repository_id,
+                        "repository_role": str(repository[0]),
+                        "local_repository_binding": str(local_binding[0]),
+                        "submission_authorization": "AUTHORIZED",
+                    }
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+                return
+            self._send(200, declaration, identity)
             return
         if request.path == "/diagnostics/topology":
             try:
@@ -6229,7 +6328,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -6250,6 +6349,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reason")
     parser.add_argument("--capability", choices=("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"))
     parser.add_argument("--operation-id")
+    parser.add_argument("--expected-instance-id")
+    parser.add_argument("--peer-binding-id")
+    parser.add_argument("--peer-runtime-id")
+    parser.add_argument("--peer-configuration-digest")
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--target-version")
     parser.add_argument("--target-digest")
@@ -6583,6 +6686,126 @@ def _operational_product_readback(args: argparse.Namespace) -> dict[str, object]
     )
 
 
+def _owner_credential_authority(
+    data_root: Path, expected_instance_id: str,
+) -> owner_credential_recovery.OwnerAuthority:
+    """Prove the invoking installed user runtime owns this exact instance."""
+
+    selected = server_service.configured_interpreter(data_root)
+    if selected is None:
+        raise owner_credential_recovery.CredentialRecoveryError(
+            "INSTALLED_INTERPRETER_BINDING_UNAVAILABLE"
+        )
+    if selected.absolute() != Path(sys.executable).absolute():
+        raise owner_credential_recovery.CredentialRecoveryError(
+            "OWNER_ROUTE_REQUIRES_INSTALLED_INTERPRETER"
+        )
+    installation = operational_installation.resolve(data_root, interpreter=selected)
+    package = operational_installation.package_identity(selected)
+    operational_installation.validate_package_identity(installation, package)
+    record = operational_installation.record_status(installation)
+    operational_installation.validate_registered_package_identity(record, package)
+    if installation.instance_id != expected_instance_id:
+        raise owner_credential_recovery.CredentialRecoveryError(
+            "INSTALLATION_INSTANCE_MISMATCH"
+        )
+    return owner_credential_recovery.validate_owner_authority(
+        data_root,
+        expected_instance_id=expected_instance_id,
+        selected_interpreter=selected,
+        running_status=status(data_root),
+    )
+
+
+def _owner_credential_authenticate(
+    data_root: Path,
+) -> Callable[[str, owner_credential_recovery.ConsumerBinding], bool]:
+    configuration = ServerConfiguration.load(data_root)
+    host = configuration.bind_host
+    if host in {"0.0.0.0", "::", "localhost"}:
+        host = "127.0.0.1"
+    elif host == "::1":
+        host = "[::1]"
+    elif host != "127.0.0.1":
+        raise owner_credential_recovery.CredentialRecoveryError(
+            "OWNER_RECOVERY_REQUIRES_LOOPBACK_HTTP"
+        )
+    endpoint = f"http://{host}:{configuration.bind_port}/v1/producer-compatibility"
+
+    class NoCredentialRedirect(HTTPRedirectHandler):
+        def redirect_request(self, request, file_pointer, code, message, headers, new_url):  # type: ignore[no-untyped-def]
+            return None
+
+    opener = build_opener(NoCredentialRedirect())
+
+    def authenticate(
+        material: str, binding: owner_credential_recovery.ConsumerBinding,
+    ) -> bool:
+        request = Request(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {material}",
+                "Accept": "application/json",
+                "EP-Project-ID": binding.project_id,
+                "EP-Repository-ID": binding.repository_id,
+            },
+            method="GET",
+        )
+        try:
+            with opener.open(request, timeout=5.0) as response:  # nosec B310 -- fixed installed loopback origin, redirects disabled
+                payload = json.loads(response.read(65_537))
+        except (OSError, URLError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(payload, Mapping):
+            return False
+        instance = payload.get("instance")
+        contracts = payload.get("contracts")
+        authentication = payload.get("authentication")
+        return (
+            payload.get("contract_version") == "1.1"
+            and isinstance(instance, Mapping)
+            and instance.get("id") == binding.instance_id
+            and isinstance(contracts, Mapping)
+            and "1.2" in contracts.get("producer_readback", [])
+            and "1.4" in contracts.get("terminal_evidence", [])
+            and isinstance(authentication, Mapping)
+            and authentication.get("consumer_id") == binding.consumer_id
+            and authentication.get("consumer_status") == "ACTIVE"
+            and authentication.get("project_id") == binding.project_id
+            and authentication.get("project_status") == "ACTIVE"
+            and authentication.get("repository_id") == binding.repository_id
+            and authentication.get("repository_role") == "authority"
+            and authentication.get("local_repository_binding") == "BOUND"
+            and authentication.get("submission_authorization") == "AUTHORIZED"
+        )
+
+    return authenticate
+
+
+def _owner_binding_from_args(
+    args: argparse.Namespace,
+) -> owner_credential_recovery.ConsumerBinding:
+    if not all((
+        args.expected_instance_id, args.project_id, args.repository_id,
+        args.consumer_id, args.peer_binding_id, args.peer_runtime_id,
+        args.peer_configuration_digest,
+    )):
+        raise ServerConfigurationError(
+            "--expected-instance-id, --project-id, --repository-id, --consumer-id, "
+            "--peer-binding-id, --peer-runtime-id and --peer-configuration-digest are required"
+        )
+    return owner_credential_recovery.readback_from_data_root(
+        args.data_root,
+        expected_instance_id=args.expected_instance_id,
+        project_id=args.project_id,
+        repository_id=args.repository_id,
+        expected_consumer_id=args.consumer_id,
+        peer_binding_id=args.peer_binding_id,
+        peer_runtime_id=args.peer_runtime_id,
+        peer_configuration_digest=args.peer_configuration_digest,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -6775,6 +6998,36 @@ def main(argv: list[str] | None = None) -> int:
             if not args.operation_id:
                 raise ServerConfigurationError("--operation-id is required for installation update status")
             result = installation_update_operation.status(args.data_root, args.operation_id)
+        elif args.command in {"owner-consumer-readback", "owner-credential-recover"}:
+            binding = _owner_binding_from_args(args)
+            authority = _owner_credential_authority(args.data_root, binding.instance_id)
+            if args.command == "owner-consumer-readback":
+                result = {
+                    "owner_authority": authority.safe_dict(),
+                    "consumer_binding": binding.safe_dict(),
+                    "mutation_performed": False,
+                }
+            else:
+                if not args.operation_id:
+                    raise ServerConfigurationError(
+                        "--operation-id is required for owner credential recovery"
+                    )
+                result = owner_credential_recovery.recover_credential(
+                    args.data_root,
+                    operation_id=args.operation_id,
+                    binding=binding,
+                    authority=authority,
+                    store=owner_credential_recovery.NativeMacOSKeychainStore(),
+                    authenticate=_owner_credential_authenticate(args.data_root),
+                )
+        elif args.command == "owner-credential-recovery-status":
+            if not args.operation_id:
+                raise ServerConfigurationError(
+                    "--operation-id is required for owner credential recovery status"
+                )
+            result = owner_credential_recovery.recovery_status(args.data_root, args.operation_id)
+            authority = _owner_credential_authority(args.data_root, str(result["instance_id"]))
+            result = {**result, "owner_authority": authority.safe_dict()}
         elif args.command == "service-install":
             initialize(args.data_root)
             result = {"result": "INSTALLED", **server_service.install(args.data_root)}
@@ -6936,6 +7189,7 @@ def main(argv: list[str] | None = None) -> int:
             installation_update_migration.InstallationUpdateMigrationError,
             installation_update_activation.InstallationUpdateActivationError,
             legacy_installation_adoption.LegacyInstallationAdoptionError,
+            owner_credential_recovery.CredentialRecoveryError,
             operational_installation_record.OperationalInstallationRecordError,
             server_service.ServerServiceError,
             development_profile.DevelopmentProfileError,
