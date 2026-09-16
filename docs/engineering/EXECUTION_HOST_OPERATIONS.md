@@ -243,6 +243,10 @@ the requested revision must remain an ancestor of protected main. The
 Execution Host then synchronizes and re-verifies that exact allowed baseline
 before any provider work. This makes the UI promise of using current
 repository state explicit without silently retargeting the original request.
+The correlation anchor and its immutable original constraints remain intact;
+the host reads the successor's accepted constraints through its explicit
+attempt link so a retry-specific allowed baseline cannot collapse back to the
+root submission's exact pin.
 
 For every terminal run, CENTRAL persists a separate immutable terminal-evidence
 artifact. Terminal-history reconciliation repairs a missing artifact from the
