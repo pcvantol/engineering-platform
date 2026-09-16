@@ -7,6 +7,7 @@ import os
 import ctypes
 from contextlib import redirect_stdout
 from dataclasses import replace
+from http.server import ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
 import sqlite3
@@ -15,6 +16,8 @@ from threading import Event, Thread
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from engineering_platform import owner_credential_recovery as recovery
 from engineering_platform import server
@@ -374,6 +377,127 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
                 previous_peer_configuration_digest=PEER_DIGEST,
             )
 
+    def test_destination_lock_and_configuration_adoption_guards_fail_closed(self) -> None:
+        another_root = self.root.parent / "another-root"
+        another_root.mkdir()
+        mismatched_authority = replace(
+            self.authority, data_root=str(another_root),
+        )
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_DATA_ROOT_AUTHORITY_MISMATCH",
+        ):
+            with recovery._destination_lock(self.root, mismatched_authority):
+                self.fail("a mismatched data root must never acquire the destination lock")
+
+        lock_path = self.root / recovery._DESTINATION_LOCK_FILENAME
+        lock_path.touch(mode=0o600)
+        lock_path.chmod(0o644)
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_DESTINATION_LOCK_UNSAFE",
+        ):
+            with recovery._destination_lock(self.root, self.authority):
+                self.fail("an unsafe lock file must never be accepted")
+        lock_path.chmod(0o600)
+
+        with patch(
+            "engineering_platform.owner_credential_recovery.os.open",
+            side_effect=OSError("synthetic open denial"),
+        ), self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_DESTINATION_LOCK_UNAVAILABLE",
+        ):
+            with recovery._destination_lock(self.root, self.authority):
+                self.fail("an unavailable lock must not enter its protected section")
+
+        with patch(
+            "engineering_platform.owner_credential_recovery.fcntl.flock",
+            side_effect=OSError("synthetic flock denial"),
+        ), self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_DESTINATION_LOCK_UNAVAILABLE",
+        ):
+            with recovery._destination_lock(self.root, self.authority):
+                self.fail("a failed kernel lock must not enter its protected section")
+
+        binding = self.binding()
+        next_digest = "sha256:" + "d" * 64
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "PREVIOUS_PEER_CONFIGURATION_DIGEST_INVALID",
+        ):
+            recovery.adopt_peer_configuration(
+                self.root, operation_id="forge-consumer-recovery-invalid-adoption",
+                binding=replace(binding, peer_configuration_digest=next_digest),
+                authority=self.authority, previous_peer_configuration_digest="not-a-digest",
+            )
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "PEER_CONFIGURATION_DIGEST_UNCHANGED",
+        ):
+            recovery.adopt_peer_configuration(
+                self.root, operation_id="forge-consumer-recovery-unchanged-adoption",
+                binding=binding, authority=self.authority,
+                previous_peer_configuration_digest=PEER_DIGEST,
+            )
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_OPERATION_NOT_FOUND",
+        ):
+            recovery.adopt_peer_configuration(
+                self.root, operation_id="forge-consumer-recovery-missing-adoption",
+                binding=replace(binding, peer_configuration_digest=next_digest),
+                authority=self.authority, previous_peer_configuration_digest=PEER_DIGEST,
+            )
+
+        operation_id = "forge-consumer-recovery-identity-adoption"
+        recovery._prepare_operation(self.root, operation_id, binding, self.authority)
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_OPERATION_IDENTITY_CONFLICT",
+        ):
+            recovery.adopt_peer_configuration(
+                self.root, operation_id=operation_id,
+                binding=replace(
+                    binding, consumer_id="another-consumer",
+                    peer_configuration_digest=next_digest,
+                ),
+                authority=self.authority, previous_peer_configuration_digest=PEER_DIGEST,
+            )
+
+    def test_fingerprint_and_reuse_state_transitions_are_compare_and_swap_guarded(self) -> None:
+        binding = self.binding()
+        reuse_operation = "forge-consumer-recovery-reuse-guard"
+        recovery._prepare_operation(self.root, reuse_operation, binding, self.authority)
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "EXISTING_KEYCHAIN_CREDENTIAL_IDENTITY_CONFLICT",
+        ):
+            recovery._mark_reused(self.root, reuse_operation, "production-one", "old-two")
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE ep_consumer_credential_recovery_operations SET state='SUCCEEDED' "
+                "WHERE operation_id=?", (reuse_operation,),
+            )
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_OPERATION_STATE_CONFLICT",
+        ):
+            recovery._mark_reused(self.root, reuse_operation, "production-one", "old-one")
+
+        fingerprint_operation = "forge-consumer-recovery-fingerprint-guard"
+        recovery._prepare_operation(self.root, fingerprint_operation, binding, self.authority)
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_OPERATION_STATE_CONFLICT",
+        ):
+            recovery._bind_prepared_fingerprint(
+                self.root, fingerprint_operation, "SYNTHETIC_COMPARE_AND_SWAP",
+                expected_fingerprint="sha256-does-not-match",
+            )
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE ep_consumer_credential_recovery_operations SET state='SUCCEEDED' "
+                "WHERE operation_id=?", (fingerprint_operation,),
+            )
+        with self.assertRaisesRegex(
+            recovery.CredentialRecoveryError, "RECOVERY_OPERATION_STATE_CONFLICT",
+        ):
+            recovery._bind_prepared_fingerprint(
+                self.root, fingerprint_operation, "SYNTHETIC_COMPARE_AND_SWAP",
+                expected_fingerprint=None,
+            )
+
     def test_owner_authority_precedes_consumer_discovery(self) -> None:
         arguments = SimpleNamespace(
             data_root=self.root, expected_instance_id=self.instance,
@@ -639,6 +763,177 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
                 ),
                 ("forge-managed-e2e", "forge"),
             )
+
+    def test_pending_candidate_probe_is_enforced_by_the_real_http_route(self) -> None:
+        store = FakeKeychain()
+        operation_id = "forge-consumer-recovery-http-route-probe"
+
+        def interrupt() -> None:
+            raise recovery.RecoveryInterrupted("before real HTTP probe")
+
+        with patch(
+            "engineering_platform.owner_credential_recovery.secrets.token_urlsafe",
+            return_value=SYNTHETIC_SECRET,
+        ):
+            with self.assertRaises(recovery.RecoveryInterrupted):
+                recovery.recover_credential(
+                    self.root, operation_id=operation_id, binding=self.binding(),
+                    authority=self.authority, store=store, authenticate=self.authenticates,
+                    after_central_activation=interrupt,
+                )
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server._HealthHandler)
+        httpd.data_root = self.root  # type: ignore[attr-defined]
+        thread = Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        endpoint = f"http://127.0.0.1:{httpd.server_port}/v1/owner-credential-recovery-probe"
+        try:
+            request = Request(endpoint, headers={
+                "Authorization": f"Bearer {store.value}",
+                "EP-Recovery-Operation-ID": operation_id,
+                "EP-Project-ID": "forge",
+                "EP-Repository-ID": "forge",
+            })
+            with urlopen(request) as response:  # nosec B310 -- isolated loopback fixture
+                payload = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload, {
+                "contract_version": "1.0",
+                "instance_id": self.instance,
+                "operation_id": operation_id,
+                "consumer_id": "forge-managed-e2e",
+                "project_id": "forge",
+                "repository_id": "forge",
+                "credential_status": "PENDING_RECOVERY_PROBE",
+                "authorization": "RECOVERY_PROBE_ONLY",
+            })
+
+            with self.assertRaises(HTTPError) as incomplete:
+                urlopen(Request(endpoint))  # nosec B310 -- isolated loopback fixture
+            self.assertEqual(incomplete.exception.code, 400)
+            with self.assertRaises(HTTPError) as unauthenticated:
+                urlopen(Request(endpoint, headers={  # nosec B310 -- isolated loopback fixture
+                    "Authorization": "Bearer invalid-recovery-material",
+                    "EP-Recovery-Operation-ID": operation_id,
+                    "EP-Project-ID": "forge",
+                    "EP-Repository-ID": "forge",
+                }))
+            self.assertEqual(unauthenticated.exception.code, 401)
+            with self.assertRaises(HTTPError) as wrong_scope:
+                urlopen(Request(endpoint, headers={  # nosec B310 -- isolated loopback fixture
+                    "Authorization": f"Bearer {store.value}",
+                    "EP-Recovery-Operation-ID": operation_id,
+                    "EP-Project-ID": "forge",
+                    "EP-Repository-ID": "another-repository",
+                }))
+            self.assertEqual(wrong_scope.exception.code, 403)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(5)
+
+    def test_uncertain_replay_reconciles_each_pre_promotion_edge(self) -> None:
+        binding = self.binding()
+
+        active_store = FakeKeychain()
+        active_operation = "forge-consumer-recovery-uncertain-active"
+        with patch(
+            "engineering_platform.owner_credential_recovery.secrets.token_urlsafe",
+            return_value="SYNTHETIC_UNCERTAIN_ACTIVE",
+        ):
+            with self.assertRaises(recovery.RecoveryInterrupted):
+                recovery.recover_credential(
+                    self.root, operation_id=active_operation, binding=binding,
+                    authority=self.authority, store=active_store,
+                    authenticate=self.authenticates,
+                    after_central_activation=lambda: (_ for _ in ()).throw(
+                        recovery.RecoveryInterrupted("after activation")
+                    ),
+                )
+        recovery._stop_uncertain(self.root, active_operation, "SYNTHETIC_UNCERTAIN")
+        resumed_active = recovery.recover_credential(
+            self.root, operation_id=active_operation, binding=binding,
+            authority=self.authority, store=active_store, authenticate=self.authenticates,
+        )
+        self.assertEqual(
+            (resumed_active["state"], resumed_active["disposition"]),
+            ("SUCCEEDED", "REPLACED"),
+        )
+
+        empty_store = FakeKeychain()
+        empty_operation = "forge-consumer-recovery-uncertain-empty"
+        with patch(
+            "engineering_platform.owner_credential_recovery.secrets.token_urlsafe",
+            return_value="SYNTHETIC_UNCERTAIN_EMPTY_FIRST",
+        ):
+            with self.assertRaises(recovery.RecoveryInterrupted):
+                recovery.recover_credential(
+                    self.root, operation_id=empty_operation, binding=binding,
+                    authority=self.authority, store=empty_store,
+                    authenticate=self.authenticates,
+                    after_fingerprint_binding=lambda: (_ for _ in ()).throw(
+                        recovery.RecoveryInterrupted("after fingerprint")
+                    ),
+                )
+        recovery._stop_uncertain(self.root, empty_operation, "SYNTHETIC_UNCERTAIN")
+        with patch(
+            "engineering_platform.owner_credential_recovery.secrets.token_urlsafe",
+            return_value="SYNTHETIC_UNCERTAIN_EMPTY_REPLAY",
+        ):
+            resumed_empty = recovery.recover_credential(
+                self.root, operation_id=empty_operation, binding=binding,
+                authority=self.authority, store=empty_store, authenticate=self.authenticates,
+            )
+        self.assertEqual(resumed_empty["state"], "SUCCEEDED")
+
+        matching_store = FakeKeychain()
+        matching_operation = "forge-consumer-recovery-uncertain-matching"
+        with patch(
+            "engineering_platform.owner_credential_recovery.secrets.token_urlsafe",
+            return_value="SYNTHETIC_UNCERTAIN_MATCHING",
+        ):
+            with self.assertRaises(recovery.RecoveryInterrupted):
+                recovery.recover_credential(
+                    self.root, operation_id=matching_operation, binding=binding,
+                    authority=self.authority, store=matching_store,
+                    authenticate=self.authenticates,
+                    after_keychain_write=lambda: (_ for _ in ()).throw(
+                        recovery.RecoveryInterrupted("after keychain write")
+                    ),
+                )
+        recovery._stop_uncertain(self.root, matching_operation, "SYNTHETIC_UNCERTAIN")
+        resumed_matching = recovery.recover_credential(
+            self.root, operation_id=matching_operation, binding=binding,
+            authority=self.authority, store=matching_store, authenticate=self.authenticates,
+        )
+        self.assertEqual(resumed_matching["state"], "SUCCEEDED")
+
+        changed_store = FakeKeychain()
+        changed_operation = "forge-consumer-recovery-uncertain-changed"
+        with patch(
+            "engineering_platform.owner_credential_recovery.secrets.token_urlsafe",
+            return_value="SYNTHETIC_UNCERTAIN_CHANGED",
+        ):
+            with self.assertRaises(recovery.RecoveryInterrupted):
+                recovery.recover_credential(
+                    self.root, operation_id=changed_operation, binding=binding,
+                    authority=self.authority, store=changed_store,
+                    authenticate=self.authenticates,
+                    after_fingerprint_binding=lambda: (_ for _ in ()).throw(
+                        recovery.RecoveryInterrupted("before keychain write")
+                    ),
+                )
+        recovery._stop_uncertain(self.root, changed_operation, "SYNTHETIC_UNCERTAIN")
+        changed_store.value = "SYNTHETIC_UNRELATED_VALUE"
+        stopped = recovery.recover_credential(
+            self.root, operation_id=changed_operation, binding=binding,
+            authority=self.authority, store=changed_store, authenticate=self.authenticates,
+        )
+        self.assertEqual(
+            (stopped["state"], stopped["last_error_code"]),
+            ("FAILED_SAFE", "UNCERTAIN_KEYCHAIN_VALUE_NOT_OWNED"),
+        )
+        self.assertEqual(changed_store.value, "SYNTHETIC_UNRELATED_VALUE")
 
     def test_post_activation_interruption_replays_the_same_candidate(self) -> None:
         store = FakeKeychain()
