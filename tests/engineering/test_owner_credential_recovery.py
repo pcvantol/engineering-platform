@@ -3,12 +3,14 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import ctypes
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 import sqlite3
 import tempfile
 from threading import Event, Thread
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +52,75 @@ class FakeKeychain:
         if self.delete_error:
             raise recovery.CredentialRecoveryError(self.delete_error)
         self.value = None
+
+
+class FakeCFunction:
+    def __init__(self, callback):
+        self.callback = callback
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        return self.callback(*args)
+
+
+class FakeCoreFoundation:
+    def __init__(self) -> None:
+        self.next_pointer = 100
+        self.data: dict[int, bytes] = {}
+        self.buffers: list[object] = []
+        self.released: list[int] = []
+        self.CFStringCreateWithCString = FakeCFunction(self._string)
+        self.CFDataCreate = FakeCFunction(self._data)
+        self.CFDataGetLength = FakeCFunction(self._length)
+        self.CFDataGetBytePtr = FakeCFunction(self._bytes)
+        self.CFDictionaryCreateMutable = FakeCFunction(lambda *_: self.pointer())
+        self.CFDictionarySetValue = FakeCFunction(lambda *_: None)
+        self.CFRelease = FakeCFunction(self._release)
+
+    def pointer(self, value: bytes | None = None) -> int:
+        self.next_pointer += 1
+        if value is not None:
+            self.data[self.next_pointer] = value
+        return self.next_pointer
+
+    def _string(self, _allocator, value, _encoding):
+        return self.pointer(bytes(value))
+
+    def _data(self, _allocator, value, length):
+        return self.pointer(ctypes.string_at(value, int(length)))
+
+    def _length(self, value):
+        return len(self.data.get(int(value.value), b""))
+
+    def _bytes(self, value):
+        buffer = (ctypes.c_ubyte * len(self.data[int(value.value)]))(
+            *self.data[int(value.value)]
+        )
+        self.buffers.append(buffer)
+        return ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte))
+
+    def _release(self, value):
+        self.released.append(int(value.value))
+
+
+class FakeSecurityFramework:
+    def __init__(self, core: FakeCoreFoundation) -> None:
+        self.core = core
+        self.material: bytes | None = None
+        self.copy_status = recovery.NativeMacOSKeychainStore.SUCCESS
+        self.update_status = recovery.NativeMacOSKeychainStore.SUCCESS
+        self.add_status = recovery.NativeMacOSKeychainStore.SUCCESS
+        self.delete_status = recovery.NativeMacOSKeychainStore.SUCCESS
+        self.SecItemAdd = FakeCFunction(lambda *_: self.add_status)
+        self.SecItemCopyMatching = FakeCFunction(self._copy)
+        self.SecItemUpdate = FakeCFunction(lambda *_: self.update_status)
+        self.SecItemDelete = FakeCFunction(lambda *_: self.delete_status)
+
+    def _copy(self, _query, output):
+        if self.copy_status == recovery.NativeMacOSKeychainStore.SUCCESS and self.material is not None:
+            output._obj.value = self.core.pointer(self.material)
+        return self.copy_status
 
 
 class OwnerCredentialRecoveryTests(unittest.TestCase):
@@ -160,6 +231,7 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
             safe["binding_evidence"]["historically_eligible_consumer_count"], 1,
         )
         self.assertNotIn("human-bootstrap", json.dumps(safe))
+        self.assertEqual(recovery.safe_json({"b": 2, "a": 1}), '{"a":1,"b":2}')
 
     def test_missing_ambiguous_wrong_scope_and_inactive_bindings_are_typed(self) -> None:
         with self.connection() as connection:
@@ -356,6 +428,13 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
                 )
         pending = recovery.recovery_status(self.root, "forge-consumer-recovery-post-central-001")
         self.assertEqual(pending["state"], "CENTRAL_ACTIVATED")
+        self.assertEqual(
+            recovery._activate_candidate(
+                self.root, "forge-consumer-recovery-post-central-001", self.binding(),
+                str(store.value),
+            )[0],
+            pending["credential_id"],
+        )
         result = recovery.recover_credential(
             self.root, operation_id="forge-consumer-recovery-post-central-001", binding=self.binding(),
             authority=self.authority, store=store, authenticate=self.authenticates,
@@ -434,6 +513,320 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
         self.assertNotIn("add-generic-password", source)
         self.assertNotIn("-w", source)
         self.assertNotIn(SYNTHETIC_SECRET, source)
+
+    def test_native_adapter_executes_fixed_target_security_framework_contract(self) -> None:
+        core = FakeCoreFoundation()
+        security = FakeSecurityFramework(core)
+        with patch(
+            "engineering_platform.owner_credential_recovery.ctypes.CDLL",
+            side_effect=(security, core),
+        ):
+            store = recovery.NativeMacOSKeychainStore()
+        self.assertEqual(
+            repr(store),
+            "NativeMacOSKeychainStore(service='forge.ep', account='consumer')",
+        )
+        constant = lambda *_args, **_kwargs: ctypes.c_void_p(1)
+        with patch.object(store, "_constant", side_effect=constant):
+            security.copy_status = store.ITEM_NOT_FOUND
+            self.assertIsNone(store.read())
+
+            security.copy_status = store.SUCCESS
+            security.material = b"synthetic-native-material"
+            self.assertEqual(store.read(), "synthetic-native-material")
+
+            security.material = b"\xff"
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "MATERIAL_INVALID"):
+                store.read()
+
+            security.material = None
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "OPERATION_FAILED"):
+                store.read()
+
+            security.update_status = store.SUCCESS
+            store.replace("replacement-one")
+            security.update_status = store.ITEM_NOT_FOUND
+            security.add_status = store.SUCCESS
+            store.replace("replacement-two")
+            security.add_status = store.AUTH_FAILED
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "AUTHENTICATION_FAILED"):
+                store.replace("replacement-three")
+
+            security.delete_status = store.SUCCESS
+            store.delete()
+            security.delete_status = store.ITEM_NOT_FOUND
+            store.delete()
+            security.delete_status = store.NOT_AVAILABLE
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "KEYCHAIN_UNAVAILABLE"):
+                store.delete()
+
+            original_string = core.CFStringCreateWithCString.callback
+            core.CFStringCreateWithCString.callback = lambda *_: 0
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "API_UNAVAILABLE"):
+                store._string("unavailable")
+            core.CFStringCreateWithCString.callback = original_string
+            original_data = core.CFDataCreate.callback
+            core.CFDataCreate.callback = lambda *_: 0
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "API_UNAVAILABLE"):
+                store._data("unavailable")
+            core.CFDataCreate.callback = original_data
+            original_dictionary = core.CFDictionaryCreateMutable.callback
+            core.CFDictionaryCreateMutable.callback = lambda *_: 0
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "API_UNAVAILABLE"):
+                store._dictionary()
+            core.CFDictionaryCreateMutable.callback = original_dictionary
+
+        self.assertEqual(store._failure(store.INTERACTION_NOT_ALLOWED).code,
+                         "KEYCHAIN_LOCKED_OR_INTERACTION_NOT_ALLOWED")
+        self.assertEqual(store._failure(12345).code, "KEYCHAIN_OPERATION_FAILED")
+        with patch(
+            "engineering_platform.owner_credential_recovery.ctypes.CDLL",
+            side_effect=OSError("framework absent"),
+        ):
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "NATIVE_KEYCHAIN_UNAVAILABLE"):
+                recovery.NativeMacOSKeychainStore()
+
+    def test_additional_readback_and_authority_fail_closed_branches(self) -> None:
+        binding = self.binding()
+        self.assertEqual(
+            recovery.readback_from_data_root(
+                self.root, expected_instance_id=self.instance, project_id="forge",
+                repository_id="forge", expected_consumer_id=binding.consumer_id,
+                peer_binding_id=binding.peer_binding_id, peer_runtime_id=binding.peer_runtime_id,
+                peer_configuration_digest=binding.peer_configuration_digest,
+            ).consumer_id,
+            binding.consumer_id,
+        )
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "PEER_BINDING_METADATA_INVALID"):
+            with self.connection() as connection:
+                recovery.scoped_consumer_readback(
+                    connection, expected_instance_id=self.instance, project_id="forge",
+                    repository_id="forge", expected_consumer_id=binding.consumer_id,
+                    peer_binding_id="invalid binding", peer_runtime_id=binding.peer_runtime_id,
+                    peer_configuration_digest=binding.peer_configuration_digest,
+                )
+        with self.connection() as connection:
+            connection.execute("UPDATE ep_project_registrations SET status='DISABLED' WHERE project_id='forge'")
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "PROJECT_SCOPE_NOT_ACTIVE"):
+            self.binding()
+        with self.connection() as connection:
+            connection.execute("UPDATE ep_project_registrations SET status='ACTIVE' WHERE project_id='forge'")
+            connection.execute("UPDATE ep_repository_registrations SET role='child' WHERE repository_id='forge'")
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "REPOSITORY_SCOPE_NOT_AUTHORITY"):
+            self.binding()
+        with self.connection() as connection:
+            connection.execute("UPDATE ep_repository_registrations SET role='authority' WHERE repository_id='forge'")
+            connection.execute("UPDATE ep_local_repository_bindings SET state='UNBOUND' WHERE repository_id='forge'")
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "REPOSITORY_SCOPE_NOT_BOUND"):
+            self.binding()
+        with self.connection() as connection:
+            connection.execute("UPDATE ep_local_repository_bindings SET state='BOUND' WHERE repository_id='forge'")
+            connection.execute("UPDATE ep_consumer_credentials SET revoked_at='2025-12-31T00:00:00+00:00' "
+                               "WHERE consumer_id='forge-managed-e2e'")
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "FORGE_CONSUMER_BINDING_NOT_FOUND"):
+            self.binding()
+
+        runtime = {
+            "running": True, "instance_id": self.instance, "store": "ready",
+            "components": {"ep_server": {"critical": True, "healthy": True}},
+        }
+        selected = Path("/installed/python")
+        with patch("engineering_platform.owner_credential_recovery.configured_interpreter",
+                   return_value=Path("/another/python")):
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "INTERPRETER_BINDING"):
+                recovery.validate_owner_authority(
+                    self.root, expected_instance_id=self.instance, selected_interpreter=selected,
+                    running_status=runtime, effective_uid=os.geteuid(),
+                )
+        with patch("engineering_platform.owner_credential_recovery.configured_interpreter",
+                   return_value=selected):
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "REQUIRED_RUNTIME"):
+                recovery.validate_owner_authority(
+                    self.root, expected_instance_id=self.instance, selected_interpreter=selected,
+                    running_status={**runtime, "components": "invalid"}, effective_uid=os.geteuid(),
+                )
+
+    def test_recovery_rejects_wrong_existing_scope_and_reports_replay_status(self) -> None:
+        binding = self.binding()
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "OPERATION_ID_INVALID"):
+            recovery.recover_credential(
+                self.root, operation_id="bad", binding=binding, authority=self.authority,
+                store=FakeKeychain(), authenticate=self.authenticates,
+            )
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "OPERATION_ID_INVALID"):
+            recovery.recovery_status(self.root, "bad")
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "OPERATION_NOT_FOUND"):
+            recovery.recovery_status(self.root, "forge-consumer-recovery-missing-001")
+
+        wrong = FakeKeychain("human-token")
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "SCOPE_MISMATCH"):
+            recovery.recover_credential(
+                self.root, operation_id="forge-consumer-recovery-wrong-scope-001",
+                binding=binding, authority=self.authority, store=wrong,
+                authenticate=self.authenticates,
+            )
+        failed = recovery.recovery_status(self.root, "forge-consumer-recovery-wrong-scope-001")
+        self.assertEqual((failed["state"], failed["ready"]), ("FAILED_SAFE", False))
+        self.assertEqual(
+            recovery.recover_credential(
+                self.root, operation_id="forge-consumer-recovery-wrong-scope-001",
+                binding=binding, authority=self.authority, store=wrong,
+                authenticate=self.authenticates,
+            )["state"],
+            "FAILED_SAFE",
+        )
+
+        rejected = FakeKeychain("old-two")
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "EXISTING_KEYCHAIN"):
+            recovery.recover_credential(
+                self.root, operation_id="forge-consumer-recovery-existing-rejected-001",
+                binding=binding, authority=self.authority, store=rejected,
+                authenticate=lambda *_: False,
+            )
+        uncertain = FakeKeychain()
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "WRITE_OUTCOME_UNCERTAIN"):
+            with patch.object(uncertain, "replace", side_effect=RuntimeError("unknown write")):
+                recovery.recover_credential(
+                    self.root, operation_id="forge-consumer-recovery-write-uncertain-001",
+                    binding=binding, authority=self.authority, store=uncertain,
+                    authenticate=self.authenticates,
+                )
+
+    def test_activated_replay_without_keychain_material_stops_uncertain(self) -> None:
+        store = FakeKeychain()
+
+        def interrupt() -> None:
+            raise recovery.RecoveryInterrupted("simulated")
+
+        with patch("engineering_platform.owner_credential_recovery.secrets.token_urlsafe",
+                   return_value=SYNTHETIC_SECRET):
+            with self.assertRaises(recovery.RecoveryInterrupted):
+                recovery.recover_credential(
+                    self.root, operation_id="forge-consumer-recovery-missing-replay-material",
+                    binding=self.binding(), authority=self.authority, store=store,
+                    authenticate=self.authenticates, after_central_activation=interrupt,
+                )
+        store.value = None
+        with self.assertRaisesRegex(recovery.CredentialRecoveryError, "MATERIAL_UNAVAILABLE"):
+            recovery.recover_credential(
+                self.root, operation_id="forge-consumer-recovery-missing-replay-material",
+                binding=self.binding(), authority=self.authority, store=store,
+                authenticate=self.authenticates,
+            )
+        self.assertEqual(
+            recovery.recovery_status(
+                self.root, "forge-consumer-recovery-missing-replay-material"
+            )["state"],
+            "STOPPED_UNCERTAIN",
+        )
+
+    def test_owner_http_authentication_and_cli_routes_use_derived_identity(self) -> None:
+        binding = self.binding()
+        payload = {
+            "contract_version": "1.1",
+            "instance": {"id": binding.instance_id},
+            "contracts": {"producer_readback": ["1.2"], "terminal_evidence": ["1.4"]},
+            "authentication": {
+                "consumer_id": binding.consumer_id, "consumer_status": "ACTIVE",
+                "project_id": binding.project_id, "project_status": "ACTIVE",
+                "repository_id": binding.repository_id, "repository_role": "authority",
+                "local_repository_binding": "BOUND",
+                "submission_authorization": "AUTHORIZED",
+            },
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, *_args):
+                return json.dumps(payload).encode()
+
+        class Opener:
+            request = None
+
+            def open(self, request, **_kwargs):
+                self.request = request
+                return Response()
+
+        configuration = server.ServerConfiguration(
+            3, "localhost", 8765, "/managed/codex", "2.3.66",
+        )
+        opener = Opener()
+        with patch.object(server.ServerConfiguration, "load", return_value=configuration), \
+             patch("engineering_platform.server.build_opener", return_value=opener):
+            authenticate = server._owner_credential_authenticate(self.root)
+            self.assertTrue(authenticate("synthetic-http-material", binding))
+            self.assertEqual(opener.request.full_url, "http://127.0.0.1:8765/v1/producer-compatibility")
+            payload["authentication"]["consumer_id"] = "another-consumer"
+            self.assertFalse(authenticate("synthetic-http-material", binding))
+        with patch.object(
+            server.ServerConfiguration, "load",
+            return_value=server.ServerConfiguration(3, "192.0.2.1", 8765, "/managed/codex", "2.3.66"),
+        ):
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "LOOPBACK_HTTP"):
+                server._owner_credential_authenticate(self.root)
+
+        common = [
+            "--data-root", str(self.root), "--expected-instance-id", self.instance,
+            "--project-id", "forge", "--repository-id", "forge",
+            "--consumer-id", binding.consumer_id, "--peer-binding-id", binding.peer_binding_id,
+            "--peer-runtime-id", binding.peer_runtime_id,
+            "--peer-configuration-digest", binding.peer_configuration_digest,
+        ]
+        result = {"operation_id": "forge-consumer-recovery-cli-001", "state": "SUCCEEDED",
+                  "instance_id": self.instance, "ready": True}
+        with patch("engineering_platform.server._owner_binding_from_args", return_value=binding), \
+             patch("engineering_platform.server._owner_credential_authority", return_value=self.authority), \
+             patch("engineering_platform.server.owner_credential_recovery.NativeMacOSKeychainStore",
+                   return_value=FakeKeychain("old-two")), \
+             patch("engineering_platform.server.owner_credential_recovery.recover_credential",
+                   return_value=result), redirect_stdout(StringIO()):
+            self.assertEqual(server.main(["owner-consumer-readback", *common]), 0)
+            self.assertEqual(server.main([
+                "owner-credential-recover", *common, "--operation-id",
+                "forge-consumer-recovery-cli-001",
+            ]), 0)
+            self.assertEqual(server.main(["owner-credential-recover", *common]), 2)
+        with patch("engineering_platform.server.owner_credential_recovery.recovery_status",
+                   return_value=result), \
+             patch("engineering_platform.server._owner_credential_authority", return_value=self.authority), \
+             redirect_stdout(StringIO()):
+            self.assertEqual(server.main([
+                "owner-credential-recovery-status", "--data-root", str(self.root),
+                "--operation-id", "forge-consumer-recovery-cli-001",
+            ]), 0)
+            self.assertEqual(server.main([
+                "owner-credential-recovery-status", "--data-root", str(self.root),
+            ]), 2)
+
+    def test_server_owner_authority_binds_installed_interpreter_and_instance(self) -> None:
+        selected = Path(os.sys.executable).absolute()
+        installation = SimpleNamespace(instance_id=self.instance)
+        package = {"version": "2.3.66"}
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=None):
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "BINDING_UNAVAILABLE"):
+                server._owner_credential_authority(self.root, self.instance)
+        with patch("engineering_platform.server.server_service.configured_interpreter",
+                   return_value=Path("/another/python")):
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "INSTALLED_INTERPRETER"):
+                server._owner_credential_authority(self.root, self.instance)
+        with patch("engineering_platform.server.server_service.configured_interpreter", return_value=selected), \
+             patch("engineering_platform.server.operational_installation.resolve", return_value=installation), \
+             patch("engineering_platform.server.operational_installation.package_identity", return_value=package), \
+             patch("engineering_platform.server.operational_installation.validate_package_identity"), \
+             patch("engineering_platform.server.operational_installation.record_status", return_value={}), \
+             patch("engineering_platform.server.operational_installation.validate_registered_package_identity"), \
+             patch("engineering_platform.server.status", return_value={}), \
+             patch("engineering_platform.server.owner_credential_recovery.validate_owner_authority",
+                   return_value=self.authority) as validate:
+            self.assertEqual(server._owner_credential_authority(self.root, self.instance), self.authority)
+            validate.assert_called_once()
+            with self.assertRaisesRegex(recovery.CredentialRecoveryError, "INSTANCE_MISMATCH"):
+                server._owner_credential_authority(self.root, "another-instance")
 
     def test_owner_readback_never_initializes_an_absent_runtime(self) -> None:
         absent = Path(self.temporary.name) / "must-remain-absent"
