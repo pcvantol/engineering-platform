@@ -1391,6 +1391,14 @@ class EngineeringRunner:
         return replace(result, pull_request=None), None
 
     @staticmethod
+    def _validation_pr_scope(evidence: PullRequestEvidence) -> tuple[object, ...]:
+        """Project only delivery scope; CI and mergeability remain gate data."""
+        return (
+            evidence.number, evidence.state, evidence.is_draft,
+            evidence.head_branch, evidence.base_branch, evidence.head_sha,
+        )
+
+    @staticmethod
     def _is_environmental_validation_instability(result: AgentResult) -> bool:
         """Require explicit classification and contradictory bounded test evidence.
 
@@ -2204,7 +2212,12 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
                 return self._save_terminal(validation, "BLOCKED", "local_validation_scope", "Local validation changed the bounded implementation branch."), implementation
             observed_pr, post_expectation_error = self._validation_pr_expectation(validation, candidate)
-            if post_expectation_error is None and expected_pr is not None and observed_pr != expected_pr:
+            if (
+                post_expectation_error is None
+                and expected_pr is not None
+                and observed_pr is not None
+                and self._validation_pr_scope(observed_pr) != self._validation_pr_scope(expected_pr)
+            ):
                 post_expectation_error = "validation_pull_request_scope_conflict"
             normalized_result, reference_error = self._accept_validation_pr_reference(
                 validation, result, candidate, expected_pr,

@@ -623,6 +623,13 @@ class CodexCliClient:
                 str(root),
                 "--json",
             ]
+            if assessment_contract:
+                # The supported CLI switch keeps account authentication while
+                # excluding user-configured MCP/app/tool surfaces from this
+                # receipt-only role. Repository-local Codex config is absent
+                # from the managed target contract; shell commands remain in
+                # the provider's read-only sandbox below.
+                command.extend(("--ignore-user-config", "--ephemeral"))
             for extra_root in extra_roots:
                 command.extend(("--add-dir", str(extra_root)))
             command.extend(("--output-schema", str(schema_path), prompt))

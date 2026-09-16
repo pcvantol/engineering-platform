@@ -1397,6 +1397,9 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(result.pull_request, 12)
         self.assertEqual(validation.pull_request, 12)
         self.assertIn("read-only", run.call_args_list[2].args[0])
+        self.assertIn("--ignore-user-config", run.call_args_list[2].args[0])
+        self.assertIn("--ephemeral", run.call_args_list[2].args[0])
+        self.assertNotIn("--ignore-user-config", run.call_args_list[1].args[0])
         self.assertFalse(hasattr(client, "_sandbox_override"))
 
     @patch("engineering_platform.execution_host.subprocess.run")
@@ -3147,9 +3150,17 @@ class LocalAgentRunnerTest(unittest.TestCase):
         branch, candidate_a, candidate_b = "codex/repair-candidate-b", "a" * 40, "b" * 40
         repository = FakeRepository(branch=branch)
         repository.evidence = RepositoryEvidence("pcvantol/djconnect", branch, candidate_b, True)
+        pending = PullRequestEvidence(
+            118, "OPEN", False, False, head_branch=branch, base_branch="main",
+            head_sha=candidate_b, merge_state_status="BLOCKED",
+        )
+        checks_passed = PullRequestEvidence(
+            118, "OPEN", True, True, head_branch=branch, base_branch="main",
+            head_sha=candidate_b, merge_state_status="CLEAN",
+        )
         runner = EngineeringRunner(
             self.root, self.store, repository,
-            FakeGitHub([PullRequestEvidence(118, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=candidate_b)]),
+            FakeGitHub([pending, checks_passed]),
             FakeAgent(AgentResult("COMPLETE", branch, 118)), lambda _: None,
         )
         runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)

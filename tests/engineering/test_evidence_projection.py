@@ -13,9 +13,12 @@ from engineering_platform.evidence_projection import (
     FAILED_DIAGNOSTIC_LIMIT,
     PASSING_TEST_LIMIT,
     ToolProxyEnvironment,
+    _is_delivery_mutation,
     deterministic_fixture,
     project_output,
+    proxy_main,
 )
+from unittest.mock import patch
 
 
 def _write_fixture_launcher(path: Path, program: str) -> None:
@@ -29,6 +32,38 @@ def _write_fixture_launcher(path: Path, program: str) -> None:
 
 
 class EvidenceProjectionTests(unittest.TestCase):
+    def test_delivery_mutation_classifier_covers_api_global_options_and_reads(self) -> None:
+        self.assertTrue(_is_delivery_mutation("gh", ("pr", "ready", "120")))
+        self.assertTrue(_is_delivery_mutation("gh", ("api", "--method", "PATCH", "/pulls/120")))
+        self.assertTrue(_is_delivery_mutation("git", ("-C", "/repo", "push")))
+        self.assertTrue(_is_delivery_mutation("git", ("--verbose", "commit")))
+        self.assertFalse(_is_delivery_mutation("gh", ("pr", "view", "120")))
+        self.assertFalse(_is_delivery_mutation("git", ("-C", "/repo", "status")))
+        self.assertFalse(_is_delivery_mutation("python3", ("script.py",)))
+
+    def test_proxy_main_preserves_policy_for_children_and_projects_output(self) -> None:
+        completed = subprocess.CompletedProcess(("gh",), 0, "visible\n", "")
+        with patch.dict(os.environ, {
+            "ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH": "/fixture/bin",
+            "PATH": "/proxy:/fixture/bin",
+        }, clear=True), patch("engineering_platform.evidence_projection.shutil.which", return_value="/fixture/bin/gh"), patch(
+            "engineering_platform.evidence_projection.subprocess.run", return_value=completed,
+        ) as run, patch("sys.argv", ["gh", "pr", "view", "120"]), patch("sys.stdout.write") as write:
+            with self.assertRaises(SystemExit) as terminal:
+                proxy_main("gh")
+        self.assertEqual(terminal.exception.code, 0)
+        self.assertEqual(run.call_args.kwargs["env"]["PATH"], "/proxy:/fixture/bin")
+        write.assert_called_once_with("visible\n")
+
+    def test_proxy_main_refuses_mutation_before_executable_launch(self) -> None:
+        with patch.dict(os.environ, {"ENGINEERING_PLATFORM_DENY_DELIVERY_MUTATIONS": "1"}, clear=True), patch(
+            "sys.argv", ["gh", "api", "--method", "DELETE", "/pulls/120"],
+        ), patch("engineering_platform.evidence_projection.subprocess.run") as run:
+            with self.assertRaises(SystemExit) as terminal:
+                proxy_main("gh")
+        self.assertEqual(terminal.exception.code, 126)
+        run.assert_not_called()
+
     def test_small_output_passes_through_unchanged(self) -> None:
         projected = project_output(("git", "status"), "## main\n", 0)
         self.assertEqual(projected.text, "## main\n")
