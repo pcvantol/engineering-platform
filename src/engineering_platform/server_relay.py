@@ -14,12 +14,13 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from .platform_components import PLATFORM_COMPONENT_BY_ID
-from .providers import LaunchdProvider, LocalProcessProvider
+from .providers import LaunchdProvider, LocalProcessProvider, TailscaleProvider
 from .resources import package_path
 
 
 RUNTIME_DIRECTORY = "runtime"
 RELAY_BINARY_FILENAME = "engineering-dashboard-relay"
+RELAY_PORT = 8765
 # This identifier is retained solely to migrate an already installed legacy
 # relay.  The canonical component model is the only active lifecycle owner.
 LEGACY_RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
@@ -74,13 +75,40 @@ def legacy_launch_agent_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{LEGACY_RELAY_LABEL}.plist"
 
 
-def relay_functional_probe() -> bool:
-    """Perform the bounded, token-free relay health check used for commit."""
+def relay_access_endpoint() -> tuple[str | None, str | None]:
+    """Return the validated local Tailnet address and relay endpoint."""
     try:
-        with urlopen("http://127.0.0.1:8765/health", timeout=2) as response:  # noqa: S310 -- fixed loopback endpoint
+        address = TailscaleProvider().ipv4_address()
+    except OSError:
+        address = None
+    return address, f"http://{address}:{RELAY_PORT}/" if address else None
+
+
+def relay_functional_probe(endpoint: str | None = None) -> bool:
+    """Probe the actual Tailnet relay rather than the Server loopback.
+
+    The root document is intentionally used instead of ``/health``: the
+    latter builds the component projection that calls this probe.
+    """
+    if endpoint is None:
+        _, endpoint = relay_access_endpoint()
+    if endpoint is None:
+        return False
+    try:
+        with urlopen(endpoint, timeout=1) as response:  # noqa: S310 -- endpoint is a validated Tailnet IPv4
             return 200 <= response.status < 300
     except (OSError, URLError):
         return False
+
+
+def relay_access_observation(*, probe: bool = True) -> dict[str, object]:
+    """Project the bounded, secret-free access state used by Server health."""
+    address, endpoint = relay_access_endpoint()
+    return {
+        "tailscale_ipv4": address,
+        "relay_endpoint": endpoint,
+        "relay_reachable": bool(probe and endpoint and relay_functional_probe(endpoint)),
+    }
 
 
 def pre_cutover_state(launchd: LaunchdProvider, *, probe=relay_functional_probe) -> PreCutoverState:

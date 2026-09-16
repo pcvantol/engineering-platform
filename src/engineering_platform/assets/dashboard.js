@@ -3770,6 +3770,7 @@ const COMPONENT_DETAIL_CODES = new Set([
   "LIFECYCLE_WORKER_SERVER_HOSTED", "OPERATIONS_CONSOLE_SERVER_NATIVE",
   "DASHBOARD_RELAY_TAILSCALE_AVAILABLE", "DASHBOARD_RELAY_LAUNCH_AGENT_UNLOADED",
   "DASHBOARD_RELAY_PROCESS_INACTIVE", "DASHBOARD_RELAY_LIFECYCLE_UNAVAILABLE",
+  "DASHBOARD_RELAY_TAILSCALE_UNAVAILABLE", "DASHBOARD_RELAY_ENDPOINT_UNREACHABLE",
 ]);
 function transportState(code) {
   const raw = String(code || ""), normalized = LEGACY_TRANSPORT_STATUS_CODES[raw] || raw;
@@ -3906,6 +3907,19 @@ function showComponentModal(payload) {
       payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy"),
   );
   componentDetailField(fields, t("component.version"), payload.version);
+  if (payload.component === "dashboard_relay") {
+    componentDetailEndpoint(fields, t("component.relay_access"), payload.relay_endpoint);
+    componentDetailField(fields, t("component.tailscale_ipv4"), payload.tailscale_ipv4);
+    componentDetailField(
+      fields,
+      t("component.relay_probe"),
+      payload.relay_reachable === true
+        ? t("component.relay_reachable")
+        : payload.relay_reachable === false
+          ? t("component.relay_unreachable")
+          : null,
+    );
+  }
   if (payload.kind === "TRANSPORT") {
     const transportTimestamp = (value) => value ? formatTimestamp(value) : null;
     if (payload.component === "http_ingress")

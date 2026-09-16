@@ -2117,7 +2117,7 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
 
 
 def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
-    """Project the Relay only when its real lifecycle owner is live.
+    """Project the Relay only when its lifecycle and Tailnet route are live.
 
     The relay is an optional access adapter, but it is still a logical
     Platform Component.  A running EP Server cannot stand in for a missing or
@@ -2134,13 +2134,21 @@ def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
         detail = runtime.detail if runtime is not None else "lifecycle owner unavailable"
     except OSError:
         observed, relay_running, detail = None, False, "lifecycle owner unavailable"
-    healthy = server_running and relay_running
+    access = server_relay.relay_access_observation(probe=server_running and relay_running)
+    relay_reachable = access["relay_reachable"] is True
+    healthy = server_running and relay_running and relay_reachable
     if healthy:
         detail_code = "DASHBOARD_RELAY_TAILSCALE_AVAILABLE"
     elif observed is not None and not observed.loaded:
         detail_code = "DASHBOARD_RELAY_LAUNCH_AGENT_UNLOADED"
     elif observed is not None and not observed.active:
         detail_code = "DASHBOARD_RELAY_PROCESS_INACTIVE"
+    elif access["tailscale_ipv4"] is None:
+        detail_code = "DASHBOARD_RELAY_TAILSCALE_UNAVAILABLE"
+        detail = "Tailscale address unavailable"
+    elif not relay_reachable:
+        detail_code = "DASHBOARD_RELAY_ENDPOINT_UNREACHABLE"
+        detail = "Relay endpoint unreachable"
     else:
         detail_code = "DASHBOARD_RELAY_LIFECYCLE_UNAVAILABLE"
     return {
@@ -2153,6 +2161,7 @@ def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
         # placeholder (notably zero) for the observed process lifetime.
         "uptime_seconds": observed.uptime_seconds if observed is not None else None,
         "recent_error": None if healthy else detail,
+        **access,
     }
 
 

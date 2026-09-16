@@ -23,6 +23,76 @@ class ServerRelayTests(unittest.TestCase):
             self.root.resolve() / "runtime" / "engineering-dashboard-relay",
         )
 
+    def test_access_endpoint_uses_the_validated_tailscale_address(self) -> None:
+        with patch("engineering_platform.server_relay.TailscaleProvider") as tailscale:
+            tailscale.return_value.ipv4_address.return_value = "100.108.178.11"
+
+            self.assertEqual(
+                server_relay.relay_access_endpoint(),
+                ("100.108.178.11", "http://100.108.178.11:8765/"),
+            )
+
+    def test_access_endpoint_fails_closed_when_tailscale_inspection_errors(self) -> None:
+        with patch("engineering_platform.server_relay.TailscaleProvider") as tailscale:
+            tailscale.return_value.ipv4_address.side_effect = OSError("tailscale unavailable")
+
+            self.assertEqual(server_relay.relay_access_endpoint(), (None, None))
+
+    def test_functional_probe_reaches_the_relay_root_not_server_health(self) -> None:
+        response = Mock(status=204)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch("engineering_platform.server_relay.urlopen", return_value=response) as opened:
+            self.assertTrue(server_relay.relay_functional_probe("http://100.108.178.11:8765/"))
+
+        opened.assert_called_once_with("http://100.108.178.11:8765/", timeout=1)
+
+    def test_functional_probe_fails_closed_for_error_and_non_success_response(self) -> None:
+        unavailable = Mock(status=503)
+        unavailable.__enter__ = Mock(return_value=unavailable)
+        unavailable.__exit__ = Mock(return_value=False)
+        with patch("engineering_platform.server_relay.urlopen", return_value=unavailable):
+            self.assertFalse(server_relay.relay_functional_probe("http://100.108.178.11:8765/"))
+        with patch("engineering_platform.server_relay.urlopen", side_effect=OSError("refused")):
+            self.assertFalse(server_relay.relay_functional_probe("http://100.108.178.11:8765/"))
+
+    def test_access_observation_retains_the_endpoint_when_probe_fails(self) -> None:
+        with patch(
+            "engineering_platform.server_relay.relay_access_endpoint",
+            return_value=("100.108.178.11", "http://100.108.178.11:8765/"),
+        ), patch("engineering_platform.server_relay.relay_functional_probe", return_value=False) as probe:
+            observation = server_relay.relay_access_observation()
+
+        self.assertEqual(observation, {
+            "tailscale_ipv4": "100.108.178.11",
+            "relay_endpoint": "http://100.108.178.11:8765/",
+            "relay_reachable": False,
+        })
+        probe.assert_called_once_with("http://100.108.178.11:8765/")
+
+    def test_access_observation_without_tailscale_never_probes(self) -> None:
+        with patch(
+            "engineering_platform.server_relay.relay_access_endpoint", return_value=(None, None)
+        ), patch("engineering_platform.server_relay.relay_functional_probe") as probe:
+            observation = server_relay.relay_access_observation()
+
+        self.assertEqual(observation, {
+            "tailscale_ipv4": None,
+            "relay_endpoint": None,
+            "relay_reachable": False,
+        })
+        probe.assert_not_called()
+
+    def test_access_observation_skips_probe_for_an_inactive_lifecycle(self) -> None:
+        with patch(
+            "engineering_platform.server_relay.relay_access_endpoint",
+            return_value=("100.108.178.11", "http://100.108.178.11:8765/"),
+        ), patch("engineering_platform.server_relay.relay_functional_probe") as functional_probe:
+            observation = server_relay.relay_access_observation(probe=False)
+
+        self.assertFalse(observation["relay_reachable"])
+        functional_probe.assert_not_called()
+
     def test_install_uses_the_canonical_component_label_and_server_paths(self) -> None:
         binary = self.root / "runtime" / "engineering-dashboard-relay"
         plist = self.root / "LaunchAgents" / "com.engineeringplatform.dashboard-relay.plist"
