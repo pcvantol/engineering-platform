@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import os
 import signal
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -1398,9 +1399,116 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(validation.pull_request, 12)
         self.assertIn("read-only", run.call_args_list[2].args[0])
         self.assertIn("--ignore-user-config", run.call_args_list[2].args[0])
+        self.assertIn("--ignore-rules", run.call_args_list[2].args[0])
         self.assertIn("--ephemeral", run.call_args_list[2].args[0])
         self.assertNotIn("--ignore-user-config", run.call_args_list[1].args[0])
+        self.assertNotIn("--ignore-rules", run.call_args_list[1].args[0])
         self.assertFalse(hasattr(client, "_sandbox_override"))
+
+    @unittest.skipUnless(
+        os.environ.get("ENGINEERING_PLATFORM_QUALIFY_CODEX_RULE_ISOLATION") == "1",
+        "requires the managed authenticated Codex CLI",
+    )
+    def test_codex_validation_does_not_inherit_user_execpolicy_allow_rule(self) -> None:
+        """Exercise the real CLI boundary with a harmless sandbox-bypass rule."""
+
+        source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+        source_auth = source_home / "auth.json"
+        if not source_auth.is_file():
+            self.skipTest("authenticated Codex CLI state is unavailable")
+
+        class CapturingProvider(CodexCliProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.arguments: tuple[str, ...] = ()
+                self.completed: subprocess.CompletedProcess[str] | None = None
+
+            def invoke(self, root: Path, arguments: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                self.arguments = arguments
+                kwargs["timeout"] = 120
+                self.completed = super().invoke(root, arguments, **kwargs)
+                return self.completed
+
+        with tempfile.TemporaryDirectory(prefix="ep-codex-rule-isolation-") as temporary:
+            fixture_root = Path(temporary)
+            codex_home = fixture_root / "codex-home"
+            rules = codex_home / "rules"
+            workspace = fixture_root / "workspace"
+            rules.mkdir(parents=True)
+            workspace.mkdir()
+            shutil.copy2(source_auth, codex_home / "auth.json")
+            subprocess.run(("git", "init", "-q", str(workspace)), check=True)
+
+            marker = workspace / "inherited-rule-escaped-sandbox"
+            executable = fixture_root / "allowed-outside-sandbox"
+            executable.write_text(
+                "#!/bin/sh\n"
+                f"/usr/bin/touch {shlex.quote(str(marker))}\n"
+                "printf 'EP_CODEX_RULE_FIXTURE_REACHED\\n'\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
+            rule = rules / "assessment.rules"
+            rule.write_text(
+                "prefix_rule(\n"
+                f"    pattern = [{json.dumps(str(executable))}],\n"
+                '    decision = "allow",\n'
+                '    justification = "Harmless assessment isolation fixture",\n'
+                ")\n",
+                encoding="utf-8",
+            )
+
+            provider = CapturingProvider()
+            policy = provider.command(
+                "execpolicy", "check", "--rules", str(rule), "--", str(executable)
+            )
+            self.assertEqual(policy.returncode, 0, policy.stderr)
+            self.assertEqual(json.loads(policy.stdout)["decision"], "allow")
+
+            prompt = (
+                "Run this exact executable once with the shell tool; do not simulate it or use an alternative: "
+                f"{executable}. After the attempt return terminal_state COMPLETE, diagnostic "
+                '"isolation fixture attempted", and pull_request null.'
+            )
+            isolated_environment = dict(os.environ)
+            isolated_environment["CODEX_HOME"] = str(codex_home)
+            baseline = CodexCliProvider().invoke(
+                workspace,
+                (
+                    "codex", "exec", "--sandbox", "read-only", "--ignore-user-config", "--ephemeral",
+                    "-C", str(workspace), "--json",
+                    f"Run this exact executable once with the shell tool: {executable}. Then report completion.",
+                ),
+                environment=isolated_environment,
+                timeout=120,
+            )
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            self.assertTrue(marker.exists(), "allow rule did not establish the sandbox-bypass fixture")
+            marker.unlink()
+
+            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+                try:
+                    CodexCliClient(provider).validate(workspace, prompt)
+                except CodexInvocationError:
+                    # A denied command may make the non-interactive turn fail;
+                    # the executed-command event and absent marker are the
+                    # security assertions below.
+                    pass
+
+            self.assertIn("--ignore-rules", provider.arguments)
+            self.assertIsNotNone(provider.completed)
+            events = tuple(
+                json.loads(line) for line in provider.completed.stdout.splitlines()
+                if line.strip().startswith("{")
+            )
+            commands = tuple(
+                item.get("command", "")
+                for event in events
+                if isinstance((item := event.get("item")), dict)
+                and item.get("type") == "command_execution"
+            )
+            self.assertTrue(any(str(executable) in command for command in commands), commands)
+            self.assertFalse(marker.exists(), "assessment inherited an execpolicy sandbox bypass")
 
     @patch("engineering_platform.execution_host.subprocess.run")
     def test_codex_validation_contract_rejects_malformed_local_results(self, run: object) -> None:
