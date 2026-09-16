@@ -113,8 +113,9 @@ def project_output(command: Iterable[str], output: str, exit_code: int) -> Evide
 class ToolProxyEnvironment:
     """Temporary PATH proxy. It retains no output after the invocation ends."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, deny_delivery_mutations: bool = False) -> None:
         self._temporary: TemporaryDirectory[str] | None = None
+        self._deny_delivery_mutations = deny_delivery_mutations
 
     def __enter__(self) -> Mapping[str, str]:
         self._temporary = TemporaryDirectory(prefix="engineering-platform-evidence-")
@@ -149,6 +150,10 @@ class ToolProxyEnvironment:
         environment["ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH"] = environment.get("PATH", os.defpath)
         environment["PATH"] = f"{directory}{os.pathsep}{environment['ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH']}"
         environment["ENGINEERING_PLATFORM_CONTEXT_ESCALATION_FILE"] = str(directory / "context-escalations.jsonl")
+        if self._deny_delivery_mutations:
+            # This is deliberately an invocation-scoped capability boundary,
+            # not a prompt convention.  The validation adapter opts into it.
+            environment["ENGINEERING_PLATFORM_DENY_DELIVERY_MUTATIONS"] = "1"
         return environment
 
     def __exit__(self, *_: object) -> None:
@@ -172,13 +177,20 @@ class ToolProxyEnvironment:
 def proxy_main(name: str | None = None) -> None:
     """Run the proxied command and emit only its bounded invocation-local view."""
     name = name or Path(sys.argv[0]).name
+    if os.environ.get("ENGINEERING_PLATFORM_DENY_DELIVERY_MUTATIONS") == "1" and _is_delivery_mutation(name, sys.argv[1:]):
+        sys.stderr.write("Read-only assessment tool policy refused a delivery mutation.\n")
+        raise SystemExit(126)
     original_path = os.environ.get("ENGINEERING_PLATFORM_EVIDENCE_ORIGINAL_PATH", os.defpath)
     executable = shutil.which(name, path=original_path)
     if executable is None:
         raise SystemExit(f"Evidence proxy could not resolve {name}.")
     completed = subprocess.run(  # nosec B603
         (executable, *sys.argv[1:]), text=True, capture_output=True,
-        env={**os.environ, "PATH": original_path}, check=False,
+        # Retain the interposer for descendants.  Restoring only the original
+        # PATH let a proxied interpreter launch an unmediated `gh` child.
+        # The original path remains separately available for this launcher's
+        # own executable resolution above, avoiding recursive proxy loops.
+        env=os.environ.copy(), check=False,
     )
     raw = f"{completed.stdout}{completed.stderr}"
     if os.environ.get("ENGINEERING_PLATFORM_EVIDENCE_EXPAND") == "1":
@@ -186,6 +198,27 @@ def proxy_main(name: str | None = None) -> None:
     else:
         sys.stdout.write(project_output((name, *sys.argv[1:]), raw, completed.returncode).text)
     raise SystemExit(completed.returncode)
+
+
+def _is_delivery_mutation(name: str, arguments: Iterable[str]) -> bool:
+    """Recognize the small Git/GitHub write surface relevant to assessment.
+
+    This runs inside the PATH interposer, so it remains effective even if a
+    caller accidentally grants an owner-authorized lifecycle flag elsewhere.
+    It intentionally permits read-only inspection and CI-status observation.
+    """
+    args = tuple(arguments)
+    if name == "gh":
+        if len(args) >= 2 and args[0] == "pr" and args[1] in {"create", "edit", "ready", "merge"}:
+            return True
+        return bool(args and args[0] == "api" and any(value in {"PATCH", "POST", "PUT", "DELETE"} for value in args))
+    if name != "git" or not args:
+        return False
+    # Git accepts global options before the command (`git -C repo push`).
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        index += 2 if args[index] in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"} else 1
+    return index < len(args) and args[index] in {"commit", "push", "switch", "checkout", "branch", "merge", "reset", "rebase"}
 
 
 def context_escalation_main(_: str | None = None) -> None:

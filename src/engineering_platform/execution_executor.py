@@ -50,6 +50,27 @@ _UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): [^(]+ \(([^)]+)\)$", re.MULTIL
 _UNITTEST_COUNTS = re.compile(r"FAILED \((?P<details>[^)]*)\)")
 _UNITTEST_COUNT = re.compile(r"\b(?P<name>failures|errors)=(?P<count>\d+)\b")
 _TURN_ABORTED = re.compile(r'"type"\s*:\s*"turn_aborted"[^\n]*"reason"\s*:\s*"interrupted"', re.IGNORECASE)
+_ASSESSMENT_STATES = frozenset({"COMPLETE", "WAITING", "FAILED", "BLOCKED"})
+
+
+def _parse_validation_assessment(raw: object) -> AgentResult:
+    """Validate the small read-only contract before projecting AgentResult.
+
+    JSON Schema constrains cooperative providers, but terminal lifecycle code
+    must fail closed for malformed, old, or adapter-produced output too.
+    """
+    if not isinstance(raw, dict) or set(raw) != {"terminal_state", "diagnostic", "pull_request"}:
+        raise TypeError("validation assessment fields are invalid")
+    state, diagnostic, pull_request = raw["terminal_state"], raw["diagnostic"], raw["pull_request"]
+    if not isinstance(state, str) or state not in _ASSESSMENT_STATES:
+        raise TypeError("validation assessment terminal state is invalid")
+    if not isinstance(diagnostic, str) or len(diagnostic) > 500:
+        raise TypeError("validation assessment diagnostic is invalid")
+    if pull_request is not None and (
+        not isinstance(pull_request, int) or isinstance(pull_request, bool) or pull_request < 1
+    ):
+        raise TypeError("validation assessment pull request is invalid")
+    return AgentResult(state, pull_request=pull_request, diagnostic=diagnostic)
 
 
 def provider_turn_interruption(stdout: str, stderr: str) -> str | None:
@@ -520,6 +541,7 @@ class CodexCliClient:
         self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
+        assessment_contract = getattr(self, "_validation_contract", False)
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -572,6 +594,19 @@ class CodexCliClient:
                 },
             },
         }
+        if assessment_contract:
+            # A local-validation turn is an assessment of host receipts, not
+            # a delivery turn.  Keep the legacy PR echo only as a bounded
+            # compatibility signal; lifecycle fields are projected by EP.
+            schema = {
+                "type": "object", "additionalProperties": False,
+                "required": ["terminal_state", "diagnostic", "pull_request"],
+                "properties": {
+                    "terminal_state": {"type": "string", "enum": ["COMPLETE", "WAITING", "FAILED", "BLOCKED"]},
+                    "diagnostic": {"type": "string", "maxLength": 500},
+                    "pull_request": {"type": ["integer", "null"]},
+                },
+            }
         with tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", suffix=".json", delete=False
         ) as handle:
@@ -588,11 +623,19 @@ class CodexCliClient:
                 str(root),
                 "--json",
             ]
+            if assessment_contract:
+                # These supported CLI switches keep account authentication
+                # while excluding user-configured MCP/app/tool surfaces and
+                # user- or project-scoped execpolicy rules from this
+                # receipt-only role. In particular, an inherited allow rule
+                # must not move an assessment command outside the read-only
+                # sandbox selected by the host.
+                command.extend(("--ignore-user-config", "--ignore-rules", "--ephemeral"))
             for extra_root in extra_roots:
                 command.extend(("--add-dir", str(extra_root)))
             command.extend(("--output-schema", str(schema_path), prompt))
             started = time.monotonic()
-            proxy = ToolProxyEnvironment()
+            proxy = ToolProxyEnvironment(deny_delivery_mutations=assessment_contract)
             with proxy as environment:
                 completed = self._run_invocation(tuple(command), root, environment)
             self.last_context_escalations = proxy.context_escalations()
@@ -623,7 +666,10 @@ class CodexCliClient:
             )
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
-            result = AgentResult(**raw)
+            if assessment_contract:
+                result = _parse_validation_assessment(raw)
+            else:
+                result = AgentResult(**raw)
             if not isinstance(result.validation_evidence, (list, tuple)) or not isinstance(result.quality_evidence, (list, tuple)):
                 raise TypeError("execution evidence must be a list")
             if result.validation_disposition not in {"product_failure", "environmental_instability"}:
@@ -649,7 +695,7 @@ class CodexCliClient:
             if result.diagnostic is not None:
                 result = replace(result, diagnostic=redact_diagnostic(result.diagnostic))
             return result
-        except (IndexError, json.JSONDecodeError, TypeError) as error:
+        except (IndexError, KeyError, json.JSONDecodeError, TypeError) as error:
             interruption = provider_turn_interruption(completed.stdout, completed.stderr)
             raise CodexInvocationError(
                 "Provider turn interrupted before returning the required structured terminal result."
@@ -671,10 +717,12 @@ class CodexCliClient:
         if hasattr(self, "_sandbox_override"):
             raise RunnerError("nested validation sandbox override is invalid")
         self._sandbox_override = "read-only"
+        self._validation_contract = True
         try:
             return self.invoke(root, prompt)
         finally:
             del self._sandbox_override
+            del self._validation_contract
 
     def _run_invocation(
         self, command: tuple[str, ...], root: Path, environment: Mapping[str, str] | None = None

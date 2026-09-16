@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import os
 import signal
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -1373,6 +1374,7 @@ class ClientContractTest(unittest.TestCase):
                 "commit_sha": "c" * 40,
             }
         )
+        assessment_message = json.dumps({"terminal_state": "COMPLETE", "diagnostic": "safe", "pull_request": 12})
         review_output = "\n".join((
             json.dumps({"type": "turn.started", "metadata": {"model": "gpt-5.6-terra"}}),
             json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 25, "output_tokens": 10}}),
@@ -1381,7 +1383,7 @@ class ClientContractTest(unittest.TestCase):
         run.side_effect = [
             subprocess.CompletedProcess(("codex",), 0, review_output, ""),
             subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
-            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
+            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": assessment_message}}), ""),
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1396,7 +1398,137 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(result.pull_request, 12)
         self.assertEqual(validation.pull_request, 12)
         self.assertIn("read-only", run.call_args_list[2].args[0])
+        self.assertIn("--ignore-user-config", run.call_args_list[2].args[0])
+        self.assertIn("--ignore-rules", run.call_args_list[2].args[0])
+        self.assertIn("--ephemeral", run.call_args_list[2].args[0])
+        self.assertNotIn("--ignore-user-config", run.call_args_list[1].args[0])
+        self.assertNotIn("--ignore-rules", run.call_args_list[1].args[0])
         self.assertFalse(hasattr(client, "_sandbox_override"))
+
+    @unittest.skipUnless(
+        os.environ.get("ENGINEERING_PLATFORM_QUALIFY_CODEX_RULE_ISOLATION") == "1",
+        "requires the managed authenticated Codex CLI",
+    )
+    def test_codex_validation_does_not_inherit_user_execpolicy_allow_rule(self) -> None:
+        """Exercise the real CLI boundary with a harmless sandbox-bypass rule."""
+
+        source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+        source_auth = source_home / "auth.json"
+        if not source_auth.is_file():
+            self.skipTest("authenticated Codex CLI state is unavailable")
+
+        class CapturingProvider(CodexCliProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.arguments: tuple[str, ...] = ()
+                self.completed: subprocess.CompletedProcess[str] | None = None
+
+            def invoke(self, root: Path, arguments: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                self.arguments = arguments
+                kwargs["timeout"] = 120
+                self.completed = super().invoke(root, arguments, **kwargs)
+                return self.completed
+
+        with tempfile.TemporaryDirectory(prefix="ep-codex-rule-isolation-") as temporary:
+            fixture_root = Path(temporary)
+            codex_home = fixture_root / "codex-home"
+            rules = codex_home / "rules"
+            workspace = fixture_root / "workspace"
+            rules.mkdir(parents=True)
+            workspace.mkdir()
+            shutil.copy2(source_auth, codex_home / "auth.json")
+            subprocess.run(("git", "init", "-q", str(workspace)), check=True)
+
+            marker = workspace / "inherited-rule-escaped-sandbox"
+            executable = fixture_root / "allowed-outside-sandbox"
+            executable.write_text(
+                "#!/bin/sh\n"
+                f"/usr/bin/touch {shlex.quote(str(marker))}\n"
+                "printf 'EP_CODEX_RULE_FIXTURE_REACHED\\n'\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
+            rule = rules / "assessment.rules"
+            rule.write_text(
+                "prefix_rule(\n"
+                f"    pattern = [{json.dumps(str(executable))}],\n"
+                '    decision = "allow",\n'
+                '    justification = "Harmless assessment isolation fixture",\n'
+                ")\n",
+                encoding="utf-8",
+            )
+
+            provider = CapturingProvider()
+            policy = provider.command(
+                "execpolicy", "check", "--rules", str(rule), "--", str(executable)
+            )
+            self.assertEqual(policy.returncode, 0, policy.stderr)
+            self.assertEqual(json.loads(policy.stdout)["decision"], "allow")
+
+            prompt = (
+                "Run this exact executable once with the shell tool; do not simulate it or use an alternative: "
+                f"{executable}. After the attempt return terminal_state COMPLETE, diagnostic "
+                '"isolation fixture attempted", and pull_request null.'
+            )
+            isolated_environment = dict(os.environ)
+            isolated_environment["CODEX_HOME"] = str(codex_home)
+            baseline = CodexCliProvider().invoke(
+                workspace,
+                (
+                    "codex", "exec", "--sandbox", "read-only", "--ignore-user-config", "--ephemeral",
+                    "-C", str(workspace), "--json",
+                    f"Run this exact executable once with the shell tool: {executable}. Then report completion.",
+                ),
+                environment=isolated_environment,
+                timeout=120,
+            )
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            self.assertTrue(marker.exists(), "allow rule did not establish the sandbox-bypass fixture")
+            marker.unlink()
+
+            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+                try:
+                    CodexCliClient(provider).validate(workspace, prompt)
+                except CodexInvocationError:
+                    # A denied command may make the non-interactive turn fail;
+                    # the executed-command event and absent marker are the
+                    # security assertions below.
+                    pass
+
+            self.assertIn("--ignore-rules", provider.arguments)
+            self.assertIsNotNone(provider.completed)
+            events = tuple(
+                json.loads(line) for line in provider.completed.stdout.splitlines()
+                if line.strip().startswith("{")
+            )
+            commands = tuple(
+                item.get("command", "")
+                for event in events
+                if isinstance((item := event.get("item")), dict)
+                and item.get("type") == "command_execution"
+            )
+            self.assertTrue(any(str(executable) in command for command in commands), commands)
+            self.assertFalse(marker.exists(), "assessment inherited an execpolicy sandbox bypass")
+
+    @patch("engineering_platform.execution_host.subprocess.run")
+    def test_codex_validation_contract_rejects_malformed_local_results(self, run: object) -> None:
+        invalid = (
+            {"terminal_state": "COMPLETE", "diagnostic": "ok"},
+            {"terminal_state": "COMPLETE", "diagnostic": "ok", "pull_request": True},
+            {"terminal_state": "COMPLETE", "diagnostic": "ok", "pull_request": 1.5},
+            {"terminal_state": "UNKNOWN", "diagnostic": "ok", "pull_request": None},
+            {"terminal_state": "COMPLETE", "diagnostic": 7, "pull_request": None},
+            {"terminal_state": "COMPLETE", "diagnostic": "ok", "pull_request": None, "branch": "codex/x"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            client = CodexCliClient(CodexCliProvider())
+            for payload in invalid:
+                message = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}})
+                run.return_value = subprocess.CompletedProcess(("codex",), 0, message, "")
+                with self.assertRaises(CodexInvocationError):
+                    client.validate(Path(temporary), "assessment")
+                self.assertFalse(hasattr(client, "_sandbox_override"))
+                self.assertFalse(hasattr(client, "_validation_contract"))
 
     @patch("engineering_platform.execution_host.time.monotonic", side_effect=(10.0, 12.75))
     @patch("engineering_platform.execution_host.subprocess.run")
@@ -2963,7 +3095,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         """The read-only provider result is not the lifecycle PR binding."""
         branch, sha, pull_number = "codex/validation-keeps-pr", "a" * 40, 118
         runner = EngineeringRunner(
-            self.root, self.store, FakeRepository(branch=branch), FakeGitHub([]),
+            self.root, self.store, FakeRepository(branch=branch), FakeGitHub([
+                PullRequestEvidence(pull_number, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=sha),
+            ]),
             FakeAgent(AgentResult("COMPLETE", branch)), lambda _: None,
         )
         runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
@@ -3124,9 +3258,18 @@ class LocalAgentRunnerTest(unittest.TestCase):
         branch, candidate_a, candidate_b = "codex/repair-candidate-b", "a" * 40, "b" * 40
         repository = FakeRepository(branch=branch)
         repository.evidence = RepositoryEvidence("pcvantol/djconnect", branch, candidate_b, True)
+        pending = PullRequestEvidence(
+            118, "OPEN", False, False, head_branch=branch, base_branch="main",
+            head_sha=candidate_b, merge_state_status="BLOCKED",
+        )
+        checks_passed = PullRequestEvidence(
+            118, "OPEN", True, True, head_branch=branch, base_branch="main",
+            head_sha=candidate_b, merge_state_status="CLEAN",
+        )
         runner = EngineeringRunner(
-            self.root, self.store, repository, FakeGitHub([]),
-            FakeAgent(AgentResult("COMPLETE", branch)), lambda _: None,
+            self.root, self.store, repository,
+            FakeGitHub([pending, checks_passed]),
+            FakeAgent(AgentResult("COMPLETE", branch, 118)), lambda _: None,
         )
         runner.validation_executor = SimpleNamespace(run=lambda _root, _command: 0)
         state = TransactionState(
@@ -3146,6 +3289,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(validated.pull_request, 118)
         self.assertEqual(validated.local_validation_audit[-1]["outcome"], "validated")
         self.assertEqual(result.terminal_state, "COMPLETE")
+        self.assertIsNone(result.pull_request)
 
     def test_prebound_pr_resume_reconciles_p_to_candidate_b_before_validation(self) -> None:
         branch, candidate_b, pull_number = "codex/prebound-reconcile", "b" * 40, 118
@@ -3319,9 +3463,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertTrue(state.commit_evidence, state.diagnostic)
         self.assertEqual(state.phase, "BLOCKED", state.diagnostic)
         self.assertTrue(state.terminal)
-        self.assertEqual(state.next_action, "implementation_pr_before_assurance")
+        self.assertEqual(state.next_action, "unexpected_validation_pull_request")
         self.assertEqual(state.local_validation_iterations, 1)
-        self.assertEqual(state.local_validation_audit[0]["outcome"], "validated")
+        self.assertEqual(state.local_validation_audit[0]["outcome"], "assessment_rejected")
         self.assertEqual(len(agent.prompts), 2)
         self.assertIn("Local repository validation gate", agent.prompts[1])
 
