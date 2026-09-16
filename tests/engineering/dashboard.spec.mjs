@@ -9239,7 +9239,9 @@ test.describe("Engineering Status browser smoke", () => {
           const style = getComputedStyle(element);
           // An inactive outline has a computed colour but paints nothing.
           // Inspect only painted outline values alongside actual shadows.
-          const focusStyles = `${style.outlineStyle === "solid" ? style.outlineColor : ""} ${style.boxShadow}`;
+          const outlineIsPainted = style.outlineStyle !== "none"
+            && Number.parseFloat(style.outlineWidth) > 0;
+          const focusStyles = `${outlineIsPainted ? style.outlineColor : ""} ${style.boxShadow}`;
           return hasWhite(focusStyles) ? [{
             theme,
             element: element.id || element.getAttribute("data-testid") || element.tagName,
