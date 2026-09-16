@@ -1969,6 +1969,7 @@ def load_forge_governance_handoff_snapshot(root: Path, run_id: str) -> dict[str,
 def load_submission_for_run(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Load immutable Producer provenance for one linked execution without prompt inspection."""
     connection = _evidence_connection(root, central_database)
+    attempt_constraints_payload: object | None = None
     try:
         row = connection.execute(
             "SELECT submission.submission_id,submission.producer_id,submission.producer_type,"
@@ -1978,6 +1979,20 @@ def load_submission_for_run(root: Path, run_id: str, *, central_database: Path |
             "FROM execution_submissions AS submission JOIN execution_submission_run_links AS link "
             "ON link.submission_id=submission.submission_id WHERE link.run_id=?", (run_id,)
         ).fetchone()
+        if row is not None and central_database is not None:
+            # A correlated retry deliberately retains the canonical producer
+            # submission while its execution attempt has its own immutable
+            # CENTRAL request.  Revision transitions are attempt-scoped, so
+            # the Execution Host must consume the accepted attempt constraints
+            # rather than silently falling back to the root submission's pin.
+            attempt = connection.execute(
+                "SELECT accepted.constraints FROM execution_submission_attempt_links AS link "
+                "JOIN ep_submissions AS accepted ON accepted.submission_id=link.submission_id "
+                "WHERE link.run_id=?",
+                (run_id,),
+            ).fetchone()
+            if attempt is not None:
+                attempt_constraints_payload = attempt[0]
     finally:
         connection.close()
     if not row:
@@ -1999,6 +2014,13 @@ def load_submission_for_run(root: Path, run_id: str, *, central_database: Path |
     constraints = prompt_metadata.get("constraints")
     if constraints is not None and not isinstance(constraints, dict):
         raise EngineeringStorageError("Persisted submission constraints are invalid.")
+    if attempt_constraints_payload is not None:
+        try:
+            constraints = json.loads(str(attempt_constraints_payload))
+        except (TypeError, json.JSONDecodeError) as error:
+            raise EngineeringStorageError("Persisted submission attempt constraints are corrupt.") from error
+        if not isinstance(constraints, dict):
+            raise EngineeringStorageError("Persisted submission attempt constraints are invalid.")
     handoff = None
     if row[12] is not None:
         try:

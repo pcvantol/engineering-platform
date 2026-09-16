@@ -124,6 +124,10 @@ requires a clean local `main`, refreshes `origin/main` without changing the
 checkout, and proves that the requested revision is still in protected-main
 history before admitting the successor. A later main change produces an exact
 baseline mismatch at execution time; it is never widened to ambient `HEAD`.
+The canonical producer submission remains the correlation anchor, while the
+Execution Host resolves execution constraints from the immutable accepted
+retry attempt. Attempt-specific baseline authority is therefore not replaced
+by the root submission's historical exact pin.
 
 Required host validation controls receive a distinct, per-child scratch
 directory below the EP-managed artifact root. EP probes write/read, rename and

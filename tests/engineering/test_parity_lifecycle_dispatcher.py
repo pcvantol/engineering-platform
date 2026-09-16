@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from engineering_platform.storage import sqlite_connection
+from engineering_platform.storage import load_submission_for_run, sqlite_connection
 
 from pathlib import Path
 import os
@@ -526,6 +526,21 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             {"requested_revision": requested, "allowed_baseline_revision": current},
         )
         self.assertEqual(repository.inspected[0], self.roots["alpha"].resolve())
+
+        succeeding = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            successor = succeeding.dispatch(retry.submission_id)
+        projected = load_submission_for_run(
+            self.roots["alpha"], successor.run_id,
+            central_database=self.data / server.SERVER_DATABASE_FILENAME,
+        )
+        self.assertIsNotNone(projected)
+        self.assertEqual(
+            projected["constraints"]["repository_revision_binding"],  # type: ignore[index]
+            {"requested_revision": requested, "allowed_baseline_revision": current},
+        )
 
     def test_retry_refuses_a_non_main_checkout_without_resolving_the_gate(self) -> None:
         requested = "a" * 40
