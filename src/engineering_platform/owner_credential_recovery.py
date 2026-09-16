@@ -8,9 +8,11 @@ the current user's macOS Keychain is only the fixed consumer-side destination.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+import fcntl
 import hashlib
 import hmac
 import json
@@ -19,6 +21,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import stat
 from typing import Protocol
 
 from .ep_consumer_credentials import (
@@ -39,8 +42,9 @@ RECOVERY_CREDENTIAL_PREFIX = "production-forge-recovery-"
 _OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{7,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED_SAFE", "STOPPED_UNCERTAIN"})
-_ACTIVE_STATES = frozenset({"PREPARED", "CENTRAL_ACTIVATED"})
+_TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED_SAFE"})
+_DESTINATION_LOCK_FILENAME = ".forge-ep-consumer-recovery.lock"
+_CANDIDATE_VALIDITY = timedelta(minutes=15)
 
 
 class CredentialRecoveryError(RuntimeError):
@@ -136,6 +140,8 @@ def install_schema(connection: sqlite3.Connection) -> None:
             peer_binding_id TEXT NOT NULL,
             peer_runtime_id TEXT NOT NULL,
             peer_configuration_digest TEXT NOT NULL,
+            adopted_from_peer_configuration_digest TEXT,
+            configuration_adopted_at TEXT,
             operator_uid INTEGER NOT NULL CHECK(operator_uid > 0),
             keychain_service TEXT NOT NULL CHECK(keychain_service='{KEYCHAIN_SERVICE}'),
             keychain_account TEXT NOT NULL CHECK(keychain_account='{KEYCHAIN_ACCOUNT}'),
@@ -149,9 +155,9 @@ def install_schema(connection: sqlite3.Connection) -> None:
             completed_at TEXT,
             last_error_code TEXT
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS ep_consumer_credential_recovery_active_scope
+        CREATE INDEX IF NOT EXISTS ep_consumer_credential_recovery_active_scope
             ON ep_consumer_credential_recovery_operations(consumer_id,project_id)
-            WHERE state IN ('PREPARED','CENTRAL_ACTIVATED');
+            WHERE state IN ('PREPARED','CENTRAL_ACTIVATED','STOPPED_UNCERTAIN');
         CREATE INDEX IF NOT EXISTS ep_consumer_credential_recovery_scope_lookup
             ON ep_consumer_credential_recovery_operations(project_id,consumer_id,created_at DESC);
         """
@@ -159,7 +165,11 @@ def install_schema(connection: sqlite3.Connection) -> None:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    return _utcnow_datetime().isoformat()
+
+
+def _utcnow_datetime() -> datetime:
+    return datetime.now(UTC)
 
 
 def _require_peer_metadata(
@@ -179,7 +189,7 @@ def scoped_consumer_readback(
     expected_instance_id: str,
     project_id: str,
     repository_id: str,
-    expected_consumer_id: str,
+    expected_consumer_id: str | None,
     peer_binding_id: str,
     peer_runtime_id: str,
     peer_configuration_digest: str,
@@ -250,10 +260,11 @@ def scoped_consumer_readback(
     if len(candidates) != 1:
         raise CredentialRecoveryError("FORGE_CONSUMER_BINDING_AMBIGUOUS")
     consumer_id, state = str(candidates[0][0]), str(candidates[0][1])
-    if _IDENTITY.fullmatch(expected_consumer_id) is None:
-        raise CredentialRecoveryError("PEER_CONSUMER_ID_INVALID")
-    if consumer_id != expected_consumer_id:
-        raise CredentialRecoveryError("PEER_CONSUMER_BINDING_MISMATCH")
+    if expected_consumer_id is not None:
+        if _IDENTITY.fullmatch(expected_consumer_id) is None:
+            raise CredentialRecoveryError("PEER_CONSUMER_ID_INVALID")
+        if consumer_id != expected_consumer_id:
+            raise CredentialRecoveryError("PEER_CONSUMER_BINDING_MISMATCH")
     if state == "DISABLED":
         raise CredentialRecoveryError("FORGE_CONSUMER_DISABLED")
     if state == "REVOKED":
@@ -548,6 +559,48 @@ def _database(data_root: Path) -> Path:
     return path
 
 
+@contextmanager
+def _destination_lock(data_root: Path, authority: OwnerAuthority):
+    """Serialize the complete CENTRAL/Keychain transition across processes.
+
+    The lock is tied to the one product-owned fixed destination and is held
+    across every external-store read/write and every guarded journal change.
+    ``flock`` is released by the kernel after process loss, so a crashed
+    worker cannot leave a permanent lock behind.
+    """
+
+    root = data_root.expanduser().resolve(strict=True)
+    if root != Path(authority.data_root).expanduser().resolve(strict=True):
+        raise CredentialRecoveryError("RECOVERY_DATA_ROOT_AUTHORITY_MISMATCH")
+    lock_path = root / _DESTINATION_LOCK_FILENAME
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as error:
+        raise CredentialRecoveryError("RECOVERY_DESTINATION_LOCK_UNAVAILABLE") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != authority.operator_uid
+            or metadata.st_nlink != 1
+            or metadata.st_mode & 0o077
+        ):
+            raise CredentialRecoveryError("RECOVERY_DESTINATION_LOCK_UNSAFE")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as error:
+            raise CredentialRecoveryError("RECOVERY_DESTINATION_LOCK_UNAVAILABLE") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
 def _connect(data_root: Path) -> sqlite3.Connection:
     try:
         connection = sqlite3.connect(_database(data_root), timeout=10, isolation_level=None)
@@ -579,6 +632,8 @@ def _operation_status(row: sqlite3.Row) -> dict[str, object]:
         "peer_binding_id": str(row["peer_binding_id"]),
         "peer_runtime_id": str(row["peer_runtime_id"]),
         "peer_configuration_digest": str(row["peer_configuration_digest"]),
+        "adopted_from_peer_configuration_digest": row["adopted_from_peer_configuration_digest"],
+        "configuration_adopted_at": row["configuration_adopted_at"],
         "operator_uid": int(row["operator_uid"]),
         "credential_destination": KEYCHAIN_REFERENCE,
         "credential_id": row["credential_id"],
@@ -631,11 +686,22 @@ def _prepare_operation(
         if row is not None:
             if not _same_operation(row, binding, authority):
                 raise CredentialRecoveryError("RECOVERY_OPERATION_IDENTITY_CONFLICT")
+            if str(row["state"]) in {"PREPARED", "CENTRAL_ACTIVATED", "STOPPED_UNCERTAIN"}:
+                first = connection.execute(
+                    "SELECT operation_id FROM ep_consumer_credential_recovery_operations "
+                    "WHERE consumer_id=? AND project_id=? "
+                    "AND state IN ('PREPARED','CENTRAL_ACTIVATED','STOPPED_UNCERTAIN') "
+                    "ORDER BY created_at,operation_id LIMIT 1",
+                    (binding.consumer_id, binding.project_id),
+                ).fetchone()
+                if first is None or str(first[0]) != operation_id:
+                    raise CredentialRecoveryError("CONCURRENT_RECOVERY_OPERATION_ACTIVE")
             connection.execute("COMMIT")
             return _operation_status(row)
         active = connection.execute(
             "SELECT operation_id FROM ep_consumer_credential_recovery_operations "
-            "WHERE consumer_id=? AND project_id=? AND state IN ('PREPARED','CENTRAL_ACTIVATED')",
+            "WHERE consumer_id=? AND project_id=? "
+            "AND state IN ('PREPARED','CENTRAL_ACTIVATED','STOPPED_UNCERTAIN')",
             (binding.consumer_id, binding.project_id),
         ).fetchone()
         if active is not None:
@@ -684,8 +750,19 @@ def _mark_reused(
         now = _now()
         connection.execute("BEGIN IMMEDIATE")
         row = _operation_row(connection, operation_id)
-        if row is None or str(row["state"]) not in _ACTIVE_STATES:
+        if row is None or str(row["state"]) != "PREPARED":
             raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
+        credential = connection.execute(
+            "SELECT consumer_id,project_id,fingerprint,revoked_at FROM ep_consumer_credentials "
+            "WHERE credential_id=? AND verifier=?",
+            (credential_id, verifier(material)),
+        ).fetchone()
+        if credential is None or (
+            str(credential[0]), str(credential[1]), bytes(credential[2]), credential[3]
+        ) != (
+            str(row["consumer_id"]), str(row["project_id"]), fingerprint(material), None,
+        ):
+            raise CredentialRecoveryError("EXISTING_KEYCHAIN_CREDENTIAL_IDENTITY_CONFLICT")
         connection.execute(
             "UPDATE ep_consumer_credential_recovery_operations SET state='SUCCEEDED',"
             "disposition='REUSED',credential_id=?,credential_fingerprint=?,updated_at=?,completed_at=?,"
@@ -716,6 +793,7 @@ def _final_credential_id(operation_id: str) -> str:
 
 def _bind_prepared_fingerprint(
     data_root: Path, operation_id: str, material: str,
+    *, expected_fingerprint: str | None,
 ) -> None:
     """Bind generated material to a PREPARED operation without persisting it."""
 
@@ -725,11 +803,14 @@ def _bind_prepared_fingerprint(
         operation = _operation_row(connection, operation_id)
         if operation is None or str(operation["state"]) != "PREPARED":
             raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
-        connection.execute(
+        changed = connection.execute(
             "UPDATE ep_consumer_credential_recovery_operations "
-            "SET credential_fingerprint=?,updated_at=? WHERE operation_id=? AND state='PREPARED'",
-            (fingerprint(material).hex(), _now(), operation_id),
-        )
+            "SET credential_fingerprint=?,updated_at=? WHERE operation_id=? AND state='PREPARED' "
+            "AND credential_fingerprint IS ?",
+            (fingerprint(material).hex(), _now(), operation_id, expected_fingerprint),
+        ).rowcount
+        if changed != 1:
+            raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
         connection.execute("COMMIT")
     except Exception:
         if connection.in_transaction:
@@ -737,6 +818,77 @@ def _bind_prepared_fingerprint(
         raise
     finally:
         connection.close()
+
+
+def adopt_peer_configuration(
+    data_root: Path,
+    *,
+    operation_id: str,
+    binding: ConsumerBinding,
+    authority: OwnerAuthority,
+    previous_peer_configuration_digest: str,
+) -> dict[str, object]:
+    """Guard one no-material PREPARED operation across Forge config migration.
+
+    This is deliberately narrower than recovery: only the digest may change,
+    only once, before any fingerprint, Keychain value or CENTRAL candidate is
+    bound.  The previous digest and adoption timestamp remain in the durable
+    operation receipt as secret-free migration evidence.
+    """
+
+    if _DIGEST.fullmatch(previous_peer_configuration_digest) is None:
+        raise CredentialRecoveryError("PREVIOUS_PEER_CONFIGURATION_DIGEST_INVALID")
+    if previous_peer_configuration_digest == binding.peer_configuration_digest:
+        raise CredentialRecoveryError("PEER_CONFIGURATION_DIGEST_UNCHANGED")
+    with _destination_lock(data_root, authority):
+        connection = _connect(data_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = _operation_row(connection, operation_id)
+            if row is None:
+                raise CredentialRecoveryError("RECOVERY_OPERATION_NOT_FOUND")
+            stable = (
+                str(row["instance_id"]), str(row["consumer_id"]), str(row["project_id"]),
+                str(row["repository_id"]), str(row["peer_binding_id"]),
+                str(row["peer_runtime_id"]), int(row["operator_uid"]),
+            )
+            expected = (
+                authority.instance_id, binding.consumer_id, binding.project_id,
+                binding.repository_id, binding.peer_binding_id,
+                binding.peer_runtime_id, authority.operator_uid,
+            )
+            if stable != expected:
+                raise CredentialRecoveryError("RECOVERY_OPERATION_IDENTITY_CONFLICT")
+            if (
+                str(row["state"]) != "PREPARED"
+                or row["credential_fingerprint"] is not None
+                or row["credential_id"] is not None
+                or row["disposition"] is not None
+                or str(row["peer_configuration_digest"]) != previous_peer_configuration_digest
+                or row["adopted_from_peer_configuration_digest"] is not None
+            ):
+                raise CredentialRecoveryError("RECOVERY_CONFIGURATION_ADOPTION_NOT_SAFE")
+            changed = connection.execute(
+                "UPDATE ep_consumer_credential_recovery_operations SET "
+                "peer_configuration_digest=?,adopted_from_peer_configuration_digest=?,"
+                "configuration_adopted_at=?,updated_at=? WHERE operation_id=? "
+                "AND state='PREPARED' AND peer_configuration_digest=? "
+                "AND credential_fingerprint IS NULL AND credential_id IS NULL",
+                (
+                    binding.peer_configuration_digest, previous_peer_configuration_digest,
+                    _now(), _now(), operation_id, previous_peer_configuration_digest,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
+            connection.execute("COMMIT")
+            return recovery_status(data_root, operation_id)
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
 
 
 def _mark_failed_safe(data_root: Path, operation_id: str, code: str) -> None:
@@ -770,9 +922,9 @@ def _activate_candidate(
     """Stage one bounded candidate without revoking a working credential.
 
     The pending identifier is deliberately outside the production namespace.
-    One active recovery operation per consumer/project bounds this overlap.  It
-    remains a normal verifier for the real HTTP authentication proof, but it is
-    promoted into the production namespace only after that proof succeeds.
+    Its operation state and bounded expiry are enforced by the dedicated
+    recovery-probe authorization path; normal producer/operator authentication
+    must reject it until promotion.
     """
 
     candidate_id = _candidate_id(operation_id)
@@ -795,14 +947,21 @@ def _activate_candidate(
         ):
             raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
         state = str(operation["state"])
+        if operation["credential_fingerprint"] is None or not hmac.compare_digest(
+            str(operation["credential_fingerprint"]), candidate_fingerprint.hex()
+        ):
+            raise CredentialRecoveryError("RECOVERY_CANDIDATE_IDENTITY_CONFLICT")
         if state == "CENTRAL_ACTIVATED":
             existing = connection.execute(
-                "SELECT verifier,fingerprint,revoked_at FROM ep_consumer_credentials "
+                "SELECT verifier,fingerprint,revoked_at,"
+                "(expires_at IS NOT NULL AND expires_at>CURRENT_TIMESTAMP) "
+                "FROM ep_consumer_credentials "
                 "WHERE credential_id=? AND consumer_id=? AND project_id=?",
                 (candidate_id, binding.consumer_id, binding.project_id),
             ).fetchone()
             if (
                 existing is None or existing[2] is not None
+                or int(existing[3]) != 1
                 or not hmac.compare_digest(bytes(existing[0]), candidate_verifier)
                 or not hmac.compare_digest(bytes(existing[1]), candidate_fingerprint)
             ):
@@ -835,10 +994,11 @@ def _activate_candidate(
         else:
             connection.execute(
                 "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,"
-                "fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
+                "fingerprint,issued_at,expires_at) VALUES(?,?,?,?,?,?,?)",
                 (
                     candidate_id, binding.consumer_id, binding.project_id,
                     candidate_verifier, candidate_fingerprint, _now(),
+                    (_utcnow_datetime() + _CANDIDATE_VALIDITY).strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
         active = connection.execute(
@@ -878,7 +1038,9 @@ def _activate_candidate(
         connection.close()
 
 
-def _complete_replacement(data_root: Path, operation_id: str) -> dict[str, object]:
+def _complete_replacement(
+    data_root: Path, operation_id: str, material: str,
+) -> dict[str, object]:
     connection = _connect(data_root)
     try:
         now = _now()
@@ -891,12 +1053,20 @@ def _complete_replacement(data_root: Path, operation_id: str) -> dict[str, objec
         if not isinstance(candidate, str) or not candidate.startswith(RECOVERY_CANDIDATE_PREFIX):
             raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
         candidate_scope = connection.execute(
-            "SELECT consumer_id,project_id,revoked_at FROM ep_consumer_credentials "
+            "SELECT consumer_id,project_id,verifier,fingerprint,revoked_at,"
+            "(expires_at IS NOT NULL AND expires_at>CURRENT_TIMESTAMP) "
+            "FROM ep_consumer_credentials "
             "WHERE credential_id=?", (candidate,),
         ).fetchone()
         if candidate_scope is None or (
-            str(candidate_scope[0]), str(candidate_scope[1]), candidate_scope[2]
-        ) != (str(operation["consumer_id"]), str(operation["project_id"]), None):
+            str(candidate_scope[0]), str(candidate_scope[1]), bytes(candidate_scope[2]),
+            bytes(candidate_scope[3]), candidate_scope[4],
+        ) != (
+            str(operation["consumer_id"]), str(operation["project_id"]), verifier(material),
+            fingerprint(material), None,
+        ) or int(candidate_scope[5]) != 1 or not hmac.compare_digest(
+            str(operation["credential_fingerprint"]), fingerprint(material).hex()
+        ):
             raise CredentialRecoveryError("RECOVERY_CANDIDATE_IDENTITY_CONFLICT")
         active = connection.execute(
             "SELECT credential_id FROM ep_consumer_credentials WHERE consumer_id=? AND project_id=? "
@@ -926,7 +1096,7 @@ def _complete_replacement(data_root: Path, operation_id: str) -> dict[str, objec
             "WHERE operation_id=? AND state='CENTRAL_ACTIVATED'", (operation_id,),
         )
         changed = connection.execute(
-            "UPDATE ep_consumer_credentials SET credential_id=? WHERE credential_id=? "
+            "UPDATE ep_consumer_credentials SET credential_id=?,expires_at=NULL WHERE credential_id=? "
             "AND consumer_id=? AND project_id=? AND revoked_at IS NULL",
             (final_id, candidate, operation["consumer_id"], operation["project_id"]),
         ).rowcount
@@ -959,30 +1129,44 @@ def _complete_replacement(data_root: Path, operation_id: str) -> dict[str, objec
         connection.close()
 
 
-def _rollback_replacement(data_root: Path, operation_id: str) -> None:
+def _rollback_replacement(
+    data_root: Path, operation_id: str, *, code: str,
+) -> dict[str, object]:
     connection = _connect(data_root)
     try:
         now = _now()
         connection.execute("BEGIN IMMEDIATE")
         operation = _operation_row(connection, operation_id)
-        if operation is None or str(operation["state"]) != "CENTRAL_ACTIVATED":
+        if operation is None or str(operation["state"]) not in {
+            "CENTRAL_ACTIVATED", "STOPPED_UNCERTAIN",
+        }:
             raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
         candidate = operation["credential_id"]
-        replaced = operation["replaced_credential_id"]
-        if not isinstance(candidate, str):
+        if not isinstance(candidate, str) or not candidate.startswith(RECOVERY_CANDIDATE_PREFIX):
             raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
+        candidate_scope = connection.execute(
+            "SELECT consumer_id,project_id,revoked_at FROM ep_consumer_credentials "
+            "WHERE credential_id=?", (candidate,),
+        ).fetchone()
+        if candidate_scope is None or (
+            str(candidate_scope[0]), str(candidate_scope[1])
+        ) != (str(operation["consumer_id"]), str(operation["project_id"])):
+            raise CredentialRecoveryError("RECOVERY_CANDIDATE_IDENTITY_CONFLICT")
         connection.execute(
             "UPDATE ep_consumer_credentials SET revoked_at=? WHERE credential_id=? "
             "AND consumer_id=? AND project_id=? AND revoked_at IS NULL",
             (now, candidate, operation["consumer_id"], operation["project_id"]),
         )
-        connection.execute(
+        changed = connection.execute(
             "UPDATE ep_consumer_credential_recovery_operations SET state='FAILED_SAFE',"
-            "updated_at=?,completed_at=?,last_error_code='REPLACEMENT_AUTHENTICATION_FAILED' "
-            "WHERE operation_id=?",
-            (now, now, operation_id),
-        )
+            "updated_at=?,completed_at=?,last_error_code=? WHERE operation_id=? "
+            "AND state IN ('CENTRAL_ACTIVATED','STOPPED_UNCERTAIN')",
+            (now, now, code, operation_id),
+        ).rowcount
+        if changed != 1:
+            raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
         connection.execute("COMMIT")
+        return recovery_status(data_root, operation_id)
     except Exception:
         if connection.in_transaction:
             connection.execute("ROLLBACK")
@@ -995,11 +1179,135 @@ def _stop_uncertain(data_root: Path, operation_id: str, code: str) -> None:
     connection = _connect(data_root)
     try:
         now = _now()
-        connection.execute(
+        changed = connection.execute(
             "UPDATE ep_consumer_credential_recovery_operations SET state='STOPPED_UNCERTAIN',"
-            "updated_at=?,completed_at=?,last_error_code=? WHERE operation_id=?",
-            (now, now, code, operation_id),
+            "updated_at=?,completed_at=NULL,last_error_code=? WHERE operation_id=? "
+            "AND state IN ('PREPARED','CENTRAL_ACTIVATED','STOPPED_UNCERTAIN')",
+            (now, code, operation_id),
+        ).rowcount
+        if changed != 1:
+            raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
+    finally:
+        connection.close()
+
+
+def _delete_if_operation_owns_value(
+    store: KeychainStore, expected_fingerprint: str,
+) -> bool:
+    """Delete only the currently observed operation-bound Keychain value."""
+
+    current = store.read()
+    if current is None:
+        return True
+    if not hmac.compare_digest(fingerprint(current).hex(), expected_fingerprint):
+        return False
+    store.delete()
+    return store.read() is None
+
+
+def _resume_uncertain(
+    data_root: Path,
+    operation_id: str,
+    *,
+    store: KeychainStore,
+) -> dict[str, object]:
+    """Reconcile an uncertain operation without issuing another candidate."""
+
+    operation = recovery_status(data_root, operation_id)
+    if operation["state"] != "STOPPED_UNCERTAIN":
+        return operation
+    expected_fingerprint = operation.get("credential_fingerprint")
+    candidate_id = operation.get("credential_id")
+    try:
+        material = store.read()
+    except Exception as error:
+        raise CredentialRecoveryError("UNCERTAIN_KEYCHAIN_READ_UNAVAILABLE") from error
+
+    material_matches = (
+        isinstance(expected_fingerprint, str)
+        and material is not None
+        and hmac.compare_digest(expected_fingerprint, fingerprint(material).hex())
+    )
+    if isinstance(candidate_id, str):
+        connection = _connect(data_root)
+        try:
+            candidate = connection.execute(
+                "SELECT verifier,fingerprint,revoked_at,"
+                "(expires_at IS NOT NULL AND expires_at>CURRENT_TIMESTAMP) "
+                "FROM ep_consumer_credentials WHERE credential_id=? AND consumer_id=? AND project_id=?",
+                (candidate_id, operation["consumer_id"], operation["project_id"]),
+            ).fetchone()
+        finally:
+            connection.close()
+        candidate_active = (
+            candidate is not None and candidate[2] is None and int(candidate[3]) == 1
+            and material_matches
+            and hmac.compare_digest(bytes(candidate[0]), verifier(material))
+            and hmac.compare_digest(bytes(candidate[1]), fingerprint(material))
         )
+        if candidate_active:
+            connection = _connect(data_root)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                changed = connection.execute(
+                    "UPDATE ep_consumer_credential_recovery_operations "
+                    "SET state='CENTRAL_ACTIVATED',completed_at=NULL,updated_at=?,last_error_code=NULL "
+                    "WHERE operation_id=? AND state='STOPPED_UNCERTAIN'",
+                    (_now(), operation_id),
+                ).rowcount
+                if changed != 1:
+                    raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
+                connection.execute("COMMIT")
+            except Exception:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+            finally:
+                connection.close()
+            return recovery_status(data_root, operation_id)
+        if material_matches:
+            try:
+                deleted = _delete_if_operation_owns_value(store, str(expected_fingerprint))
+            except Exception as error:
+                raise CredentialRecoveryError("UNCERTAIN_KEYCHAIN_DELETE_UNRESOLVED") from error
+            if not deleted:
+                raise CredentialRecoveryError("UNCERTAIN_KEYCHAIN_DELETE_UNRESOLVED")
+        return _rollback_replacement(
+            data_root, operation_id, code="UNCERTAIN_CANDIDATE_RECONCILED_ABORTED",
+        )
+
+    connection = _connect(data_root)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        if material is None:
+            changed = connection.execute(
+                "UPDATE ep_consumer_credential_recovery_operations SET state='PREPARED',"
+                "credential_fingerprint=NULL,completed_at=NULL,updated_at=?,last_error_code=NULL "
+                "WHERE operation_id=? AND state='STOPPED_UNCERTAIN' AND credential_id IS NULL",
+                (_now(), operation_id),
+            ).rowcount
+        elif material_matches:
+            changed = connection.execute(
+                "UPDATE ep_consumer_credential_recovery_operations SET state='PREPARED',"
+                "completed_at=NULL,updated_at=?,last_error_code=NULL "
+                "WHERE operation_id=? AND state='STOPPED_UNCERTAIN' AND credential_id IS NULL",
+                (_now(), operation_id),
+            ).rowcount
+        else:
+            changed = connection.execute(
+                "UPDATE ep_consumer_credential_recovery_operations SET state='FAILED_SAFE',"
+                "completed_at=?,updated_at=?,last_error_code='UNCERTAIN_KEYCHAIN_VALUE_NOT_OWNED' "
+                "WHERE operation_id=? AND state='STOPPED_UNCERTAIN' AND credential_id IS NULL",
+                (_now(), _now(), operation_id),
+            ).rowcount
+        if changed != 1:
+            raise CredentialRecoveryError("RECOVERY_OPERATION_STATE_CONFLICT")
+        connection.execute("COMMIT")
+        return recovery_status(data_root, operation_id)
+    except Exception:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
     finally:
         connection.close()
 
@@ -1012,109 +1320,194 @@ def recover_credential(
     authority: OwnerAuthority,
     store: KeychainStore,
     authenticate: Callable[[str, ConsumerBinding], bool],
+    authenticate_candidate: Callable[[str, ConsumerBinding], bool] | None = None,
+    after_fingerprint_binding: Callable[[], None] | None = None,
     after_keychain_write: Callable[[], None] | None = None,
     after_central_activation: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     """Reconcile one replayable credential recovery without exporting a token."""
 
-    prepared = _prepare_operation(data_root, operation_id, binding, authority)
-    if prepared["state"] in _TERMINAL_STATES:
-        return prepared
-    material = store.read()
-    if material is not None:
-        connection = _connect(data_root)
+    candidate_authenticate = authenticate_candidate or authenticate
+    with _destination_lock(data_root, authority):
+        prepared = _prepare_operation(data_root, operation_id, binding, authority)
+        if prepared["state"] in _TERMINAL_STATES:
+            return prepared
+        if prepared["state"] == "STOPPED_UNCERTAIN":
+            prepared = _resume_uncertain(data_root, operation_id, store=store)
+            if prepared["state"] in _TERMINAL_STATES:
+                return prepared
         try:
-            scope = _credential_scope(connection, material)
-        finally:
-            connection.close()
-        if scope is not None:
-            credential_id, consumer_id, project_id, revoked_at = scope
-            if (consumer_id, project_id) != (binding.consumer_id, binding.project_id):
-                _mark_failed_safe(
-                    data_root, operation_id, "KEYCHAIN_CREDENTIAL_SCOPE_MISMATCH"
-                )
-                raise CredentialRecoveryError("KEYCHAIN_CREDENTIAL_SCOPE_MISMATCH")
-            if (
-                prepared["state"] == "CENTRAL_ACTIVATED"
-                and prepared["credential_id"] == credential_id
-                and revoked_at is None
-            ):
-                if authenticate(material, binding):
-                    return _complete_replacement(data_root, operation_id)
-                try:
-                    _rollback_replacement(data_root, operation_id)
-                    store.delete()
-                except Exception as error:
-                    _stop_uncertain(data_root, operation_id, "REPLACEMENT_ROLLBACK_UNCERTAIN")
-                    raise CredentialRecoveryError("REPLACEMENT_ROLLBACK_UNCERTAIN") from error
-                return recovery_status(data_root, operation_id)
-            if revoked_at is None:
-                if not authenticate(material, binding):
-                    _mark_failed_safe(
-                        data_root,
-                        operation_id,
-                        "EXISTING_KEYCHAIN_CREDENTIAL_AUTHENTICATION_FAILED",
-                    )
-                    raise CredentialRecoveryError("EXISTING_KEYCHAIN_CREDENTIAL_AUTHENTICATION_FAILED")
-                return _mark_reused(data_root, operation_id, credential_id, material)
-            # A known revoked value is not reusable material for a new
-            # verifier.  Replace it with a freshly generated candidate.
-            material = None
-        else:
-            # Never legitimize arbitrary pre-existing Keychain material by
-            # registering its verifier.  It can only be retained when its
-            # fingerprint was already bound to this exact PREPARED operation,
-            # which is the replay edge after a successful Keychain write.
-            expected_fingerprint = prepared.get("credential_fingerprint")
-            if not (
-                prepared["state"] == "PREPARED"
-                and isinstance(expected_fingerprint, str)
-                and hmac.compare_digest(expected_fingerprint, fingerprint(material).hex())
-            ):
-                material = None
-    operation = recovery_status(data_root, operation_id)
-    if operation["state"] == "CENTRAL_ACTIVATED":
-        candidate_id = operation["credential_id"]
-        if material is None or not isinstance(candidate_id, str):
-            _stop_uncertain(data_root, operation_id, "ACTIVATED_CREDENTIAL_MATERIAL_UNAVAILABLE")
-            raise CredentialRecoveryError("ACTIVATED_CREDENTIAL_MATERIAL_UNAVAILABLE")
-        connection = _connect(data_root)
-        try:
-            scope = _credential_scope(connection, material)
-        finally:
-            connection.close()
-        if scope is None or scope[:3] != (candidate_id, binding.consumer_id, binding.project_id):
-            _stop_uncertain(data_root, operation_id, "ACTIVATED_CREDENTIAL_IDENTITY_MISMATCH")
-            raise CredentialRecoveryError("ACTIVATED_CREDENTIAL_IDENTITY_MISMATCH")
-    else:
-        if material is None:
-            material = secrets.token_urlsafe(32)
-            _bind_prepared_fingerprint(data_root, operation_id, material)
+            material = store.read()
+        except Exception as error:
+            if prepared.get("credential_fingerprint") is not None:
+                _stop_uncertain(data_root, operation_id, "KEYCHAIN_READ_OUTCOME_UNCERTAIN")
+            raise CredentialRecoveryError("KEYCHAIN_READ_OUTCOME_UNCERTAIN") from error
+
+        if material is not None:
+            connection = _connect(data_root)
             try:
-                store.replace(material)
-            except CredentialRecoveryError as error:
-                _mark_failed_safe(data_root, operation_id, error.code)
-                raise
-            except Exception as error:
-                _stop_uncertain(data_root, operation_id, "KEYCHAIN_WRITE_OUTCOME_UNCERTAIN")
-                raise CredentialRecoveryError("KEYCHAIN_WRITE_OUTCOME_UNCERTAIN") from error
-            if after_keychain_write is not None:
-                after_keychain_write()
-        # Existing unrecognized material is unusable for this EP authority.  A
-        # fixed-target replacement is permitted only inside this exact durable
-        # operation; no discovery or alternative export destination exists.
-        _activate_candidate(data_root, operation_id, binding, material)
-        if after_central_activation is not None:
-            after_central_activation()
-    if authenticate(material, binding):
-        return _complete_replacement(data_root, operation_id)
-    try:
-        _rollback_replacement(data_root, operation_id)
-        store.delete()
-    except Exception as error:
-        _stop_uncertain(data_root, operation_id, "REPLACEMENT_ROLLBACK_UNCERTAIN")
-        raise CredentialRecoveryError("REPLACEMENT_ROLLBACK_UNCERTAIN") from error
-    return recovery_status(data_root, operation_id)
+                scope = _credential_scope(connection, material)
+            finally:
+                connection.close()
+            if scope is not None:
+                credential_id, consumer_id, project_id, revoked_at = scope
+                if (consumer_id, project_id) != (binding.consumer_id, binding.project_id):
+                    if prepared["state"] == "PREPARED":
+                        _mark_failed_safe(
+                            data_root, operation_id, "KEYCHAIN_CREDENTIAL_SCOPE_MISMATCH"
+                        )
+                    raise CredentialRecoveryError("KEYCHAIN_CREDENTIAL_SCOPE_MISMATCH")
+                if (
+                    prepared["state"] == "CENTRAL_ACTIVATED"
+                    and prepared["credential_id"] == credential_id
+                    and revoked_at is None
+                ):
+                    pass
+                elif prepared["state"] == "PREPARED" and revoked_at is None:
+                    stored = store.read()
+                    if stored is None or not hmac.compare_digest(
+                        fingerprint(stored), fingerprint(material)
+                    ):
+                        _stop_uncertain(
+                            data_root, operation_id, "KEYCHAIN_VALUE_CHANGED_BEFORE_REUSE"
+                        )
+                        raise CredentialRecoveryError("KEYCHAIN_VALUE_CHANGED_BEFORE_REUSE")
+                    if not authenticate(stored, binding):
+                        _mark_failed_safe(
+                            data_root,
+                            operation_id,
+                            "EXISTING_KEYCHAIN_CREDENTIAL_AUTHENTICATION_FAILED",
+                        )
+                        raise CredentialRecoveryError(
+                            "EXISTING_KEYCHAIN_CREDENTIAL_AUTHENTICATION_FAILED"
+                        )
+                    return _mark_reused(data_root, operation_id, credential_id, stored)
+                elif prepared["state"] == "PREPARED" and revoked_at is not None:
+                    # This is EP-owned material for the exact consumer/project,
+                    # but no longer an authorization credential. It is safe to
+                    # replace inside the locked, durable recovery operation.
+                    material = None
+                else:
+                    if prepared["state"] == "PREPARED":
+                        _mark_failed_safe(
+                            data_root, operation_id, "KEYCHAIN_CREDENTIAL_NOT_ACTIVE"
+                        )
+                    raise CredentialRecoveryError("KEYCHAIN_CREDENTIAL_NOT_ACTIVE")
+            else:
+                expected_fingerprint = prepared.get("credential_fingerprint")
+                if not (
+                    prepared["state"] == "PREPARED"
+                    and isinstance(expected_fingerprint, str)
+                    and hmac.compare_digest(
+                        expected_fingerprint, fingerprint(material).hex()
+                    )
+                ):
+                    if prepared["state"] == "PREPARED":
+                        _mark_failed_safe(
+                            data_root, operation_id, "KEYCHAIN_DESTINATION_NOT_OPERATION_OWNED"
+                        )
+                    raise CredentialRecoveryError(
+                        "KEYCHAIN_DESTINATION_NOT_OPERATION_OWNED"
+                    )
+
+        operation = recovery_status(data_root, operation_id)
+        if operation["state"] == "CENTRAL_ACTIVATED":
+            candidate_id = operation["credential_id"]
+            expected_fingerprint = operation.get("credential_fingerprint")
+            if (
+                material is None or not isinstance(candidate_id, str)
+                or not isinstance(expected_fingerprint, str)
+                or not hmac.compare_digest(
+                    expected_fingerprint, fingerprint(material).hex()
+                )
+            ):
+                _stop_uncertain(
+                    data_root, operation_id, "ACTIVATED_CREDENTIAL_MATERIAL_UNAVAILABLE"
+                )
+                raise CredentialRecoveryError(
+                    "ACTIVATED_CREDENTIAL_MATERIAL_UNAVAILABLE"
+                )
+        else:
+            if material is None:
+                material = secrets.token_urlsafe(32)
+                previous_fingerprint = operation.get("credential_fingerprint")
+                _bind_prepared_fingerprint(
+                    data_root, operation_id, material,
+                    expected_fingerprint=(
+                        previous_fingerprint if isinstance(previous_fingerprint, str) else None
+                    ),
+                )
+                if after_fingerprint_binding is not None:
+                    after_fingerprint_binding()
+                try:
+                    store.replace(material)
+                except CredentialRecoveryError as error:
+                    _mark_failed_safe(data_root, operation_id, error.code)
+                    raise
+                except Exception as error:
+                    _stop_uncertain(
+                        data_root, operation_id, "KEYCHAIN_WRITE_OUTCOME_UNCERTAIN"
+                    )
+                    raise CredentialRecoveryError(
+                        "KEYCHAIN_WRITE_OUTCOME_UNCERTAIN"
+                    ) from error
+                if after_keychain_write is not None:
+                    after_keychain_write()
+                stored = store.read()
+                if stored is None or not hmac.compare_digest(
+                    fingerprint(stored), fingerprint(material)
+                ):
+                    _stop_uncertain(
+                        data_root, operation_id, "KEYCHAIN_WRITE_READBACK_MISMATCH"
+                    )
+                    raise CredentialRecoveryError("KEYCHAIN_WRITE_READBACK_MISMATCH")
+                material = stored
+            _activate_candidate(data_root, operation_id, binding, material)
+            if after_central_activation is not None:
+                after_central_activation()
+
+        operation = recovery_status(data_root, operation_id)
+        expected_fingerprint = operation.get("credential_fingerprint")
+        candidate_id = operation.get("credential_id")
+        stored = store.read()
+        if (
+            stored is None or not isinstance(expected_fingerprint, str)
+            or not isinstance(candidate_id, str)
+            or not hmac.compare_digest(
+                expected_fingerprint, fingerprint(stored).hex()
+            )
+        ):
+            _stop_uncertain(
+                data_root, operation_id, "ACTIVATED_CREDENTIAL_IDENTITY_MISMATCH"
+            )
+            raise CredentialRecoveryError("ACTIVATED_CREDENTIAL_IDENTITY_MISMATCH")
+        connection = _connect(data_root)
+        try:
+            scope = _credential_scope(connection, stored)
+        finally:
+            connection.close()
+        if scope is None or scope[:3] != (
+            candidate_id, binding.consumer_id, binding.project_id,
+        ) or scope[3] is not None:
+            _stop_uncertain(
+                data_root, operation_id, "ACTIVATED_CREDENTIAL_IDENTITY_MISMATCH"
+            )
+            raise CredentialRecoveryError("ACTIVATED_CREDENTIAL_IDENTITY_MISMATCH")
+        if candidate_authenticate(stored, binding):
+            return _complete_replacement(data_root, operation_id, stored)
+        try:
+            deleted = _delete_if_operation_owns_value(store, expected_fingerprint)
+        except Exception as error:
+            _stop_uncertain(data_root, operation_id, "REPLACEMENT_ROLLBACK_UNCERTAIN")
+            raise CredentialRecoveryError("REPLACEMENT_ROLLBACK_UNCERTAIN") from error
+        return _rollback_replacement(
+            data_root,
+            operation_id,
+            code=(
+                "REPLACEMENT_AUTHENTICATION_FAILED"
+                if deleted else "REPLACEMENT_AUTHENTICATION_FAILED_KEYCHAIN_CHANGED"
+            ),
+        )
 
 
 def readback_from_data_root(
@@ -1123,7 +1516,7 @@ def readback_from_data_root(
     expected_instance_id: str,
     project_id: str,
     repository_id: str,
-    expected_consumer_id: str,
+    expected_consumer_id: str | None,
     peer_binding_id: str,
     peer_runtime_id: str,
     peer_configuration_digest: str,

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from html import escape
 import http.server
+from ipaddress import ip_address
 import json
 import logging
 import os
@@ -123,7 +124,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 64
+SERVER_STORE_SCHEMA_VERSION = 65
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -1889,6 +1890,57 @@ def _migrate_schema_64(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=64")
 
 
+def _migrate_schema_65(connection: sqlite3.Connection) -> None:
+    """Fence credential recovery and preserve guarded config-adoption evidence."""
+
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema64")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+        "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65)))"
+    )
+    connection.execute(
+        "INSERT INTO ep_installations SELECT instance_id,created_at,65 "
+        "FROM ep_installations_schema64"
+    )
+    connection.execute("DROP TABLE ep_installations_schema64")
+    columns = {
+        str(row[1]) for row in connection.execute(
+            "PRAGMA table_info(ep_consumer_credential_recovery_operations)"
+        )
+    }
+    if "adopted_from_peer_configuration_digest" not in columns:
+        connection.execute(
+            "ALTER TABLE ep_consumer_credential_recovery_operations "
+            "ADD COLUMN adopted_from_peer_configuration_digest TEXT"
+        )
+    if "configuration_adopted_at" not in columns:
+        connection.execute(
+            "ALTER TABLE ep_consumer_credential_recovery_operations "
+            "ADD COLUMN configuration_adopted_at TEXT"
+        )
+    connection.execute("DROP INDEX ep_consumer_credential_recovery_active_scope")
+    connection.execute(
+        "CREATE INDEX ep_consumer_credential_recovery_active_scope "
+        "ON ep_consumer_credential_recovery_operations(consumer_id,project_id) "
+        "WHERE state IN ('PREPARED','CENTRAL_ACTIVATED','STOPPED_UNCERTAIN')"
+    )
+    # Candidates staged by the previous implementation had no explicit
+    # validity bound.  Expire only those exact operation-linked candidates;
+    # the owning replay route then reconciles or revokes them without touching
+    # any production credential.
+    connection.execute(
+        "UPDATE ep_consumer_credentials SET expires_at=CURRENT_TIMESTAMP "
+        "WHERE expires_at IS NULL AND credential_id IN ("
+        "SELECT credential_id FROM ep_consumer_credential_recovery_operations "
+        "WHERE credential_id IS NOT NULL "
+        "AND state IN ('CENTRAL_ACTIVATED','STOPPED_UNCERTAIN'))"
+    )
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(65)")
+    connection.execute("UPDATE engineering_metadata SET value='65' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=65")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -1913,6 +1965,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (62, _migrate_schema_62),
     (63, _migrate_schema_63),
     (64, _migrate_schema_64),
+    (65, _migrate_schema_65),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -4586,16 +4639,63 @@ def _no_project_platform_projection(data_root: Path) -> dict[str, object]:
 
 
 def _authenticated_consumer_scope(
-    connection: sqlite3.Connection, token: object,
+    connection: sqlite3.Connection, token: object, *, recovery_operation_id: str | None = None,
 ) -> tuple[str, str] | None:
-    """Resolve one active credential to EP-owned consumer and project identity."""
+    """Resolve credential identity under an explicit authorization purpose.
+
+    Recovery candidates are never production credentials.  They authenticate
+    only for their exact active operation when the dedicated probe supplies
+    its operation ID; every normal producer and operator path excludes them.
+    """
     if not isinstance(token, str) or not token or len(token) > 4096:
         return None
-    row = connection.execute("""SELECT c.consumer_id,c.project_id FROM ep_consumer_credentials c
-        JOIN ep_consumer_registrations r ON r.consumer_id=c.consumer_id AND r.project_id=c.project_id
-        WHERE c.verifier=? AND c.revoked_at IS NULL
-        AND (c.expires_at IS NULL OR c.expires_at>CURRENT_TIMESTAMP)
-        AND r.status='ACTIVE'""", (verifier(token),)).fetchone()
+    recovery_schema_available = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='ep_consumer_credential_recovery_operations'"
+    ).fetchone() is not None
+    if recovery_operation_id is not None:
+        if not recovery_schema_available:
+            return None
+        row = connection.execute("""
+            SELECT c.consumer_id,c.project_id FROM ep_consumer_credentials c
+            JOIN ep_consumer_registrations r
+              ON r.consumer_id=c.consumer_id AND r.project_id=c.project_id
+            JOIN ep_consumer_credential_recovery_operations o
+              ON o.credential_id=c.credential_id
+             AND o.consumer_id=c.consumer_id AND o.project_id=c.project_id
+            WHERE c.verifier=? AND c.revoked_at IS NULL
+              AND c.expires_at>CURRENT_TIMESTAMP AND r.status='ACTIVE'
+              AND o.operation_id=? AND o.state='CENTRAL_ACTIVATED'
+              AND o.credential_fingerprint=lower(hex(c.fingerprint))
+        """, (verifier(token), recovery_operation_id)).fetchone()
+    elif recovery_schema_available:
+        row = connection.execute("""
+            SELECT c.consumer_id,c.project_id FROM ep_consumer_credentials c
+            JOIN ep_consumer_registrations r
+              ON r.consumer_id=c.consumer_id AND r.project_id=c.project_id
+            WHERE c.verifier=? AND c.revoked_at IS NULL
+              AND (c.expires_at IS NULL OR c.expires_at>CURRENT_TIMESTAMP)
+              AND r.status='ACTIVE'
+              AND c.credential_id NOT LIKE ?
+              AND NOT EXISTS (
+                SELECT 1 FROM ep_consumer_credential_recovery_operations o
+                WHERE o.credential_id=c.credential_id
+                  AND o.state IN ('CENTRAL_ACTIVATED','STOPPED_UNCERTAIN')
+              )
+            """, (verifier(token), f"{owner_credential_recovery.RECOVERY_CANDIDATE_PREFIX}%")).fetchone()
+    else:
+        # Older migration boundaries cannot contain operation-linked recovery
+        # candidates.  Keep their credential transfer testable while still
+        # rejecting the reserved candidate namespace defense-in-depth.
+        row = connection.execute("""
+            SELECT c.consumer_id,c.project_id FROM ep_consumer_credentials c
+            JOIN ep_consumer_registrations r
+              ON r.consumer_id=c.consumer_id AND r.project_id=c.project_id
+            WHERE c.verifier=? AND c.revoked_at IS NULL
+              AND (c.expires_at IS NULL OR c.expires_at>CURRENT_TIMESTAMP)
+              AND r.status='ACTIVE'
+              AND c.credential_id NOT LIKE ?
+        """, (verifier(token), f"{owner_credential_recovery.RECOVERY_CANDIDATE_PREFIX}%")).fetchone()
     return (str(row[0]), str(row[1])) if row else None
 
 
@@ -5892,6 +5992,61 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
             return
+        if request.path == "/v1/owner-credential-recovery-probe":
+            try:
+                if not ip_address(str(self.client_address[0])).is_loopback:
+                    self._send(403, {"error": "OWNER_RECOVERY_PROBE_REQUIRES_LOOPBACK"})
+                    return
+            except ValueError:
+                self._send(403, {"error": "OWNER_RECOVERY_PROBE_REQUIRES_LOOPBACK"})
+                return
+            operation_id = self.headers.get("EP-Recovery-Operation-ID")
+            project_id = self.headers.get("EP-Project-ID")
+            repository_id = self.headers.get("EP-Repository-ID")
+            if not operation_id or not project_id or not repository_id:
+                self._send(400, {"error": "INCOMPLETE_RECOVERY_PROBE_SCOPE"})
+                return
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with storage.sqlite_connection(
+                    self.server.data_root / SERVER_DATABASE_FILENAME  # type: ignore[attr-defined]
+                ) as connection:
+                    consumer_scope = _authenticated_consumer_scope(
+                        connection, token, recovery_operation_id=operation_id,
+                    )
+                    operation = connection.execute(
+                        "SELECT instance_id,consumer_id,project_id,repository_id,state "
+                        "FROM ep_consumer_credential_recovery_operations WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    if consumer_scope is None or operation is None:
+                        self._send(401, {"error": "RECOVERY_PROBE_UNAUTHENTICATED"})
+                        return
+                    identity = initialize(self.server.data_root).instance_id  # type: ignore[attr-defined]
+                    if (
+                        consumer_scope != (str(operation[1]), str(operation[2]))
+                        or str(operation[0]) != identity
+                        or str(operation[2]) != project_id
+                        or str(operation[3]) != repository_id
+                        or str(operation[4]) != "CENTRAL_ACTIVATED"
+                    ):
+                        self._send(403, {"error": "RECOVERY_PROBE_SCOPE_MISMATCH"})
+                        return
+                    self._send(200, {
+                        "contract_version": "1.0",
+                        "instance_id": identity,
+                        "operation_id": operation_id,
+                        "consumer_id": str(operation[1]),
+                        "project_id": str(operation[2]),
+                        "repository_id": str(operation[3]),
+                        "credential_status": "PENDING_RECOVERY_PROBE",
+                        "authorization": "RECOVERY_PROBE_ONLY",
+                    }, identity)
+                    return
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+                return
         if request.path == "/v1/producer-compatibility":
             identity = initialize(self.server.data_root).instance_id  # type: ignore[attr-defined]
             declaration: dict[str, object] = {
@@ -6328,7 +6483,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -6353,6 +6508,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--peer-binding-id")
     parser.add_argument("--peer-runtime-id")
     parser.add_argument("--peer-configuration-digest")
+    parser.add_argument("--previous-peer-configuration-digest")
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--target-version")
     parser.add_argument("--target-digest")
@@ -6718,7 +6874,7 @@ def _owner_credential_authority(
 
 
 def _owner_credential_authenticate(
-    data_root: Path,
+    data_root: Path, operation_id: str | None = None,
 ) -> Callable[[str, owner_credential_recovery.ConsumerBinding], bool]:
     configuration = ServerConfiguration.load(data_root)
     host = configuration.bind_host
@@ -6730,7 +6886,10 @@ def _owner_credential_authenticate(
         raise owner_credential_recovery.CredentialRecoveryError(
             "OWNER_RECOVERY_REQUIRES_LOOPBACK_HTTP"
         )
-    endpoint = f"http://{host}:{configuration.bind_port}/v1/producer-compatibility"
+    endpoint = f"http://{host}:{configuration.bind_port}" + (
+        "/v1/producer-compatibility"
+        if operation_id is None else "/v1/owner-credential-recovery-probe"
+    )
 
     class NoCredentialRedirect(HTTPRedirectHandler):
         def redirect_request(self, request, file_pointer, code, message, headers, new_url):  # type: ignore[no-untyped-def]
@@ -6741,14 +6900,17 @@ def _owner_credential_authenticate(
     def authenticate(
         material: str, binding: owner_credential_recovery.ConsumerBinding,
     ) -> bool:
+        headers = {
+            "Authorization": f"Bearer {material}",
+            "Accept": "application/json",
+            "EP-Project-ID": binding.project_id,
+            "EP-Repository-ID": binding.repository_id,
+        }
+        if operation_id is not None:
+            headers["EP-Recovery-Operation-ID"] = operation_id
         request = Request(
             endpoint,
-            headers={
-                "Authorization": f"Bearer {material}",
-                "Accept": "application/json",
-                "EP-Project-ID": binding.project_id,
-                "EP-Repository-ID": binding.repository_id,
-            },
+            headers=headers,
             method="GET",
         )
         try:
@@ -6758,6 +6920,21 @@ def _owner_credential_authenticate(
             return False
         if not isinstance(payload, Mapping):
             return False
+        if operation_id is not None:
+            return (
+                set(payload) == {
+                    "contract_version", "instance_id", "operation_id", "consumer_id",
+                    "project_id", "repository_id", "credential_status", "authorization",
+                }
+                and payload.get("contract_version") == "1.0"
+                and payload.get("instance_id") == binding.instance_id
+                and payload.get("operation_id") == operation_id
+                and payload.get("consumer_id") == binding.consumer_id
+                and payload.get("project_id") == binding.project_id
+                and payload.get("repository_id") == binding.repository_id
+                and payload.get("credential_status") == "PENDING_RECOVERY_PROBE"
+                and payload.get("authorization") == "RECOVERY_PROBE_ONLY"
+            )
         instance = payload.get("instance")
         contracts = payload.get("contracts")
         authentication = payload.get("authentication")
@@ -6783,16 +6960,17 @@ def _owner_credential_authenticate(
 
 
 def _owner_binding_from_args(
-    args: argparse.Namespace,
+    args: argparse.Namespace, *, require_consumer: bool = True,
 ) -> owner_credential_recovery.ConsumerBinding:
     if not all((
         args.expected_instance_id, args.project_id, args.repository_id,
-        args.consumer_id, args.peer_binding_id, args.peer_runtime_id,
+        args.peer_binding_id, args.peer_runtime_id,
         args.peer_configuration_digest,
-    )):
+    )) or (require_consumer and not args.consumer_id):
         raise ServerConfigurationError(
-            "--expected-instance-id, --project-id, --repository-id, --consumer-id, "
-            "--peer-binding-id, --peer-runtime-id and --peer-configuration-digest are required"
+            "--expected-instance-id, --project-id, --repository-id, --peer-binding-id, "
+            "--peer-runtime-id and --peer-configuration-digest are required; --consumer-id "
+            "is additionally required for mutating owner recovery routes"
         )
     return owner_credential_recovery.readback_from_data_root(
         args.data_root,
@@ -6998,16 +7176,27 @@ def main(argv: list[str] | None = None) -> int:
             if not args.operation_id:
                 raise ServerConfigurationError("--operation-id is required for installation update status")
             result = installation_update_operation.status(args.data_root, args.operation_id)
-        elif args.command in {"owner-consumer-readback", "owner-credential-recover"}:
-            binding = _owner_binding_from_args(args)
-            authority = _owner_credential_authority(args.data_root, binding.instance_id)
+        elif args.command in {
+            "owner-consumer-readback", "owner-credential-recover",
+            "owner-credential-recovery-adopt-peer-configuration",
+        }:
+            if not args.expected_instance_id:
+                raise ServerConfigurationError("--expected-instance-id is required")
+            # Prove installed owner authority before discovery reveals scoped
+            # consumer evidence.
+            authority = _owner_credential_authority(
+                args.data_root, args.expected_instance_id,
+            )
+            binding = _owner_binding_from_args(
+                args, require_consumer=args.command != "owner-consumer-readback",
+            )
             if args.command == "owner-consumer-readback":
                 result = {
                     "owner_authority": authority.safe_dict(),
                     "consumer_binding": binding.safe_dict(),
                     "mutation_performed": False,
                 }
-            else:
+            elif args.command == "owner-credential-recover":
                 if not args.operation_id:
                     raise ServerConfigurationError(
                         "--operation-id is required for owner credential recovery"
@@ -7019,6 +7208,22 @@ def main(argv: list[str] | None = None) -> int:
                     authority=authority,
                     store=owner_credential_recovery.NativeMacOSKeychainStore(),
                     authenticate=_owner_credential_authenticate(args.data_root),
+                    authenticate_candidate=_owner_credential_authenticate(
+                        args.data_root, args.operation_id,
+                    ),
+                )
+            else:
+                if not args.operation_id or not args.previous_peer_configuration_digest:
+                    raise ServerConfigurationError(
+                        "--operation-id and --previous-peer-configuration-digest are required "
+                        "for guarded recovery peer-configuration adoption"
+                    )
+                result = owner_credential_recovery.adopt_peer_configuration(
+                    args.data_root,
+                    operation_id=args.operation_id,
+                    binding=binding,
+                    authority=authority,
+                    previous_peer_configuration_digest=args.previous_peer_configuration_digest,
                 )
         elif args.command == "owner-credential-recovery-status":
             if not args.operation_id:
