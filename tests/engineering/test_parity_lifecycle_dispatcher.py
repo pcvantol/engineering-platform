@@ -51,6 +51,34 @@ class _AcceptedPreflight:
     checks = (_AcceptedCheck(),)
 
 
+class _RetryRepository:
+    def __init__(self, *, current: str, requested: str, clean: bool = True,
+                 branch: str = "main", contains_head: bool = True,
+                 requested_on_main: bool = True) -> None:
+        self.current = current
+        self.requested = requested
+        self.clean = clean
+        self.branch = branch
+        self.contains_head = contains_head
+        self.requested_on_main = requested_on_main
+        self.inspected: list[Path] = []
+
+    def inspect(self, root: Path) -> SimpleNamespace:
+        self.inspected.append(root)
+        return SimpleNamespace(
+            clean=self.clean, branch=self.branch,
+            main_contains_head=self.contains_head,
+        )
+
+    def protected_main_revision(self, root: Path) -> str:
+        self.inspected.append(root)
+        return self.current
+
+    def remote_main_contains(self, root: Path, revision: str) -> bool:
+        self.inspected.append(root)
+        return self.requested_on_main and revision == self.requested
+
+
 class _Runner:
     calls: list[tuple[Path, str | None, bool, bool]] = []
 
@@ -158,7 +186,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
                 project, project, "canary", "HUMAN", "1", prompt, "HTTP",
             )).submission_id
 
-    def _forge_submission(self, project: str, correlation_id: str) -> str:
+    def _forge_submission(
+        self, project: str, correlation_id: str, *, requested_revision: str | None = None,
+    ) -> str:
         constraints = {
             "forge_execution": {
                 "contract_version": "1.0", "host_id": "host-alpha", "repository_id": project,
@@ -169,6 +199,11 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
                 "retry_of_correlation_id": None,
             },
         }
+        if requested_revision is not None:
+            constraints["repository_revision_binding"] = {
+                "requested_revision": requested_revision,
+                "allowed_baseline_revision": None,
+            }
         with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(
                 project, project, "forge", "FORGE", "2.7.2", "Implement the bounded action.", "HTTP",
@@ -457,6 +492,85 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(candidate.submission_id, retry.submission_id)
         self.assertIn(f"Retry-Of: {receipt.run_id}", candidate.prompt)
         self.assertFalse(duplicate)
+
+    def test_retry_binds_current_protected_main_without_rewriting_requested_revision(self) -> None:
+        requested, current = "a" * 40, "b" * 40
+        original = self._forge_submission(
+            "alpha", "forge-runtime-correlation-baseline", requested_revision=requested,
+        )
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            failed = dispatcher.dispatch(original)
+        repository = _RetryRepository(current=current, requested=requested)
+
+        retry = retry_operator_gate(
+            self.data, project_id="alpha", run_id=failed.run_id,
+            repository=repository,  # type: ignore[arg-type]
+        )
+
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            rows = connection.execute(
+                "SELECT constraints FROM ep_submissions WHERE submission_id IN (?,?) "
+                "ORDER BY CASE submission_id WHEN ? THEN 0 ELSE 1 END",
+                (original, retry.submission_id, original),
+            ).fetchall()
+        original_constraints, retry_constraints = rows[0][0], rows[1][0]
+        self.assertEqual(
+            json.loads(original_constraints)["repository_revision_binding"],
+            {"requested_revision": requested, "allowed_baseline_revision": None},
+        )
+        self.assertEqual(
+            json.loads(retry_constraints)["repository_revision_binding"],
+            {"requested_revision": requested, "allowed_baseline_revision": current},
+        )
+        self.assertEqual(repository.inspected[0], self.roots["alpha"].resolve())
+
+    def test_retry_refuses_a_non_main_checkout_without_resolving_the_gate(self) -> None:
+        requested = "a" * 40
+        original = self._forge_submission(
+            "alpha", "forge-runtime-correlation-dirty-baseline", requested_revision=requested,
+        )
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            failed = dispatcher.dispatch(original)
+
+        with self.assertRaisesRegex(ParityLifecycleDispatchError, "RETRY_BASELINE_NOT_CLEAN_MAIN"):
+            retry_operator_gate(
+                self.data, project_id="alpha", run_id=failed.run_id,
+                repository=_RetryRepository(
+                    current="b" * 40, requested=requested, branch="codex/other",
+                ),  # type: ignore[arg-type]
+            )
+
+        with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            gate = connection.execute(
+                "SELECT operator_resolution,resolution_submission_id "
+                "FROM ep_parity_lifecycle_dispatches WHERE run_id=?", (failed.run_id,),
+            ).fetchone()
+        self.assertEqual(gate, ("OPEN", None))
+
+    def test_retry_refuses_a_requested_revision_outside_protected_main(self) -> None:
+        requested = "a" * 40
+        original = self._forge_submission(
+            "alpha", "forge-runtime-correlation-retarget", requested_revision=requested,
+        )
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            failed = dispatcher.dispatch(original)
+
+        with self.assertRaisesRegex(ParityLifecycleDispatchError, "RETRY_REQUESTED_REVISION_NOT_ON_MAIN"):
+            retry_operator_gate(
+                self.data, project_id="alpha", run_id=failed.run_id,
+                repository=_RetryRepository(
+                    current="b" * 40, requested=requested, requested_on_main=False,
+                ),  # type: ignore[arg-type]
+            )
 
     def test_dismissed_retry_descendant_releases_the_full_fifo_chain(self) -> None:
         """A dismissed terminal retry cannot leave an older retry as a ghost blocker."""

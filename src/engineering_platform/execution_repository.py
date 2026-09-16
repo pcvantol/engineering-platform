@@ -33,6 +33,7 @@ def github_repository_slug(remote: str) -> str:
 class RepositoryClient(Protocol):
     def inspect(self, root: Path) -> RepositoryEvidence: ...
     def main_contains(self, root: Path, sha: str) -> bool: ...
+    def protected_main_revision(self, root: Path) -> str: ...
     def refresh_main_reference(self, root: Path) -> None: ...
     def remote_main_contains(self, root: Path, sha: str) -> bool: ...
     def synchronize_main(self, root: Path) -> None: ...
@@ -76,6 +77,14 @@ class SubprocessRepositoryClient:
     def refresh_main_reference(self, root: Path) -> None:
         """Refresh remote main evidence without changing the shared checkout."""
         self._synchronize_command(root, "git", "fetch", "origin", "main")
+
+    def protected_main_revision(self, root: Path) -> str:
+        """Return the freshly observed protected-main revision without checkout mutation."""
+        self.refresh_main_reference(root)
+        revision = self._run(root, "git", "rev-parse", "--verify", "origin/main")
+        if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise RunnerError("protected main revision is unavailable")
+        return revision
 
     def remote_main_contains(self, root: Path, sha: str) -> bool:
         return self.provider.execute(root, "git", "merge-base", "--is-ancestor", sha, "origin/main").returncode == 0
