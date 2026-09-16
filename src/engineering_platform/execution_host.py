@@ -1418,12 +1418,20 @@ class EngineeringRunner:
         """Return whether an agent supplied bounded evidence of a failed local check."""
         if not result.validation_evidence:
             return False
-        summaries = " ".join(
-            item.get("result", "").casefold()
-            for item in result.validation_evidence
-            if isinstance(item, dict)
-        )
-        return any(token in summaries for token in ("fail", "failed", "timeout", "timed out", "error"))
+        for item in result.validation_evidence:
+            if not isinstance(item, dict):
+                continue
+            summary = item.get("result", "").strip().casefold()
+            # Result summaries are dispositions followed by bounded detail.
+            # A passing disposition takes precedence over words such as
+            # "fail-closed" or "failure mode" in that descriptive detail.
+            if re.match(r"^(?:pass(?:ed)?|success(?:ful|fully)?|succeeded)\b", summary):
+                continue
+            if re.match(r"^(?:fail(?:ed|ure)?|error|timeout|timed\s+out)\b", summary):
+                return True
+            if re.search(r"\b(?:failed|failure|error|timeout|timed\s+out)\b", summary):
+                return True
+        return False
 
     @staticmethod
     def _is_external_agent_block(result: AgentResult) -> bool:
