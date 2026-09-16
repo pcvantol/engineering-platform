@@ -2159,6 +2159,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(runner._has_failed_validation_evidence(AgentResult("FAILED")))
         self.assertFalse(runner._has_failed_validation_evidence(AgentResult("FAILED", validation_evidence=("not-a-record",))))
         self.assertTrue(runner._has_failed_validation_evidence(AgentResult("FAILED", validation_evidence=({"result": "timed out"},))))
+        self.assertFalse(runner._has_failed_validation_evidence(AgentResult(
+            "COMPLETE", validation_evidence=({"result": "PASS: fail-closed readiness and failure modes are covered"},),
+        )))
+        self.assertTrue(runner._has_failed_validation_evidence(AgentResult(
+            "FAILED", validation_evidence=({"result": "2 required controls failed"},),
+        )))
         self.assertEqual(runner._append_verified_commit_evidence(TransactionState("commit-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT"), phase="EXECUTE_AGENT", commit_sha="not-a-sha", description="bad" ).commit_evidence, ())
         self.assertEqual(runner._validation_kind("python -m unittest discover"), "tests")
         self.assertEqual(runner._validation_kind("echo harmless"), None)
