@@ -118,6 +118,13 @@ v1.3 terminal artifacts remain their original bytes during reconciliation;
 they are registered and read as historical evidence rather than rewritten as
 v1.4.
 
+An operator-authorized retry retains the requested revision but records the
+freshly observed protected-main revision as its one permitted transition. EP
+requires a clean local `main`, refreshes `origin/main` without changing the
+checkout, and proves that the requested revision is still in protected-main
+history before admitting the successor. A later main change produces an exact
+baseline mismatch at execution time; it is never widened to ambient `HEAD`.
+
 Required host validation controls receive a distinct, per-child scratch
 directory below the EP-managed artifact root. EP probes write/read, rename and
 SQLite before launching the child and reports an unavailable or lost directory

@@ -936,6 +936,35 @@ class ClientContractTest(unittest.TestCase):
         SubprocessRepositoryClient(provider).refresh_main_reference(Path("/repository"))
         self.assertEqual(provider.calls, [("git", "fetch", "origin", "main")])
 
+    def test_repository_protected_main_revision_is_fresh_and_exact(self) -> None:
+        revision = "a" * 40
+
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+
+            def command(self, _: Path, *args: str) -> str:
+                self.calls.append(args)
+                return revision if args[-2:] == ("--verify", "origin/main") else ""
+
+        provider = Provider()
+        self.assertEqual(
+            SubprocessRepositoryClient(provider).protected_main_revision(Path("/repository")),
+            revision,
+        )
+        self.assertEqual(provider.calls, [
+            ("git", "fetch", "origin", "main"),
+            ("git", "rev-parse", "--verify", "origin/main"),
+        ])
+
+    def test_repository_protected_main_revision_rejects_an_invalid_identity(self) -> None:
+        class Provider:
+            def command(self, _: Path, *args: str) -> str:
+                return "not-a-revision" if args[-2:] == ("--verify", "origin/main") else ""
+
+        with self.assertRaisesRegex(RunnerError, "protected main revision is unavailable"):
+            SubprocessRepositoryClient(Provider()).protected_main_revision(Path("/repository"))
+
     def test_repository_remote_main_containment_uses_refreshed_remote_reference(self) -> None:
         class Provider:
             def __init__(self) -> None:

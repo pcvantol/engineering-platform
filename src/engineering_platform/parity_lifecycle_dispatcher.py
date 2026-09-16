@@ -47,6 +47,7 @@ from .storage import (
 )
 from .prompt_history import prompt_history, record_terminal_report
 from .report_analysis import analyze as analyze_terminal_report
+from .revision_binding import CONSTRAINT_KEY, parse_repository_revision_binding
 
 
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
@@ -83,9 +84,76 @@ def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> d
     return {"run_id": run_id, "handling_state": OPERATOR_RESOLUTION_DISMISSED}
 
 
-def retry_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> submission_service.SubmissionResult:
+def _retry_constraints_for_current_main(
+    constraints: dict[str, object], *, repository_root: Path | None,
+    repository: SubprocessRepositoryClient,
+) -> dict[str, object]:
+    """Bind one explicit retry to freshly observed protected main.
+
+    The producer's requested revision remains immutable history.  The retry
+    gets one exact allowed baseline so the Execution Host can synchronize to
+    and re-verify the current repository state promised by the operator UI.
+    """
+    try:
+        binding = parse_repository_revision_binding(constraints)
+    except ValueError as error:
+        raise ParityLifecycleDispatchError("RETRY_CONSTRAINTS_INVALID") from error
+    if binding is None:
+        return constraints
+    if repository_root is None:
+        raise ParityLifecycleDispatchError("RETRY_BASELINE_UNAVAILABLE")
+    try:
+        evidence = repository.inspect(repository_root)
+        if not evidence.clean or evidence.branch != "main" or not evidence.main_contains_head:
+            raise ParityLifecycleDispatchError("RETRY_BASELINE_NOT_CLEAN_MAIN")
+        current_main = repository.protected_main_revision(repository_root)
+        if not repository.remote_main_contains(repository_root, binding.requested_revision):
+            raise ParityLifecycleDispatchError("RETRY_REQUESTED_REVISION_NOT_ON_MAIN")
+    except RunnerError as error:
+        raise ParityLifecycleDispatchError("RETRY_BASELINE_UNAVAILABLE") from error
+    rebound = json.loads(json.dumps(constraints))
+    rebound[CONSTRAINT_KEY] = {
+        "requested_revision": binding.requested_revision,
+        "allowed_baseline_revision": current_main,
+    }
+    return rebound
+
+
+def retry_operator_gate(
+    data_root: Path, *, project_id: str, run_id: str,
+    repository: SubprocessRepositoryClient | None = None,
+) -> submission_service.SubmissionResult:
     """Create the only FIFO-successor allowed to resolve a failed run."""
-    with sqlite_connection(central_database.path(data_root)) as connection:
+    repository = repository or SubprocessRepositoryClient()
+    database = central_database.path(data_root)
+    with sqlite_connection(database) as connection:
+        source = connection.execute(
+            """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
+                      s.prompt,s.transport,s.correlation_id,s.mission_id,s.engineering_action_id,s.constraints
+                FROM ep_parity_lifecycle_dispatches AS d
+                JOIN ep_submissions AS s ON s.submission_id=d.submission_id
+                WHERE d.project_id=? AND d.run_id=? AND d.state IN ('BLOCKED','FAILED')
+                  AND d.operator_resolution=?""",
+            (project_id, run_id, OPERATOR_RESOLUTION_OPEN),
+        ).fetchone()
+        if source is None:
+            raise ParityLifecycleDispatchError("PROJECT_RUN_NOT_AWAITING_OPERATOR")
+        context = project_context(
+            connection, data_root=data_root, project_id=project_id,
+            repository_id=str(source[0]),
+        )
+    try:
+        constraints = json.loads(str(source[9]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise ParityLifecycleDispatchError("RETRY_CONSTRAINTS_INVALID") from None
+    if not isinstance(constraints, dict):
+        raise ParityLifecycleDispatchError("RETRY_CONSTRAINTS_INVALID")
+    constraints = _retry_constraints_for_current_main(
+        constraints,
+        repository_root=context.local_repository_root,
+        repository=repository,
+    )
+    with sqlite_connection(database) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
@@ -99,14 +167,9 @@ def retry_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> sub
         if row is None:
             connection.execute("ROLLBACK")
             raise ParityLifecycleDispatchError("PROJECT_RUN_NOT_AWAITING_OPERATOR")
-        try:
-            constraints = json.loads(str(row[9]))
-        except (TypeError, ValueError, json.JSONDecodeError):
+        if tuple(row) != tuple(source):
             connection.execute("ROLLBACK")
-            raise ParityLifecycleDispatchError("RETRY_CONSTRAINTS_INVALID") from None
-        if not isinstance(constraints, dict):
-            connection.execute("ROLLBACK")
-            raise ParityLifecycleDispatchError("RETRY_CONSTRAINTS_INVALID")
+            raise ParityLifecycleDispatchError("PROJECT_RETRY_SOURCE_CHANGED")
         request = submission_service.SubmissionRequest(
             project_id=project_id, repository_id=str(row[0]), producer_id=str(row[1]),
             producer_type=str(row[2]), producer_version=str(row[3]) if row[3] is not None else None,

@@ -235,6 +235,15 @@ run in `disposition.retry_parent_run_id`. Consumers must follow this lineage
 only when both identifiers agree with their persisted dispatch. An internal
 retry never produces a second Forge submission receipt.
 
+When the accepted request carries a repository-revision binding, an explicit
+operator retry preserves its original `requested_revision` and binds exactly
+the freshly observed protected `origin/main` revision as the successor's
+`allowed_baseline_revision`. The checkout must already be clean on `main`, and
+the requested revision must remain an ancestor of protected main. The
+Execution Host then synchronizes and re-verifies that exact allowed baseline
+before any provider work. This makes the UI promise of using current
+repository state explicit without silently retargeting the original request.
+
 For every terminal run, CENTRAL persists a separate immutable terminal-evidence
 artifact. Terminal-history reconciliation repairs a missing artifact from the
 same retained checkpoint and report bindings; it never reruns a provider or
