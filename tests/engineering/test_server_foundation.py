@@ -88,14 +88,34 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                     for index in range(1001)
                 ],
             )
-        with patch("engineering_platform.server.timing_summaries", return_value={}), patch(
-            "engineering_platform.server.provider_usage_summaries", return_value={},
-        ):
-            rows = server._central_console_telemetry(
-                self.root, "full-overview", full=True,
-            )
+        measured_run = "full-overview-0000"
+        started = datetime(2026, 9, 17, 10, tzinfo=timezone.utc)
+        total = start_phase(
+            self.root, measured_run, "TOTAL_EXECUTION", started_at=started,
+            monotonic_clock=0, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        complete_phase(
+            self.root, total, completed_at=started + timedelta(seconds=1),
+            monotonic_clock=1,
+        )
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                measured_run, 1, "codex_cli", "observed-model", "PROVIDER_EXECUTION",
+                "IMPLEMENTATION", started.isoformat(),
+                (started + timedelta(seconds=1)).isoformat(), 1000,
+                {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 10},
+                invocation_id="full-overview-final-page-invocation",
+            ),
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        rows = server._central_console_telemetry(
+            self.root, "full-overview", full=True,
+        )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["prompt_count"], 1001)
+        self.assertEqual(rows[0]["usage_metrics"]["input_tokens"]["value"], 100)
+        self.assertEqual(rows[0]["average_total_execution_seconds"], 1.0)
         model = server.telemetry_export.overview_model(
             project_id="full-overview", rows=rows, sort_key="date",
             sort_direction="desc", locale="en",

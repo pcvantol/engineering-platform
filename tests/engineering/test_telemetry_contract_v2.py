@@ -327,6 +327,16 @@ class CanonicalUsageAndTimingTests(unittest.TestCase):
         self.assertFalse(stored["historical_pr_identity_set_complete"])
         self.assertEqual(stored["historical_pr_identity_coverage"], "CONFLICT")
         self.assertEqual(stored["historical_pr_unique_lower_bound"], 2)
+        corrupt_stored = {
+            **stored,
+            "historical_pr_identity_set_complete": True,
+            "historical_pr_identity_coverage": "COMPLETE",
+        }
+        with open_storage(self.root) as connection:
+            connection.execute(
+                "UPDATE provider_invocations SET churn=? WHERE invocation_id=?",
+                (json.dumps(corrupt_stored, sort_keys=True), "conflicting-pr-identity"),
+            )
         summary = provider_usage_summary(self.root, "conflicting-pr-identities")
         self.assertIsNone(summary["historical_unique_pr_results"])
         self.assertEqual(summary["historical_unique_pr_results_lower_bound"], 2)

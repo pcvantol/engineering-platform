@@ -106,7 +106,9 @@ Legacy rows without an explicit set-completeness marker are never promoted to
 an exact complete union. A modern record that claims completeness while its
 declared unique count, retained count, opaque identities, truncation marker or
 coverage disagree fails closed as `CONFLICT`; its safe lower bound may remain
-visible, but it is not projected as an exact unique total.
+visible, but it is not projected as an exact unique total. The same invariant
+is checked again during read projection, so a pre-existing corrupt or
+inconsistent stored row cannot bypass the owning writer's validation.
 
 Read-command counters are derived command observations. Exact file-read
 observations require reliable tool metadata for opaque file identity, revision
@@ -170,7 +172,9 @@ being truncated or retained without a bound.
 The overview export reads the entire active project/filter population through
 bounded 500-record database pages inside the same read transaction; the
 1,000-run Console preview limit and 360-day UI limit are not export limits.
-It therefore contains every retained row rather than only the visible page.
+Usage and timing reducers page that identical run population in 500-identifier
+batches as well. It therefore contains every retained row and its available
+measurements rather than only the visible page.
 Detail export can select the UTC day,
 one attempt, or its verified execution chain. Full exports disable the UI
 preview limits for runs, invocations and spans. A chain detail includes a safe

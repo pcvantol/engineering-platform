@@ -74,6 +74,29 @@ def _number(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
+def _pr_identity_metadata_conflicts(values: Mapping[str, object]) -> bool:
+    """Reject an exactness claim unless every bounded identity invariant agrees."""
+    if values.get("historical_pr_identity_set_complete") is not True:
+        return False
+    raw_identities = values.get("historical_pr_identity_hashes")
+    if not isinstance(raw_identities, (list, tuple)):
+        return True
+    identities = {
+        item.casefold() for item in raw_identities
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item.casefold())
+    }
+    unique_count = _number(values.get("historical_unique_pr_results"))
+    retained_count = _number(values.get("historical_pr_identity_retained_count"))
+    return (
+        values.get("historical_pr_identity_coverage") != COMPLETE
+        or values.get("historical_pr_identity_set_truncated") is not False
+        or unique_count is None
+        or unique_count != len(identities)
+        or retained_count != len(identities)
+        or len(raw_identities) != len(identities)
+    )
+
+
 def speed_state(metadata: Mapping[str, object] | None) -> str:
     """Return only a runtime-observed speed state; UI preferences are irrelevant."""
     known_fields = {
@@ -549,23 +572,11 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation, *, c
         declared_unique_count = _number(
             (invocation.churn or {}).get("historical_unique_pr_results")
         )
-        declared_retained_count = _number(
-            (invocation.churn or {}).get("historical_pr_identity_retained_count")
-        )
-        claims_complete = churn.get("historical_pr_identity_set_complete") is True
-        identity_metadata_conflict = claims_complete and (
-            churn.get("historical_pr_identity_coverage") != COMPLETE
-            or churn.get("historical_pr_identity_set_truncated") is True
-            or declared_unique_count is None
-            or declared_unique_count != supplied_identity_count
-            or retained_identity_count != supplied_identity_count
-            or declared_retained_count not in {None, retained_identity_count}
-        )
         churn["historical_pr_identity_retained_count"] = retained_identity_count
         churn["historical_pr_unique_lower_bound"] = max(
             retained_identity_count, declared_unique_count or 0,
         )
-        if identity_metadata_conflict:
+        if _pr_identity_metadata_conflicts(churn):
             churn["historical_pr_identity_set_complete"] = False
             churn["historical_pr_identity_coverage"] = CONFLICT
     snapshots = tuple(
@@ -732,6 +743,10 @@ def provider_usage_summary(
         except (TypeError, json.JSONDecodeError):
             values = {}
         if isinstance(values, dict):
+            values = dict(values)
+            if _pr_identity_metadata_conflicts(values):
+                values["historical_pr_identity_set_complete"] = False
+                values["historical_pr_identity_coverage"] = CONFLICT
             query_count = _number(values.get("historical_pr_queries")) or 0
             if query_count:
                 retained = {
@@ -1062,8 +1077,10 @@ def provider_usage_summaries(
     invocation_limit: int | None = 250,
     _read_connection: sqlite3.Connection | None = None,
 ) -> dict[str, dict[str, object]]:
-    """Load a bounded run population in two queries, then reuse the canonical reducer."""
-    identifiers = list(dict.fromkeys(value for value in run_ids if isinstance(value, str) and value))[:1000]
+    """Load a run population in bounded query pages, then reuse the canonical reducer."""
+    identifiers = list(dict.fromkeys(
+        value for value in run_ids if isinstance(value, str) and value
+    ))
     if not identifiers:
         return {}
     owns_connection = _read_connection is None
@@ -1078,28 +1095,38 @@ def provider_usage_summaries(
         connection = sqlite3.connect(database, isolation_level=None)
         connection.execute("PRAGMA foreign_keys=ON")
     connection.row_factory = sqlite3.Row
-    placeholders = ",".join("?" for _ in identifiers)
+    rows: list[sqlite3.Row] = []
+    snapshot_rows: list[sqlite3.Row] = []
+    started_read_transaction = owns_connection and not connection.in_transaction
     try:
-        rows = connection.execute(
-            f"""SELECT invocation_id,run_id,ordinal,provider,model,model_authority,
-                       raw_provider_model,phase,role,started_at,completed_at,duration_ms,
-                       input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,
-                       reasoning_tokens,total_tokens,estimated_credits,estimated_eur,
-                       speed_state,usage_authority,churn,retry_ordinal
-                  FROM provider_invocations WHERE run_id IN ({placeholders})
-                  ORDER BY run_id,ordinal""",
-            identifiers,
-        ).fetchall()
-        snapshot_rows = connection.execute(
-            f"""SELECT p.run_id,s.invocation_id,s.ordinal,s.input_tokens,s.cached_input_tokens,
-                       s.uncached_input_tokens,s.output_tokens,s.input_delta,s.cached_input_delta,
-                       s.uncached_input_delta,s.output_delta
-                  FROM provider_usage_snapshots AS s
-                  JOIN provider_invocations AS p ON p.invocation_id=s.invocation_id
-                 WHERE p.run_id IN ({placeholders}) ORDER BY p.run_id,s.invocation_id,s.ordinal""",
-            identifiers,
-        ).fetchall()
+        if started_read_transaction:
+            connection.execute("BEGIN")
+        for offset in range(0, len(identifiers), 500):
+            batch = identifiers[offset:offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(connection.execute(
+                f"""SELECT invocation_id,run_id,ordinal,provider,model,model_authority,
+                           raw_provider_model,phase,role,started_at,completed_at,duration_ms,
+                           input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,
+                           reasoning_tokens,total_tokens,estimated_credits,estimated_eur,
+                           speed_state,usage_authority,churn,retry_ordinal
+                      FROM provider_invocations WHERE run_id IN ({placeholders})
+                      ORDER BY run_id,ordinal""",
+                batch,
+            ).fetchall())
+            snapshot_rows.extend(connection.execute(
+                f"""SELECT p.run_id,s.invocation_id,s.ordinal,s.input_tokens,s.cached_input_tokens,
+                           s.uncached_input_tokens,s.output_tokens,s.input_delta,s.cached_input_delta,
+                           s.uncached_input_delta,s.output_delta
+                      FROM provider_usage_snapshots AS s
+                      JOIN provider_invocations AS p ON p.invocation_id=s.invocation_id
+                     WHERE p.run_id IN ({placeholders})
+                     ORDER BY p.run_id,s.invocation_id,s.ordinal""",
+                batch,
+            ).fetchall())
     finally:
+        if started_read_transaction and connection.in_transaction:
+            connection.rollback()
         if owns_connection:
             connection.close()
     rows_by_run: dict[str, list[sqlite3.Row]] = {run_id: [] for run_id in identifiers}
