@@ -108,7 +108,8 @@ declared unique count, retained count, opaque identities, truncation marker or
 coverage disagree fails closed as `CONFLICT`; its safe lower bound may remain
 visible, but it is not projected as an exact unique total. The same invariant
 is checked again during read projection, so a pre-existing corrupt or
-inconsistent stored row cannot bypass the owning writer's validation.
+inconsistent stored row cannot bypass the owning writer's validation. Readback
+also enforces the 250-identity storage bound and canonical lowercase hash form.
 
 Read-command counters are derived command observations. Exact file-read
 observations require reliable tool metadata for opaque file identity, revision

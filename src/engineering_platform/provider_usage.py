@@ -91,9 +91,11 @@ def _pr_identity_metadata_conflicts(values: Mapping[str, object]) -> bool:
         values.get("historical_pr_identity_coverage") != COMPLETE
         or values.get("historical_pr_identity_set_truncated") is not False
         or unique_count is None
+        or len(identities) > _MAX_PR_IDENTITY_HASHES
         or unique_count != len(identities)
         or retained_count != len(identities)
         or len(raw_identities) != len(identities)
+        or any(item != item.casefold() for item in raw_identities if isinstance(item, str))
     )
 
 

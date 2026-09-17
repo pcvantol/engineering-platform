@@ -342,6 +342,33 @@ class CanonicalUsageAndTimingTests(unittest.TestCase):
         self.assertEqual(summary["historical_unique_pr_results_lower_bound"], 2)
         self.assertEqual(summary["historical_unique_pr_coverage"], "CONFLICT")
 
+        for identities in (
+            [f"{index:064x}" for index in range(251)],
+            ["A" * 64],
+        ):
+            corrupt_stored = {
+                **stored,
+                "historical_unique_pr_results": len(identities),
+                "historical_pr_identity_hashes": identities,
+                "historical_pr_identity_set_complete": True,
+                "historical_pr_identity_set_truncated": False,
+                "historical_pr_identity_retained_count": len(identities),
+                "historical_pr_unique_lower_bound": len(identities),
+                "historical_pr_identity_coverage": "COMPLETE",
+            }
+            with open_storage(self.root) as connection:
+                connection.execute(
+                    "UPDATE provider_invocations SET churn=? WHERE invocation_id=?",
+                    (json.dumps(corrupt_stored, sort_keys=True), "conflicting-pr-identity"),
+                )
+            summary = provider_usage_summary(self.root, "conflicting-pr-identities")
+            self.assertIsNone(summary["historical_unique_pr_results"])
+            self.assertEqual(
+                summary["historical_unique_pr_results_lower_bound"], len(identities),
+            )
+            self.assertFalse(summary["historical_pr_identity_set_complete"])
+            self.assertEqual(summary["historical_unique_pr_coverage"], "CONFLICT")
+
     def test_churn_maximum_and_partial_coverage_keep_their_metric_semantics(self) -> None:
         for ordinal, coverage, maximum in ((1, "PARTIAL", 900), (2, "COMPLETE", 400)):
             persist_provider_invocation(self.root, ProviderInvocation(
