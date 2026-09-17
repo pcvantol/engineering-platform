@@ -173,8 +173,11 @@ def report_lines(handoff: ForgeGovernanceHandoff | None, execution_status: str) 
     if handoff is None:
         return (
             "## Forge Governance Handoff", "- Forge Governance Handoff: `NOT SUPPLIED BY PRODUCER`",
-            "- Governance Status: `FORGE GOVERNANCE HANDOFF NOT SUPPLIED`", "- Decision Evidence: `NOT SUPPLIED BY PRODUCER`",
-            "- Governance Handoff Completeness: `INCOMPLETE`", "- Business Review Readiness: `NOT SUPPLIED BY PRODUCER`", "",
+            "- Handoff Requirement: `NOT DECLARED BY PRODUCER`",
+            "- Governance Status: `NOT ASSESSED`", "- Decision Evidence: `NOT SUPPLIED BY PRODUCER`",
+            "- Governance Handoff Completeness: `NOT ASSESSED`",
+            "- Business Review Readiness: `NOT ASSESSED`",
+            "- Interpretation: absence is not a failed or incomplete governance review unless the Producer contract declared this handoff required.", "",
         )
     selected = handoff.selected
     evidence = handoff.decision_evidence or {}

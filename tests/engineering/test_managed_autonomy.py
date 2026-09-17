@@ -156,6 +156,30 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["required_validation_state"], "PASS")
         self.assertFalse(snapshot["validation_projection_conflict"])
 
+    def test_conflicting_optional_provider_summaries_do_not_disqualify_canonical_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._qualified(root)
+            append_validation_observation(
+                root, run_id="inbox-managed-proof", control="validation_tests",
+                state="FAIL", required=False, currentness=2,
+            )
+            append_validation_observation(
+                root, run_id="inbox-managed-proof", control="validation_tests",
+                state="PASS", required=False, currentness=2,
+            )
+            snapshot = terminal_snapshot(
+                root, run_id="inbox-managed-proof", execution_outcome="COMPLETE",
+                implementation_pr=101, finalization_pr=102, reconciliation_pr=103,
+                repository_state="MERGED_RECONCILED", workspace_state="WORKSPACE_READY",
+                main_origin_sync="YES", worktree_state="CLEAN", active_blocker="NONE",
+                recovery_required="NO", lineage_available=True,
+            )
+
+        self.assertEqual(snapshot["validation_current"]["validation_tests"], "UNAVAILABLE")
+        self.assertFalse(snapshot["validation_projection_conflict"])
+        self.assertEqual(snapshot["run_qualification"], "QUALIFIED")
+
     def test_reconciliation_pr_requires_its_own_satisfied_operator_gate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

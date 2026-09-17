@@ -829,20 +829,20 @@ class EngineeringRunner:
             if kind is None:
                 continue
             status = self._validation_summary_status(summary)
+            if profile_context and profile_context.get("profile_digest"):
+                binding = matching_control_binding(command, profile_context["control_bindings"])
+                validation_id = (
+                    str(binding["validation_id"])
+                    if isinstance(binding, dict) else self._validation_id(command, kind)
+                )
+            else:
+                validation_id = self._validation_id_for_profile(command, kind, tier)
             try:
                 record_managed_validation(
                     self.root, run_id=state.run_id, control=f"validation_{kind}", state=status,
-                    required=True, currentness=state.repair_iterations,
+                    required=validation_id in required_controls, currentness=state.repair_iterations,
                     central_database=self.store.central_database,
                 )
-                if profile_context and profile_context.get("profile_digest"):
-                    binding = matching_control_binding(command, profile_context["control_bindings"])
-                    validation_id = (
-                        str(binding["validation_id"])
-                        if isinstance(binding, dict) else self._validation_id(command, kind)
-                    )
-                else:
-                    validation_id = self._validation_id_for_profile(command, kind, tier)
                 record_validation_control_result(
                     self.root, run_id=state.run_id, validation_id=validation_id, category="agent",
                     control_identity=command[:160], required_for_profile=validation_id in required_controls, execution_status="EXECUTED",

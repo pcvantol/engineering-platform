@@ -37,6 +37,15 @@ Every terminal report includes these derived sections:
 - **Execution Receipt Projection** and **Decision Evidence Projection** —
   immutable run and Producer provenance references only; the report never
   reproduces receipt or Decision Evidence content.
+- **Forge Execution Provenance** — for admitted Forge submissions, the report
+  projects the immutable execution-contract version, exact attempt identity,
+  canonical root identity, bound Mission and Engineering Action identifiers,
+  Runtime Prompt digest and the presence of action/planning envelopes. A retry
+  attempt is never relabelled as its canonical root submission.
+- **Candidate-bound Assurance Reviews** — persisted Quality and Security
+  assurance records are projected separately from capability-based reviewer
+  observations. Their status, candidate revision, bounded invocation and
+  finding summary remain attached to the exact reviewed candidate.
 - **Statistics Projection** — Mission, execution, Engineering Action and
   runtime counts are separately scoped. An Engineering execution never implies
   Mission completion.
@@ -135,6 +144,12 @@ An absent Execution Context is reported as `Not supplied by Producer` and does
 not change execution status. Reports never parse prompt text, inspect Forge
 Runtime or derive Mission semantics to fill these fields.
 
+For a retry, the Producer Submission section names the exact admitted attempt
+and separately names its canonical root submission. Attempt-scoped immutable
+constraints are loaded through the persisted run-to-attempt binding. This
+prevents a canonical root envelope from hiding the action intent, Runtime
+Prompt or other Forge execution provenance that applied to the actual run.
+
 ## Forge Mission Recommendation Handoff
 
 When a Forge Producer explicitly supplies a structured recommendation handoff,
@@ -148,8 +163,10 @@ Deliverable Projection identifies the requested recommendation, supplied
 artefact, recommended Mission and Decision Evidence reference. It keeps
 Execution Status, Recommendation Status, Business Decision and Mission Created
 as separate facts. `COMPLETE` execution never means approved, allocated or
-executable. Missing title or Decision Evidence is reported as
-`Recommendation Projection: INCOMPLETE`; values are never fabricated.
+executable. When the Producer declared a handoff, missing required title or
+Decision Evidence is reported as `Recommendation Projection: INCOMPLETE`;
+values are never fabricated. When no handoff requirement was declared, the
+projection is `NOT ASSESSED`, not a failed or incomplete governance result.
 
 The projection supports the Forge-supplied statuses `PROPOSED`, `RECOMMENDED`,
 `NOT_RECOMMENDED`, `SUPERSEDED` and `UNAVAILABLE`. Alternative candidates keep

@@ -25,7 +25,7 @@ from .producer import ProducerMetadata, parse_producer_metadata
 from .providers import GitProvider
 from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
-from .storage import EngineeringStorageError, load_readiness_evaluation, load_run_qualification_snapshot, load_submission_for_run, load_run_lineage, load_validation_context
+from .storage import EngineeringStorageError, load_readiness_evaluation, load_run_qualification_snapshot, load_submission_attempt_for_run, load_submission_for_run, load_run_lineage, load_validation_context
 from .telemetry_contract import run_telemetry_snapshot
 from .provider_recovery import load_recovery_state
 from .execution_activity import build_terminal_activity_summary, persist_terminal_activity_summary, terminal_activity_summary
@@ -164,7 +164,9 @@ def _persisted_producer_submission(
 ) -> tuple[ProducerMetadata, dict[str, object] | None]:
     """Use immutable Producer submission evidence before legacy prompt compatibility."""
     try:
-        submission = load_submission_for_run(root, state.run_id, central_database=central_database)
+        submission = load_submission_attempt_for_run(
+            root, state.run_id, central_database=central_database,
+        )
     except EngineeringStorageError:
         submission = None
     if submission is None:
@@ -194,9 +196,16 @@ def _producer_submission_contract_lines(
         if isinstance(validation_context, dict) and isinstance(profile, dict)
         else "not supplied by Producer"
     )
+    canonical = submission.get("canonical_submission_id") if isinstance(submission, dict) else None
+    attempt = submission.get("submission_id") if isinstance(submission, dict) else None
+    lineage = (
+        (f"- Canonical Root Submission ID: `{canonical}`",)
+        if isinstance(canonical, str) and canonical != attempt else ()
+    )
     return (
         "## Producer Submission Contract",
         f"- Submission ID: `{submission.get('submission_id') if submission else 'legacy'}`",
+        *lineage,
         f"- Contract Version: `{submission.get('contract_version') if submission else 'legacy prompt'}`",
         "- Submission Status: `PERSISTED_IMMUTABLY`",
         "",
@@ -209,6 +218,66 @@ def _producer_submission_contract_lines(
         f"- Validation Profile Source: `{profile_source}`",
         "- Snapshot: " + (json.dumps(context, sort_keys=True) if isinstance(context, dict) else "Not supplied by Producer."),
         f"- Execution Status: `{state.phase}`",
+        "",
+    )
+
+
+def _forge_execution_provenance_lines(
+    submission: dict[str, object] | None,
+) -> tuple[str, ...]:
+    """Render only the identifier-only subset of admitted Forge provenance."""
+    constraints = submission.get("constraints") if isinstance(submission, dict) else None
+    raw = constraints.get("forge_execution") if isinstance(constraints, dict) else None
+    if not isinstance(raw, dict):
+        return ()
+    runtime_prompt = raw.get("runtime_prompt")
+    runtime_prompt = runtime_prompt if isinstance(runtime_prompt, dict) else {}
+
+    def token(name: str, *, maximum: int = 512) -> str:
+        value = raw.get(name)
+        if not isinstance(value, str) or not value.strip() or len(value) > maximum or "\n" in value:
+            return "UNAVAILABLE"
+        return value.strip()
+
+    prompt_id = runtime_prompt.get("id")
+    prompt_digest = runtime_prompt.get("content_digest")
+    prompt_id = (
+        prompt_id.strip()
+        if isinstance(prompt_id, str) and prompt_id.strip()
+        and len(prompt_id) <= 512 and "\n" not in prompt_id
+        else "UNAVAILABLE"
+    )
+    prompt_digest = (
+        prompt_digest
+        if isinstance(prompt_digest, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", prompt_digest)
+        else "UNAVAILABLE"
+    )
+    submission_id = submission.get("submission_id") if isinstance(submission, dict) else None
+    correlation = token("correlation_id")
+    mission = token("mission_id")
+    action = token("action_id")
+    identity_matches = (
+        correlation == submission.get("correlation_id")
+        and mission == submission.get("mission_id")
+        and action == submission.get("engineering_action_id")
+    )
+    return (
+        "## Forge Execution Provenance",
+        "This is the immutable, attempt-scoped Forge provenance admitted by CENTRAL; it is distinct from the optional generic Execution Context snapshot.",
+        f"- Submission Attempt ID: `{submission_id or 'UNAVAILABLE'}`",
+        f"- Forge Provenance Contract: `{token('contract_version')}`",
+        f"- Identity Binding: `{'VERIFIED' if identity_matches else 'UNAVAILABLE'}`",
+        f"- Mission ID: `{mission}`",
+        f"- Mission Revision: `{token('mission_revision')}`",
+        f"- Intent ID: `{token('intent_id')}`",
+        f"- Intent Revision: `{token('intent_revision')}`",
+        f"- Engineering Action ID: `{action}`",
+        f"- Runtime Prompt ID: `{prompt_id}`",
+        f"- Runtime Prompt Digest: `{prompt_digest}`",
+        f"- Retry Correlation ID: `{token('retry_of_correlation_id') if raw.get('retry_of_correlation_id') is not None else 'NONE'}`",
+        f"- Action Context Envelope: `{'SUPPLIED' if isinstance(raw.get('action_context_envelope'), dict) else 'NOT SUPPLIED'}`",
+        f"- Planning Context Envelope: `{'SUPPLIED' if isinstance(raw.get('planning_context_envelope'), dict) else 'NOT SUPPLIED'}`",
         "",
     )
 
@@ -343,8 +412,11 @@ def _evidence_lines(label: str, values: tuple[str, ...]) -> tuple[str, ...]:
 def _implementation_evidence(bundle: TerminalEvidenceBundle) -> str:
     """Classify file-level evidence without inferring unrecorded implementation intent."""
     changed = bundle.changed_files
+    implementation_files = tuple(
+        path for _component, paths in _component_inventory(bundle) for path in paths
+    )
     groups = {
-        "Implemented components": tuple(path for path in changed if path.startswith("src/engineering_platform/")),
+        "Implemented components": implementation_files,
         "Updated models": tuple(path for path in changed if "model" in path.casefold() or "state" in path.casefold()),
         "Updated documentation": tuple(path for path in changed if path.endswith(".md")),
         "Updated tests": tuple(path for path in changed if path.startswith("tests/") or "/test_" in path),
@@ -693,7 +765,12 @@ def _runtime_projection(
     )
 
 
-def _execution_receipt_projection(root: Path, state: TransactionState, producer: ProducerMetadata) -> tuple[str, ...]:
+def _execution_receipt_projection(
+    root: Path,
+    state: TransactionState,
+    producer: ProducerMetadata,
+    submission: dict[str, object] | None = None,
+) -> tuple[str, ...]:
     """Render receipt qualification fields only from the persisted terminal snapshot."""
     try:
         snapshot = load_run_qualification_snapshot(root, state.run_id) or {}
@@ -705,7 +782,7 @@ def _execution_receipt_projection(root: Path, state: TransactionState, producer:
     delivery_paths = activity.get("terminal_delivery_diff", {}).get("total_unique_changed_paths", "UNAVAILABLE") if isinstance(activity, dict) else "UNAVAILABLE"
     conflicts_text = ", ".join(conflicts) if isinstance(conflicts, list) and conflicts else "NONE"
     recovery = load_recovery_state(root, state.run_id) or {}
-    submission = load_submission_for_run(root, state.run_id) or {}
+    submission = submission or load_submission_for_run(root, state.run_id) or {}
     return (
         f"- Receipt ID: `{state.run_id}`",
         "- Execution Host: `Engineering Platform`",
@@ -791,6 +868,16 @@ def report_consistency_errors(body: str, state: TransactionState, bundle: Termin
         errors.append("repository commit is missing")
     if state.phase == "COMPLETE" and "## Evidence Bundle" not in body:
         errors.append("complete report is missing Evidence Bundle")
+    receipt_resolution = re.search(r"^- Receipt Resolution: `([^`]+)`$", body, re.MULTILINE)
+    if (
+        state.phase == "COMPLETE"
+        and receipt_resolution is not None
+        and receipt_resolution.group(1) in {
+            "operator_merge_required", "open_pr_checks_terminal",
+            "post_merge_workspace_sync_required",
+        }
+    ):
+        errors.append("complete report has a nonterminal receipt resolution")
     fresh = re.search(r"^- Fresh Submission: `([^`]+)`$", body, re.MULTILINE)
     retry = re.search(r"^- Retry Parent: `([^`]+)`$", body, re.MULTILINE)
     resume = re.search(r"^- Resume Parent: `([^`]+)`$", body, re.MULTILINE)
@@ -1039,6 +1126,53 @@ def _format_reviewer_records(records: tuple[dict[str, object], ...], phase: str)
             )
         )
     return "\n".join(lines)
+
+
+def _format_assurance_reviews(state: TransactionState) -> tuple[str, ...]:
+    """Project mandatory candidate-bound assurance separately from capability advice."""
+    lines = [
+        "## Candidate-bound Quality and Security Assurance",
+        "These records are mandatory post-implementation assurance, not capability-review recommendations.",
+    ]
+    if not state.assurance_reviews:
+        lines.extend(("- Assurance Reviews: `NOT RECORDED`", ""))
+        return tuple(lines)
+    for review in state.assurance_reviews:
+        if not isinstance(review, dict):
+            continue
+        reviewer = review.get("reviewer")
+        status = review.get("status")
+        candidate = review.get("candidate_sha")
+        findings = review.get("findings")
+        if (
+            reviewer not in {"quality", "security"}
+            or status not in {"PASS", "FAIL", "UNRESOLVED"}
+            or not isinstance(candidate, str)
+            or re.fullmatch(r"[0-9a-f]{40}", candidate) is None
+            or not isinstance(findings, list)
+        ):
+            continue
+        lines.extend((
+            f"- Reviewer: `{reviewer}`",
+            f"  - Status: `{status}`",
+            f"  - Candidate SHA: `{candidate}`",
+            f"  - Invocation ID: `{review.get('invocation_id', 'UNAVAILABLE')}`",
+            f"  - Finding Count: `{len(findings)}`",
+        ))
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            lines.append(
+                "  - Finding: "
+                f"severity `{finding.get('severity', 'UNAVAILABLE')}`; "
+                f"disposition `{finding.get('disposition', 'UNAVAILABLE')}`; "
+                f"blocking `{'YES' if finding.get('blocking') is True else 'NO'}`; "
+                f"evidence `{finding.get('evidence_ref', 'UNAVAILABLE')}`."
+            )
+    if len(lines) == 2:
+        lines.append("- Assurance Reviews: `INVALID OR UNAVAILABLE`")
+    lines.append("")
+    return tuple(lines)
 
 
 def _format_engineering_outcome(state: TransactionState) -> str:
@@ -1459,6 +1593,7 @@ def generate_terminal_report(
             f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
             "",
             *_producer_submission_contract_lines(submission, state, root),
+            *_forge_execution_provenance_lines(submission),
             "## Execution Target Identity",
             "- Execution Host: `Engineering Platform`",
             f"- Execution Host Repository: `{state.repository}`",
@@ -1585,6 +1720,7 @@ def generate_terminal_report(
             _format_engineering_outcome(state),
             "",
             *_managed_autonomy_projection(root, state, bundle, reviewer_records),
+            *_format_assurance_reviews(state),
             "## Reviewer Findings",
             "Initial observations only. They are not final repository claims.",
             _format_reviewer_records(reviewer_records, state.phase),
@@ -1609,7 +1745,7 @@ def generate_terminal_report(
             *_runtime_projection(state, producer, runtime_provider, reported_model),
             "",
             "## Execution Receipt Projection",
-            *_execution_receipt_projection(root, state, producer),
+            *_execution_receipt_projection(root, state, producer, submission),
             "",
             "## Decision Evidence Projection",
             *_decision_evidence_projection(producer),

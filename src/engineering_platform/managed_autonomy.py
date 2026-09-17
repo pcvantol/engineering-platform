@@ -210,14 +210,16 @@ def append_pr_check_observation(
 
 
 def _current(rows: Iterable[tuple[object, ...]]) -> tuple[dict[str, str], bool]:
-    grouped: dict[str, list[tuple[str, int]]] = {}
+    grouped: dict[str, list[tuple[str, int, bool]]] = {}
     for control, state, _required, currentness, _at in rows:
-        grouped.setdefault(str(control), []).append((str(state), int(currentness)))
+        grouped.setdefault(str(control), []).append((str(state), int(currentness), bool(_required)))
     result, conflict = {}, False
     for control, values in grouped.items():
         latest = max(item[1] for item in values)
         states = {item[0] for item in values if item[1] == latest}
-        conflict |= len(states) != 1
+        # Optional/provider-advisory observations remain visible, but only a
+        # conflicting required control can make run qualification ambiguous.
+        conflict |= len(states) != 1 and any(item[2] for item in values if item[1] == latest)
         result[control] = next(iter(states)) if len(states) == 1 else "UNAVAILABLE"
     return result, conflict
 

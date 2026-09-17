@@ -11,7 +11,7 @@ import unittest
 from engineering_platform.agent_state import StateStore, TransactionState
 from engineering_platform.contracts import AllowedAction, evaluate_action, get_allowed_actions, get_run_context
 from engineering_platform.contracts.models import ContractVersionError, require_compatible_version
-from engineering_platform.execution_reporting import _producer_submission_contract_lines
+from engineering_platform.execution_reporting import _forge_execution_provenance_lines, _producer_submission_contract_lines
 from engineering_platform.managed_autonomy import append_pr_check_observation
 from engineering_platform.storage import (
     open_storage,
@@ -78,6 +78,49 @@ class ContractProjectionTests(unittest.TestCase):
                 received_at="2026-01-02T00:00:00+00:00", link_run_id="retry-run", retry_parent_submission_id="original",
             )
             self.assertEqual(get_run_context(root, "retry-run")["objective"]["objective_summary"], "Repair the bounded projection")
+
+    def test_report_labels_retry_attempt_and_root_identity_without_conflating_them(self) -> None:
+        submission = {
+            "submission_id": "sub-attempt",
+            "canonical_submission_id": "sub-root",
+            "contract_version": "1.0",
+            "producer_id": "forge",
+            "producer_type": "FORGE",
+            "producer_version": "2.7.20",
+            "correlation_id": "forge-runtime-current",
+            "mission_id": "MISSION-0002",
+            "engineering_action_id": "aggregate-health",
+            "execution_context": None,
+            "constraints": {"forge_execution": {
+                "contract_version": "1.3",
+                "correlation_id": "forge-runtime-current",
+                "mission_id": "MISSION-0002",
+                "mission_revision": "a" * 40,
+                "intent_id": "intent-2",
+                "intent_revision": "revision-2",
+                "action_id": "aggregate-health",
+                "runtime_prompt": {
+                    "id": "forge-runtime-prompt:current",
+                    "content_digest": "sha256:" + "b" * 64,
+                },
+                "retry_of_correlation_id": "forge-runtime-parent",
+                "action_context_envelope": {},
+                "planning_context_envelope": {},
+            }},
+        }
+        state = TransactionState(
+            "retry-report", "pcvantol/forge", "prompt.md", "COMPLETE",
+            terminal=True, terminal_condition="repository_reconciled",
+        )
+
+        contract = "\n".join(_producer_submission_contract_lines(submission, state))
+        provenance = "\n".join(_forge_execution_provenance_lines(submission))
+
+        self.assertIn("- Submission ID: `sub-attempt`", contract)
+        self.assertIn("- Canonical Root Submission ID: `sub-root`", contract)
+        self.assertIn("- Submission Attempt ID: `sub-attempt`", provenance)
+        self.assertIn("- Identity Binding: `VERIFIED`", provenance)
+        self.assertIn("- Planning Context Envelope: `SUPPLIED`", provenance)
 
     def test_unsafe_objective_metadata_is_omitted_instead_of_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
