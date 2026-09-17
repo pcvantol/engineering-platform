@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,16 @@ let dashboard;
 let dashboardRoot;
 let installationRoot;
 let dashboardUrl;
+
+function setSyntheticTelemetryRun(runId, date, present = true) {
+  const script = present
+    ? "import sqlite3,sys; c=sqlite3.connect(sys.argv[1] + '/epdata.sqlite'); c.execute(\"INSERT OR REPLACE INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?, 'dashboard-fixture', 'COMPLETE', ?, ?, 'MANAGED')\", (sys.argv[2], sys.argv[3] + 'T12:00:00+00:00', sys.argv[3] + 'T12:01:00+00:00')); c.commit(); c.close()"
+    : "import sqlite3,sys; c=sqlite3.connect(sys.argv[1] + '/epdata.sqlite'); c.execute('DELETE FROM ep_execution_runs WHERE run_id=?', (sys.argv[2],)); c.commit(); c.close()";
+  execFileSync("python3", ["-c", script, dashboardRoot, runId, date], {
+    cwd: repository,
+    env: { ...process.env, PYTHONPATH: path.join(repository, "src") },
+  });
+}
 
 const TELEMETRY_PHASES = [
   "QUEUE_WAIT", "SUBMISSION_CLAIM", "INITIALIZATION", "HOST_PREFLIGHT",
@@ -2429,11 +2439,15 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests")).toContainText("Gewijzigde bestanden: 5");
     const markdown = page.locator("#promptHistoryDetailDownloadMarkdown");
     const json = page.locator("#promptHistoryDetailDownloadJson");
+    const requestedExports = [];
+    page.on("download", (download) => requestedExports.push(download));
     await expect(markdown).toHaveAttribute("aria-label", "Uitvoeringsdetails als Markdown downloaden voor Modal prompt");
     await expect(json).toHaveAttribute("aria-label", "Uitvoeringsdetails als JSON downloaden voor Modal prompt");
     await expect(json).toHaveText("{}");
     const markdownDownload = page.waitForEvent("download");
     await markdown.click();
+    await expect.poll(() => requestedExports.length).toBe(1);
+    await expect(page.locator("#copyToast")).toBeHidden();
     const downloadedMarkdown = await markdownDownload;
     expect(downloadedMarkdown.suggestedFilename()).toBe("execution-details-inbox-modal.md");
     const markdownContent = readFileSync(await downloadedMarkdown.path(), "utf8");
@@ -4861,6 +4875,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("exports one loaded telemetry day as Markdown and JSON", async ({ page }) => {
+    setSyntheticTelemetryRun("inbox-day-export", "2026-08-24");
     const detail = {
       summary: {
         executions: 1, completed: 1, blocked: 0, failed: 0,
@@ -4871,7 +4886,21 @@ test.describe("Engineering Status browser smoke", () => {
       bottlenecks: { longest_average_phase: { phase: "VALIDATION" }, largest_accumulated_phase: { phase: "VALIDATION" }, top_time_consumers: [{ phase: "VALIDATION", share_percent: 20 }] },
       runs: [{ run_id: "inbox-day-export", started_at: "2026-08-24T12:00:00Z", status: "COMPLETE", total_duration_ms: 60000, queue_wait_ms: 5000, provider_duration_ms: 12000, validation_duration_ms: 12000, external_wait_ms: 0, largest_phase: "VALIDATION", producer_type: "HUMAN", repository: "pcvantol/djconnect", model: "gpt-5.6", phase_telemetry: "RECORDED" }],
     };
-    await page.route("**/api/telemetry/2026-08-24", (route) => route.fulfill({ json: detail }));
+    await page.route("**/api/telemetry/2026-08-24", (route) => {
+      const requestUrl = new URL(route.request().url());
+      if (!requestUrl.pathname.endsWith("/export")) return route.fulfill({ json: detail });
+      if (requestUrl.searchParams.get("prepare") === "1") return route.fulfill({ json: {
+        snapshot_id: `sha256:${"d".repeat(64)}`, selection: { scope: "UTC_DAY_DETAIL", date: "2026-08-24" },
+      } });
+      const markdown = requestUrl.searchParams.get("format") === "markdown";
+      return route.fulfill({
+        contentType: markdown ? "text/markdown; charset=utf-8" : "application/json; charset=utf-8",
+        headers: { "Content-Disposition": `attachment; filename="telemetry-detail-dashboard-fixture-utc-day-detail-2026-08-24.${markdown ? "md" : "json"}"` },
+        body: markdown
+          ? "# Telemetriedetail\n\nSnapshot: `sha256:detail-snapshot`\n\n## Samenvatting\n\n| run_id | coverage |\n| --- | --- |\n| inbox-day-export | COMPLETE |\n"
+          : "{}",
+      });
+    });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => window.executionTelemetry([{
@@ -4892,16 +4921,50 @@ test.describe("Engineering Status browser smoke", () => {
     const markdownDownload = page.waitForEvent("download");
     await markdown.click();
     const downloadedMarkdown = await markdownDownload;
-    expect(downloadedMarkdown.suggestedFilename()).toBe("execution-telemetry-2026-08-24.md");
+    expect(downloadedMarkdown.suggestedFilename()).toBe("telemetry-detail-dashboard-fixture-utc-day-detail-2026-08-24.md");
     const markdownContent = readFileSync(await downloadedMarkdown.path(), "utf8");
-    expect(markdownContent).toContain("# Uitvoeringstelemetrie — 24-08-2026");
+    expect(markdownContent).toContain("# Telemetriedetail");
     expect(markdownContent).toContain("## Samenvatting");
     expect(markdownContent).toContain("inbox-day-export");
     const jsonDownload = page.waitForEvent("download");
     await json.click();
     const downloadedJson = await jsonDownload;
-    expect(downloadedJson.suggestedFilename()).toBe("execution-telemetry-2026-08-24.json");
-    expect(JSON.parse(readFileSync(await downloadedJson.path(), "utf8"))).toEqual(detail);
+    expect(downloadedJson.suggestedFilename()).toBe("telemetry-detail-dashboard-fixture-utc-day-detail-2026-08-24.json");
+    const jsonContent = JSON.parse(readFileSync(await downloadedJson.path(), "utf8"));
+    expect(jsonContent.export_schema_version).toBe("telemetry-export@1.1");
+    expect(jsonContent.selection).toMatchObject({ project_id: "dashboard-fixture", scope: "UTC_DAY_DETAIL", date: "2026-08-24" });
+    expect(jsonContent.data.day_detail.runs.map((run) => run.run_id)).toContain("inbox-day-export");
+    expect(markdownContent).toContain(jsonContent.snapshot_id);
+    setSyntheticTelemetryRun("inbox-day-export", "2026-08-24", false);
+  });
+
+  test("shows an export error and allows the same captured detail selection to retry", async ({ page }) => {
+    const date = "2026-08-23", runId = "retry-detail-export";
+    const detail = {
+      summary: { executions: 1 }, phases: [], bottlenecks: { top_time_consumers: [] },
+      runs: [{ run_id: runId, status: "COMPLETE", telemetry_snapshot: { attempt: { timing: {}, usage: {} }, chain: {} } }],
+    };
+    await page.route(`**/api/telemetry/${date}`, (route) => {
+      const requestUrl = new URL(route.request().url());
+      return requestUrl.pathname.endsWith("/export") ? route.continue() : route.fulfill({ json: detail });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate((selectedDate) => window.executionTelemetry([{
+      date: selectedDate, prompt_count: 1, complete_count: 1, blocked_count: 0, failed_count: 0,
+    }]), date);
+    await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator("#executionTelemetryRows .telemetry-row"));
+    await page.locator("#telemetryDetailDownloadJson").click();
+    await expect(page.locator("#copyToast")).toContainText(DASHBOARD_MESSAGES.nl["telemetry.export_failed"]);
+
+    setSyntheticTelemetryRun(runId, date);
+    const retryDownload = page.waitForEvent("download");
+    await page.locator("#telemetryDetailDownloadJson").click();
+    const downloaded = await retryDownload;
+    expect(downloaded.suggestedFilename()).toBe(`telemetry-detail-dashboard-fixture-utc-day-detail-${date}.json`);
+    const content = JSON.parse(readFileSync(await downloaded.path(), "utf8"));
+    expect(content.selection).toMatchObject({ scope: "UTC_DAY_DETAIL", date });
+    setSyntheticTelemetryRun(runId, date, false);
   });
 
   test("gives every table a coloured first column and sorts telemetry columns", async ({ page }) => {
@@ -4987,6 +5050,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("offers read-only download and copy actions for telemetry in CENTRAL", async ({ page }) => {
+    setSyntheticTelemetryRun("overview-export-run", "2026-08-24");
     let clearRequests = 0;
     await page.route("**/api/telemetry/clear", (route) => {
       clearRequests += 1;
@@ -5002,10 +5066,26 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
     const actions = page.locator("#executionTelemetry .telemetry-actions");
     await expect(actions).toHaveCSS("justify-content", "flex-end");
-    await expect(actions.getByRole("button", { name: "Telemetrie downloaden" })).toBeEnabled();
+    await expect(actions.getByRole("button", { name: "Volledig overzicht als Markdown downloaden" })).toBeEnabled();
+    await expect(actions.getByRole("button", { name: "Volledig overzicht als JSON downloaden" })).toBeEnabled();
     await expect(actions.getByRole("button", { name: "Telemetrie kopiëren" })).toBeEnabled();
     await expect(actions.getByRole("button", { name: "Telemetrie wissen" })).toHaveCount(0);
+    const markdownDownload = page.waitForEvent("download");
+    await actions.getByRole("button", { name: "Volledig overzicht als Markdown downloaden" }).click();
+    const markdown = await markdownDownload;
+    expect(markdown.suggestedFilename()).toBe("telemetry-overview-dashboard-fixture-utc.md");
+    const markdownContent = readFileSync(await markdown.path(), "utf8");
+    expect(markdownContent).toContain("# Telemetrieoverzicht");
+    const jsonDownload = page.waitForEvent("download");
+    await actions.getByRole("button", { name: "Volledig overzicht als JSON downloaden" }).click();
+    const json = await jsonDownload;
+    expect(json.suggestedFilename()).toBe("telemetry-overview-dashboard-fixture-utc.json");
+    const jsonContent = JSON.parse(readFileSync(await json.path(), "utf8"));
+    expect(jsonContent.selection.sort).toEqual({ key: "date", direction: "desc" });
+    expect(jsonContent.data.overview.summary.run_count).toBe(1);
+    expect(markdownContent).toContain(jsonContent.snapshot_id);
     expect(clearRequests).toBe(0);
+    setSyntheticTelemetryRun("overview-export-run", "2026-08-24", false);
   });
 
   test("sorts telemetry detail tables with the same header treatment as logs", async ({ page }) => {
@@ -5271,8 +5351,9 @@ test.describe("Engineering Status browser smoke", () => {
   test("formats telemetry percentages with one localized decimal place", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
-      summary: {},
+      summary: { cache_ratio_percent: null },
       phases: [],
+      exclusive_distribution: [{ category: "UNASSIGNED", duration_ms: 0, share_percent: 0 }],
       bottlenecks: { top_time_consumers: [{ phase: "PROVIDER_EXECUTION", share_percent: 61.848 }] },
       runs: [],
     } }));
@@ -5285,6 +5366,10 @@ test.describe("Engineering Status browser smoke", () => {
     await dispatchDashboardPointerClick(page.locator("#executionTelemetry > summary"));
     await dispatchDashboardPointerClick(page.locator("#executionTelemetryRows tr"));
     await expect(page.locator("#telemetryDetailContent")).toContainText("61,8%");
+    await expect(page.locator("#telemetryDetailContent")).toContainText("0,0%");
+    const cacheField = page.locator("#telemetryDetailContent .field").filter({ hasText: DASHBOARD_MESSAGES.nl["telemetry.cache_ratio"] }).first();
+    await expect(cacheField).toContainText(DASHBOARD_MESSAGES.nl["format.unavailable"]);
+    await expect(cacheField).not.toContainText("0,0%");
   });
 
   test("projects canonical bottlenecks and complete per-run telemetry detail", async ({ page }) => {
@@ -5317,6 +5402,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("qualifies canonical telemetry coverage, timing, invocation and chain scopes", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 1000 });
     const runId = "inbox-cd4ba8cb829a4ee1b852369c602c3653";
+    setSyntheticTelemetryRun(runId, "2026-09-17");
     const invocations = Array.from({ length: 9 }, (_, index) => ({
       invocation_id: `invocation-${index + 1}`, phase: index < 6 ? "PROVIDER_EXECUTION" : "CAPABILITY_REVIEW",
       role: index ? "REVIEWER" : "PRIMARY", provider: "codex-cli", state: "COMPLETE",
@@ -5330,10 +5416,10 @@ test.describe("Engineering Status browser smoke", () => {
       missing_usage_fields: index === 8 ? ["input_tokens", "cached_input_tokens", "output_tokens"] : [],
     }));
     const timeline = [
-      { phase_id: "total", parent_phase_id: null, phase_name: "TOTAL_EXECUTION", duration_ms: 2721545, outcome: "COMPLETE" },
-      { phase_id: "provider", parent_phase_id: "total", phase_name: "PROVIDER_EXECUTION", duration_ms: 1233062, outcome: "COMPLETE" },
-      { phase_id: "validation", parent_phase_id: "total", phase_name: "VALIDATION", duration_ms: 148244, outcome: "COMPLETE" },
-      { phase_id: "nested", parent_phase_id: "validation", phase_name: "VALIDATION", duration_ms: 4200, outcome: "COMPLETE" },
+      { phase_id: "total", parent_phase_id: null, phase_name: "TOTAL_EXECUTION", duration_ms: 2721545, outcome: "COMPLETE", measurement_basis: "MONOTONIC", started_at: "2026-09-17T10:00:00Z", completed_at: "2026-09-17T10:45:21.545Z", relative_start_ms: 0, relative_end_ms: 2721545 },
+      { phase_id: "provider", parent_phase_id: "total", phase_name: "PROVIDER_EXECUTION", duration_ms: 1233062, outcome: "COMPLETE", measurement_basis: "MONOTONIC", started_at: "2026-09-17T10:02:00Z", completed_at: "2026-09-17T10:22:33.062Z", relative_start_ms: 120000, relative_end_ms: 1353062 },
+      { phase_id: "validation", parent_phase_id: "total", phase_name: "VALIDATION", duration_ms: 148244, outcome: "COMPLETE", measurement_basis: "MONOTONIC", started_at: "2026-09-17T10:18:00Z", completed_at: "2026-09-17T10:20:28.244Z", relative_start_ms: 1080000, relative_end_ms: 1228244 },
+      { phase_id: "nested", parent_phase_id: "validation", phase_name: "VALIDATION", duration_ms: 4200, outcome: "COMPLETE", measurement_basis: "MONOTONIC", started_at: "2026-09-17T10:18:10Z", completed_at: "2026-09-17T10:18:14.200Z", relative_start_ms: 1090000, relative_end_ms: 1094200 },
     ];
     const chainRuns = Array.from({ length: 7 }, (_, index) => ({
       run_id: index === 6 ? runId : `inbox-chain-${index + 1}`, relation: index ? "RETRY" : "ORIGINAL",
@@ -5341,7 +5427,7 @@ test.describe("Engineering Status browser smoke", () => {
       provider_invocation_count: index === 6 ? 9 : 5,
     }));
     const detail = {
-      contract_version: "telemetry-contract@2.0", source_snapshot_references: [runId], scope: "EP_RUN_ATTEMPTS_IN_UTC_DAY",
+      contract_version: "telemetry-contract@2.2", source_snapshot_references: [runId], scope: "EP_RUN_ATTEMPTS_IN_UTC_DAY",
       summary: {
         executions: 1, population: 1, completed: 1, blocked: 0, failed: 0,
         total_wall_time: { average_ms: 2721545, median_ms: 2721545, population: 1 },
@@ -5377,10 +5463,11 @@ test.describe("Engineering Status browser smoke", () => {
         model: "gpt-6-codex-experimental", phase_telemetry: "RECORDED",
         usage_coverage: { input_tokens: "PARTIAL", output_tokens: "PARTIAL" }, timing_coverage: { state: "COMPLETE" },
         telemetry_snapshot: {
-          contract_version: "telemetry-contract@2.0",
+          contract_version: "telemetry-contract@2.2",
           attempt: { scope: "EP_RUN_ATTEMPT", timing: {
             total_wall_time_ms: 2721545, provider_unique_coverage_ms: 1233072, provider_cumulative_process_duration_ms: 1233062,
             external_wait_time_ms: 364132, unassigned_time_ms: 648751, coverage: { state: "COMPLETE" }, timeline,
+            timeline_axis: { duration_ms: 2721545, started_at: "2026-09-17T10:00:00Z", completed_at: "2026-09-17T10:45:21.545Z", measurement_basis: "WALL_CLOCK_INTERVAL_ENVELOPE" },
           }, usage: {
             invocations, cache_ratio_percent: 92.557, cache_ratio_population: { coverage: "PARTIAL", observed_observations: 8, expected_observations: 9 },
             metrics: {
@@ -5391,13 +5478,35 @@ test.describe("Engineering Status browser smoke", () => {
           chain: {
             scope: "EXECUTION_CHAIN", coverage: "COMPLETE", mission_scope_label: "EP execution within this Mission",
             attempt_count: 7, original_attempt_count: 1, retry_count: 6, resume_count: 0, elapsed_ms: 30281903,
-            processing_time_ms: 14040669, inter_attempt_gap_ms: 16217525, outside_selected_window_count: 6, runs: chainRuns,
+            processing_time_ms: 14040669, inter_attempt_gap_ms: 16217525, outside_selected_window_count: 6,
+            provider_invocation_count: 39, usage_metrics: {
+              input_tokens: { value: 18858573, coverage: "PARTIAL", observed_observations: 38, expected_observations: 39 },
+              cached_input_tokens: { value: 16921536, coverage: "PARTIAL", observed_observations: 38, expected_observations: 39 },
+              uncached_input_tokens: { value: 1937037, coverage: "PARTIAL", observed_observations: 38, expected_observations: 39 },
+              output_tokens: { value: 165758, coverage: "PARTIAL", observed_observations: 38, expected_observations: 39 },
+            }, cache_ratio_percent: 89.728, cache_ratio_population: { coverage: "PARTIAL", observed_observations: 38, expected_observations: 39 },
+            runs: chainRuns,
           },
         },
       }],
     };
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/telemetry/2026-09-17", (route) => route.fulfill({ json: detail }));
+    await page.route("**/api/telemetry/2026-09-17", (route) => {
+      const requestUrl = new URL(route.request().url());
+      if (!requestUrl.pathname.endsWith("/export")) return route.fulfill({ json: detail });
+      if (requestUrl.searchParams.get("prepare") === "1") return route.fulfill({ json: {
+        snapshot_id: `sha256:${"c".repeat(64)}`, selection: { scope: "EXECUTION_CHAIN", run_id: runId },
+      } });
+      return route.fulfill({
+        contentType: "application/json; charset=utf-8",
+        headers: { "Content-Disposition": `attachment; filename="telemetry-detail-dashboard-fixture-execution-chain-${runId}.json"` },
+        body: JSON.stringify({
+          export_schema_version: "telemetry-export@1.1", contract_version: "telemetry-contract@2.2",
+          snapshot_id: "sha256:chain-snapshot", selection: { scope: "EXECUTION_CHAIN", run_id: runId },
+          data: { selected_attempt: detail.runs[0], chain: detail.runs[0].telemetry_snapshot.chain },
+        }),
+      });
+    });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await selectDashboardLocale(page, "nl");
     await page.evaluate(() => window.executionTelemetry([{ date: "2026-09-17", prompt_count: 1, average_total_execution_seconds: 2721.545, input_tokens: 8558573, output_tokens: 65758, complete_count: 1, blocked_count: 0, failed_count: 0 }]));
@@ -5412,6 +5521,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(content).toContainText("gpt-6-codex-experimental (AUTHORITATIVE)");
     await expect(content).toContainText("3.847.785");
     await expect(content).not.toContainText("Actieve context");
+    await expect(content).toContainText("Timingkoppeling");
+    await expect(content.locator(".telemetry-timeline__bar--unpositioned")).toHaveCount(0);
+    await expect(content.locator(".telemetry-timeline__bar")).toHaveCount(4);
+    await expect(content.locator(".telemetry-timeline__bar").nth(1)).toHaveAttribute("title", /provider.*2026-09-17T10:02:00Z/);
     const scopeButtons = content.locator(".telemetry-scope-switcher button");
     await expect(scopeButtons).toHaveCount(2);
     for (const button of await scopeButtons.all()) {
@@ -5426,20 +5539,34 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(chainScopeButton).toHaveCSS("box-shadow", /3px 0px 0px/);
     await expect(content).toContainText("Pogingen in keten");
     await expect(content).toContainText("6");
+    await expect(content).toContainText("18.858.573 · Gedeeltelijk (38/39)");
+    await expect(content).toContainText("39");
     await expect(content).toContainText("EP execution within this Mission");
+    const chainDownloadPromise = page.waitForEvent("download");
+    await page.locator("#telemetryDetailDownloadJson").click();
+    const chainDownload = await chainDownloadPromise;
+    expect(chainDownload.suggestedFilename()).toBe(`telemetry-detail-dashboard-fixture-execution-chain-${runId}.json`);
+    const chainExport = JSON.parse(readFileSync(await chainDownload.path(), "utf8"));
+    expect(chainExport.export_schema_version).toBe("telemetry-export@1.1");
+    expect(chainExport.selection).toMatchObject({ scope: "EXECUTION_CHAIN", run_id: runId });
+    expect(chainExport.data.selected_attempt.run_id).toBe(runId);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     expect(overflow).toBe(false);
     const screenshotDirectory = process.env.TELEMETRY_SCREENSHOT_DIR;
     if (screenshotDirectory) {
       mkdirSync(screenshotDirectory, { recursive: true });
       await page.screenshot({ path: path.join(screenshotDirectory, "telemetry-desktop.png"), fullPage: true });
-      await page.setViewportSize({ width: 390, height: 844 });
-      await expect(page.locator("#telemetryDetailModal")).toBeVisible();
-      const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
-      expect(mobileOverflow).toBe(false);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator("#telemetryDetailModal")).toBeVisible();
+    const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    expect(mobileOverflow).toBe(false);
+    await expect(content.locator(".telemetry-timeline__bar")).toHaveCount(4);
+    if (screenshotDirectory) {
       await content.evaluate((element) => { element.scrollTop = element.scrollHeight; });
       await page.screenshot({ path: path.join(screenshotDirectory, "telemetry-mobile.png"), fullPage: true });
     }
+    setSyntheticTelemetryRun(runId, "2026-09-17", false);
   });
 
   test("uses one uninterrupted selected-row treatment for telemetry rows", async ({ page }) => {

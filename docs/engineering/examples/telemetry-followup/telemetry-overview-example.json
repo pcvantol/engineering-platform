@@ -1,0 +1,55 @@
+{
+  "as_of": "2026-09-17T10:00:00+00:00",
+  "completeness": {
+    "displayed_population": 1,
+    "export": "COMPLETE",
+    "full_population": 1,
+    "metrics_may_be_partial": true
+  },
+  "contract_version": "telemetry-contract@2.2",
+  "downloaded_at": "2026-09-17T10:00:05+00:00",
+  "data": {
+    "overview": {
+      "row_count": 1,
+      "rows": [
+        {
+          "blocked_count": 0,
+          "complete_count": 1,
+          "contract_version": "telemetry-contract@2.2",
+          "date": "2026-09-17",
+          "failed_count": 0,
+          "input_tokens": 1250,
+          "measurement_coverage": "PARTIAL",
+          "output_tokens": 75,
+          "prompt_count": 1,
+          "total_tokens": 1325
+        }
+      ],
+      "summary": {
+        "blocked": 0,
+        "completed": 1,
+        "day_count": 1,
+        "failed": 0,
+        "run_count": 1
+      }
+    }
+  },
+  "export_schema_version": "telemetry-export@1.1",
+  "locale": "nl",
+  "selection": {
+    "aggregation_level": "UTC_DAY",
+    "filters": {"retention_days": 90},
+    "project_id": "synthetic-project",
+    "scope": "TELEMETRY_OVERVIEW",
+    "sort": {"direction": "desc", "key": "date"},
+    "timezone": "UTC"
+  },
+  "source": {
+    "as_of": "2026-09-17T10:00:00+00:00",
+    "kind": "CENTRAL_READ_TRANSACTION",
+    "reference": "central-schema:45:data-version:4"
+  },
+  "source_as_of": "2026-09-17T10:00:00+00:00",
+  "snapshot_id": "sha256:synthetic-overview-example",
+  "source_snapshot_references": ["2026-09-17"]
+}
