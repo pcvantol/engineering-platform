@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "increment": "FORGE_EP_PARALLEL_ACTION_RUNTIME_V1",
+  "owner": "engineering-platform",
+  "authority": "DOCUMENTARY_DERIVED",
+  "executable": false,
+  "version_decision": "NO_BUMP",
+  "parent_lanes": ["P-QUEUE", "FORGE_ACTION_DEPENDENCY_ADMISSION", "MULTI_EXECUTION"],
+  "architecture": "docs/engineering/FORGE_ACTION_DEPENDENCY_ADMISSION_BOUNDARY.md",
+  "current_mission_3_dependency": false,
+  "nodes": [
+    {"id":"PA-E0","status":"PLANNED","depends_on":[],"external_evidence":["forge:PA-F0"],"deliverable":"Per-Action dependency/concurrency contract and compatibility"},
+    {"id":"PA-E1","status":"PLANNED","depends_on":["PA-E0"],"deliverable":"Independent admission and predecessor evidence enforcement"},
+    {"id":"PA-E2","status":"PLANNED","depends_on":["PA-E1"],"deliverable":"Concurrent delivery with bounded repository/resource/capacity scheduling"},
+    {"id":"PA-E3","status":"PLANNED","depends_on":["PA-E2"],"deliverable":"Invocation isolation, fencing and partial-failure/restart/cancel safety"},
+    {"id":"PA-E4","status":"PLANNED","depends_on":["PA-E1"],"deliverable":"Per-result readback and complete multi-active timing/usage/export evidence"},
+    {"id":"PA-EQ","status":"PLANNED","depends_on":["PA-E2","PA-E3","PA-E4"],"deliverable":"Installed actual concurrency and negative-boundary qualification"}
+  ]
+}
