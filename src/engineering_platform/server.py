@@ -7,6 +7,8 @@ those later capabilities can be composed.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -106,6 +108,7 @@ from .execution_timing import timing_summaries, timing_summary
 from .provider_usage import provider_usage_summaries, provider_usage_summary
 from .telemetry_contract import load_lineage_graph, run_telemetry_snapshot
 from .telemetry_metrics import (
+    VALID_SUBTOTAL,
     aggregate_coverage as aggregate_telemetry_coverage,
     aggregate_numeric_metric,
     metric_coverage,
@@ -3277,12 +3280,18 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
     }
 
 
-def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[str, object]]:
-    """Read all project runs with their admitted CENTRAL submission lineage."""
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+def _central_console_run_records(
+    data_root: Path, project_id: str, *, _read_connection: sqlite3.Connection | None = None,
+    record_limit: int | None = 1000,
+) -> list[dict[str, object]]:
+    """Read project runs with bounded pages from one consistent source view."""
+    owns_connection = _read_connection is None
+    connection = _read_connection or sqlite3.connect(data_root / SERVER_DATABASE_FILENAME)
+    try:
         connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,r.execution_mode,
+        if owns_connection and record_limit is None:
+            connection.execute("BEGIN")
+        query = """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,r.execution_mode,
                       d.submission_id,d.state AS dispatch_state,d.operator_resolution,
                       d.resolution_submission_id,
                       retry.run_id AS retry_child_run_id,
@@ -3312,11 +3321,24 @@ def _central_console_run_records(data_root: Path, project_id: str) -> list[dict[
                  LEFT JOIN ep_forge_action_context_envelopes AS a ON a.submission_id=s.submission_id
                  LEFT JOIN ep_forge_planning_context_envelopes AS p ON p.submission_id=s.submission_id
                  LEFT JOIN ep_execution_host_evidence AS h ON h.run_id=r.run_id
-                 LEFT JOIN execution_activity_summaries AS activity_summary ON activity_summary.run_id=r.run_id
+                LEFT JOIN execution_activity_summaries AS activity_summary ON activity_summary.run_id=r.run_id
                 WHERE r.project_id=?
-                ORDER BY r.created_at DESC,r.run_id DESC LIMIT 1000""",
-            (project_id,),
-        ).fetchall()
+                ORDER BY r.created_at DESC,r.run_id DESC LIMIT ? OFFSET ?"""
+        page_size = 500
+        rows: list[sqlite3.Row] = []
+        offset = 0
+        while record_limit is None or offset < record_limit:
+            batch_size = page_size if record_limit is None else min(page_size, record_limit - offset)
+            page = connection.execute(query, (project_id, batch_size, offset)).fetchall()
+            rows.extend(page)
+            if len(page) < batch_size:
+                break
+            offset += len(page)
+    finally:
+        if owns_connection and connection.in_transaction:
+            connection.rollback()
+        if owns_connection:
+            connection.close()
     return [_central_run_record(row, project_id) for row in rows]
 
 
@@ -3900,7 +3922,86 @@ def _central_console_terminal_execution_diagnostic(data_root: Path, run_id: str)
     return redact_diagnostic(diagnostic, limit=500) if diagnostic else None
 
 
-def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[str, object]]:
+@contextmanager
+def _telemetry_read_snapshot(
+    data_root: Path,
+) -> Iterator[tuple[sqlite3.Connection, str, str]]:
+    """Hold one short, read-only SQLite snapshot for a canonical export model."""
+    database = (data_root / SERVER_DATABASE_FILENAME).resolve()
+    connection = sqlite3.connect(
+        f"file:{database}?mode=ro", uri=True, isolation_level=None, timeout=10,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=10000")
+        connection.execute("BEGIN")
+        # The first read establishes the SQLite snapshot before any helper is
+        # allowed to inspect runs, lineage, usage or timing.
+        schema_row = connection.execute(
+            "SELECT COALESCE(MAX(version),0) FROM engineering_schema_migrations"
+        ).fetchone()
+        data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+        source_as_of = datetime.now(timezone.utc).isoformat()
+        source_reference = f"central-schema:{int(schema_row[0])}:data-version:{data_version}"
+        yield connection, source_as_of, source_reference
+    finally:
+        if connection.in_transaction:
+            connection.rollback()
+        connection.close()
+
+
+def _telemetry_retention_days(connection: sqlite3.Connection) -> int:
+    row = connection.execute(
+        "SELECT value FROM engineering_metadata WHERE key='console.telemetry_retention_days'"
+    ).fetchone()
+    try:
+        value = json.loads(str(row[0])) if row is not None else None
+    except json.JSONDecodeError:
+        value = None
+    allowed = central_database.CONSOLE_CONFIGURATION_OPTIONS["telemetry_retention_days"]
+    return int(value) if value in allowed else int(
+        central_database.CONSOLE_CONFIGURATION_DEFAULTS["telemetry_retention_days"]
+    )
+
+
+_TELEMETRY_EXPORT_STORE_LOCK = RLock()
+
+
+def _telemetry_export_store(server_instance: object) -> telemetry_export.ExportSnapshotStore:
+    store = getattr(server_instance, "telemetry_export_snapshots", None)
+    if isinstance(store, telemetry_export.ExportSnapshotStore):
+        return store
+    with _TELEMETRY_EXPORT_STORE_LOCK:
+        store = getattr(server_instance, "telemetry_export_snapshots", None)
+        if not isinstance(store, telemetry_export.ExportSnapshotStore):
+            store = telemetry_export.ExportSnapshotStore()
+            setattr(server_instance, "telemetry_export_snapshots", store)
+        return store
+
+
+def _retain_telemetry_export_snapshot(
+    store: telemetry_export.ExportSnapshotStore,
+    model: Mapping[str, object], *, binding: str,
+) -> tuple[str | None, tuple[int, str] | None]:
+    """Retain one model or return a safe HTTP status/diagnostic pair."""
+    try:
+        return store.retain(model, binding=binding), None
+    except ValueError as error:
+        code = str(error)
+        safe_code = (
+            code if code.startswith("TELEMETRY_EXPORT_")
+            else "TELEMETRY_EXPORT_SNAPSHOT_INVALID"
+        )
+        return None, (
+            413 if safe_code == "TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE" else 500,
+            safe_code,
+        )
+def _central_console_telemetry(
+    data_root: Path, project_id: str, *, full: bool = False,
+    _read_connection: sqlite3.Connection | None = None,
+) -> list[dict[str, object]]:
     """Aggregate canonical run snapshots by UTC day.
 
     The retired ``execution_runs`` telemetry projection is intentionally not
@@ -3908,16 +4009,21 @@ def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[st
     """
     grouped: dict[str, list[tuple[Mapping[str, object], dict[str, object]]]] = {}
     terminal_records = [
-        record for record in _central_console_run_records(data_root, project_id)
+        record for record in _central_console_run_records(
+            data_root, project_id, _read_connection=_read_connection,
+            record_limit=None if full else 1000,
+        )
         if record.get("state") in {"COMPLETE", "BLOCKED", "FAILED"}
     ]
     identifiers = [str(record["run_id"]) for record in terminal_records]
     try:
         timing_by_run = timing_summaries(
             data_root, identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
+            _read_connection=_read_connection,
         )
         usage_by_run = provider_usage_summaries(
             data_root, identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
+            _read_connection=_read_connection,
         )
     except (storage.EngineeringStorageError, sqlite3.DatabaseError):
         timing_by_run, usage_by_run = {}, {}
@@ -3997,7 +4103,8 @@ def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[st
                                           if snapshot.get("contract_version")), None)
             ) else None,
         })
-    return sorted(entries, key=lambda entry: str(entry["date"]), reverse=True)[:360]
+    ordered = sorted(entries, key=lambda entry: str(entry["date"]), reverse=True)
+    return ordered if full else ordered[:360]
 
 
 def _legacy_central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
@@ -4077,6 +4184,7 @@ def _legacy_central_console_telemetry_detail(data_root: Path, project_id: str, e
 
 def _central_console_telemetry_detail(
     data_root: Path, project_id: str, execution_date: str, *, full: bool = False,
+    _read_connection: sqlite3.Connection | None = None,
 ) -> dict[str, object] | None:
     """Return the canonical contract used by UI, Markdown and JSON export."""
     if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", execution_date):
@@ -4084,7 +4192,11 @@ def _central_console_telemetry_detail(
     day = datetime.strptime(execution_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     day_end = day + timedelta(days=1)
     matching: list[Mapping[str, object]] = []
-    for record in _central_console_run_records(data_root, project_id):
+    all_records = _central_console_run_records(
+        data_root, project_id, _read_connection=_read_connection,
+        record_limit=None if full else 1000,
+    )
+    for record in all_records:
         if record.get("state") not in {"COMPLETE", "BLOCKED", "FAILED"}:
             continue
         timestamp = record.get("updated_at")
@@ -4101,6 +4213,7 @@ def _central_console_telemetry_detail(
     identifiers = [str(record["run_id"]) for record in selected_records]
     lineage_graph = load_lineage_graph(
         data_root, central_database=data_root / SERVER_DATABASE_FILENAME,
+        _read_connection=_read_connection,
     )
     contexts = lineage_graph[0]
     related = set(identifiers)
@@ -4123,10 +4236,12 @@ def _central_console_telemetry_detail(
         usage_cache = provider_usage_summaries(
             data_root, telemetry_identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
             invocation_limit=None if full else 250,
+            _read_connection=_read_connection,
         )
         timing_cache = timing_summaries(
             data_root, telemetry_identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
             timeline_limit=None if full else 500,
+            _read_connection=_read_connection,
         )
     except (storage.EngineeringStorageError, sqlite3.DatabaseError):
         usage_cache, timing_cache = {}, {}
@@ -4146,15 +4261,20 @@ def _central_console_telemetry_detail(
         nested = value.get(key, {}) if isinstance(value, Mapping) else {}
         return nested if isinstance(nested, Mapping) else {}
 
-    run_rows: list[dict[str, object]] = []
-    for record, snapshot in selected:
+    def run_row(record: Mapping[str, object], snapshot: Mapping[str, object]) -> dict[str, object]:
         timing, usage = attempt(snapshot, "timing"), attempt(snapshot, "usage")
         metrics = usage.get("metrics", {}) if isinstance(usage.get("metrics"), Mapping) else {}
         def metric_value(name: str) -> object:
             metric = metrics.get(name)
             return metric.get("value") if isinstance(metric, Mapping) else None
-        run_rows.append({
+        try:
+            observed = datetime.fromisoformat(str(record.get("updated_at")).replace("Z", "+00:00")).astimezone(timezone.utc)
+            outside_selected_window = not day <= observed < day_end
+        except ValueError:
+            outside_selected_window = None
+        return {
             "run_id": str(record["run_id"]), "started_at": record.get("created_at"),
+            "completed_at": record.get("updated_at"),
             "status": record.get("state"), "duration_label": "duration",
             "total_duration_ms": timing.get("total_wall_time_ms"),
             "queue_wait_ms": timing.get("queue_wait_time_ms"),
@@ -4173,8 +4293,36 @@ def _central_console_telemetry_detail(
             "usage_coverage": {name: value.get("coverage") for name, value in metrics.items() if isinstance(value, Mapping)},
             "timing_coverage": timing.get("coverage"),
             "phase_telemetry": "RECORDED" if timing.get("phase_telemetry_available") else "NOT_RECORDED",
+            "outside_selected_window": outside_selected_window,
             "chain": snapshot.get("chain"), "telemetry_snapshot": snapshot,
-        })
+        }
+
+    run_rows = [run_row(record, snapshot) for record, snapshot in selected]
+    chain_attempts: dict[str, list[dict[str, object]]] = {}
+    if full:
+        records_by_run = {str(record["run_id"]): record for record in all_records}
+        snapshots_by_run = {str(record["run_id"]): snapshot for record, snapshot in selected}
+        for record, snapshot in selected:
+            selected_run_id = str(record["run_id"])
+            chain = snapshot.get("chain", {})
+            chain_rows = chain.get("runs", []) if isinstance(chain, Mapping) else []
+            details: list[dict[str, object]] = []
+            for chain_row in chain_rows if isinstance(chain_rows, list) else []:
+                member = chain_row.get("run_id") if isinstance(chain_row, Mapping) else None
+                if not isinstance(member, str) or member not in records_by_run:
+                    continue
+                member_snapshot = snapshots_by_run.get(member)
+                if member_snapshot is None:
+                    member_snapshot = run_telemetry_snapshot(
+                        data_root, member,
+                        central_database=data_root / SERVER_DATABASE_FILENAME,
+                        window_start=day, window_end=day_end,
+                        _usage_cache=usage_cache, _timing_cache=timing_cache,
+                        _lineage_graph=lineage_graph,
+                    )
+                    snapshots_by_run[member] = member_snapshot
+                details.append(run_row(records_by_run[member], member_snapshot))
+            chain_attempts[selected_run_id] = details
 
     def aggregate(values: list[int]) -> dict[str, int] | None:
         if not values:
@@ -4246,15 +4394,23 @@ def _central_console_telemetry_detail(
     cache_sources: list[Mapping[str, object]] = []
     cache_inputs = 0
     cache_cached = 0
+    cache_population_observed = False
     for index, usage in enumerate(usages):
         population = usage.get("cache_ratio_population")
         if isinstance(population, Mapping):
             cache_sources.append(population)
-            if population.get("coverage") != "CONFLICT":
+            if (
+                population.get("coverage") != "CONFLICT"
+                or population.get("value_semantics") == VALID_SUBTOTAL
+            ):
+                source_observed = False
                 if isinstance(population.get("input_tokens"), int):
                     cache_inputs += int(population["input_tokens"])
+                    source_observed = True
                 if isinstance(population.get("cached_input_tokens"), int):
                     cache_cached += int(population["cached_input_tokens"])
+                    source_observed = True
+                cache_population_observed = cache_population_observed or source_observed
         else:
             cache_sources.append(metric_coverage(
                 expected=None, present=0, valid=0,
@@ -4287,12 +4443,13 @@ def _central_console_telemetry_detail(
         "usage": observed_usage,
         "cache_ratio_percent": (
             round(cache_cached * 100 / cache_inputs, 3)
-            if cache_inputs and cache_coverage["coverage"] != "CONFLICT" else None
+            if cache_inputs and cache_population_observed else None
         ),
         "cache_ratio_population": {
             **cache_coverage,
-            "input_tokens": cache_inputs or None,
-            "cached_input_tokens": cache_cached or None,
+            "value_semantics": VALID_SUBTOTAL if cache_population_observed else None,
+            "input_tokens": cache_inputs if cache_population_observed else None,
+            "cached_input_tokens": cache_cached if cache_population_observed else None,
         },
         "timing_coverage": timing_coverage,
     }
@@ -4303,6 +4460,7 @@ def _central_console_telemetry_detail(
         "matching_run_count": len(matching), "returned_run_count": len(selected),
         "runs_truncated": len(matching) > len(selected), "run_limit": None if full else MAX_TELEMETRY_DAY_RUNS,
         "summary": summary, "runs": run_rows,
+        "chain_attempts": chain_attempts if full else {},
         "inclusive_phases": phases, "phases": phases,
         "inclusive_shares_additive": False,
         "exclusive_distribution": exclusive,
@@ -6132,6 +6290,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if request.path == "/api/telemetry/export":
                 parameters = parse_qs(request.query)
                 export_format = (parameters.get("format") or [""])[0]
+                prepare = (parameters.get("prepare") or [""])[0] == "1"
+                snapshot_id = (parameters.get("snapshot_id") or [None])[0]
                 locale = (parameters.get("locale") or ["en"])[0]
                 sort_key = (parameters.get("sort") or ["date"])[0]
                 direction = (parameters.get("direction") or ["desc"])[0]
@@ -6141,20 +6301,52 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     "total_tokens", "complete_count", "blocked_count", "failed_count",
                 }
                 if (
-                    export_format not in {"markdown", "json"}
+                    (not prepare and export_format not in {"markdown", "json"})
+                    or (prepare and export_format not in {"", "markdown", "json"})
                     or locale not in telemetry_export.SUPPORTED_LOCALES
                     or sort_key not in allowed_sort or direction not in {"asc", "desc"}
+                    or (snapshot_id is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", snapshot_id))
                 ):
                     self._send(400, {"error": "TELEMETRY_EXPORT_SELECTION_INVALID"})
                     return
-                configuration = _central_console_configuration(self.server.data_root)  # type: ignore[attr-defined]
-                model = telemetry_export.overview_model(
-                    project_id=selected,
-                    rows=_central_console_telemetry(self.server.data_root, selected),  # type: ignore[attr-defined]
-                    sort_key=sort_key, sort_direction=direction, locale=locale,
-                    retention_days=configuration.get("telemetry_retention_days")
-                    if isinstance(configuration.get("telemetry_retention_days"), int) else None,
-                )
+                binding = json.dumps({
+                    "project_id": selected, "scope": "TELEMETRY_OVERVIEW",
+                    "locale": locale, "sort": sort_key, "direction": direction,
+                }, sort_keys=True, separators=(",", ":"))
+                store = _telemetry_export_store(self.server)
+                model = store.read(snapshot_id, binding=binding) if snapshot_id else None
+                if snapshot_id and model is None:
+                    self._send(409, {"error": "TELEMETRY_EXPORT_SNAPSHOT_UNAVAILABLE"})
+                    return
+                if model is None:
+                    with _telemetry_read_snapshot(self.server.data_root) as (  # type: ignore[attr-defined]
+                        read_connection, source_as_of, source_reference,
+                    ):
+                        model = telemetry_export.overview_model(
+                            project_id=selected,
+                            rows=_central_console_telemetry(
+                                self.server.data_root, selected,  # type: ignore[attr-defined]
+                                full=True,
+                                _read_connection=read_connection,
+                            ),
+                            sort_key=sort_key, sort_direction=direction, locale=locale,
+                            retention_days=_telemetry_retention_days(read_connection),
+                            source_as_of=source_as_of, source_reference=source_reference,
+                        )
+                    snapshot_id, snapshot_error = _retain_telemetry_export_snapshot(
+                        store, model, binding=binding,
+                    )
+                    if snapshot_error is not None:
+                        self._send(snapshot_error[0], {"error": snapshot_error[1]})
+                        return
+                if prepare:
+                    self._send(200, {
+                        "snapshot_id": snapshot_id,
+                        "expires_in_seconds": telemetry_export.SNAPSHOT_TTL_SECONDS,
+                        "selection": model["selection"],
+                    })
+                    return
+                model = telemetry_export.download_model(model)
                 markdown = export_format == "markdown"
                 payload = telemetry_export.serialize_markdown(model) if markdown else telemetry_export.serialize_json(model)
                 self._send_download(
@@ -6169,33 +6361,66 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if telemetry_export_match:
                 parameters = parse_qs(request.query)
                 export_format = (parameters.get("format") or [""])[0]
+                prepare = (parameters.get("prepare") or [""])[0] == "1"
+                snapshot_id = (parameters.get("snapshot_id") or [None])[0]
                 locale = (parameters.get("locale") or ["en"])[0]
                 scope = (parameters.get("scope") or ["UTC_DAY_DETAIL"])[0]
                 run_id = (parameters.get("run_id") or [None])[0]
                 if (
-                    export_format not in {"markdown", "json"}
+                    (not prepare and export_format not in {"markdown", "json"})
+                    or (prepare and export_format not in {"", "markdown", "json"})
                     or locale not in telemetry_export.SUPPORTED_LOCALES
                     or scope not in {"UTC_DAY_DETAIL", "EP_RUN_ATTEMPT", "EXECUTION_CHAIN"}
                     or (run_id is not None and not _SAFE_REPORT_ID.fullmatch(run_id))
                     or (scope != "UTC_DAY_DETAIL" and run_id is None)
+                    or (snapshot_id is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", snapshot_id))
                 ):
                     self._send(400, {"error": "TELEMETRY_EXPORT_SELECTION_INVALID"})
                     return
                 export_date = telemetry_export_match.group(1)
-                detail = _central_console_telemetry_detail(
-                    self.server.data_root, selected, export_date, full=True,  # type: ignore[attr-defined]
-                )
-                if detail is None:
-                    self._send(404, {"error": "TELEMETRY_NOT_FOUND"})
+                binding = json.dumps({
+                    "project_id": selected, "scope": scope, "date": export_date,
+                    "run_id": run_id, "locale": locale,
+                }, sort_keys=True, separators=(",", ":"))
+                store = _telemetry_export_store(self.server)
+                model = store.read(snapshot_id, binding=binding) if snapshot_id else None
+                if snapshot_id and model is None:
+                    self._send(409, {"error": "TELEMETRY_EXPORT_SNAPSHOT_UNAVAILABLE"})
                     return
-                try:
-                    model = telemetry_export.detail_model(
-                        project_id=selected, execution_date=export_date, detail=detail,
-                        scope=scope, run_id=run_id, locale=locale,
+                if model is None:
+                    with _telemetry_read_snapshot(self.server.data_root) as (  # type: ignore[attr-defined]
+                        read_connection, source_as_of, source_reference,
+                    ):
+                        detail = _central_console_telemetry_detail(
+                            self.server.data_root, selected, export_date, full=True,  # type: ignore[attr-defined]
+                            _read_connection=read_connection,
+                        )
+                        if detail is None:
+                            self._send(404, {"error": "TELEMETRY_NOT_FOUND"})
+                            return
+                        try:
+                            model = telemetry_export.detail_model(
+                                project_id=selected, execution_date=export_date, detail=detail,
+                                scope=scope, run_id=run_id, locale=locale,
+                                source_as_of=source_as_of, source_reference=source_reference,
+                            )
+                        except ValueError:
+                            self._send(404, {"error": "TELEMETRY_EXPORT_RUN_NOT_FOUND"})
+                            return
+                    snapshot_id, snapshot_error = _retain_telemetry_export_snapshot(
+                        store, model, binding=binding,
                     )
-                except ValueError:
-                    self._send(404, {"error": "TELEMETRY_EXPORT_RUN_NOT_FOUND"})
+                    if snapshot_error is not None:
+                        self._send(snapshot_error[0], {"error": snapshot_error[1]})
+                        return
+                if prepare:
+                    self._send(200, {
+                        "snapshot_id": snapshot_id,
+                        "expires_in_seconds": telemetry_export.SNAPSHOT_TTL_SECONDS,
+                        "selection": model["selection"],
+                    })
                     return
+                model = telemetry_export.download_model(model)
                 markdown = export_format == "markdown"
                 payload = telemetry_export.serialize_markdown(model) if markdown else telemetry_export.serialize_json(model)
                 context = run_id if run_id is not None else export_date

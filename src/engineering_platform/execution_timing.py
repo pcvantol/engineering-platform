@@ -683,31 +683,46 @@ def timing_summary(
 def timing_summaries(
     root: Path, run_ids: list[str], *, central_database: Path | None = None,
     timeline_limit: int | None = 500,
+    _read_connection: sqlite3.Connection | None = None,
 ) -> dict[str, dict[str, object]]:
-    """Load a bounded run population without one timing query per row."""
-    identifiers = list(dict.fromkeys(value for value in run_ids if isinstance(value, str) and value))[:1000]
+    """Load a run population in bounded query pages without an N+1 query."""
+    identifiers = list(dict.fromkeys(
+        value for value in run_ids if isinstance(value, str) and value
+    ))
     if not identifiers:
         return {}
-    connection = _connection(root, central_database)
-    placeholders = ",".join("?" for _ in identifiers)
+    owns_connection = _read_connection is None
+    connection = _read_connection if _read_connection is not None else _connection(root, central_database)
     keys = (
         "phase_id", "run_id", "phase_name", "phase_category", "parent_phase_id",
         "attempt", "ordinal", "started_at", "completed_at", "duration_ms", "outcome", "metadata",
     )
+    rows: list[tuple[object, ...]] = []
+    historical_rows: list[tuple[object, ...]] = []
+    started_read_transaction = owns_connection and not connection.in_transaction
     try:
-        rows = connection.execute(
-            f"""SELECT phase_id,run_id,phase_name,phase_category,parent_phase_id,
-                       attempt,ordinal,started_at,completed_at,duration_ms,outcome,metadata
-                  FROM execution_phase_spans WHERE run_id IN ({placeholders})
-                  ORDER BY run_id,ordinal""",
-            identifiers,
-        ).fetchall()
-        historical_rows = connection.execute(
-            f"SELECT run_id,total_execution_seconds FROM execution_runs WHERE run_id IN ({placeholders})",
-            identifiers,
-        ).fetchall()
+        if started_read_transaction:
+            connection.execute("BEGIN")
+        for offset in range(0, len(identifiers), 500):
+            batch = identifiers[offset:offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(connection.execute(
+                f"""SELECT phase_id,run_id,phase_name,phase_category,parent_phase_id,
+                           attempt,ordinal,started_at,completed_at,duration_ms,outcome,metadata
+                      FROM execution_phase_spans WHERE run_id IN ({placeholders})
+                      ORDER BY run_id,ordinal""",
+                batch,
+            ).fetchall())
+            historical_rows.extend(connection.execute(
+                f"""SELECT run_id,total_execution_seconds FROM execution_runs
+                      WHERE run_id IN ({placeholders})""",
+                batch,
+            ).fetchall())
     finally:
-        connection.close()
+        if started_read_transaction and connection.in_transaction:
+            connection.rollback()
+        if owns_connection:
+            connection.close()
     spans_by_run: dict[str, list[dict[str, object]]] = {run_id: [] for run_id in identifiers}
     for row in rows:
         item = dict(zip(keys, row, strict=True))

@@ -74,6 +74,55 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "single_operational_installation_status": "UNVERIFIED_SCOPE",
         }
 
+    def test_full_telemetry_overview_pages_beyond_console_preview_limit(self) -> None:
+        server.initialize(self.root)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.executemany(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) "
+                "VALUES(?,?,?,?,?,'MANAGED')",
+                [
+                    (
+                        f"full-overview-{index:04d}", "full-overview", "COMPLETE",
+                        "2026-09-17T10:00:00+00:00", "2026-09-17T10:00:10+00:00",
+                    )
+                    for index in range(1001)
+                ],
+            )
+        measured_run = "full-overview-0000"
+        started = datetime(2026, 9, 17, 10, tzinfo=timezone.utc)
+        total = start_phase(
+            self.root, measured_run, "TOTAL_EXECUTION", started_at=started,
+            monotonic_clock=0, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        complete_phase(
+            self.root, total, completed_at=started + timedelta(seconds=1),
+            monotonic_clock=1,
+        )
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                measured_run, 1, "codex_cli", "observed-model", "PROVIDER_EXECUTION",
+                "IMPLEMENTATION", started.isoformat(),
+                (started + timedelta(seconds=1)).isoformat(), 1000,
+                {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 10},
+                invocation_id="full-overview-final-page-invocation",
+            ),
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        rows = server._central_console_telemetry(
+            self.root, "full-overview", full=True,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["prompt_count"], 1001)
+        self.assertEqual(rows[0]["usage_metrics"]["input_tokens"]["value"], 100)
+        self.assertEqual(rows[0]["average_total_execution_seconds"], 1.0)
+        model = server.telemetry_export.overview_model(
+            project_id="full-overview", rows=rows, sort_key="date",
+            sort_direction="desc", locale="en",
+        )
+        self.assertEqual(model["data"]["overview"]["summary"]["run_count"], 1001)
+        self.assertEqual(model["completeness"]["export"], "COMPLETE")
+
     def _resolved_system_service(self, selected: Path) -> tuple[object, dict[str, object], None]:
         return (
             server.system_server_service.SystemServerService(
@@ -2611,12 +2660,28 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             ),
             central_database=self.root / server.SERVER_DATABASE_FILENAME,
         )
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                "export-run-000", 2, "codex_cli", "observed-model", "PROVIDER_EXECUTION", "IMPLEMENTATION",
+                started.isoformat(), (started + timedelta(seconds=6)).isoformat(), 6000,
+                {"input_tokens": 190, "cached_input_tokens": 90, "output_tokens": 9},
+                invocation_id="export-conflicting-invocation",
+                usage_snapshots=(
+                    {"input_tokens": 200, "cached_input_tokens": 100, "output_tokens": 10},
+                    {"input_tokens": 190, "cached_input_tokens": 90, "output_tokens": 9},
+                ),
+            ),
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
         # Exercise the exact in-process read models as well as the installed
         # HTTP boundary below.  The Server itself runs in a child process, so
         # this assertion keeps per-module coverage tied to the canonical
         # aggregation implementation rather than to a copied fixture.
         projected_overview = server._central_console_telemetry(self.root, "telemetry-export")
         self.assertEqual(projected_overview[0]["prompt_count"], 105)
+        self.assertEqual(projected_overview[0]["usage_metrics"]["input_tokens"]["value"], 100)
+        self.assertEqual(projected_overview[0]["usage_metrics"]["input_tokens"]["coverage"], "CONFLICT")
         projected_detail = server._central_console_telemetry_detail(
             self.root, "telemetry-export", "2026-09-17", full=True,
         )
@@ -2643,11 +2708,23 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.addCleanup(stop_httpd)
 
         base = f"http://127.0.0.1:{port}"
+        overview_selection = (
+            f"{base}/api/telemetry/export?project=telemetry-export&locale=nl"
+            "&sort=date&direction=desc"
+        )
+        with urlopen(overview_selection + "&prepare=1") as response:
+            overview_snapshot = json.loads(response.read())["snapshot_id"]
+        detail_selection = (
+            f"{base}/api/telemetry/2026-09-17/export?project=telemetry-export"
+            "&locale=nl&scope=UTC_DAY_DETAIL"
+        )
+        with urlopen(detail_selection + "&prepare=1") as response:
+            detail_snapshot = json.loads(response.read())["snapshot_id"]
         urls = {
-            "overview_json": f"{base}/api/telemetry/export?project=telemetry-export&format=json&locale=nl&sort=date&direction=desc",
-            "overview_markdown": f"{base}/api/telemetry/export?project=telemetry-export&format=markdown&locale=nl&sort=date&direction=desc",
-            "detail_json": f"{base}/api/telemetry/2026-09-17/export?project=telemetry-export&format=json&locale=nl&scope=UTC_DAY_DETAIL",
-            "detail_markdown": f"{base}/api/telemetry/2026-09-17/export?project=telemetry-export&format=markdown&locale=nl&scope=UTC_DAY_DETAIL",
+            "overview_json": overview_selection + f"&format=json&snapshot_id={overview_snapshot}",
+            "overview_markdown": overview_selection + f"&format=markdown&snapshot_id={overview_snapshot}",
+            "detail_json": detail_selection + f"&format=json&snapshot_id={detail_snapshot}",
+            "detail_markdown": detail_selection + f"&format=markdown&snapshot_id={detail_snapshot}",
         }
         downloads: dict[str, tuple[object, bytes]] = {}
         for name, url in urls.items():
@@ -2665,11 +2742,19 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         overview = json.loads(downloads["overview_json"][1])
         detail = json.loads(downloads["detail_json"][1])
         self.assertEqual(overview["data"]["overview"]["summary"]["run_count"], 105)
+        overview_input = overview["data"]["overview"]["summary"]["usage"]["input_tokens"]
+        detail_input = detail["data"]["day_detail"]["summary"]["usage"]["input_tokens"]
+        self.assertEqual(overview_input["value"], 100)
+        self.assertEqual(detail_input["value"], 100)
+        self.assertEqual(overview_input["coverage"], "CONFLICT")
+        self.assertEqual(detail_input["coverage"], "CONFLICT")
+        self.assertEqual(overview["snapshot_id"], overview_snapshot)
         self.assertEqual(overview["completeness"]["export"], "COMPLETE")
         self.assertEqual(len(detail["data"]["day_detail"]["runs"]), 105)
         self.assertEqual(detail["completeness"]["full_population"], 105)
         self.assertEqual(detail["completeness"]["displayed_population"], 105)
         self.assertEqual(detail["completeness"]["export"], "COMPLETE")
+        self.assertEqual(detail["snapshot_id"], detail_snapshot)
         self.assertNotIn("NaN", downloads["detail_json"][1].decode("utf-8"))
         overview_markdown = downloads["overview_markdown"][1].decode("utf-8")
         detail_markdown = downloads["detail_markdown"][1].decode("utf-8")
@@ -2680,3 +2765,25 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn(str(overview["snapshot_id"]), overview_markdown)
         self.assertIn(str(detail["snapshot_id"]), detail_markdown)
         self.assertEqual(detail["contract_version"], overview["contract_version"])
+        with self.assertRaises(HTTPError) as mismatch:
+            urlopen(
+                f"{base}/api/telemetry/export?project=telemetry-export&format=json&locale=nl"
+                f"&sort=prompt_count&direction=desc&snapshot_id={overview_snapshot}"
+            )
+        self.assertEqual(mismatch.exception.code, 409)
+        self.assertEqual(
+            json.loads(mismatch.exception.read())["error"],
+            "TELEMETRY_EXPORT_SNAPSHOT_UNAVAILABLE",
+        )
+        mismatch.exception.close()
+        httpd.telemetry_export_snapshots = server.telemetry_export.ExportSnapshotStore(
+            max_snapshots=1, max_snapshot_bytes=1, max_retained_bytes=1,
+        )
+        with self.assertRaises(HTTPError) as oversized:
+            urlopen(overview_selection.replace("locale=nl", "locale=es") + "&prepare=1")
+        self.assertEqual(oversized.exception.code, 413)
+        self.assertEqual(
+            json.loads(oversized.exception.read())["error"],
+            "TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE",
+        )
+        oversized.exception.close()

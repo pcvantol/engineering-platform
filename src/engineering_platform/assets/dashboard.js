@@ -4355,7 +4355,8 @@ const executionTelemetryColumns = [
   ["blocked_count", "telemetry.blocked"], ["failed_count", "telemetry.failed"],
 ];
 const EXECUTION_TELEMETRY_PAGE_SIZE = 7;
-let executionTelemetryRows = [], executionTelemetryPage = 1, executionTelemetrySort = { key: "date", direction: "desc" };
+let executionTelemetryRows = [], executionTelemetryPage = 1, executionTelemetrySort = { key: "date", direction: "desc" },
+  executionTelemetryExportSnapshot = null;
 function telemetryComparableValue(row, key) {
   const value = row?.[key];
   return key === "date" ? String(value || "") : typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -4397,6 +4398,7 @@ function setExecutionTelemetrySort(key) {
     ? { key, direction: executionTelemetrySort.direction === "asc" ? "desc" : "asc" }
     : { key, direction: key === "date" ? "desc" : "asc" };
   executionTelemetryPage = 1;
+  executionTelemetryExportSnapshot = null;
   executionTelemetry(executionTelemetryRows);
 }
 function executionTelemetryText(rows = sortedExecutionTelemetryRows()) {
@@ -4453,13 +4455,26 @@ async function downloadExecutionTelemetry(format) {
   const buttons = document.querySelectorAll("#executionTelemetry .telemetry-export");
   buttons.forEach((button) => button.disabled = true);
   try {
+    const bindingParameters = new URLSearchParams(parameters);
+    bindingParameters.delete("format");
+    const binding = `/api/telemetry/export?${bindingParameters}`;
+    if (!executionTelemetryExportSnapshot || executionTelemetryExportSnapshot.binding !== binding) {
+      const prepareParameters = new URLSearchParams(parameters);
+      prepareParameters.set("prepare", "1");
+      prepareParameters.delete("format");
+      const response = await fetch(`/api/telemetry/export?${prepareParameters}`, { cache: "no-store" });
+      const prepared = await response.json().catch(() => ({}));
+      if (!response.ok || typeof prepared.snapshot_id !== "string") throw new Error(t("telemetry.export_failed"));
+      executionTelemetryExportSnapshot = { binding, id: prepared.snapshot_id };
+    }
+    parameters.set("snapshot_id", executionTelemetryExportSnapshot.id);
     await downloadTelemetryResponse(
       `/api/telemetry/export?${parameters}`,
       `telemetry-overview-${project || "project"}-utc.${markdown ? "md" : "json"}`,
     );
     void recordUserAction("telemetry_downloaded");
   } catch (error) {
-    showDashboardToast(error instanceof Error ? error.message : t("telemetry.export_failed"), DASHBOARD_TOAST_GLYPHS.error);
+    showDashboardToast(t("telemetry.export_failed"), DASHBOARD_TOAST_GLYPHS.error);
   } finally {
     buttons.forEach((button) => button.disabled = !executionTelemetryRows.length);
   }
@@ -4493,6 +4508,7 @@ async function clearExecutionTelemetry() {
   }
 }
 function executionTelemetry(rows) {
+  if (rows !== executionTelemetryRows) executionTelemetryExportSnapshot = null;
   let panel = $("executionTelemetry"),
     body = $("executionTelemetryRows"),
     pagination = $("executionTelemetryPagination");
@@ -4673,7 +4689,7 @@ function executionTelemetry(rows) {
   updateExecutionTelemetrySortHeaders();
 }
 let telemetryDetailTrigger = null, telemetryDetailPayload = null, telemetryDetailDate = null, telemetryDetailRequestId = 0,
-  telemetryDetailSelection = { scope: "UTC_DAY_DETAIL", runId: null };
+  telemetryDetailSelection = { scope: "UTC_DAY_DETAIL", runId: null }, telemetryDetailExportSnapshot = null;
 function telemetryMs(value) { return typeof value === "number" && value >= 0 ? telemetryDuration(value / 1000) : t("format.unavailable"); }
 function telemetryNumber(value) {
   return typeof value === "number" && Number.isFinite(value)
@@ -4777,13 +4793,27 @@ async function downloadTelemetryDetail(format) {
   const buttons = [$('telemetryDetailDownloadMarkdown'), $('telemetryDetailDownloadJson')];
   buttons.forEach((button) => button.disabled = true);
   try {
+    const binding = `${captured.date}:${captured.scope}:${captured.runId || ""}:${project}:${dashboardLocale}`;
+    if (!telemetryDetailExportSnapshot || telemetryDetailExportSnapshot.binding !== binding) {
+      const prepareParameters = new URLSearchParams(parameters);
+      prepareParameters.set("prepare", "1");
+      prepareParameters.delete("format");
+      const response = await fetch(
+        `/api/telemetry/${encodeURIComponent(captured.date)}/export?${prepareParameters}`,
+        { cache: "no-store" },
+      );
+      const prepared = await response.json().catch(() => ({}));
+      if (!response.ok || typeof prepared.snapshot_id !== "string") throw new Error(t("telemetry.export_failed"));
+      telemetryDetailExportSnapshot = { binding, id: prepared.snapshot_id };
+    }
+    parameters.set("snapshot_id", telemetryDetailExportSnapshot.id);
     await downloadTelemetryResponse(
       `/api/telemetry/${encodeURIComponent(captured.date)}/export?${parameters}`,
       `telemetry-detail-${project || "project"}-${captured.runId || captured.date}.${markdown ? "md" : "json"}`,
     );
     void recordUserAction(markdown ? "telemetry_detail_markdown_downloaded" : "telemetry_detail_json_downloaded");
   } catch (error) {
-    showDashboardToast(error instanceof Error ? error.message : t("telemetry.export_failed"), DASHBOARD_TOAST_GLYPHS.error);
+    showDashboardToast(t("telemetry.export_failed"), DASHBOARD_TOAST_GLYPHS.error);
   } finally {
     buttons.forEach((button) => button.disabled = false);
   }
@@ -4804,6 +4834,7 @@ function openTelemetryDetail(date, trigger) {
   const requestId = ++telemetryDetailRequestId;
   telemetryDetailTrigger = trigger || document.activeElement;
   telemetryDetailSelection = { scope: "UTC_DAY_DETAIL", runId: null };
+  telemetryDetailExportSnapshot = null;
   const modal = $("telemetryDetailModal"), content = $("telemetryDetailContent");
   $("telemetryDetailTitle").textContent = t("telemetry.detail_title", { date: telemetryDate(date) });
   $("telemetryDetailDescription").textContent = t("telemetry.detail_description");
@@ -4841,6 +4872,7 @@ function renderCanonicalRunDetail(run, host, selectForExport = false) {
     if (updateExportSelection) telemetryDetailSelection = {
       scope: showChain ? "EXECUTION_CHAIN" : "EP_RUN_ATTEMPT", runId: run.run_id,
     };
+    if (updateExportSelection) telemetryDetailExportSnapshot = null;
   };
   attemptButton.addEventListener("click", () => select(false, true)); chainButton.addEventListener("click", () => select(true, true));
   switcher.append(attemptButton, chainButton); select(false); host.append(switcher);

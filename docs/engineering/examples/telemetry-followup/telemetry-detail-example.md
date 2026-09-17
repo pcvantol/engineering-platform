@@ -11,9 +11,10 @@
 | run_id | synthetic-run-1 |
 
 Snapshot: `sha256:synthetic-detail-example`
-As-of: `2026-09-17T10:00:00+00:00`
-Contract: `telemetry-contract@2.1`
-Exportschema: `telemetry-export@1.0`
+Source as-of: `2026-09-17T10:00:00+00:00`
+Downloaded at: `2026-09-17T10:00:05+00:00`
+Contract: `telemetry-contract@2.2`
+Exportschema: `telemetry-export@1.1`
 
 ## Samenvatting
 

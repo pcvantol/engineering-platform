@@ -21,7 +21,7 @@ from .agent_state import redact_diagnostic
 from .storage import EngineeringStorageError, open_storage
 from .telemetry_metrics import (
     COMPLETE, CONFLICT, PARTIAL, TELEMETRY_CALCULATION_VERSION, UNAVAILABLE,
-    aggregate_coverage, metric_coverage,
+    VALID_SUBTOTAL, aggregate_coverage, metric_coverage,
 )
 
 
@@ -46,16 +46,23 @@ _SAFE_CHURN_TEXT_FIELDS = frozenset({
     "context_escalation_diagnostic",
     "event_identity_coverage",
     "historical_pr_metrics_coverage",
+    "historical_pr_identity_coverage",
     "file_read_observation_coverage",
     "tool_output_coverage",
 })
 _SAFE_CHURN_IDENTITY_FIELDS = frozenset({"historical_pr_identity_hashes"})
+_SAFE_CHURN_BOOLEAN_FIELDS = frozenset({
+    "historical_pr_identity_set_complete", "historical_pr_identity_set_truncated",
+})
 _CHURN_MAX_FIELDS = frozenset({"maximum_tool_output_bytes"})
-_CHURN_UNIQUE_FIELDS = frozenset({"historical_unique_pr_results"})
+_CHURN_UNIQUE_FIELDS = frozenset({
+    "historical_unique_pr_results", "historical_pr_unique_lower_bound",
+})
 _CHURN_COVERAGE_FIELDS = frozenset({
     "event_identity_coverage", "historical_pr_metrics_coverage",
-    "file_read_observation_coverage", "tool_output_coverage",
+    "historical_pr_identity_coverage", "file_read_observation_coverage", "tool_output_coverage",
 })
+_MAX_PR_IDENTITY_HASHES = 250
 _MODEL_NORMALIZATION = {
     "gpt-5.6-sol": "gpt-5.6-sol",
     "gpt-5.6-terra": "gpt-5.6-terra",
@@ -65,6 +72,31 @@ _MODEL_NORMALIZATION = {
 
 def _number(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _pr_identity_metadata_conflicts(values: Mapping[str, object]) -> bool:
+    """Reject an exactness claim unless every bounded identity invariant agrees."""
+    if values.get("historical_pr_identity_set_complete") is not True:
+        return False
+    raw_identities = values.get("historical_pr_identity_hashes")
+    if not isinstance(raw_identities, (list, tuple)):
+        return True
+    identities = {
+        item.casefold() for item in raw_identities
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item.casefold())
+    }
+    unique_count = _number(values.get("historical_unique_pr_results"))
+    retained_count = _number(values.get("historical_pr_identity_retained_count"))
+    return (
+        values.get("historical_pr_identity_coverage") != COMPLETE
+        or values.get("historical_pr_identity_set_truncated") is not False
+        or unique_count is None
+        or len(identities) > _MAX_PR_IDENTITY_HASHES
+        or unique_count != len(identities)
+        or retained_count != len(identities)
+        or len(raw_identities) != len(identities)
+        or any(item != item.casefold() for item in raw_identities if isinstance(item, str))
+    )
 
 
 def speed_state(metadata: Mapping[str, object] | None) -> str:
@@ -212,11 +244,12 @@ def _structured_pr_results(raw: object) -> tuple[int, set[str]] | None:
     except json.JSONDecodeError:
         return None
     values = payload if isinstance(payload, list) else [payload]
-    identities = {_structured_pr_id(value) for value in values}
-    identities.discard(None)
-    if len(identities) != len(values):
+    observed = [_structured_pr_id(value) for value in values]
+    if any(identity is None for identity in observed):
         return None
-    return len(values), {str(value) for value in identities}
+    # Repeated result occurrences are valid structured output. They remain in
+    # the occurrence count while the opaque identity set deduplicates them.
+    return len(values), {str(identity) for identity in observed}
 
 
 def churn_from_jsonl(*outputs: str) -> dict[str, object]:
@@ -391,7 +424,14 @@ def churn_from_jsonl(*outputs: str) -> dict[str, object]:
     result["distinct_files_read"] = len(reads)
     result["unique_read_commands"] = len(reads)
     result["historical_unique_pr_results"] = len(pr_identities)
-    result["historical_pr_identity_hashes"] = sorted(pr_identities)[:250]
+    result["historical_pr_identity_hashes"] = sorted(pr_identities)[:_MAX_PR_IDENTITY_HASHES]
+    # The exact invocation-local count is retained, but the opaque identities
+    # stay bounded. Cross-invocation uniqueness is exact only when every
+    # contributing identity set is explicitly complete.
+    identity_set_complete = (
+        result["historical_pr_unstructured_queries"] == 0
+        and len(pr_identities) <= _MAX_PR_IDENTITY_HASHES
+    )
     result["event_identity_coverage"] = (
         CONFLICT if result["conflicting_terminal_events"] else PARTIAL if missing_identity else COMPLETE
     )
@@ -400,8 +440,17 @@ def churn_from_jsonl(*outputs: str) -> dict[str, object]:
         CONFLICT if result["conflicting_terminal_events"] else PARTIAL if missing_identity else COMPLETE
     )
     if result["historical_pr_queries"]:
+        result["historical_pr_identity_set_complete"] = identity_set_complete
+        result["historical_pr_identity_set_truncated"] = len(pr_identities) > _MAX_PR_IDENTITY_HASHES
+        result["historical_pr_identity_retained_count"] = min(
+            len(pr_identities), _MAX_PR_IDENTITY_HASHES,
+        )
+        result["historical_pr_unique_lower_bound"] = len(pr_identities)
         result["historical_pr_metrics_coverage"] = (
             PARTIAL if result["historical_pr_unstructured_queries"] else COMPLETE
+        )
+        result["historical_pr_identity_coverage"] = (
+            COMPLETE if identity_set_complete else PARTIAL
         )
     if not historical_observed:
         for key in (
@@ -498,6 +547,8 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation, *, c
         number = _number(value)
         if number is not None:
             churn[key] = number
+        elif key in _SAFE_CHURN_BOOLEAN_FIELDS and isinstance(value, bool):
+            churn[key] = value
         elif key in _SAFE_CHURN_TEXT_FIELDS and isinstance(value, str):
             compact = redact_diagnostic(value, limit=120)
             if compact:
@@ -506,9 +557,30 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation, *, c
             identities = sorted({
                 item.casefold() for item in value
                 if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item.casefold())
-            })[:250]
+            })[:_MAX_PR_IDENTITY_HASHES]
             if identities:
                 churn[key] = identities
+    raw_identities = (invocation.churn or {}).get("historical_pr_identity_hashes")
+    if isinstance(raw_identities, (list, tuple)):
+        supplied_identity_count = len({
+            item.casefold() for item in raw_identities
+            if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item.casefold())
+        })
+        if supplied_identity_count > _MAX_PR_IDENTITY_HASHES:
+            churn["historical_pr_identity_set_complete"] = False
+            churn["historical_pr_identity_set_truncated"] = True
+            churn["historical_pr_identity_retained_count"] = _MAX_PR_IDENTITY_HASHES
+        retained_identity_count = len(churn.get("historical_pr_identity_hashes", []))
+        declared_unique_count = _number(
+            (invocation.churn or {}).get("historical_unique_pr_results")
+        )
+        churn["historical_pr_identity_retained_count"] = retained_identity_count
+        churn["historical_pr_unique_lower_bound"] = max(
+            retained_identity_count, declared_unique_count or 0,
+        )
+        if _pr_identity_metadata_conflicts(churn):
+            churn["historical_pr_identity_set_complete"] = False
+            churn["historical_pr_identity_coverage"] = CONFLICT
     snapshots = tuple(
         {
             key: _number(snapshot.get(key))
@@ -660,6 +732,7 @@ def provider_usage_summary(
     ]
     churn: dict[str, object] = {}
     pr_identity_hashes: set[str] = set()
+    pr_identity_sources: list[dict[str, object]] = []
     coverage_evidence: dict[str, list[Mapping[str, object]]] = {
         key: [] for key in _CHURN_COVERAGE_FIELDS
     }
@@ -672,6 +745,22 @@ def provider_usage_summary(
         except (TypeError, json.JSONDecodeError):
             values = {}
         if isinstance(values, dict):
+            values = dict(values)
+            if _pr_identity_metadata_conflicts(values):
+                values["historical_pr_identity_set_complete"] = False
+                values["historical_pr_identity_coverage"] = CONFLICT
+            query_count = _number(values.get("historical_pr_queries")) or 0
+            if query_count:
+                retained = {
+                    item for item in values.get("historical_pr_identity_hashes", [])
+                    if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item)
+                } if isinstance(values.get("historical_pr_identity_hashes"), list) else set()
+                pr_identity_sources.append({
+                    "retained": retained,
+                    "complete": values.get("historical_pr_identity_set_complete") is True,
+                    "invocation_unique_count": _number(values.get("historical_unique_pr_results")),
+                    "coverage": values.get("historical_pr_identity_coverage", UNAVAILABLE),
+                })
             for key, value in values.items():
                 if key in _SAFE_CHURN_IDENTITY_FIELDS and isinstance(value, list):
                     pr_identity_hashes.update(
@@ -682,7 +771,9 @@ def provider_usage_summary(
                     # Exact scope-wide uniqueness is derived from the retained
                     # opaque identity union below, never by summing counts.
                     continue
-                elif isinstance(value, int):
+                elif key in _SAFE_CHURN_BOOLEAN_FIELDS and isinstance(value, bool):
+                    continue
+                elif isinstance(value, int) and not isinstance(value, bool):
                     previous = churn.get(key, 0)
                     if key in _CHURN_MAX_FIELDS:
                         churn[key] = max(previous if isinstance(previous, int) else 0, value)
@@ -699,8 +790,19 @@ def provider_usage_summary(
                         })
                     else:
                         text_evidence[key].add(value)
-    if pr_identity_hashes:
-        churn["historical_unique_pr_results"] = len(pr_identity_hashes)
+    if pr_identity_sources:
+        identity_sets_complete = all(
+            source["complete"] is True and source["coverage"] == COMPLETE
+            for source in pr_identity_sources
+        )
+        lower_bound = max(
+            len(pr_identity_hashes),
+            *(int(source["invocation_unique_count"] or 0) for source in pr_identity_sources),
+        )
+        churn["historical_pr_identity_set_complete"] = identity_sets_complete
+        churn["historical_pr_unique_lower_bound"] = lower_bound
+        if identity_sets_complete:
+            churn["historical_unique_pr_results"] = len(pr_identity_hashes)
     for key, evidence in coverage_evidence.items():
         if evidence:
             churn[key] = aggregate_coverage(evidence)["coverage"]
@@ -742,13 +844,20 @@ def provider_usage_summary(
         key: str, value: object, *, meaning: str, unit: str, provenance: str = AUTHORITATIVE,
         compatible: Callable[[sqlite3.Row], bool] | None = None,
     ) -> dict[str, object]:
+        coverage_record = coverage(key, compatible=compatible)
         return {
             "value": value,
             "meaning": meaning,
             "unit": unit,
             "aggregation_level": "EP_RUN_ATTEMPT",
             "provenance": provenance,
-            **coverage(key, compatible=compatible),
+            "value_semantics": (
+                VALID_SUBTOTAL
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+                and int(coverage_record["valid_observations"]) > 0
+                else None
+            ),
+            **coverage_record,
             "calculation_version": TELEMETRY_CALCULATION_VERSION,
             "source_snapshot_reference": run_id,
         }
@@ -851,8 +960,16 @@ def provider_usage_summary(
             "timing_correlation": UNAVAILABLE,
         })
     exact_pr_coverage = churn.get("historical_pr_metrics_coverage", UNAVAILABLE)
-    unique_pr_coverage = exact_pr_coverage
-    if exact_pr_coverage == COMPLETE and len(rows) > 1 and not pr_identity_hashes:
+    if not pr_identity_sources:
+        unique_pr_coverage = UNAVAILABLE
+    elif any(source["coverage"] == CONFLICT for source in pr_identity_sources):
+        unique_pr_coverage = CONFLICT
+    elif all(
+        source["complete"] is True and source["coverage"] == COMPLETE
+        for source in pr_identity_sources
+    ):
+        unique_pr_coverage = COMPLETE
+    else:
         unique_pr_coverage = PARTIAL
     exact_file_coverage = churn.get("file_read_observation_coverage", UNAVAILABLE)
     result = {
@@ -889,7 +1006,9 @@ def provider_usage_summary(
                     for row in rows
                 ),
             ),
-            "input_tokens": compatible_input or None, "cached_input_tokens": compatible_cached or None,
+            "value_semantics": VALID_SUBTOTAL if compatible_cache_rows else None,
+            "input_tokens": compatible_input if compatible_cache_rows else None,
+            "cached_input_tokens": compatible_cached if compatible_cache_rows else None,
         },
         "max_input_tokens_per_invocation": max(inputs) if inputs else None,
         "median_input_tokens_per_invocation": median(inputs) if inputs else None,
@@ -912,14 +1031,25 @@ def provider_usage_summary(
         "historical_pr_result_occurrences": churn.get("historical_pr_result_occurrences") if exact_pr_coverage != UNAVAILABLE else None,
         "historical_unique_pr_results": (
             churn.get("historical_unique_pr_results")
-            if pr_identity_hashes or len(rows) == 1 else None
-        ) if exact_pr_coverage != UNAVAILABLE else None,
+            if unique_pr_coverage == COMPLETE else None
+        ),
+        "historical_unique_pr_results_lower_bound": (
+            churn.get("historical_pr_unique_lower_bound")
+            if pr_identity_sources else None
+        ),
+        "historical_pr_identity_retained_count": (
+            len(pr_identity_hashes) if pr_identity_sources else None
+        ),
+        "historical_pr_identity_set_complete": (
+            unique_pr_coverage == COMPLETE if pr_identity_sources else None
+        ),
         "historical_pr_details_fetched": churn.get("historical_pr_details_fetched") if exact_pr_coverage != UNAVAILABLE else None,
-        "historical_pr_metrics_coverage": unique_pr_coverage,
+        "historical_pr_metrics_coverage": exact_pr_coverage,
         "historical_unique_pr_coverage": unique_pr_coverage,
         "historical_unique_pr_missing_reason": (
-            "Invocation-level unique counts lack scope-wide opaque identities"
-            if unique_pr_coverage == PARTIAL and not pr_identity_hashes else None
+            "One or more query-bearing invocations have a truncated, legacy, or incomplete identity set"
+            if unique_pr_coverage == PARTIAL else
+            "Conflicting PR identity evidence" if unique_pr_coverage == CONFLICT else None
         ),
         "legacy_historical_pr_output_lines": churn.get("historical_pr_results_legacy_lines") or (
             churn.get("historical_pr_results") if observed_history and exact_pr_coverage == UNAVAILABLE else None
@@ -947,12 +1077,18 @@ def provider_usage_summary(
 def provider_usage_summaries(
     root: Path, run_ids: list[str], *, central_database: Path | None = None,
     invocation_limit: int | None = 250,
+    _read_connection: sqlite3.Connection | None = None,
 ) -> dict[str, dict[str, object]]:
-    """Load a bounded run population in two queries, then reuse the canonical reducer."""
-    identifiers = list(dict.fromkeys(value for value in run_ids if isinstance(value, str) and value))[:1000]
+    """Load a run population in bounded query pages, then reuse the canonical reducer."""
+    identifiers = list(dict.fromkeys(
+        value for value in run_ids if isinstance(value, str) and value
+    ))
     if not identifiers:
         return {}
-    if central_database is None:
+    owns_connection = _read_connection is None
+    if _read_connection is not None:
+        connection = _read_connection
+    elif central_database is None:
         connection = open_storage(root)
     else:
         database = central_database.resolve()
@@ -961,29 +1097,40 @@ def provider_usage_summaries(
         connection = sqlite3.connect(database, isolation_level=None)
         connection.execute("PRAGMA foreign_keys=ON")
     connection.row_factory = sqlite3.Row
-    placeholders = ",".join("?" for _ in identifiers)
+    rows: list[sqlite3.Row] = []
+    snapshot_rows: list[sqlite3.Row] = []
+    started_read_transaction = owns_connection and not connection.in_transaction
     try:
-        rows = connection.execute(
-            f"""SELECT invocation_id,run_id,ordinal,provider,model,model_authority,
-                       raw_provider_model,phase,role,started_at,completed_at,duration_ms,
-                       input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,
-                       reasoning_tokens,total_tokens,estimated_credits,estimated_eur,
-                       speed_state,usage_authority,churn,retry_ordinal
-                  FROM provider_invocations WHERE run_id IN ({placeholders})
-                  ORDER BY run_id,ordinal""",
-            identifiers,
-        ).fetchall()
-        snapshot_rows = connection.execute(
-            f"""SELECT p.run_id,s.invocation_id,s.ordinal,s.input_tokens,s.cached_input_tokens,
-                       s.uncached_input_tokens,s.output_tokens,s.input_delta,s.cached_input_delta,
-                       s.uncached_input_delta,s.output_delta
-                  FROM provider_usage_snapshots AS s
-                  JOIN provider_invocations AS p ON p.invocation_id=s.invocation_id
-                 WHERE p.run_id IN ({placeholders}) ORDER BY p.run_id,s.invocation_id,s.ordinal""",
-            identifiers,
-        ).fetchall()
+        if started_read_transaction:
+            connection.execute("BEGIN")
+        for offset in range(0, len(identifiers), 500):
+            batch = identifiers[offset:offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(connection.execute(
+                f"""SELECT invocation_id,run_id,ordinal,provider,model,model_authority,
+                           raw_provider_model,phase,role,started_at,completed_at,duration_ms,
+                           input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,
+                           reasoning_tokens,total_tokens,estimated_credits,estimated_eur,
+                           speed_state,usage_authority,churn,retry_ordinal
+                      FROM provider_invocations WHERE run_id IN ({placeholders})
+                      ORDER BY run_id,ordinal""",
+                batch,
+            ).fetchall())
+            snapshot_rows.extend(connection.execute(
+                f"""SELECT p.run_id,s.invocation_id,s.ordinal,s.input_tokens,s.cached_input_tokens,
+                           s.uncached_input_tokens,s.output_tokens,s.input_delta,s.cached_input_delta,
+                           s.uncached_input_delta,s.output_delta
+                      FROM provider_usage_snapshots AS s
+                      JOIN provider_invocations AS p ON p.invocation_id=s.invocation_id
+                     WHERE p.run_id IN ({placeholders})
+                     ORDER BY p.run_id,s.invocation_id,s.ordinal""",
+                batch,
+            ).fetchall())
     finally:
-        connection.close()
+        if started_read_transaction and connection.in_transaction:
+            connection.rollback()
+        if owns_connection:
+            connection.close()
     rows_by_run: dict[str, list[sqlite3.Row]] = {run_id: [] for run_id in identifiers}
     snapshots_by_run: dict[str, list[sqlite3.Row]] = {run_id: [] for run_id in identifiers}
     for row in rows:

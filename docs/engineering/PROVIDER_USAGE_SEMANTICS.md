@@ -3,7 +3,7 @@
 ## Owning contract
 
 Engineering Platform owns the read model defined by
-`telemetry-contract@2.1`. `provider_usage.py`, `execution_timing.py` and
+`telemetry-contract@2.2`. `provider_usage.py`, `execution_timing.py` and
 `telemetry_contract.py` are the calculation authority. The API, dashboard,
 Engineering Report, Markdown download and JSON export project that contract;
 they must not independently calculate totals or bottlenecks.
@@ -20,6 +20,14 @@ scope even when its numeric present count equals the expected count. Unknown
 expected populations remain unknown. Independent metrics propagate only their
 own dependencies; one invalid cached-input observation does not invalidate an
 otherwise valid output observation.
+
+A numeric aggregate marked `VALID_OBSERVATIONS_SUBTOTAL` contains only the
+observations that remain valid for that metric. Higher scopes retain that
+subtotal while independently retaining `PARTIAL` or `CONFLICT` coverage and
+its observation counts. An unmarked numeric value from a conflicted legacy
+source is not admitted. This makes sums and maxima independent of whether the
+same population is grouped first by run, day, chain or overview. A compatible
+cache-ratio population follows the same rule and preserves a measured zero.
 
 The scopes are:
 
@@ -88,6 +96,21 @@ observations. Output lines are never PRs inspected. When only old unstructured
 output-line totals survive, the value is named `legacy_historical_pr_output_lines`
 and exact PR fields are unavailable.
 
+Opaque PR identities are retained up to a fixed privacy/storage bound. Every
+query-bearing invocation records whether its retained identity set is complete
+and whether it was truncated. Scope-wide uniqueness is exact only when every
+contributing set is explicitly complete. Otherwise the exact value is `null`,
+coverage is `PARTIAL`/`UNAVAILABLE`/`CONFLICT` as applicable, and a safe lower
+bound is the greater of the retained union and each source's own lower bound.
+Legacy rows without an explicit set-completeness marker are never promoted to
+an exact complete union. A modern record that claims completeness while its
+declared unique count, retained count, opaque identities, truncation marker or
+coverage disagree fails closed as `CONFLICT`; its safe lower bound may remain
+visible, but it is not projected as an exact unique total. The same invariant
+is checked again during read projection, so a pre-existing corrupt or
+inconsistent stored row cannot bypass the owning writer's validation. Readback
+also enforces the 250-identity storage bound and canonical lowercase hash form.
+
 Read-command counters are derived command observations. Exact file-read
 observations require reliable tool metadata for opaque file identity, revision
 and (when relevant) range. Repeating a shell command is not proof that a file
@@ -130,16 +153,35 @@ missing historical event metadata is never fabricated.
 
 ## Export contract
 
-`telemetry-export@1.0` is the read-only export envelope for the overview and
+`telemetry-export@1.1` is the read-only export envelope for the overview and
 detail Markdown/JSON downloads. Each envelope carries a snapshot digest,
-as-of timestamp, project, UTC selection, scope, source references, displayed
+source-as-of timestamp, separate download timestamp, project, UTC selection, scope, source references, displayed
 and full population, export completeness and metric coverage. Markdown and
 JSON serialize that one model; neither recalculates totals.
 
-The overview export contains every retained row in the active project/filter
-scope rather than only the visible page. Detail export can select the UTC day,
+All CENTRAL reads used to build one model share one short read-only SQLite
+transaction. The transaction is released before serialization or download.
+The already projected, privacy-safe model is retained in a bounded in-memory
+cache for ten minutes so Markdown and JSON can read back the same snapshot ID.
+A missing, expired, project-foreign or selection-foreign ID fails explicitly;
+it is never replaced silently by a newer read. The cache has independent
+per-model, item-count and total encoded-byte limits. It evicts oldest snapshots
+within that process-wide budget; a single model that cannot fit is rejected as
+an explicit `TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE` product response rather than
+being truncated or retained without a bound.
+
+The overview export reads the entire active project/filter population through
+bounded 500-record database pages inside the same read transaction; the
+1,000-run Console preview limit and 360-day UI limit are not export limits.
+Usage and timing reducers page that identical run population in 500-identifier
+batches as well. It therefore contains every retained row and its available
+measurements rather than only the visible page.
+Detail export can select the UTC day,
 one attempt, or its verified execution chain. Full exports disable the UI
-preview limits for runs, invocations and spans. JSON retains numeric machine
+preview limits for runs, invocations and spans. A chain detail includes a safe
+full attempt record, invocations, spans, timing distribution and coverage for
+every retained verified member, including members outside the selected UTC
+day. Export completeness is separate from measurement coverage. JSON retains numeric machine
 values and `null`; Markdown localizes human headings and explicitly renders
 unavailable values. Neither export includes prompts, replies, commands,
 secrets, raw tool output, or span metadata outside the telemetry allow-list.

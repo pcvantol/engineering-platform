@@ -4889,6 +4889,9 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/telemetry/2026-08-24", (route) => {
       const requestUrl = new URL(route.request().url());
       if (!requestUrl.pathname.endsWith("/export")) return route.fulfill({ json: detail });
+      if (requestUrl.searchParams.get("prepare") === "1") return route.fulfill({ json: {
+        snapshot_id: `sha256:${"d".repeat(64)}`, selection: { scope: "UTC_DAY_DETAIL", date: "2026-08-24" },
+      } });
       const markdown = requestUrl.searchParams.get("format") === "markdown";
       return route.fulfill({
         contentType: markdown ? "text/markdown; charset=utf-8" : "application/json; charset=utf-8",
@@ -4928,7 +4931,7 @@ test.describe("Engineering Status browser smoke", () => {
     const downloadedJson = await jsonDownload;
     expect(downloadedJson.suggestedFilename()).toBe("telemetry-detail-dashboard-fixture-utc-day-detail-2026-08-24.json");
     const jsonContent = JSON.parse(readFileSync(await downloadedJson.path(), "utf8"));
-    expect(jsonContent.export_schema_version).toBe("telemetry-export@1.0");
+    expect(jsonContent.export_schema_version).toBe("telemetry-export@1.1");
     expect(jsonContent.selection).toMatchObject({ project_id: "dashboard-fixture", scope: "UTC_DAY_DETAIL", date: "2026-08-24" });
     expect(jsonContent.data.day_detail.runs.map((run) => run.run_id)).toContain("inbox-day-export");
     expect(markdownContent).toContain(jsonContent.snapshot_id);
@@ -5424,7 +5427,7 @@ test.describe("Engineering Status browser smoke", () => {
       provider_invocation_count: index === 6 ? 9 : 5,
     }));
     const detail = {
-      contract_version: "telemetry-contract@2.1", source_snapshot_references: [runId], scope: "EP_RUN_ATTEMPTS_IN_UTC_DAY",
+      contract_version: "telemetry-contract@2.2", source_snapshot_references: [runId], scope: "EP_RUN_ATTEMPTS_IN_UTC_DAY",
       summary: {
         executions: 1, population: 1, completed: 1, blocked: 0, failed: 0,
         total_wall_time: { average_ms: 2721545, median_ms: 2721545, population: 1 },
@@ -5460,7 +5463,7 @@ test.describe("Engineering Status browser smoke", () => {
         model: "gpt-6-codex-experimental", phase_telemetry: "RECORDED",
         usage_coverage: { input_tokens: "PARTIAL", output_tokens: "PARTIAL" }, timing_coverage: { state: "COMPLETE" },
         telemetry_snapshot: {
-          contract_version: "telemetry-contract@2.1",
+          contract_version: "telemetry-contract@2.2",
           attempt: { scope: "EP_RUN_ATTEMPT", timing: {
             total_wall_time_ms: 2721545, provider_unique_coverage_ms: 1233072, provider_cumulative_process_duration_ms: 1233062,
             external_wait_time_ms: 364132, unassigned_time_ms: 648751, coverage: { state: "COMPLETE" }, timeline,
@@ -5491,13 +5494,16 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/telemetry/2026-09-17", (route) => {
       const requestUrl = new URL(route.request().url());
       if (!requestUrl.pathname.endsWith("/export")) return route.fulfill({ json: detail });
+      if (requestUrl.searchParams.get("prepare") === "1") return route.fulfill({ json: {
+        snapshot_id: `sha256:${"c".repeat(64)}`, selection: { scope: "EXECUTION_CHAIN", run_id: runId },
+      } });
       return route.fulfill({
         contentType: "application/json; charset=utf-8",
         headers: { "Content-Disposition": `attachment; filename="telemetry-detail-dashboard-fixture-execution-chain-${runId}.json"` },
         body: JSON.stringify({
-          export_schema_version: "telemetry-export@1.0", contract_version: "telemetry-contract@2.1",
+          export_schema_version: "telemetry-export@1.1", contract_version: "telemetry-contract@2.2",
           snapshot_id: "sha256:chain-snapshot", selection: { scope: "EXECUTION_CHAIN", run_id: runId },
-          data: { chain: detail.runs[0].telemetry_snapshot.chain },
+          data: { selected_attempt: detail.runs[0], chain: detail.runs[0].telemetry_snapshot.chain },
         }),
       });
     });
@@ -5541,7 +5547,7 @@ test.describe("Engineering Status browser smoke", () => {
     const chainDownload = await chainDownloadPromise;
     expect(chainDownload.suggestedFilename()).toBe(`telemetry-detail-dashboard-fixture-execution-chain-${runId}.json`);
     const chainExport = JSON.parse(readFileSync(await chainDownload.path(), "utf8"));
-    expect(chainExport.export_schema_version).toBe("telemetry-export@1.0");
+    expect(chainExport.export_schema_version).toBe("telemetry-export@1.1");
     expect(chainExport.selection).toMatchObject({ scope: "EXECUTION_CHAIN", run_id: runId });
     expect(chainExport.data.selected_attempt.run_id).toBe(runId);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);

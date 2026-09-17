@@ -6,29 +6,106 @@ neither serializer recalculates telemetry metrics.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+from threading import RLock
+from time import monotonic
 from typing import Mapping, Sequence
 
 from .telemetry_metrics import aggregate_numeric_metric, metric_coverage
 
 
-EXPORT_SCHEMA_VERSION = "telemetry-export@1.0"
+EXPORT_SCHEMA_VERSION = "telemetry-export@1.1"
 SUPPORTED_LOCALES = frozenset({"en", "nl", "de", "fr", "es"})
+SNAPSHOT_TTL_SECONDS = 600
+MAX_RETAINED_SNAPSHOTS = 16
+MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
+MAX_RETAINED_SNAPSHOT_BYTES = 64 * 1024 * 1024
+
+
+class ExportSnapshotStore:
+    """Bounded in-memory readback for already projected, privacy-safe models."""
+
+    def __init__(
+        self, *, max_snapshots: int = MAX_RETAINED_SNAPSHOTS,
+        max_snapshot_bytes: int = MAX_SNAPSHOT_BYTES,
+        max_retained_bytes: int = MAX_RETAINED_SNAPSHOT_BYTES,
+    ) -> None:
+        if not 0 < max_snapshot_bytes <= max_retained_bytes or max_snapshots < 1:
+            raise ValueError("TELEMETRY_EXPORT_SNAPSHOT_LIMIT_INVALID")
+        self._lock = RLock()
+        self._max_snapshots = max_snapshots
+        self._max_snapshot_bytes = max_snapshot_bytes
+        self._max_retained_bytes = max_retained_bytes
+        self._retained_bytes = 0
+        self._models: dict[str, tuple[float, str, int, dict[str, object]]] = {}
+
+    def retain(self, model: Mapping[str, object], *, binding: str) -> str:
+        snapshot_id = model.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or not snapshot_id.startswith("sha256:"):
+            raise ValueError("TELEMETRY_EXPORT_SNAPSHOT_INVALID")
+        encoded = json.dumps(model, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        encoded_size = len(encoded)
+        if encoded_size > self._max_snapshot_bytes:
+            raise ValueError("TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE")
+        now = monotonic()
+        with self._lock:
+            self._expire(now)
+            previous = self._models.pop(snapshot_id, None)
+            if previous is not None:
+                self._retained_bytes -= previous[2]
+            while self._models and (
+                len(self._models) >= self._max_snapshots
+                or self._retained_bytes + encoded_size > self._max_retained_bytes
+            ):
+                oldest = min(self._models, key=lambda key: self._models[key][0])
+                evicted = self._models.pop(oldest)
+                self._retained_bytes -= evicted[2]
+            if self._retained_bytes + encoded_size > self._max_retained_bytes:
+                raise ValueError("TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE")
+            self._models[snapshot_id] = (
+                now + SNAPSHOT_TTL_SECONDS, binding, encoded_size, deepcopy(dict(model)),
+            )
+            self._retained_bytes += encoded_size
+        return snapshot_id
+
+    def read(self, snapshot_id: str, *, binding: str) -> dict[str, object] | None:
+        now = monotonic()
+        with self._lock:
+            self._expire(now)
+            retained = self._models.get(snapshot_id)
+            if retained is None or retained[1] != binding:
+                return None
+            return deepcopy(retained[3])
+
+    def _expire(self, now: float) -> None:
+        for key, (expires_at, _, encoded_size, _) in list(self._models.items()):
+            if expires_at <= now:
+                self._models.pop(key, None)
+                self._retained_bytes -= encoded_size
+
+
+def download_model(model: Mapping[str, object]) -> dict[str, object]:
+    """Stamp download time without changing the retained source snapshot."""
+    result = deepcopy(dict(model))
+    result["downloaded_at"] = datetime.now(timezone.utc).isoformat()
+    return result
 
 _LABELS = {
-    "en": {"overview": "Telemetry overview", "detail": "Telemetry detail", "selection": "Selection", "summary": "Summary", "coverage": "Coverage", "runs": "Runs", "inclusive": "Inclusive phase workload", "inclusive_note": "Inclusive shares may overlap and are not additive.", "exclusive": "Exclusive elapsed-time distribution", "bottlenecks": "Bottlenecks", "invocations": "Provider invocations", "timeline": "Timeline", "chain": "Execution chain", "limitations": "Limitations and conflicts", "field": "Field", "value": "Value", "unavailable": "Unavailable"},
-    "nl": {"overview": "Telemetrieoverzicht", "detail": "Telemetriedetail", "selection": "Selectie", "summary": "Samenvatting", "coverage": "Dekking", "runs": "Uitvoeringen", "inclusive": "Inclusieve fasewerklast", "inclusive_note": "Inclusieve aandelen mogen overlappen en zijn niet optelbaar.", "exclusive": "Exclusieve doorlooptijdverdeling", "bottlenecks": "Knelpunten", "invocations": "Providerinvocations", "timeline": "Tijdlijn", "chain": "Uitvoeringsketen", "limitations": "Beperkingen en conflicten", "field": "Veld", "value": "Waarde", "unavailable": "Niet beschikbaar"},
-    "de": {"overview": "Telemetrieübersicht", "detail": "Telemetriedetail", "selection": "Auswahl", "summary": "Zusammenfassung", "coverage": "Abdeckung", "runs": "Ausführungen", "inclusive": "Inklusive Phasenarbeitslast", "inclusive_note": "Inklusive Anteile dürfen sich überlappen und sind nicht addierbar.", "exclusive": "Exklusive Laufzeitverteilung", "bottlenecks": "Engpässe", "invocations": "Provider-Aufrufe", "timeline": "Zeitachse", "chain": "Ausführungskette", "limitations": "Einschränkungen und Konflikte", "field": "Feld", "value": "Wert", "unavailable": "Nicht verfügbar"},
-    "fr": {"overview": "Vue d’ensemble de la télémétrie", "detail": "Détail de télémétrie", "selection": "Sélection", "summary": "Résumé", "coverage": "Couverture", "runs": "Exécutions", "inclusive": "Charge de phase inclusive", "inclusive_note": "Les parts inclusives peuvent se chevaucher et ne sont pas additionnables.", "exclusive": "Répartition exclusive du temps", "bottlenecks": "Goulets d’étranglement", "invocations": "Invocations fournisseur", "timeline": "Chronologie", "chain": "Chaîne d’exécution", "limitations": "Limites et conflits", "field": "Champ", "value": "Valeur", "unavailable": "Indisponible"},
-    "es": {"overview": "Resumen de telemetría", "detail": "Detalle de telemetría", "selection": "Selección", "summary": "Resumen", "coverage": "Cobertura", "runs": "Ejecuciones", "inclusive": "Carga de fase inclusiva", "inclusive_note": "Las proporciones inclusivas pueden solaparse y no son sumables.", "exclusive": "Distribución exclusiva del tiempo", "bottlenecks": "Cuellos de botella", "invocations": "Invocaciones del proveedor", "timeline": "Cronología", "chain": "Cadena de ejecución", "limitations": "Limitaciones y conflictos", "field": "Campo", "value": "Valor", "unavailable": "No disponible"},
+    "en": {"overview": "Telemetry overview", "detail": "Telemetry detail", "selection": "Selection", "summary": "Summary", "coverage": "Coverage", "runs": "Runs", "attempt": "Attempt", "inclusive": "Inclusive phase workload", "inclusive_note": "Inclusive shares may overlap and are not additive.", "exclusive": "Exclusive elapsed-time distribution", "bottlenecks": "Bottlenecks", "invocations": "Provider invocations", "timeline": "Timeline", "chain": "Execution chain", "limitations": "Limitations and conflicts", "field": "Field", "value": "Value", "unavailable": "Unavailable"},
+    "nl": {"overview": "Telemetrieoverzicht", "detail": "Telemetriedetail", "selection": "Selectie", "summary": "Samenvatting", "coverage": "Dekking", "runs": "Uitvoeringen", "attempt": "Poging", "inclusive": "Inclusieve fasewerklast", "inclusive_note": "Inclusieve aandelen mogen overlappen en zijn niet optelbaar.", "exclusive": "Exclusieve doorlooptijdverdeling", "bottlenecks": "Knelpunten", "invocations": "Providerinvocations", "timeline": "Tijdlijn", "chain": "Uitvoeringsketen", "limitations": "Beperkingen en conflicten", "field": "Veld", "value": "Waarde", "unavailable": "Niet beschikbaar"},
+    "de": {"overview": "Telemetrieübersicht", "detail": "Telemetriedetail", "selection": "Auswahl", "summary": "Zusammenfassung", "coverage": "Abdeckung", "runs": "Ausführungen", "attempt": "Versuch", "inclusive": "Inklusive Phasenarbeitslast", "inclusive_note": "Inklusive Anteile dürfen sich überlappen und sind nicht addierbar.", "exclusive": "Exklusive Laufzeitverteilung", "bottlenecks": "Engpässe", "invocations": "Provider-Aufrufe", "timeline": "Zeitachse", "chain": "Ausführungskette", "limitations": "Einschränkungen und Konflikte", "field": "Feld", "value": "Wert", "unavailable": "Nicht verfügbar"},
+    "fr": {"overview": "Vue d’ensemble de la télémétrie", "detail": "Détail de télémétrie", "selection": "Sélection", "summary": "Résumé", "coverage": "Couverture", "runs": "Exécutions", "attempt": "Tentative", "inclusive": "Charge de phase inclusive", "inclusive_note": "Les parts inclusives peuvent se chevaucher et ne sont pas additionnables.", "exclusive": "Répartition exclusive du temps", "bottlenecks": "Goulets d’étranglement", "invocations": "Invocations fournisseur", "timeline": "Chronologie", "chain": "Chaîne d’exécution", "limitations": "Limites et conflits", "field": "Champ", "value": "Valeur", "unavailable": "Indisponible"},
+    "es": {"overview": "Resumen de telemetría", "detail": "Detalle de telemetría", "selection": "Selección", "summary": "Resumen", "coverage": "Cobertura", "runs": "Ejecuciones", "attempt": "Intento", "inclusive": "Carga de fase inclusiva", "inclusive_note": "Las proporciones inclusivas pueden solaparse y no son sumables.", "exclusive": "Distribución exclusiva del tiempo", "bottlenecks": "Cuellos de botella", "invocations": "Invocaciones del proveedor", "timeline": "Cronología", "chain": "Cadena de ejecución", "limitations": "Limitaciones y conflictos", "field": "Campo", "value": "Valor", "unavailable": "No disponible"},
 }
 
 
 def overview_model(
     *, project_id: str, rows: Sequence[Mapping[str, object]], sort_key: str,
     sort_direction: str, locale: str, retention_days: int | None = None,
+    source_as_of: str | None = None, source_reference: str | None = None,
 ) -> dict[str, object]:
     comparable = [row for row in rows if _sort_value(row, sort_key)[0] == 0]
     unavailable = [row for row in rows if _sort_value(row, sort_key)[0] != 0]
@@ -74,12 +151,14 @@ def overview_model(
         references=[str(row.get("date")) for row in ordered if row.get("date")],
         displayed_population=len(ordered), full_population=len(ordered), export_complete=True,
         contract_version=_contract_version(ordered),
+        source_as_of=source_as_of, source_reference=source_reference,
     )
 
 
 def detail_model(
     *, project_id: str, execution_date: str, detail: Mapping[str, object],
     scope: str, run_id: str | None, locale: str,
+    source_as_of: str | None = None, source_reference: str | None = None,
 ) -> dict[str, object]:
     runs = [row for row in detail.get("runs", []) if isinstance(row, Mapping)]
     selected = next((row for row in runs if row.get("run_id") == run_id), None)
@@ -93,12 +172,32 @@ def detail_model(
     elif scope == "EXECUTION_CHAIN":
         snapshot = (selected or {}).get("telemetry_snapshot", {})
         chain = snapshot.get("chain", {}) if isinstance(snapshot, Mapping) else {}
-        data = {"selected_attempt": _safe_run(selected or {}), "chain": _safe_chain(chain)}
+        attempts_by_selected = detail.get("chain_attempts", {})
+        raw_attempts = (
+            attempts_by_selected.get(str(run_id), [])
+            if isinstance(attempts_by_selected, Mapping) else []
+        )
+        chain_attempts = [
+            _safe_run(row) for row in raw_attempts if isinstance(row, Mapping)
+        ] if isinstance(raw_attempts, list) else []
+        data = {
+            "selected_attempt_reference": str(run_id),
+            "selected_attempt": _safe_run(selected or {}),
+            "chain": _safe_chain(chain),
+            "chain_attempts": chain_attempts,
+        }
         references = [str(row.get("run_id")) for row in chain.get("runs", []) if isinstance(row, Mapping)] if isinstance(chain, Mapping) else [str(run_id)]
         chain_runs = chain.get("runs", []) if isinstance(chain, Mapping) else []
-        displayed_population = full_population = len(chain_runs) if isinstance(chain_runs, list) else 0
+        full_population = len(chain_runs) if isinstance(chain_runs, list) else 0
+        displayed_population = len(chain_attempts)
         reasons = chain.get("reasons", []) if isinstance(chain, Mapping) else []
-        export_complete = not any(
+        expected_ids = {
+            str(row.get("run_id")) for row in chain_runs if isinstance(row, Mapping) and row.get("run_id")
+        } if isinstance(chain_runs, list) else set()
+        delivered_ids = {
+            str(row.get("run_id")) for row in chain_attempts if row.get("run_id")
+        }
+        export_complete = expected_ids == delivered_ids and not any(
             isinstance(reason, str) and reason.startswith("chain-limit:")
             for reason in (reasons if isinstance(reasons, list) else [])
         )
@@ -122,6 +221,7 @@ def detail_model(
         full_population=full_population,
         export_complete=export_complete,
         contract_version=str(detail.get("contract_version") or "UNAVAILABLE"),
+        source_as_of=source_as_of, source_reference=source_reference,
     )
 
 
@@ -138,7 +238,7 @@ def serialize_markdown(model: Mapping[str, object]) -> bytes:
     lines = [f"# {_md(title)}", "", f"## {_md(labels['selection'])}", "", _table(
         [labels["field"], labels["value"]],
         [[key, _display(value, labels)] for key, value in selection.items()] if isinstance(selection, Mapping) else [],
-    ), "", f"Snapshot: `{_md(model.get('snapshot_id'))}`  ", f"As-of: `{_md(model.get('as_of'))}`  ", f"Contract: `{_md(model.get('contract_version'))}`  ", f"Export schema: `{_md(model.get('export_schema_version'))}`", ""]
+    ), "", f"Snapshot: `{_md(model.get('snapshot_id'))}`  ", f"Source as-of: `{_md(model.get('source_as_of') or model.get('as_of'))}`  ", f"Downloaded at: `{_md(model.get('downloaded_at'))}`  ", f"Contract: `{_md(model.get('contract_version'))}`  ", f"Export schema: `{_md(model.get('export_schema_version'))}`", ""]
     completeness = model.get("completeness", {})
     lines += [f"## {_md(labels['coverage'])}", "", _table(
         [labels["field"], labels["value"]],
@@ -155,8 +255,11 @@ def serialize_markdown(model: Mapping[str, object]) -> bytes:
         columns = sorted({str(key) for row in rows if isinstance(row, Mapping) for key in row})
         lines += [f"## {_md(labels['runs'])}", "", _mapping_table(columns, rows, labels), ""]
     elif isinstance(data, Mapping):
-        detail = data.get("day_detail") or data.get("attempt") or data.get("selected_attempt") or {}
-        if isinstance(detail, Mapping):
+        chain_attempts = data.get("chain_attempts")
+        detail = data.get("day_detail") or data.get("attempt") or (
+            {} if isinstance(chain_attempts, list) else data.get("selected_attempt")
+        ) or {}
+        if isinstance(detail, Mapping) and detail:
             lines += _markdown_detail(detail, labels)
         chain = data.get("chain")
         if isinstance(chain, Mapping):
@@ -168,21 +271,38 @@ def serialize_markdown(model: Mapping[str, object]) -> bytes:
             if isinstance(chain_rows, list) and chain_rows:
                 columns = sorted({str(key) for row in chain_rows if isinstance(row, Mapping) for key in row})
                 lines += [_mapping_table(columns, chain_rows, labels), ""]
+        if isinstance(chain_attempts, list):
+            for attempt in chain_attempts:
+                if not isinstance(attempt, Mapping):
+                    continue
+                lines += [
+                    f"## {_md(labels['attempt'])}: `{_md(attempt.get('run_id'))}`", "",
+                    *_markdown_detail(attempt, labels),
+                ]
     limitations = _limitations(model)
     if limitations:
         lines += [f"## {_md(labels['limitations'])}", "", *[f"- {_md(reason)}" for reason in limitations], ""]
     return ("\n".join(lines).rstrip() + "\n").encode("utf-8")
 
 
-def _envelope(*, locale: str, selection: Mapping[str, object], data: Mapping[str, object], references: Sequence[str], displayed_population: int, full_population: int, export_complete: bool, contract_version: str) -> dict[str, object]:
+def _envelope(*, locale: str, selection: Mapping[str, object], data: Mapping[str, object], references: Sequence[str], displayed_population: int, full_population: int, export_complete: bool, contract_version: str, source_as_of: str | None = None, source_reference: str | None = None) -> dict[str, object]:
     locale = locale if locale in SUPPORTED_LOCALES else "en"
-    as_of = datetime.now(timezone.utc).isoformat()
-    core = {"contract_version": contract_version, "selection": selection, "data": data, "source_snapshot_references": list(dict.fromkeys(references))}
+    as_of = source_as_of or datetime.now(timezone.utc).isoformat()
+    core = {
+        "contract_version": contract_version, "selection": selection, "data": data,
+        "source_snapshot_references": list(dict.fromkeys(references)),
+        "source": {
+            "kind": "CENTRAL_READ_TRANSACTION",
+            "as_of": as_of,
+            "reference": source_reference,
+        },
+    }
     digest = hashlib.sha256(json.dumps(core, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
     return {
         "export_schema_version": EXPORT_SCHEMA_VERSION,
         "contract_version": contract_version,
-        "snapshot_id": f"sha256:{digest}", "as_of": as_of, "locale": locale,
+        "snapshot_id": f"sha256:{digest}", "as_of": as_of, "source_as_of": as_of,
+        "downloaded_at": None, "source": core["source"], "locale": locale,
         "selection": dict(selection), "source_snapshot_references": core["source_snapshot_references"],
         "completeness": {
             "export": "COMPLETE" if export_complete and displayed_population == full_population else "PARTIAL",
@@ -231,7 +351,19 @@ def _safe_attempt(attempt: Mapping[str, object]) -> dict[str, object]:
 
 
 def _safe_chain(chain: object) -> dict[str, object]:
-    return dict(chain) if isinstance(chain, Mapping) else {}
+    if not isinstance(chain, Mapping):
+        return {}
+    allowed = {
+        "contract_version", "scope", "selected_run_id", "root_run_id",
+        "coverage", "reason", "reasons", "mission_scope_label", "mission_id",
+        "engineering_action_id", "attempt_count", "original_attempt_count",
+        "retry_count", "resume_count", "first_started_at", "last_completed_at",
+        "elapsed_ms", "processing_time_ms", "covered_elapsed_ms",
+        "inter_attempt_gap_ms", "provider_invocation_count",
+        "duplicate_invocation_count", "usage_metrics", "cache_ratio_percent",
+        "cache_ratio_population", "outside_selected_window_count", "runs",
+    }
+    return {key: value for key, value in chain.items() if key in allowed}
 
 
 def _markdown_detail(detail: Mapping[str, object], labels: Mapping[str, str]) -> list[str]:
