@@ -25,7 +25,17 @@ from .producer import ProducerMetadata, parse_producer_metadata
 from .providers import GitProvider
 from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
-from .storage import EngineeringStorageError, load_readiness_evaluation, load_run_qualification_snapshot, load_submission_attempt_for_run, load_submission_for_run, load_run_lineage, load_validation_context
+from .storage import (
+    EngineeringStorageError,
+    SUBMISSION_EVIDENCE_LEGACY_ABSENT,
+    SUBMISSION_EVIDENCE_VALID_MODERN,
+    load_readiness_evaluation,
+    load_run_qualification_snapshot,
+    load_submission_for_run,
+    load_run_lineage,
+    load_validation_context,
+    resolve_submission_attempt_evidence,
+)
 from .telemetry_contract import run_telemetry_snapshot
 from .provider_recovery import load_recovery_state
 from .execution_activity import build_terminal_activity_summary, persist_terminal_activity_summary, terminal_activity_summary
@@ -134,16 +144,50 @@ def _objective_requirements(objective: str) -> tuple[str, ...]:
     return (first,)
 
 
-def _deliverable_answer(objective: str, state: TransactionState) -> str:
-    """Answer explicit binary delivery requests from the persisted terminal state."""
-    requested = re.search(r"\bYES\b|\bPASS\b|\bGO\b|\bNO-GO\b", objective, re.IGNORECASE)
-    if not requested:
-        return "Not explicitly requested by the prompt."
-    if state.phase == "COMPLETE":
-        return "YES / PASS / GO — the persisted terminal checkpoint is COMPLETE."
-    if state.phase == "BLOCKED":
-        return "NO / FAIL / NO-GO — the persisted terminal checkpoint is BLOCKED."
-    return "NO / FAIL / NO-GO — the persisted terminal checkpoint is FAILED."
+def _outcome_projection(
+    state: TransactionState,
+    qualification_snapshot: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Separate technical completion, EP qualification and external acceptance."""
+    snapshot = qualification_snapshot if isinstance(qualification_snapshot, Mapping) else {}
+    conflicts = snapshot.get("projection_conflicts")
+    conflict_values = (
+        tuple(str(value) for value in conflicts if isinstance(value, str) and value)
+        if isinstance(conflicts, list) else ()
+    )
+    persisted_qualification = snapshot.get("run_qualification")
+    ep_qualification = (
+        "EVIDENCE_CONFLICT"
+        if conflict_values else
+        str(persisted_qualification)
+        if persisted_qualification in {"QUALIFIED", "NOT_QUALIFIED"} else
+        "UNAVAILABLE"
+    )
+    return {
+        "technical_delivery": state.phase,
+        "ep_run_qualification": ep_qualification,
+        "ep_run_qualification_persisted_outcome": (
+            str(persisted_qualification)
+            if persisted_qualification in {"QUALIFIED", "NOT_QUALIFIED"} else None
+        ),
+        "ep_run_qualification_snapshot": snapshot.get("qualification_snapshot_id"),
+        "ep_run_qualification_conflicts": list(conflict_values),
+        "mission_autonomy_acceptance": "NOT_ESTABLISHED_BY_EP",
+        "mission_autonomy_acceptance_source": None,
+    }
+
+
+def _outcome_lines(outcome: Mapping[str, object]) -> tuple[str, ...]:
+    conflicts = outcome.get("ep_run_qualification_conflicts")
+    conflict_text = ", ".join(str(value) for value in conflicts) if isinstance(conflicts, list) and conflicts else "NONE"
+    return (
+        f"- Technical Delivery: `{outcome['technical_delivery']}`",
+        f"- EP Run Qualification: `{outcome['ep_run_qualification']}`",
+        f"- EP Qualification Snapshot: `{outcome.get('ep_run_qualification_snapshot') or 'UNAVAILABLE'}`",
+        f"- EP Qualification Conflicts: `{conflict_text}`",
+        f"- Mission / Autonomy Acceptance: `{outcome['mission_autonomy_acceptance']}`",
+        "- Interpretation: technical completion does not establish EP qualification or Forge Mission acceptance.",
+    )
 
 def _next_action_message(action: str) -> str:
     return {
@@ -161,28 +205,39 @@ def _format_terminal_report(state: TransactionState) -> str:
 def _persisted_producer_submission(
     root: Path, state: TransactionState, fallback_prompt: str, *,
     central_database: Path | None = None,
-) -> tuple[ProducerMetadata, dict[str, object] | None]:
+) -> tuple[ProducerMetadata, dict[str, object] | None, str]:
     """Use immutable Producer submission evidence before legacy prompt compatibility."""
-    try:
-        submission = load_submission_attempt_for_run(
-            root, state.run_id, central_database=central_database,
+    evidence = resolve_submission_attempt_evidence(
+        root, state.run_id, central_database=central_database,
+    )
+    if evidence.status == SUBMISSION_EVIDENCE_LEGACY_ABSENT:
+        return parse_producer_metadata(fallback_prompt), None, evidence.provenance
+    if evidence.status != SUBMISSION_EVIDENCE_VALID_MODERN or evidence.submission is None:
+        raise EngineeringStorageError(
+            f"{evidence.diagnostic_code or 'SUBMISSION_EVIDENCE_UNAVAILABLE'}: run_id={state.run_id}"
         )
-    except EngineeringStorageError:
-        submission = None
-    if submission is None:
-        return parse_producer_metadata(fallback_prompt), None
+    submission = evidence.submission
     return ProducerMetadata(
         producer_id=str(submission["producer_id"]), producer_type=str(submission["producer_type"]),
         producer_version=submission.get("producer_version") if isinstance(submission.get("producer_version"), str) else None,
         correlation_id=submission.get("correlation_id") if isinstance(submission.get("correlation_id"), str) else None,
         mission_id=submission.get("mission_id") if isinstance(submission.get("mission_id"), str) else None,
         engineering_action_id=submission.get("engineering_action_id") if isinstance(submission.get("engineering_action_id"), str) else None,
-    ), submission
+    ), submission, evidence.provenance
 
 
 def _producer_submission_contract_lines(
     submission: dict[str, object] | None, state: TransactionState, root: Path | None = None,
+    *, evidence_provenance: str = "UNAVAILABLE",
 ) -> tuple[str, ...]:
+    legacy_fallback = submission is None and evidence_provenance == "LEGACY_PROMPT_METADATA"
+    submission_label = submission.get("submission_id") if submission else "legacy" if legacy_fallback else "UNAVAILABLE"
+    contract_label = submission.get("contract_version") if submission else "legacy prompt" if legacy_fallback else "UNAVAILABLE"
+    submission_status = (
+        "PERSISTED_IMMUTABLY" if submission else
+        "LEGACY_PROMPT_METADATA_ONLY" if legacy_fallback else
+        "UNAVAILABLE"
+    )
     context = submission.get("execution_context") if isinstance(submission, dict) else None
     profile = context.get("validation_profile") if isinstance(context, dict) else None
     validation_context = None
@@ -204,15 +259,16 @@ def _producer_submission_contract_lines(
     )
     return (
         "## Producer Submission Contract",
-        f"- Submission ID: `{submission.get('submission_id') if submission else 'legacy'}`",
+        f"- Submission ID: `{submission_label}`",
         *lineage,
-        f"- Contract Version: `{submission.get('contract_version') if submission else 'legacy prompt'}`",
-        "- Submission Status: `PERSISTED_IMMUTABLY`",
+        f"- Contract Version: `{contract_label}`",
+        f"- Submission Status: `{submission_status}`",
+        f"- Submission Evidence Provenance: `{evidence_provenance}`",
         "",
         "## Execution Context Contract",
         f"- Execution Context Status: `{'SUPPLIED_BY_PRODUCER' if isinstance(context, dict) else 'NOT_SUPPLIED_BY_PRODUCER'}`",
         f"- Execution Context Version: `{submission.get('execution_context_version') if isinstance(context, dict) else 'not supplied'}`",
-        f"- Execution Context Reference: `execution-submission:{submission.get('submission_id') if isinstance(context, dict) else 'legacy'}`",
+        f"- Execution Context Reference: `execution-submission:{submission.get('submission_id') if isinstance(context, dict) else 'legacy' if legacy_fallback else 'UNAVAILABLE'}`",
         f"- Action Intent: `{context.get('action_intent', 'not supplied') if isinstance(context, dict) else 'not supplied'}`",
         f"- Validation Profile: `{profile.get('tier', 'not supplied') if isinstance(profile, dict) else 'not supplied'}`",
         f"- Validation Profile Source: `{profile_source}`",
@@ -735,12 +791,15 @@ def _qualification_projection(
     state: TransactionState,
     qualification_status: object,
     runtime_provider: str,
+    outcome: Mapping[str, object],
 ) -> tuple[str, ...]:
     """Keep execution, qualification, runtime and governance outcomes distinct."""
     validation = "recorded" if state.validation_evidence else "not recorded"
     return (
         f"- Execution Status: `{state.phase}`",
         f"- Platform Qualification Status: `{qualification_status or 'not recorded'}`",
+        f"- EP Run Qualification: `{outcome['ep_run_qualification']}`",
+        f"- Mission / Autonomy Acceptance: `{outcome['mission_autonomy_acceptance']}`",
         f"- Runtime Status: `{'reported' if runtime_provider != 'unavailable' else 'not reported'}`",
         f"- Validation Status: `{validation}`",
         "- Governance Status: see the Forge Governance Handoff projection above.",
@@ -770,19 +829,28 @@ def _execution_receipt_projection(
     state: TransactionState,
     producer: ProducerMetadata,
     submission: dict[str, object] | None = None,
+    qualification_snapshot: Mapping[str, object] | None = None,
+    *,
+    submission_evidence_resolved: bool = False,
 ) -> tuple[str, ...]:
     """Render receipt qualification fields only from the persisted terminal snapshot."""
-    try:
-        snapshot = load_run_qualification_snapshot(root, state.run_id) or {}
-    except EngineeringStorageError:
-        snapshot = {}
+    if qualification_snapshot is not None:
+        snapshot = dict(qualification_snapshot)
+    else:
+        try:
+            snapshot = load_run_qualification_snapshot(root, state.run_id) or {}
+        except EngineeringStorageError:
+            snapshot = {"projection_conflicts": ["QUALIFICATION_SNAPSHOT_READ_FAILED"]}
     conflicts = snapshot.get("projection_conflicts", [])
     activity = terminal_activity_summary(root, state.run_id)
     activity_total = activity.get("activity", {}).get("overall_activity_total", "UNAVAILABLE") if isinstance(activity, dict) else "UNAVAILABLE"
     delivery_paths = activity.get("terminal_delivery_diff", {}).get("total_unique_changed_paths", "UNAVAILABLE") if isinstance(activity, dict) else "UNAVAILABLE"
     conflicts_text = ", ".join(conflicts) if isinstance(conflicts, list) and conflicts else "NONE"
     recovery = load_recovery_state(root, state.run_id) or {}
-    submission = submission or load_submission_for_run(root, state.run_id) or {}
+    if submission_evidence_resolved:
+        submission = submission or {}
+    else:
+        submission = submission or load_submission_for_run(root, state.run_id) or {}
     return (
         f"- Receipt ID: `{state.run_id}`",
         "- Execution Host: `Engineering Platform`",
@@ -825,14 +893,18 @@ def _decision_evidence_projection(producer: ProducerMetadata) -> tuple[str, ...]
     )
 
 
-def _evidence_summary(state: TransactionState, bundle: TerminalEvidenceBundle, objective: str) -> str:
+def _evidence_summary(
+    state: TransactionState,
+    bundle: TerminalEvidenceBundle,
+    outcome: Mapping[str, object],
+) -> str:
     """Return a compact, machine-readable summary derived only from report evidence."""
     return json.dumps(
         {
             "repository_commit": bundle.target_commit,
             "implemented_components": [name for name, _ in _component_inventory(bundle)],
             "regression_coverage": [path for path in bundle.changed_files if path.startswith("tests/")],
-            "deliverable_answer": _deliverable_answer(objective, state),
+            "outcomes": dict(outcome),
             "commit_strategy": _commit_strategy(state, bundle)[0].removeprefix("- Strategy: `").removesuffix("`"),
             "execution_strategy": state.execution_mode,
             "repository_state": bundle.worktree_state,
@@ -842,7 +914,13 @@ def _evidence_summary(state: TransactionState, bundle: TerminalEvidenceBundle, o
     )
 
 
-def report_consistency_errors(body: str, state: TransactionState, bundle: TerminalEvidenceBundle, objective: str) -> tuple[str, ...]:
+def report_consistency_errors(
+    body: str,
+    state: TransactionState,
+    bundle: TerminalEvidenceBundle,
+    objective: str,
+    outcome: Mapping[str, object] | None = None,
+) -> tuple[str, ...]:
     """Validate mandatory Evidence 2.0 sections before a report is published."""
     required = (
         "## Component Inventory",
@@ -862,8 +940,34 @@ def report_consistency_errors(body: str, state: TransactionState, bundle: Termin
     errors = [f"missing required section: {section}" for section in required if section not in body]
     if "Implemented Components:\n\nnone recorded" in body:
         errors.append("component inventory is missing")
-    if re.search(r"\bYES\b|\bPASS\b|\bGO\b|\bNO-GO\b", objective, re.IGNORECASE) and _deliverable_answer(objective, state) not in body:
-        errors.append("explicit deliverable answer is missing")
+    expected_outcome = dict(outcome or _outcome_projection(state, None))
+    for line in _outcome_lines(expected_outcome):
+        if line not in body:
+            errors.append(f"outcome projection is missing: {line.removeprefix('- ')}")
+    answer_section = re.search(
+        r"^## Deliverable Answer\s*$\n(?P<body>.*?)(?=^## |\Z)",
+        body,
+        re.MULTILINE | re.DOTALL,
+    )
+    if answer_section is not None and re.search(
+        r"(?i)(?:final deliverable answer\s*:.*\b(?:YES|PASS|GO|NO-GO)\b|"
+        r"\b(?:YES|PASS|GO)\b\s*[/-]\s*(?:PASS|GO)\b)",
+        answer_section.group("body"),
+    ):
+        errors.append("deliverable answer contains an unscoped acceptance conclusion")
+    summary = re.search(
+        r"^## Engineering Evidence Summary\s*$\n```json\n(?P<body>.*?)\n```",
+        body,
+        re.MULTILINE | re.DOTALL,
+    )
+    if summary is not None:
+        try:
+            summary_payload = json.loads(summary.group("body"))
+        except json.JSONDecodeError:
+            errors.append("Engineering Evidence Summary is invalid JSON")
+        else:
+            if summary_payload.get("outcomes") != expected_outcome:
+                errors.append("Engineering Evidence Summary outcome projection conflicts")
     if bundle.target_commit not in body:
         errors.append("repository commit is missing")
     if state.phase == "COMPLETE" and "## Evidence Bundle" not in body:
@@ -1043,11 +1147,7 @@ def terminal_report_matches_state(body: str, state: TransactionState) -> bool:
 
 def corrected_terminal_report(state: TransactionState) -> str:
     """Generate a minimal replacement when richer report assembly is inconsistent."""
-    try:
-        producer_prompt = Path(state.prompt_path).read_text(encoding="utf-8")
-    except OSError:
-        producer_prompt = ""
-    producer = parse_producer_metadata(producer_prompt)
+    producer = ProducerMetadata(producer_id="unavailable", producer_type="UNKNOWN")
     submission = None
     return "\n".join(
         (
@@ -1065,7 +1165,9 @@ def corrected_terminal_report(state: TransactionState) -> str:
             f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
             f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
             "",
-            *_producer_submission_contract_lines(submission, state),
+            *_producer_submission_contract_lines(
+                submission, state, evidence_provenance="UNAVAILABLE_CORRECTED_REPORT",
+            ),
             "## Execution Target Identity",
             f"- Execution Host Repository: `{state.repository}`",
             f"- Execution Mode: `{state.execution_mode}`",
@@ -1079,6 +1181,9 @@ def corrected_terminal_report(state: TransactionState) -> str:
             "",
             "## Engineering Outcome",
             format_terminal_management_summary(state),
+            "",
+            "## Deliverable Answer",
+            *_outcome_lines(_outcome_projection(state, None)),
             "",
             *_retry_relationship(state),
             "## Reviewer Findings",
@@ -1201,16 +1306,25 @@ def _format_engineering_outcome(state: TransactionState) -> str:
     )
 
 
-def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: TerminalEvidenceBundle, reviewer_records: tuple[dict[str, object], ...]) -> tuple[str, ...]:
+def _managed_autonomy_projection(
+    root: Path,
+    state: TransactionState,
+    bundle: TerminalEvidenceBundle,
+    reviewer_records: tuple[dict[str, object], ...],
+    *,
+    submission: Mapping[str, object] | None = None,
+    submission_evidence_resolved: bool = False,
+) -> tuple[tuple[str, ...], dict[str, object]]:
     """Project canonical evidence only; legacy runs intentionally fail closed."""
     try:
         lineage = load_run_lineage(root, state.run_id)
     except EngineeringStorageError:
         lineage = None
-    try:
-        submission = load_submission_for_run(root, state.run_id)
-    except EngineeringStorageError:
-        submission = None
+    if not submission_evidence_resolved:
+        try:
+            submission = load_submission_for_run(root, state.run_id)
+        except EngineeringStorageError:
+            submission = None
     snapshot = managed_autonomy_snapshot(
         root, run_id=state.run_id, execution_outcome=state.phase,
         implementation_pr=state.implementation_pull_request, finalization_pr=state.finalization_pull_request,
@@ -1247,7 +1361,7 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
             f"  - Required Checks Evidence Reference: `{item.get('evidence_ref', 'UNAVAILABLE')}`",
             f"  - Historical Check Observations: `{item.get('historical_observation_count', 'UNAVAILABLE')}`",
         )
-    return (
+    lines = (
         "## Run Qualification",
         f"- Execution: `{snapshot['terminal_execution_state']}`",
         f"- Action Intent: `{snapshot['action_intent']}`",
@@ -1282,6 +1396,7 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
         f"- Qualification Reasons: `{', '.join(snapshot['qualification_failure_reasons']) or 'none'}`",
         "",
     )
+    return lines, snapshot
 
 
 def generate_terminal_report(
@@ -1299,7 +1414,6 @@ def generate_terminal_report(
         central_database.resolve().parent / "artifacts" / "reports"
         if central_database is not None else root / ".engineering" / "reports"
     )
-    reports.mkdir(mode=0o700, parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     path = reports / f"{timestamp}_{state.run_id}.md"
     objective = "Objective unavailable because the prompt file is no longer local."
@@ -1315,9 +1429,10 @@ def generate_terminal_report(
         "Submitted runtime prompt retained at the supplied prompt path; "
         "non-authoritative input."
     )
-    producer, submission = _persisted_producer_submission(
+    producer, submission, submission_evidence_provenance = _persisted_producer_submission(
         root, state, objective, central_database=central_database,
     )
+    reports.mkdir(mode=0o700, parents=True, exist_ok=True)
     raw_handoff = submission.get("forge_governance_handoff") if isinstance(submission, dict) else None
     handoff = ForgeGovernanceHandoff.from_snapshot(raw_handoff) if isinstance(raw_handoff, dict) else None
     manifest = manifest or EngineeringPlatformManifest.load(
@@ -1346,6 +1461,12 @@ def generate_terminal_report(
         if isinstance(value, int) and not isinstance(value, bool)
     }
     bundle = collect_terminal_evidence(root, state)
+    managed_autonomy_lines, qualification_snapshot = _managed_autonomy_projection(
+        root, state, bundle, reviewer_records,
+        submission=submission,
+        submission_evidence_resolved=True,
+    )
+    outcome = _outcome_projection(state, qualification_snapshot)
     activity_summary = persist_terminal_activity_summary(
         root, build_terminal_activity_summary(root, state, bundle)
     )
@@ -1604,7 +1725,10 @@ def generate_terminal_report(
             f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
             f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
             "",
-            *_producer_submission_contract_lines(submission, state, root),
+            *_producer_submission_contract_lines(
+                submission, state, root,
+                evidence_provenance=submission_evidence_provenance,
+            ),
             *_forge_execution_provenance_lines(submission),
             "## Execution Target Identity",
             "- Execution Host: `Engineering Platform`",
@@ -1731,7 +1855,7 @@ def generate_terminal_report(
             "## Engineering Outcome",
             _format_engineering_outcome(state),
             "",
-            *_managed_autonomy_projection(root, state, bundle, reviewer_records),
+            *managed_autonomy_lines,
             *_format_assurance_reviews(state),
             "## Reviewer Findings",
             "Initial observations only. They are not final repository claims.",
@@ -1751,19 +1875,26 @@ def generate_terminal_report(
             "",
             *recommendation_handoff_report_lines(handoff, state.phase),
             "## Qualification Projection",
-            *_qualification_projection(state, qualification_status, runtime_provider),
+            *_qualification_projection(state, qualification_status, runtime_provider, outcome),
             "",
             "## Runtime Projection",
             *_runtime_projection(state, producer, runtime_provider, reported_model),
             "",
             "## Execution Receipt Projection",
-            *_execution_receipt_projection(root, state, producer, submission),
+            *_execution_receipt_projection(
+                root,
+                state,
+                producer,
+                submission,
+                qualification_snapshot,
+                submission_evidence_resolved=True,
+            ),
             "",
             "## Decision Evidence Projection",
             *_decision_evidence_projection(producer),
             "",
             "## Deliverable Answer",
-            f"- Final Deliverable Answer: {_deliverable_answer(objective, state)}",
+            *_outcome_lines(outcome),
             "",
             "## Commit Strategy",
             *_commit_strategy(state, bundle),
@@ -1786,7 +1917,7 @@ def generate_terminal_report(
             "",
             "## Engineering Evidence Summary",
             "```json",
-            _evidence_summary(state, bundle, objective),
+            _evidence_summary(state, bundle, outcome),
             "```",
             "",
             evidence_bundle,
@@ -1829,6 +1960,8 @@ def generate_terminal_report(
     return ReportingCoordinator().deliver(
         path=path,
         body=body,
-        validate=lambda value: report_consistency_errors(value, state, bundle, objective),
+        validate=lambda value: report_consistency_errors(
+            value, state, bundle, objective, outcome,
+        ),
         terminal_matches=lambda value: terminal_report_matches_state(value, state),
     )
