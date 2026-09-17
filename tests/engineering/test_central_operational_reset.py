@@ -83,6 +83,73 @@ class CentralOperationalResetTests(unittest.TestCase):
         )
         return operation_id, str(plan["plan_digest"])
 
+    def _bind_update_candidate_fixture(self, operation: Path) -> None:
+        """Write the exact token-free identities that own one candidate venv."""
+        operation_id = operation.name
+        installation_id = str(json.loads(
+            (self.root / "runtime-identity.json").read_text(encoding="utf-8")
+        )["instance_id"])
+        staged = operation / "download" / "engineering_platform-2.3.82-py3-none-any.whl"
+        candidate = operation / "candidate-venv"
+        plan = {
+            "operation_id": operation_id,
+            "installation_id": installation_id,
+            "data_root": str(self.root),
+            "current_version": "2.3.81",
+            "current_digest": "sha256:" + "a" * 64,
+            "target_version": "2.3.82",
+            "target_digest": "sha256:" + "b" * 64,
+            "target_source_revision": "c" * 40,
+            "artifact": str(staged),
+            "cleanup_targets": [
+                str(operation / name) for name in ("build", "download", "pip-cache")
+            ],
+            "steps": [
+                "INSTALLATION_LOCK", "INVENTORY_AND_COMPATIBILITY", "EXACT_ARTIFACT",
+                "QUIESCE", "BACKUP_AND_MIGRATION", "ACTIVATE", "VERIFY", "CLEANUP",
+            ],
+        }
+        prepared = {
+            "operation_id": operation_id,
+            "installation_id": installation_id,
+            "operation_root": str(operation),
+            "staged_artifact": str(staged),
+            "artifact_digest": plan["target_digest"],
+            "candidate_venv": str(candidate),
+            "interpreter": str(candidate / "bin" / "python"),
+            "pip_cache": str(operation / "pip-cache"),
+            "package": {
+                "interpreter": str(candidate / "bin" / "python"),
+                "version": "2.3.82",
+                "metadata": str(candidate / "lib" / "python3.14" / "site-packages" / "engineering_platform-2.3.82.dist-info"),
+                "package": str(candidate / "lib" / "python3.14" / "site-packages" / "engineering_platform"),
+            },
+        }
+        canonical_plan = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+        canonical_prepared = json.dumps(
+            prepared, sort_keys=True, separators=(",", ":"),
+        ).encode()
+        (operation / "operation.json").write_text(json.dumps({
+            "schema_version": 2,
+            "operation_id": operation_id,
+            "plan": plan,
+            "plan_digest": "sha256:" + hashlib.sha256(canonical_plan).hexdigest(),
+            "state": "PREPARED",
+            "events": [{"state": "PREPARED", "evidence": {}}],
+            "prepared_candidate": prepared,
+            "prepared_candidate_digest": "sha256:" + hashlib.sha256(canonical_prepared).hexdigest(),
+        }), encoding="utf-8")
+        (operation / "candidate-runtime.json").write_text(json.dumps({
+            "schema_version": 1,
+            "operation_id": operation_id,
+            "installation_id": installation_id,
+            "target_version": plan["target_version"],
+            "target_digest": plan["target_digest"],
+            "target_source_revision": plan["target_source_revision"],
+            "staged_artifact": str(staged),
+            "candidate_venv": str(candidate),
+        }), encoding="utf-8")
+
     def test_schema_owned_inventory_is_exhaustive_and_preview_is_read_only(self) -> None:
         before = hashlib.sha256((self.root / "epdata.sqlite").read_bytes()).hexdigest()
         plan = reset.preview(self.root)
@@ -806,6 +873,376 @@ class CentralOperationalResetTests(unittest.TestCase):
         self.assertIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", blocked["blocking_codes"])
         self.assertIn("runtime/user-payload.bin", blocked["unknown_external_paths"])
         self.assertEqual(unknown.read_bytes(), b"keep")
+
+    def test_updater_candidate_venv_is_an_opaque_preserved_runtime_boundary(self) -> None:
+        operation = self.root / "operations" / "update-live-preview-0001"
+        operation.mkdir(parents=True)
+        venv = operation / "candidate-venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "lib" / "python3.14" / "site-packages").mkdir(parents=True)
+        (venv / "bin" / "python").symlink_to("python3.14")
+        (venv / "bin" / "python3.14").symlink_to("/usr/bin/python3")
+        (venv / "lib" / "python3.14" / "site-packages" / "installed.py").write_text(
+            "# updater-owned fixture\n", encoding="utf-8",
+        )
+        self._bind_update_candidate_fixture(operation)
+
+        plan = reset.preview(self.root)
+
+        self.assertNotIn("EXTERNAL_SYMLINK_UNSAFE", plan["blocking_codes"])
+        self.assertNotIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", plan["blocking_codes"])
+        boundary = next(
+            item for item in plan["preserved_external"]
+            if item["path"] == "operations/update-live-preview-0001/candidate-venv"
+        )
+        self.assertEqual("INSTALLATION_RUNTIME", boundary["classification"])
+        self.assertEqual("directory", boundary["kind"])
+        self.assertTrue(boundary["opaque_boundary"])
+        self.assertFalse(boundary["symlinks_followed"])
+        self.assertFalse(any(
+            str(item["path"]).startswith(
+                "operations/update-live-preview-0001/candidate-venv/"
+            ) for item in plan["preserved_external"]
+        ))
+
+        # A sibling staging symlink is not covered by the opaque venv contract.
+        outside = Path(self.temporary.name) / "outside-runtime"
+        outside.mkdir()
+        (operation / "build").mkdir()
+        unsafe = operation / "build" / "unsafe-link"
+        unsafe.symlink_to(outside, target_is_directory=True)
+        self.assertIn("EXTERNAL_SYMLINK_UNSAFE", reset.preview(self.root)["blocking_codes"])
+        unsafe.unlink()
+
+        # A candidate-venv is opaque only below an exact journalled operation;
+        # the same symlink shape at an unowned path remains fail-closed.
+        unowned = self.root / "operations" / "update-no-journal-0002" / "candidate-venv"
+        unowned.mkdir(parents=True)
+        (unowned / "python").symlink_to("/usr/bin/python3")
+        self.assertIn("EXTERNAL_SYMLINK_UNSAFE", reset.preview(self.root)["blocking_codes"])
+        (unowned / "python").unlink()
+        unowned.rmdir()
+        unowned.parent.rmdir()
+
+        linked_operation = self.root / "operations" / "update-venv-link-0003"
+        linked_operation.mkdir()
+        self._bind_update_candidate_fixture(linked_operation)
+        linked_venv = linked_operation / "candidate-venv"
+        linked_venv.symlink_to(outside, target_is_directory=True)
+        self.assertIn("EXTERNAL_SYMLINK_UNSAFE", reset.preview(self.root)["blocking_codes"])
+        linked_venv.unlink()
+        (linked_operation / "candidate-runtime.json").unlink()
+        (linked_operation / "operation.json").unlink()
+        linked_operation.rmdir()
+
+        # A malformed journal or a candidate marker bound to another path
+        # cannot hide regular unknown content behind a venv-shaped directory.
+        malformed = self.root / "operations" / "update-malformed-0004"
+        malformed_venv = malformed / "candidate-venv"
+        malformed_venv.mkdir(parents=True)
+        (malformed_venv / "unknown.bin").write_bytes(b"keep")
+        (malformed / "operation.json").write_text("{}", encoding="utf-8")
+        (malformed / "candidate-runtime.json").write_text("{}", encoding="utf-8")
+        malformed_plan = reset.preview(self.root)
+        self.assertIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", malformed_plan["blocking_codes"])
+        self.assertIn(
+            "operations/update-malformed-0004/candidate-venv/unknown.bin",
+            malformed_plan["unknown_external_paths"],
+        )
+        (malformed_venv / "unknown.bin").unlink()
+        malformed_venv.rmdir()
+        (malformed / "candidate-runtime.json").unlink()
+        (malformed / "operation.json").unlink()
+        malformed.rmdir()
+
+        unbound = self.root / "operations" / "update-unbound-0005"
+        unbound_venv = unbound / "candidate-venv"
+        unbound_venv.mkdir(parents=True)
+        (unbound_venv / "unknown.bin").write_bytes(b"keep")
+        self._bind_update_candidate_fixture(unbound)
+        marker_path = unbound / "candidate-runtime.json"
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        marker["candidate_venv"] = str(unbound / "some-other-venv")
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+        unbound_plan = reset.preview(self.root)
+        self.assertIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", unbound_plan["blocking_codes"])
+        self.assertIn(
+            "operations/update-unbound-0005/candidate-venv/unknown.bin",
+            unbound_plan["unknown_external_paths"],
+        )
+
+        unknown = operation / "operator-notes.txt"
+        unknown.write_text("preserve", encoding="utf-8")
+        blocked = reset.preview(self.root)
+        self.assertIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", blocked["blocking_codes"])
+        self.assertIn(
+            "operations/update-live-preview-0001/operator-notes.txt",
+            blocked["unknown_external_paths"],
+        )
+        self.assertEqual("preserve", unknown.read_text(encoding="utf-8"))
+
+    def test_marker_bound_pre_journal_updater_staging_is_opaque_but_incomplete(self) -> None:
+        operation = self.root / "operations" / "ep-update-2358-release-20260915-001"
+        operation.mkdir(parents=True)
+        candidate = operation / "candidate-venv"
+        (candidate / "bin").mkdir(parents=True)
+        (candidate / "bin" / "python").symlink_to("python3.14")
+        (candidate / "bin" / "python3.14").symlink_to("/usr/bin/python3")
+        self._bind_update_candidate_fixture(operation)
+        marker = json.loads((operation / "candidate-runtime.json").read_text(encoding="utf-8"))
+        staged = Path(str(marker["staged_artifact"]))
+        staged.parent.mkdir()
+        staged.write_bytes(b"synthetic wheel")
+        marker["target_digest"] = "sha256:" + hashlib.sha256(staged.read_bytes()).hexdigest()
+        (operation / "candidate-runtime.json").write_text(
+            json.dumps(marker), encoding="utf-8",
+        )
+        pip_cache = operation / "pip-cache"
+        pip_cache.mkdir()
+        # Exact updater-owned subtrees are opaque in this explicit crash
+        # window, so their internal links are neither followed nor reset.
+        (pip_cache / "cached-link").symlink_to(Path(self.temporary.name) / "outside-cache")
+        (operation / "operation.json").unlink()
+
+        plan = reset.preview(self.root)
+
+        self.assertNotIn("EXTERNAL_SYMLINK_UNSAFE", plan["blocking_codes"])
+        self.assertNotIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", plan["blocking_codes"])
+        preserved = {str(item["path"]): item for item in plan["preserved_external"]}
+        marker_path = f"operations/{operation.name}/candidate-runtime.json"
+        self.assertEqual(
+            preserved[marker_path]["classification"],
+            "INSTALLATION_RUNTIME_STAGING_UNBOUND",
+        )
+        for name in ("candidate-venv", "download", "pip-cache"):
+            boundary = preserved[f"operations/{operation.name}/{name}"]
+            self.assertEqual(
+                boundary["classification"], "INSTALLATION_RUNTIME_STAGING_UNBOUND",
+            )
+            self.assertTrue(boundary["opaque_boundary"])
+            self.assertFalse(boundary["symlinks_followed"])
+            self.assertEqual(
+                boundary["installation_update_state"],
+                "INCOMPLETE_NO_OPERATION_JOURNAL",
+            )
+        self.assertFalse(any(
+            path.startswith(f"operations/{operation.name}/candidate-venv/")
+            or path.startswith(f"operations/{operation.name}/download/")
+            or path.startswith(f"operations/{operation.name}/pip-cache/")
+            for path in preserved
+        ))
+
+        sibling = operation / "operator-notes.txt"
+        sibling.write_text("preserve", encoding="utf-8")
+        blocked = reset.preview(self.root)
+        self.assertIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", blocked["blocking_codes"])
+        self.assertIn(
+            f"operations/{operation.name}/operator-notes.txt",
+            blocked["unknown_external_paths"],
+        )
+        self.assertEqual(sibling.read_text(encoding="utf-8"), "preserve")
+
+    def test_unbound_staging_marker_mismatch_missing_and_linked_root_fail_closed(self) -> None:
+        outside = Path(self.temporary.name) / "outside-unbound"
+        outside.mkdir()
+        for suffix, mutation in (
+            ("mismatch", "MISMATCH"),
+            ("malformed", "MALFORMED"),
+            ("missing", "MISSING"),
+            ("identity", "WRONG_INSTALLATION"),
+            ("digest", "DIGEST_MISMATCH"),
+            ("wheel", "WHEEL_IDENTITY"),
+            ("linked", "LINKED_ROOT"),
+        ):
+            operation = self.root / "operations" / f"ep-update-unbound-{suffix}-0001"
+            operation.mkdir(parents=True)
+            self._bind_update_candidate_fixture(operation)
+            marker_path = operation / "candidate-runtime.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            staged = Path(str(marker["staged_artifact"]))
+            staged.parent.mkdir()
+            staged.write_bytes(b"synthetic wheel")
+            marker["target_digest"] = "sha256:" + hashlib.sha256(staged.read_bytes()).hexdigest()
+            marker_path.write_text(json.dumps(marker), encoding="utf-8")
+            (operation / "operation.json").unlink()
+            candidate = operation / "candidate-venv"
+            if mutation == "LINKED_ROOT":
+                candidate.symlink_to(outside, target_is_directory=True)
+            else:
+                candidate.mkdir()
+                (candidate / "python").symlink_to("/usr/bin/python3")
+                if mutation == "MISMATCH":
+                    marker["candidate_venv"] = str(operation / "different-venv")
+                    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+                elif mutation == "MALFORMED":
+                    marker_path.write_text("{}", encoding="utf-8")
+                elif mutation == "WRONG_INSTALLATION":
+                    marker["installation_id"] = "forged-installation-id"
+                    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+                elif mutation == "DIGEST_MISMATCH":
+                    marker["target_digest"] = "sha256:" + "d" * 64
+                    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+                elif mutation == "WHEEL_IDENTITY":
+                    foreign = staged.with_name("foreign-candidate.whl")
+                    staged.rename(foreign)
+                    staged = foreign
+                    marker["staged_artifact"] = str(staged)
+                    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+                else:
+                    marker_path.unlink()
+
+            blocked = reset.preview(self.root)
+            self.assertIn("EXTERNAL_SYMLINK_UNSAFE", blocked["blocking_codes"])
+
+            if candidate.is_symlink():
+                candidate.unlink()
+            else:
+                (candidate / "python").unlink()
+                candidate.rmdir()
+            staged.unlink()
+            staged.parent.rmdir()
+            marker_path.unlink(missing_ok=True)
+            operation.rmdir()
+
+    def test_journalled_candidate_rejects_forged_identity_cleanup_and_steps(self) -> None:
+        operation = self.root / "operations" / "update-adversarial-0001"
+        operation.mkdir(parents=True)
+        candidate = operation / "candidate-venv"
+        (candidate / "bin").mkdir(parents=True)
+        (candidate / "bin" / "python").symlink_to("/usr/bin/python3")
+        self._bind_update_candidate_fixture(operation)
+        journal_path = operation / "operation.json"
+        marker_path = operation / "candidate-runtime.json"
+        original_journal = journal_path.read_text(encoding="utf-8")
+        original_marker = marker_path.read_text(encoding="utf-8")
+
+        def persist(journal: dict[str, object], marker: dict[str, object]) -> None:
+            plan = journal["plan"]
+            prepared = journal["prepared_candidate"]
+            assert isinstance(plan, dict) and isinstance(prepared, dict)
+            journal["plan_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+                plan, sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest()
+            journal["prepared_candidate_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+                prepared, sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest()
+            journal_path.write_text(json.dumps(journal), encoding="utf-8")
+            marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+        for case in ("WRONG_INSTALLATION", "EXTERNAL_CLEANUP", "UNKNOWN_STEP"):
+            journal = json.loads(original_journal)
+            marker = json.loads(original_marker)
+            plan = journal["plan"]
+            prepared = journal["prepared_candidate"]
+            assert isinstance(plan, dict) and isinstance(prepared, dict)
+            if case == "WRONG_INSTALLATION":
+                plan["installation_id"] = "forged-installation-id"
+                prepared["installation_id"] = "forged-installation-id"
+                marker["installation_id"] = "forged-installation-id"
+            elif case == "EXTERNAL_CLEANUP":
+                plan["cleanup_targets"] = [
+                    str(Path(self.temporary.name) / "outside-cleanup"),
+                    str(operation / "download"),
+                    str(operation / "pip-cache"),
+                ]
+            else:
+                plan["steps"] = [*plan["steps"], "UNKNOWN_SIDE_EFFECT"]
+            persist(journal, marker)
+            with self.subTest(case=case):
+                blocked = reset.preview(self.root)
+                self.assertIn("EXTERNAL_SYMLINK_UNSAFE", blocked["blocking_codes"])
+
+        journal_path.write_text(original_journal, encoding="utf-8")
+        marker_path.write_text(original_marker, encoding="utf-8")
+        allowed = reset.preview(self.root)
+        self.assertNotIn("EXTERNAL_SYMLINK_UNSAFE", allowed["blocking_codes"])
+
+    def test_empty_database_identity_and_empty_updater_bindings_never_become_opaque(self) -> None:
+        runtime_identity = json.loads(
+            (self.root / "runtime-identity.json").read_text(encoding="utf-8")
+        )["instance_id"]
+        self.assertRegex(
+            runtime_identity,
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
+        operation = self.root / "operations" / "update-empty-identity-0001"
+        operation.mkdir(parents=True)
+        candidate = operation / "candidate-venv"
+        candidate.mkdir()
+        unknown = candidate / "unknown-application-data.bin"
+        unknown.write_bytes(b"preserve")
+        self._bind_update_candidate_fixture(operation)
+
+        journal_path = operation / "operation.json"
+        marker_path = operation / "candidate-runtime.json"
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        plan = journal["plan"]
+        prepared = journal["prepared_candidate"]
+        assert isinstance(plan, dict) and isinstance(prepared, dict)
+        plan["installation_id"] = ""
+        prepared["installation_id"] = ""
+        marker["installation_id"] = ""
+        journal["plan_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+            plan, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        journal["prepared_candidate_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+            prepared, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+        with reset._central_connection(self.root / "epdata.sqlite") as connection:
+            connection.execute("UPDATE ep_installations SET instance_id=''")
+            connection.execute(
+                "UPDATE engineering_metadata SET value='' "
+                "WHERE key='installation.instance_id'"
+            )
+
+        with self.assertRaisesRegex(reset.OperationalResetError, "TARGET_IDENTITY_CONFLICT"):
+            reset.preview(self.root)
+        with self.assertRaisesRegex(reset.OperationalResetError, "TARGET_IDENTITY_CONFLICT"):
+            reset._external_inventory(self.root, expected_installation_id="")
+        self.assertIsNone(reset._opaque_update_directory_classification(
+            "operations", candidate, f"{operation.name}/candidate-venv",
+            expected_installation_id="",
+        ))
+        self.assertEqual(unknown.read_bytes(), b"preserve")
+
+    def test_opaque_directory_swap_before_receipt_fails_closed(self) -> None:
+        operation = self.root / "operations" / "update-swap-race-0001"
+        operation.mkdir(parents=True)
+        candidate = operation / "candidate-venv"
+        (candidate / "bin").mkdir(parents=True)
+        (candidate / "bin" / "python").symlink_to("/usr/bin/python3")
+        self._bind_update_candidate_fixture(operation)
+        displaced = operation / "candidate-venv-displaced"
+        outside = Path(self.temporary.name) / "outside-swap-target"
+        outside.mkdir()
+        original_recheck = reset._recheck_opaque_directory
+        swapped = False
+
+        def swap_then_recheck(
+            path: Path, *, device: int, inode: int, descriptor: int,
+        ) -> None:
+            nonlocal swapped
+            if path == candidate and not swapped:
+                candidate.rename(displaced)
+                candidate.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            original_recheck(
+                path, device=device, inode=inode, descriptor=descriptor,
+            )
+
+        with patch.object(
+            reset, "_recheck_opaque_directory", side_effect=swap_then_recheck,
+        ):
+            blocked = reset.preview(self.root)
+        self.assertTrue(swapped)
+        self.assertIn("EXTERNAL_SYMLINK_UNSAFE", blocked["blocking_codes"])
+        self.assertFalse(any(
+            item.get("path") == "operations/update-swap-race-0001/candidate-venv"
+            for item in blocked["preserved_external"]
+        ))
 
     def test_cli_argument_and_internal_errors_are_stable_secret_free_contracts(self) -> None:
         def invoke(arguments: list[str]) -> tuple[int, dict[str, object]]:

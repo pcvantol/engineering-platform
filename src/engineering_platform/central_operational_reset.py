@@ -36,6 +36,14 @@ PROFILE = "EP_CENTRAL_OPERATIONAL_HISTORY_V1"
 PLAN_VERSION = 1
 SCHEMA_VERSION = 68
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}")
+_INSTANCE_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
+_UPDATE_STEPS = (
+    "INSTALLATION_LOCK", "INVENTORY_AND_COMPATIBILITY", "EXACT_ARTIFACT",
+    "QUIESCE", "BACKUP_AND_MIGRATION", "ACTIVATE", "VERIFY", "CLEANUP",
+)
+_UPDATE_CLEANUP_DIRECTORIES = ("build", "download", "pip-cache")
 _ACTIVE_STATES = frozenset({
     "PREPARING", "AUTHORIZED", "ARTIFACTS_ARCHIVING", "ARTIFACTS_ARCHIVED",
     "DB_APPLIED", "VERIFIED", "FAILED",
@@ -469,6 +477,10 @@ def _actor(data_root: Path) -> str:
     return f"uid:{uid}:{name}"
 
 
+def _valid_instance_id(value: object) -> bool:
+    return isinstance(value, str) and _INSTANCE_ID.fullmatch(value) is not None
+
+
 def _identity(data_root: Path, connection: sqlite3.Connection) -> dict[str, object]:
     try:
         file_identity = json.loads((data_root / "runtime-identity.json").read_text(encoding="utf-8"))
@@ -478,16 +490,22 @@ def _identity(data_root: Path, connection: sqlite3.Connection) -> dict[str, obje
     metadata = connection.execute(
         "SELECT value FROM engineering_metadata WHERE key='installation.instance_id'"
     ).fetchone()
+    runtime_instance = file_identity.get("instance_id") if isinstance(file_identity, dict) else None
+    database_instance = row[0] if row is not None else None
+    metadata_instance = metadata[0] if metadata is not None else None
     if (
-        not isinstance(file_identity, dict) or not isinstance(file_identity.get("instance_id"), str)
-        or row is None or metadata is None or file_identity["instance_id"] != row[0] != ""
-        or row[0] != metadata[0]
+        not _valid_instance_id(runtime_instance)
+        or not _valid_instance_id(database_instance)
+        or not _valid_instance_id(metadata_instance)
+        or runtime_instance != database_instance
+        or runtime_instance != metadata_instance
+        or database_instance != metadata_instance
     ):
         raise OperationalResetError("TARGET_IDENTITY_CONFLICT")
     database = (data_root / central_database.DATABASE_FILENAME).resolve()
     stat = database.stat()
     return {
-        "product": "engineering-platform", "instance_id": str(row[0]),
+        "product": "engineering-platform", "instance_id": str(database_instance),
         "data_root": str(data_root), "database": str(database), "schema_version": int(row[1]),
         "database_device": stat.st_dev, "database_inode": stat.st_ino,
     }
@@ -584,11 +602,408 @@ def _safe_files(directory: Path, logical_root: str) -> list[dict[str, object]]:
     return rows
 
 
+def _candidate_runtime_marker(
+    operation_root: Path, *, expected_installation_id: str,
+    require_staged_artifact: bool,
+) -> dict[str, object] | None:
+    """Read the updater's exact, closed, token-free candidate identity."""
+    if not _valid_instance_id(expected_installation_id):
+        return None
+    operation_id = operation_root.name
+    marker = _regular_json_object(operation_root / "candidate-runtime.json")
+    if marker is None or _OPERATION.fullmatch(operation_id) is None:
+        return None
+    expected_candidate = str(operation_root / "candidate-venv")
+    if (
+        set(marker) != {
+            "schema_version", "operation_id", "installation_id", "target_version",
+            "target_digest", "target_source_revision", "staged_artifact", "candidate_venv",
+        }
+        or marker.get("schema_version") != 1
+        or marker.get("operation_id") != operation_id
+        or not _valid_instance_id(marker.get("installation_id"))
+        or marker.get("installation_id") != expected_installation_id
+        or marker.get("candidate_venv") != expected_candidate
+        or re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)",
+                        str(marker.get("target_version", ""))) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(marker.get("target_digest", ""))) is None
+        or re.fullmatch(r"[0-9a-f]{40}", str(marker.get("target_source_revision", ""))) is None
+    ):
+        return None
+    staged = marker.get("staged_artifact")
+    if not isinstance(staged, str):
+        return None
+    staged_path = Path(staged)
+    if (
+        not staged_path.is_absolute()
+        or staged_path != Path(os.path.normpath(staged))
+        or staged_path.parent != operation_root / "download"
+        or staged_path.name != (
+            f"engineering_platform-{marker['target_version']}-py3-none-any.whl"
+        )
+    ):
+        return None
+    if require_staged_artifact:
+        try:
+            metadata = staged_path.lstat()
+        except OSError:
+            return None
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or _regular_file_digest(staged_path) != marker["target_digest"]
+        ):
+            return None
+    return marker
+
+
+def _path_is_absent(path: Path) -> bool:
+    """Distinguish an absent path from a dangling link or unreadable entry."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _unbound_candidate_runtime_marker(
+    operation_root: Path, *, expected_installation_id: str,
+) -> dict[str, object] | None:
+    """Return a closed candidate marker only in the pre-journal crash window."""
+    if not _path_is_absent(operation_root / "operation.json"):
+        return None
+    return _candidate_runtime_marker(
+        operation_root, expected_installation_id=expected_installation_id,
+        require_staged_artifact=True,
+    )
+
+
+def _opaque_update_directory_classification(
+    root_name: str, directory: Path, relative: str, *, expected_installation_id: str,
+) -> str | None:
+    """Recognize only an identity-bound updater runtime/staging directory.
+
+    Merely finding ``operation.json`` beside a venv-shaped directory is not
+    ownership evidence: an arbitrary file must not turn unknown application
+    data into an opaque preserve boundary.  The journal and the updater's
+    candidate marker therefore have to bind the same operation, installation,
+    plan and exact paths before normal Python venv symlinks become opaque.
+    """
+    parts = Path(relative).parts
+    if (
+        root_name != "operations" or len(parts) != 2
+        or _OPERATION.fullmatch(parts[0]) is None
+        or parts[1] not in {"candidate-venv", "download", "pip-cache"}
+    ):
+        return None
+
+    operation_id = parts[0]
+    operation_root = directory.parent
+    unbound_marker = _unbound_candidate_runtime_marker(
+        operation_root, expected_installation_id=expected_installation_id,
+    )
+    if unbound_marker is not None:
+        return "INSTALLATION_RUNTIME_STAGING_UNBOUND"
+    if parts[1] != "candidate-venv":
+        return None
+    data_root = operation_root.parent.parent
+    journal = _regular_json_object(operation_root / "operation.json")
+    marker = _candidate_runtime_marker(
+        operation_root, expected_installation_id=expected_installation_id,
+        require_staged_artifact=False,
+    )
+    if journal is None:
+        return None
+    if marker is None:
+        return None
+    schema = journal.get("schema_version")
+    base_fields = {
+        "schema_version", "operation_id", "plan", "plan_digest", "state", "events",
+    }
+    fields_by_schema = {
+        1: base_fields,
+        2: base_fields | {"prepared_candidate", "prepared_candidate_digest"},
+        3: base_fields | {
+            "prepared_candidate", "prepared_candidate_digest",
+            "prepared_record_provenance", "prepared_record_provenance_digest",
+        },
+        4: base_fields | {
+            "prepared_candidate", "prepared_candidate_digest",
+            "prepared_record_provenance", "prepared_record_provenance_digest",
+            "execution_admission", "execution_admission_digest",
+        },
+    }
+    if (
+        type(schema) is not int
+        or set(journal) != fields_by_schema.get(schema)
+        or not isinstance(journal.get("events"), list)
+        or journal.get("state") not in {
+            "PREPARED", "INVENTORIED", "QUIESCING", "QUIESCED", "BACKED_UP",
+            "MIGRATED", "ACTIVATED", "VERIFIED", "CLEANUP_PENDING", "COMPLETE",
+        }
+    ):
+        return None
+    plan = journal.get("plan")
+    if not isinstance(plan, dict):
+        return None
+    plan_fields = {
+        "operation_id", "installation_id", "data_root", "current_version",
+        "current_digest", "target_version", "target_digest", "target_source_revision",
+        "artifact", "cleanup_targets", "steps",
+    }
+    installation_id = plan.get("installation_id")
+    expected_cleanup = [
+        str(operation_root / name) for name in _UPDATE_CLEANUP_DIRECTORIES
+    ]
+    if (
+        frozenset(plan) not in {frozenset(plan_fields), frozenset(plan_fields | {"legacy_adoption"})}
+        or journal.get("operation_id") != operation_id
+        or plan.get("operation_id") != operation_id
+        or installation_id != expected_installation_id
+        or plan.get("data_root") != str(data_root)
+        or plan.get("cleanup_targets") != expected_cleanup
+        or plan.get("steps") != list(_UPDATE_STEPS)
+        or re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)",
+                        str(plan.get("current_version", ""))) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(plan.get("current_digest", ""))) is None
+    ):
+        return None
+    try:
+        canonical_plan = json.dumps(
+            plan, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    if journal.get("plan_digest") != "sha256:" + hashlib.sha256(canonical_plan).hexdigest():
+        return None
+
+    expected_candidate = str(directory)
+    expected_operation = str(operation_root)
+    expected_interpreter = str(directory / "bin" / "python")
+    if (
+        set(marker) != {
+            "schema_version", "operation_id", "installation_id", "target_version",
+            "target_digest", "target_source_revision", "staged_artifact", "candidate_venv",
+        }
+        or marker.get("schema_version") != 1
+        or marker.get("operation_id") != operation_id
+        or marker.get("installation_id") != installation_id
+        or marker.get("candidate_venv") != expected_candidate
+        or marker.get("target_version") != plan.get("target_version")
+        or marker.get("target_digest") != plan.get("target_digest")
+        or marker.get("target_source_revision") != plan.get("target_source_revision")
+        or marker.get("staged_artifact") != plan.get("artifact")
+    ):
+        return None
+    staged_artifact = marker.get("staged_artifact")
+    if (
+        not isinstance(staged_artifact, str)
+        or Path(staged_artifact).parent != operation_root / "download"
+    ):
+        return None
+
+    prepared = journal.get("prepared_candidate")
+    if prepared is None:
+        return (
+            "INSTALLATION_RUNTIME"
+            if journal.get("prepared_candidate_digest") is None else None
+        )
+    if not isinstance(prepared, dict):
+        return None
+    package = prepared.get("package")
+    if (
+        set(prepared) != {
+            "operation_id", "installation_id", "operation_root", "staged_artifact",
+            "artifact_digest", "candidate_venv", "interpreter", "pip_cache", "package",
+        }
+        or prepared.get("operation_id") != operation_id
+        or prepared.get("installation_id") != installation_id
+        or prepared.get("operation_root") != expected_operation
+        or prepared.get("candidate_venv") != expected_candidate
+        or prepared.get("interpreter") != expected_interpreter
+        or prepared.get("staged_artifact") != staged_artifact
+        or prepared.get("artifact_digest") != plan.get("target_digest")
+        or prepared.get("pip_cache") != str(operation_root / "pip-cache")
+        or not isinstance(package, dict)
+        or set(package) != {"interpreter", "version", "metadata", "package"}
+        or package.get("interpreter") != expected_interpreter
+        or package.get("version") != plan.get("target_version")
+        or not all(isinstance(package.get(field), str) and package[field]
+                   for field in ("version", "metadata", "package"))
+        or not all(_lexically_within(directory, Path(str(package[field])))
+                   for field in ("metadata", "package"))
+    ):
+        return None
+    try:
+        canonical_prepared = json.dumps(
+            prepared, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    if journal.get("prepared_candidate_digest") != (
+        "sha256:" + hashlib.sha256(canonical_prepared).hexdigest()
+    ):
+        return None
+    return "INSTALLATION_RUNTIME"
+
+
+def _lexically_within(root: Path, candidate: Path) -> bool:
+    """Check an already persisted absolute path without resolving any link."""
+    if (
+        not candidate.is_absolute()
+        or candidate != Path(os.path.normpath(str(candidate)))
+    ):
+        return False
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+    return candidate != root
+
+
+def _regular_json_object(path: Path) -> dict[str, object] | None:
+    """Read one bounded regular JSON file without following its final link."""
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4 * 1024 * 1024:
+            return None
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            value = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return value if isinstance(value, dict) else None
+
+
+def _regular_file_digest(path: Path) -> str | None:
+    """Hash one regular file while refusing a final-component link swap."""
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+    except OSError:
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _walk_preserved_files(
+    directory: Path, *, root_name: str, code: str, expected_installation_id: str,
+    opaque_bindings: list[tuple[Path, str, int, int, int]],
+) -> tuple[list[Path], list[tuple[Path, str, int, int, int]]]:
+    """Walk preserved product data while treating exact updater venvs as opaque."""
+    if not directory.exists():
+        return [], []
+    if directory.is_symlink() or not directory.is_dir():
+        raise OperationalResetError(code)
+    files: list[Path] = []
+    opaque: list[tuple[Path, str, int, int, int]] = []
+    pending = [directory]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = sorted(os.scandir(current), key=lambda entry: entry.name)
+        except OSError as error:
+            raise OperationalResetError(code) from error
+        for entry in entries:
+            try:
+                path = Path(entry.path)
+                metadata = path.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise OperationalResetError(code)
+                if stat.S_ISDIR(metadata.st_mode):
+                    relative = path.relative_to(directory).as_posix()
+                    classification = _opaque_update_directory_classification(
+                        root_name, path, relative,
+                        expected_installation_id=expected_installation_id,
+                    )
+                    if classification is not None:
+                        descriptor = _open_opaque_directory(
+                            path, device=metadata.st_dev, inode=metadata.st_ino,
+                        )
+                        binding = (
+                            path, classification, metadata.st_dev, metadata.st_ino,
+                            descriptor,
+                        )
+                        opaque.append(binding)
+                        opaque_bindings.append(binding)
+                    else:
+                        pending.append(path)
+                elif stat.S_ISREG(metadata.st_mode):
+                    files.append(path)
+                else:
+                    raise OperationalResetError(code)
+            except OSError as error:
+                raise OperationalResetError(code) from error
+    return sorted(files), sorted(opaque, key=lambda item: item[0])
+
+
+def _open_opaque_directory(path: Path, *, device: int, inode: int) -> int:
+    """Pin the accepted real directory until the inventory is published."""
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_dev != device
+            or metadata.st_ino != inode
+        ):
+            raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE")
+        return descriptor
+    except OSError as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE") from error
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+
+
+def _recheck_opaque_directory(
+    path: Path, *, device: int, inode: int, descriptor: int,
+) -> None:
+    """Bind the final opaque receipt to the still-pinned original directory."""
+    try:
+        pinned = os.fstat(descriptor)
+        current = path.lstat()
+    except OSError as error:
+        raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE") from error
+    if (
+        not stat.S_ISDIR(pinned.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or pinned.st_dev != device or pinned.st_ino != inode
+        or current.st_dev != device or current.st_ino != inode
+    ):
+        raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE")
+
+
 def _known_top_level(name: str) -> bool:
     return name in _KNOWN_TOP_LEVEL or _VERSIONED_RECOVERY_BACKUP.fullmatch(name) is not None
 
 
-def _nested_preserved_classification(root_name: str, relative: str, path: Path) -> str | None:
+def _nested_preserved_classification(
+    root_name: str, relative: str, path: Path, *, expected_installation_id: str,
+) -> str | None:
     """Classify only product-owned shapes inside preserved top-level roots."""
     parts = Path(relative).parts
     if root_name == "runtime":
@@ -605,12 +1020,22 @@ def _nested_preserved_classification(root_name: str, relative: str, path: Path) 
             return "INSTALLATION_OPERATION_AUDIT"
         if parts and _OPERATION.fullmatch(parts[0]) is not None:
             operation_root = path.parents[len(parts) - 2]
+            if _unbound_candidate_runtime_marker(
+                operation_root, expected_installation_id=expected_installation_id,
+            ) is not None:
+                if parts[1:] == ("candidate-runtime.json",):
+                    return "INSTALLATION_RUNTIME_STAGING_UNBOUND"
+                # The exact staging subtrees are normally opaque. This branch
+                # also keeps a race/retry readback classified if a leaf was
+                # enumerated just before the boundary recognition.
+                if len(parts) >= 3 and parts[1] in {"download", "pip-cache"}:
+                    return "INSTALLATION_RUNTIME_STAGING_UNBOUND"
             if (operation_root / "operation.json").is_file() and len(parts) >= 2:
                 if parts[1] in {"operation.json", "candidate-runtime.json"} and len(parts) == 2:
                     return "INSTALLATION_OPERATION_AUDIT"
                 if parts[1:] == ("backup", "central.sqlite"):
                     return "FORENSIC_OR_RECOVERY"
-                if parts[1] in {"build", "download", "pip-cache", "candidate-venv"}:
+                if parts[1] in {"build", "download", "pip-cache"}:
                     return "INSTALLATION_RUNTIME_STAGING"
         return None
     if root_name == "migration":
@@ -651,8 +1076,9 @@ def _nested_preserved_classification(root_name: str, relative: str, path: Path) 
     return None
 
 
-def _external_inventory(
-    data_root: Path,
+def _external_inventory_bound(
+    data_root: Path, *, expected_installation_id: str,
+    opaque_bindings: list[tuple[Path, str, int, int, int]],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str], list[str]]:
     unknown = sorted(path.name for path in data_root.iterdir() if not _known_top_level(path.name))
     rows: list[dict[str, object]] = []
@@ -693,11 +1119,30 @@ def _external_inventory(
             "runtime", "operations", "recovery", "migration", "backups",
             "operational-reset-archive",
         }:
-            for nested in _walk_regular_files(path, code="EXTERNAL_SYMLINK_UNSAFE"):
+            nested_files, opaque_boundaries = _walk_preserved_files(
+                path, root_name=path.name, code="EXTERNAL_SYMLINK_UNSAFE",
+                expected_installation_id=expected_installation_id,
+                opaque_bindings=opaque_bindings,
+            )
+            for boundary, classification, _device, _inode, _descriptor in opaque_boundaries:
+                relative = boundary.relative_to(path).as_posix()
+                entry = {
+                    "path": f"{path.name}/{relative}",
+                    "classification": classification,
+                    "effect": "PRESERVE", "kind": "directory",
+                    "opaque_boundary": True, "symlinks_followed": False,
+                }
+                if classification == "INSTALLATION_RUNTIME_STAGING_UNBOUND":
+                    entry["installation_update_state"] = "INCOMPLETE_NO_OPERATION_JOURNAL"
+                preserved.append(entry)
+            for nested in nested_files:
                 relative = nested.relative_to(path).as_posix()
                 if path.name == "runtime" and relative.startswith("central-data-imports/"):
                     continue
-                classification = _nested_preserved_classification(path.name, relative, nested)
+                classification = _nested_preserved_classification(
+                    path.name, relative, nested,
+                    expected_installation_id=expected_installation_id,
+                )
                 if classification is None:
                     unknown.append(f"{path.name}/{relative}")
                     continue
@@ -709,6 +1154,34 @@ def _external_inventory(
                 if classification == "ACTIVE_INGEST_CONTROL":
                     active_ingest_controls.append(f"{path.name}/{relative}")
     return rows, preserved, sorted(set(unknown)), active_ingest_controls
+
+
+def _external_inventory(
+    data_root: Path, *, expected_installation_id: str,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str], list[str]]:
+    """Inventory external data while pinning every published opaque boundary."""
+    if not _valid_instance_id(expected_installation_id):
+        raise OperationalResetError("TARGET_IDENTITY_CONFLICT")
+    bindings: list[tuple[Path, str, int, int, int]] = []
+    try:
+        result = _external_inventory_bound(
+            data_root, expected_installation_id=expected_installation_id,
+            opaque_bindings=bindings,
+        )
+        # This is intentionally the final work before returning the receipt.
+        # A path swapped after initial acceptance cannot be represented as the
+        # pinned directory that was actually classified.
+        for path, _classification, device, inode, descriptor in bindings:
+            _recheck_opaque_directory(
+                path, device=device, inode=inode, descriptor=descriptor,
+            )
+        return result
+    finally:
+        for _path, _classification, _device, _inode, descriptor in bindings:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _runtime_activity(data_root: Path) -> dict[str, object]:
@@ -807,7 +1280,9 @@ def preview(data_root: Path) -> dict[str, object]:
         raise OperationalResetError("CENTRAL_INSPECTION_FAILED") from error
     external_error: str | None = None
     try:
-        external, preserved_external, unknown_paths, active_ingest_controls = _external_inventory(root)
+        external, preserved_external, unknown_paths, active_ingest_controls = _external_inventory(
+            root, expected_installation_id=str(identity["instance_id"]),
+        )
     except OperationalResetError as error:
         external, preserved_external, unknown_paths, active_ingest_controls = [], [], [], []
         external_error = error.code
@@ -1725,6 +2200,7 @@ def _verify_under_lock(
         credentials = int(connection.execute("SELECT COUNT(*) FROM ep_consumer_credentials").fetchone()[0])
         projects = int(connection.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0])
         repositories = int(connection.execute("SELECT COUNT(*) FROM ep_repository_registrations").fetchone()[0])
+        expected_installation_id = str(_identity(root, connection)["instance_id"])
     archive = root / "operational-reset-archive" / operation_id
     boundary: dict[str, object] | None = None
     boundary_path_value = row.get("finish_boundary_path")
@@ -1750,7 +2226,9 @@ def _verify_under_lock(
             raise OperationalResetError("FINISH_BOUNDARY_INVALID")
         if not allow_boundary_recovery:
             frozen_modes = _verify_frozen_empty_active_roots(root)
-    external, _preserved, unknown, active_controls = _external_inventory(root)
+    external, _preserved, unknown, active_controls = _external_inventory(
+        root, expected_installation_id=expected_installation_id,
+    )
     backup = verify_backup(
         Path(str(row["backup_path"])), operation_id=operation_id, plan_digest=plan_digest,
         expected_manifest_digest=str(row["backup_manifest_digest"]),

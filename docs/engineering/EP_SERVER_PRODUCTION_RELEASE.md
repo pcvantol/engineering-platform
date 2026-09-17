@@ -17,6 +17,24 @@ maintenance controls; neither publication nor installation authorizes
 artifact qualification and an installed read-only preview are required before
 the capability can be reported installed.
 
+The 2.3.82 corrective patch keeps the same schema and reset semantics. It
+prevents read-only maintenance preview from recursively entering an exact
+updater-owned `operations/<id>/candidate-venv` and falsely rejecting normal
+virtual-environment symlinks. The venv is preserved as an opaque runtime
+boundary only when the journal and candidate marker bind its exact operation,
+current CENTRAL installation, closed updater step/cleanup contract and path.
+Opaque directories stay descriptor-pinned until the final inventory receipt,
+so a path swap cannot publish stale classification. All malformed,
+unrecognized and active-route symlink protections remain in force. Publication
+and installation still do not authorize a reset.
+
+The preview also recognizes the updater's bounded pre-journal crash window. A
+closed candidate marker may preserve only its exact candidate/download/cache
+staging boundaries as opaque `INSTALLATION_RUNTIME_STAGING_UNBOUND` after its
+canonical staged wheel filename and digest are verified, with an explicit
+incomplete-state readback. It never turns an arbitrary operation sibling,
+malformed marker or linked boundary into known product data.
+
 ## Release-operation lifecycle V1
 
 After both the production-wheel and dashboard qualifications succeed, the
