@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from engineering_platform import server, submission_service
 from engineering_platform.agent_state import TransactionState
 from engineering_platform.storage import sqlite_connection
 from engineering_platform.terminal_evidence_reconciliation import (
     TerminalEvidenceReconciliationError,
+    main,
     reconcile_terminal_evidence,
 )
 
@@ -172,6 +176,127 @@ class TerminalEvidenceReconciliationTest(unittest.TestCase):
                 self.root, run_id=self.run_id,
                 operation_id="terminal-evidence-repair-002",
             )
+
+    def test_identifiers_unavailable_run_and_operation_reuse_fail_closed(self) -> None:
+        cases = (
+            ({"run_id": "!", "operation_id": "terminal-evidence-repair-001"}, "RUN_ID_INVALID"),
+            ({"run_id": self.run_id, "operation_id": "short"}, "OPERATION_ID_INVALID"),
+            ({"run_id": "run-without-terminal-evidence", "operation_id": "terminal-evidence-repair-001"}, "TERMINAL_EVIDENCE_UNAVAILABLE"),
+        )
+        for arguments, reason in cases:
+            with self.subTest(reason=reason), self.assertRaisesRegex(
+                TerminalEvidenceReconciliationError, reason,
+            ):
+                reconcile_terminal_evidence(self.root, **arguments)
+
+        reconcile_terminal_evidence(
+            self.root, run_id=self.run_id,
+            operation_id="terminal-evidence-repair-001",
+        )
+        with self.assertRaisesRegex(
+            TerminalEvidenceReconciliationError, "OPERATION_ID_CONFLICT",
+        ):
+            reconcile_terminal_evidence(
+                self.root, run_id="another-terminal-run",
+                operation_id="terminal-evidence-repair-001",
+            )
+
+    def test_invalid_source_and_absent_defect_are_refused(self) -> None:
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite_connection(database) as connection:
+            connection.execute(
+                "UPDATE execution_artifact_records SET digest_algorithm='sha512' WHERE artifact_id=?",
+                (self.source_id,),
+            )
+        with self.assertRaisesRegex(
+            TerminalEvidenceReconciliationError, "SOURCE_ARTIFACT_INVALID",
+        ):
+            reconcile_terminal_evidence(
+                self.root, run_id=self.run_id,
+                operation_id="terminal-evidence-repair-001",
+            )
+
+        with sqlite_connection(database) as connection:
+            connection.execute(
+                "UPDATE execution_artifact_records SET digest_algorithm='sha256' WHERE artifact_id=?",
+                (self.source_id,),
+            )
+            payload = json.loads(connection.execute(
+                "SELECT payload FROM engineering_transactions WHERE run_id=?",
+                (self.run_id,),
+            ).fetchone()[0])
+            payload["action_intent"] = "VALIDATION_ONLY"
+            connection.execute(
+                "UPDATE engineering_transactions SET payload=? WHERE run_id=?",
+                (json.dumps(payload), self.run_id),
+            )
+        with self.assertRaisesRegex(
+            TerminalEvidenceReconciliationError, "RECONCILIATION_PRECONDITION_FAILED",
+        ):
+            reconcile_terminal_evidence(
+                self.root, run_id=self.run_id,
+                operation_id="terminal-evidence-repair-001",
+            )
+
+        payload["action_intent"] = "MUTATING_DELIVERY"
+        payload["implementation_head_sha"] = self.candidate
+        with sqlite_connection(database) as connection:
+            connection.execute(
+                "UPDATE engineering_transactions SET payload=? WHERE run_id=?",
+                (json.dumps(payload), self.run_id),
+            )
+        with self.assertRaisesRegex(
+            TerminalEvidenceReconciliationError, "RECONCILIATION_DEFECT_NOT_PRESENT",
+        ):
+            reconcile_terminal_evidence(
+                self.root, run_id=self.run_id,
+                operation_id="terminal-evidence-repair-001",
+            )
+
+    def test_changed_source_is_refused_and_same_operation_can_resume(self) -> None:
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite_connection(database) as connection:
+            active = submission_service._active_terminal_artifact(connection, self.run_id)
+        self.assertIsNotNone(active)
+        with patch(
+            "engineering_platform.terminal_evidence_reconciliation."
+            "submission_service._active_terminal_artifact",
+            side_effect=(active, None),
+        ), self.assertRaisesRegex(
+            TerminalEvidenceReconciliationError, "SOURCE_ARTIFACT_CHANGED",
+        ):
+            reconcile_terminal_evidence(
+                self.root, run_id=self.run_id,
+                operation_id="terminal-evidence-repair-001",
+            )
+
+        operation = reconcile_terminal_evidence(
+            self.root, run_id=self.run_id,
+            operation_id="terminal-evidence-repair-001",
+        )
+        self.assertEqual(operation["state"], "SUCCEEDED")
+
+    def test_cli_reports_blocked_and_success_without_exposing_material(self) -> None:
+        blocked_output = io.StringIO()
+        with redirect_stdout(blocked_output):
+            blocked = main([
+                "--data-root", str(self.root), "--run-id", "!",
+                "--operation-id", "terminal-evidence-repair-001",
+            ])
+        self.assertEqual(blocked, 2)
+        self.assertEqual(
+            json.loads(blocked_output.getvalue()),
+            {"state": "BLOCKED", "reason_code": "RUN_ID_INVALID"},
+        )
+
+        success_output = io.StringIO()
+        with redirect_stdout(success_output):
+            succeeded = main([
+                "--data-root", str(self.root), "--run-id", self.run_id,
+                "--operation-id", "terminal-evidence-repair-001",
+            ])
+        self.assertEqual(succeeded, 0)
+        self.assertEqual(json.loads(success_output.getvalue())["state"], "SUCCEEDED")
 
     def test_immutable_operation_receipt_rejects_update_and_delete(self) -> None:
         reconcile_terminal_evidence(
