@@ -149,6 +149,32 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
     def test_server_presentation_boundaries_reject_unsafe_headers_and_normalize_quota_data(self) -> None:
         """Console-only helpers remain fail-closed for unsafe or malformed inputs."""
+        class DetachedDownloadHandler:
+            def __init__(self) -> None:
+                self.responses: list[int] = []
+                self.headers: list[tuple[str, str]] = []
+                self.wfile = io.BytesIO()
+
+            def send_response(self, status: int) -> None:
+                self.responses.append(status)
+
+            def send_header(self, name: str, value: str) -> None:
+                self.headers.append((name, value))
+
+            def end_headers(self) -> None:
+                pass
+
+        self.assertEqual(
+            server._telemetry_export_content_type("markdown"),
+            "text/markdown; charset=utf-8",
+        )
+        self.assertEqual(
+            server._telemetry_export_content_type("json"),
+            "application/json; charset=utf-8",
+        )
+        for unsafe_format in (None, "", "text/plain", "json\r\nInjected: value"):
+            with self.assertRaises(ValueError):
+                server._telemetry_export_content_type(unsafe_format)
         self.assertEqual(
             server._attachment_content_disposition("qualification-report.md"),
             'attachment; filename="qualification-report.md"',
@@ -163,6 +189,28 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         for unsafe_id in (None, "../run", "run\r\n"):
             with self.assertRaises(ValueError):
                 server._report_content_disposition(unsafe_id)
+
+        download = DetachedDownloadHandler()
+        server._HealthHandler._send_download(
+            download, b"{}", export_format="json", filename="telemetry-overview-project-utc.json",
+        )
+        self.assertEqual(download.responses, [200])
+        self.assertIn(("Content-Type", "application/json; charset=utf-8"), download.headers)
+        self.assertIn(
+            ("Content-Disposition", 'attachment; filename="telemetry-overview-project-utc.json"'),
+            download.headers,
+        )
+        for export_format, filename in (
+            ("text/plain", "telemetry.txt"),
+            ("json", "telemetry.json\r\nInjected: value"),
+        ):
+            rejected = DetachedDownloadHandler()
+            with self.assertRaises(ValueError):
+                server._HealthHandler._send_download(
+                    rejected, b"{}", export_format=export_format, filename=filename,
+                )
+            self.assertEqual(rejected.responses, [])
+            self.assertEqual(rejected.headers, [])
 
         self.assertIsNone(server._remaining_rate_limit_capacity({}))
         self.assertIsNone(server._remaining_rate_limit_capacity({"windows": ["malformed", {"used_percent": True}]}))

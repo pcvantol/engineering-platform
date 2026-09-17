@@ -322,6 +322,15 @@ def _attachment_content_disposition(filename: object) -> str:
     return f'attachment; filename="{sanitized}"'
 
 
+def _telemetry_export_content_type(export_format: object) -> str:
+    """Return a fixed MIME type for one supported telemetry export format."""
+    if export_format == "markdown":
+        return "text/markdown; charset=utf-8"
+    if export_format == "json":
+        return "application/json; charset=utf-8"
+    raise ValueError("telemetry export format is invalid")
+
+
 def _report_content_disposition(report_id: object) -> str:
     """Compose the report filename only after independently validating its id."""
     if not isinstance(report_id, str) or not _SAFE_REPORT_ID.fullmatch(report_id):
@@ -5272,11 +5281,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
-    def _send_download(self, payload: bytes, *, content_type: str, filename: str) -> None:
-        """Return one bounded read-only export with explicit browser metadata."""
+    def _send_download(self, payload: bytes, *, export_format: str, filename: str) -> None:
+        """Return one bounded read-only export with fail-closed browser metadata."""
+        content_type = _telemetry_export_content_type(export_format)
+        content_disposition = _attachment_content_disposition(filename)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Disposition", content_disposition)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -6148,7 +6159,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 payload = telemetry_export.serialize_markdown(model) if markdown else telemetry_export.serialize_json(model)
                 self._send_download(
                     payload,
-                    content_type="text/markdown; charset=utf-8" if markdown else "application/json; charset=utf-8",
+                    export_format=export_format,
                     filename=f"telemetry-overview-{selected}-utc.{('md' if markdown else 'json')}",
                 )
                 return
@@ -6190,7 +6201,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 context = run_id if run_id is not None else export_date
                 self._send_download(
                     payload,
-                    content_type="text/markdown; charset=utf-8" if markdown else "application/json; charset=utf-8",
+                    export_format=export_format,
                     filename=f"telemetry-detail-{selected}-{scope.casefold().replace('_', '-')}-{context}.{('md' if markdown else 'json')}",
                 )
                 return
