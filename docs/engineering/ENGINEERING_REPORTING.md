@@ -154,6 +154,11 @@ and separately names its canonical root submission. Attempt-scoped immutable
 constraints are loaded through the persisted run-to-attempt binding. This
 prevents a canonical root envelope from hiding the action intent, Runtime
 Prompt or other Forge execution provenance that applied to the actual run.
+The attempt, canonical root, retry parent and available qualification lineage
+must agree. A historical parent without a local attempt is accepted only when
+CENTRAL explicitly binds that parent run to the current retry and its Producer
+correlation. A local retry read without its attempt-scoped source is therefore
+unavailable, not silently replaced by the root envelope.
 An absent expected attempt link, invalid stored constraints, unavailable
 CENTRAL read or Producer/root identity conflict is reported with a safe
 submission-evidence diagnostic code and prevents publication of a misleading

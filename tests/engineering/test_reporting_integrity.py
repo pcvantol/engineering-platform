@@ -251,6 +251,27 @@ class ReportingIntegrityTest(unittest.TestCase):
         errors = report_consistency_errors(tampered, state, bundle, "PASS", outcome)
         self.assertIn("deliverable answer contains an unscoped acceptance conclusion", errors)
 
+        overall_acceptance = body.replace(
+            "## Commit Strategy",
+            "- Overall Acceptance: PASS\n\n## Commit Strategy",
+        )
+        errors = report_consistency_errors(
+            overall_acceptance, state, bundle, "PASS", outcome,
+        )
+        self.assertIn("deliverable answer contains an unscoped acceptance conclusion", errors)
+
+        missing_machine_summary = re.sub(
+            r"```json\n.*?\n```",
+            "machine projection unavailable",
+            body,
+            count=1,
+            flags=re.DOTALL,
+        )
+        errors = report_consistency_errors(
+            missing_machine_summary, state, bundle, "PASS", outcome,
+        )
+        self.assertIn("Engineering Evidence Summary machine projection is missing", errors)
+
     def test_blocked_and_failed_keep_factual_execution_status(self) -> None:
         for phase in ("BLOCKED", "FAILED"):
             with self.subTest(phase=phase):
@@ -298,6 +319,144 @@ class ReportingIntegrityTest(unittest.TestCase):
         self.assertEqual(result.submission["submission_id"], "submission-retry")
         self.assertEqual(result.submission["canonical_submission_id"], "submission-root")
         self.assertEqual(result.submission["constraints"], {"attempt": "retry"})
+
+    def test_retry_root_parent_and_qualification_conflicts_fail_closed(self) -> None:
+        for case in ("local-source", "canonical-root", "qualification-attempt", "qualification-parent"):
+            with self.subTest(case=case):
+                root = self.root / case
+                root.mkdir()
+                original_root = self.root
+                self.root = root
+                try:
+                    self._record_submission(submission_id="submission-root", run_id="run-root")
+                    self._record_submission(
+                        submission_id="submission-retry",
+                        run_id="run-retry",
+                        retry_parent_submission_id="submission-root",
+                        constraints={"attempt": "retry"},
+                    )
+                    if case == "local-source":
+                        result = resolve_submission_attempt_evidence(self.root, "run-retry")
+                        self.assertEqual(result.status, SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE)
+                        self.assertEqual(
+                            result.diagnostic_code,
+                            "SUBMISSION_EVIDENCE_ATTEMPT_SOURCE_UNAVAILABLE",
+                        )
+                        continue
+                    if case == "canonical-root":
+                        self._record_submission(
+                            submission_id="other-root",
+                            run_id="other-run",
+                            correlation_id="correlation-other",
+                        )
+                    database = self._create_central_submission_rows((
+                        ("submission-root", "forge", '{"attempt":"root"}'),
+                        ("submission-retry", "forge", '{"attempt":"retry"}'),
+                        ("other-root", "forge", '{}'),
+                    ))
+                    if case == "canonical-root":
+                        with sqlite_connection(database) as connection:
+                            connection.execute(
+                                "UPDATE execution_submission_attempts "
+                                "SET canonical_submission_id='other-root' "
+                                "WHERE submission_id='submission-retry'"
+                            )
+                    else:
+                        record_run_qualification_context(
+                            self.root,
+                            run_id="run-retry",
+                            submission_id=(
+                                "wrong-attempt" if case == "qualification-attempt"
+                                else "submission-retry"
+                            ),
+                            fresh_submission=False,
+                            retry_parent_run_id=(
+                                "wrong-parent" if case == "qualification-parent"
+                                else "run-root"
+                            ),
+                            resume_parent_run_id=None,
+                            recorded_at="2026-09-17T10:00:00+00:00",
+                        )
+                    result = resolve_submission_attempt_evidence(
+                        self.root, "run-retry", central_database=database,
+                    )
+                    self.assertEqual(result.status, SUBMISSION_EVIDENCE_IDENTITY_CONFLICT)
+                    with patch(
+                        "engineering_platform.execution_reporting.parse_producer_metadata",
+                        side_effect=AssertionError("prompt fallback must not run"),
+                    ), self.assertRaisesRegex(EngineeringStorageError, "SUBMISSION_EVIDENCE_"):
+                        _persisted_producer_submission(
+                            self.root,
+                            self._state("run-retry"),
+                            "Mission ID: WRONG",
+                            central_database=database,
+                        )
+                finally:
+                    self.root = original_root
+
+    def test_historical_parent_exception_requires_retried_parent_without_attempt(self) -> None:
+        for case in ("parent-has-attempt", "dismissed-parent"):
+            with self.subTest(case=case):
+                root = self.root / case
+                root.mkdir()
+                original_root = self.root
+                self.root = root
+                try:
+                    self._record_submission(submission_id="submission-root", run_id="run-root")
+                    historical_submission = "submission-middle"
+                    historical_run = "run-middle"
+                    if case == "parent-has-attempt":
+                        self._record_submission(
+                            submission_id=historical_submission,
+                            run_id=historical_run,
+                            retry_parent_submission_id="submission-root",
+                        )
+                    self._record_submission(
+                        submission_id="submission-current",
+                        run_id="run-current",
+                        retry_parent_submission_id="submission-root",
+                    )
+                    database = self._create_central_submission_rows((
+                        ("submission-root", "forge", '{}'),
+                        (historical_submission, "forge", '{}'),
+                        ("submission-current", "forge", '{}'),
+                    ))
+                    with sqlite_connection(database) as connection:
+                        connection.execute(
+                            "CREATE TABLE ep_parity_lifecycle_dispatches("
+                            "submission_id TEXT,run_id TEXT,operator_resolution TEXT,"
+                            "resolution_submission_id TEXT)"
+                        )
+                        connection.execute(
+                            "INSERT INTO ep_parity_lifecycle_dispatches VALUES(?,?,?,?)",
+                            (
+                                historical_submission,
+                                historical_run,
+                                "RETRIED" if case == "parent-has-attempt" else "DISMISSED",
+                                "submission-current",
+                            ),
+                        )
+                    record_run_qualification_context(
+                        self.root,
+                        run_id="run-current",
+                        submission_id="submission-current",
+                        fresh_submission=False,
+                        retry_parent_run_id=historical_run,
+                        resume_parent_run_id=None,
+                        recorded_at="2026-09-17T10:00:00+00:00",
+                    )
+
+                    result = resolve_submission_attempt_evidence(
+                        self.root, "run-current", central_database=database,
+                    )
+
+                    self.assertEqual(result.status, SUBMISSION_EVIDENCE_IDENTITY_CONFLICT)
+                    self.assertEqual(
+                        result.diagnostic_code,
+                        "SUBMISSION_EVIDENCE_QUALIFICATION_LINEAGE_CONFLICT",
+                    )
+                finally:
+                    self.root = original_root
 
     def test_identity_conflict_and_corrupt_constraints_never_call_prompt_fallback(self) -> None:
         for case, producer_id, constraints, expected in (

@@ -2070,6 +2070,36 @@ def resolve_submission_attempt_evidence(
     copied into diagnostics.
     """
     try:
+        connection = _evidence_connection(root, central_database)
+        try:
+            attempt_row = connection.execute(
+                "SELECT attempt.submission_id,attempt.canonical_submission_id,"
+                "attempt.retry_parent_submission_id,parent.canonical_submission_id,"
+                "parent_link.run_id "
+                "FROM execution_submission_attempt_links AS link "
+                "JOIN execution_submission_attempts AS attempt "
+                "ON attempt.submission_id=link.submission_id "
+                "LEFT JOIN execution_submission_attempts AS parent "
+                "ON parent.submission_id=attempt.retry_parent_submission_id "
+                "LEFT JOIN execution_submission_attempt_links AS parent_link "
+                "ON parent_link.submission_id=parent.submission_id "
+                "WHERE link.run_id=?",
+                (run_id,),
+            ).fetchone()
+            lineage_row = connection.execute(
+                "SELECT submission_id,fresh_submission,retry_parent_run_id,resume_parent_run_id "
+                "FROM execution_run_qualification_context WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except (EngineeringStorageError, sqlite3.DatabaseError, OSError):
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE,
+            diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_READ_FAILED",
+        )
+    try:
         root_submission = load_submission_for_run(
             root, run_id, central_database=central_database,
         )
@@ -2083,26 +2113,12 @@ def resolve_submission_attempt_evidence(
                 if unavailable else "SUBMISSION_EVIDENCE_ROOT_CORRUPT"
             ),
         )
-    if root_submission is None:
-        if central_database is not None:
+    if attempt_row is None:
+        if root_submission is not None or central_database is not None or lineage_row is not None:
             return SubmissionAttemptEvidence(
                 run_id=run_id,
                 status=SUBMISSION_EVIDENCE_MISSING_MODERN_BINDING,
-                diagnostic_code="SUBMISSION_EVIDENCE_ROOT_BINDING_MISSING",
-            )
-        try:
-            lineage = load_run_lineage(root, run_id)
-        except (EngineeringStorageError, sqlite3.DatabaseError, OSError):
-            return SubmissionAttemptEvidence(
-                run_id=run_id,
-                status=SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE,
-                diagnostic_code="SUBMISSION_EVIDENCE_LINEAGE_READ_FAILED",
-            )
-        if lineage is not None:
-            return SubmissionAttemptEvidence(
-                run_id=run_id,
-                status=SUBMISSION_EVIDENCE_MISSING_MODERN_BINDING,
-                diagnostic_code="SUBMISSION_EVIDENCE_EXPECTED_SUBMISSION_MISSING",
+                diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_BINDING_MISSING",
             )
         return SubmissionAttemptEvidence(
             run_id=run_id,
@@ -2110,7 +2126,93 @@ def resolve_submission_attempt_evidence(
             diagnostic_code="SUBMISSION_EVIDENCE_LEGACY_ABSENT",
             provenance="LEGACY_PROMPT_METADATA",
         )
+    attempt_id = str(attempt_row[0])
+    canonical_id = str(attempt_row[1])
+    retry_parent_id = attempt_row[2]
+    parent_canonical_id = attempt_row[3]
+    parent_run_id = attempt_row[4]
+    if root_submission is None:
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_MISSING_MODERN_BINDING,
+            diagnostic_code="SUBMISSION_EVIDENCE_ROOT_BINDING_MISSING",
+        )
+    if root_submission.get("submission_id") != canonical_id:
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_IDENTITY_CONFLICT,
+            diagnostic_code="SUBMISSION_EVIDENCE_ROOT_IDENTITY_CONFLICT",
+        )
+    if retry_parent_id is not None and (
+        parent_canonical_id is None
+        or str(parent_canonical_id) != canonical_id
+        or parent_run_id is None
+    ):
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_IDENTITY_CONFLICT,
+            diagnostic_code="SUBMISSION_EVIDENCE_RETRY_PARENT_CONFLICT",
+        )
+    if lineage_row is not None:
+        lineage_submission_id = str(lineage_row[0])
+        lineage_fresh = bool(lineage_row[1])
+        lineage_retry_run = lineage_row[2]
+        lineage_resume_run = lineage_row[3]
+        lineage_conflicts = lineage_submission_id != attempt_id
+        if retry_parent_id is not None:
+            historical_parent_verified = False
+            if lineage_retry_run != parent_run_id and central_database is not None:
+                try:
+                    connection = _evidence_connection(root, central_database)
+                    try:
+                        historical_parent = connection.execute(
+                            "SELECT submission.producer_id,submission.producer_type,"
+                            "submission.correlation_id,dispatch.operator_resolution,"
+                            "historical_attempt.submission_id "
+                            "FROM ep_parity_lifecycle_dispatches AS dispatch "
+                            "JOIN ep_submissions AS submission "
+                            "ON submission.submission_id=dispatch.submission_id "
+                            "LEFT JOIN execution_submission_attempts AS historical_attempt "
+                            "ON historical_attempt.submission_id=dispatch.submission_id "
+                            "WHERE dispatch.run_id=? AND dispatch.resolution_submission_id=?",
+                            (lineage_retry_run, attempt_id),
+                        ).fetchone()
+                    finally:
+                        connection.close()
+                except (EngineeringStorageError, sqlite3.DatabaseError, OSError):
+                    historical_parent = None
+                historical_parent_verified = bool(
+                    historical_parent is not None
+                    and root_submission.get("correlation_id") is not None
+                    and historical_parent[0] == root_submission.get("producer_id")
+                    and historical_parent[1] == root_submission.get("producer_type")
+                    and historical_parent[2] == root_submission.get("correlation_id")
+                    and historical_parent[3] == "RETRIED"
+                    and historical_parent[4] is None
+                )
+            lineage_conflicts = lineage_conflicts or (
+                lineage_fresh
+                or lineage_resume_run is not None
+                or (
+                    lineage_retry_run != parent_run_id
+                    and not historical_parent_verified
+                )
+            )
+        elif lineage_retry_run is not None:
+            lineage_conflicts = True
+        if lineage_conflicts:
+            return SubmissionAttemptEvidence(
+                run_id=run_id,
+                status=SUBMISSION_EVIDENCE_IDENTITY_CONFLICT,
+                diagnostic_code="SUBMISSION_EVIDENCE_QUALIFICATION_LINEAGE_CONFLICT",
+            )
     if central_database is None:
+        if attempt_id != canonical_id:
+            return SubmissionAttemptEvidence(
+                run_id=run_id,
+                status=SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE,
+                diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_SOURCE_UNAVAILABLE",
+            )
         return SubmissionAttemptEvidence(
             run_id=run_id,
             status=SUBMISSION_EVIDENCE_VALID_MODERN,
@@ -2147,7 +2249,8 @@ def resolve_submission_attempt_evidence(
             diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_BINDING_MISSING",
         )
     if (
-        row[8] != root_submission["submission_id"]
+        row[0] != attempt_id
+        or row[8] != canonical_id
         or row[1] != root_submission["producer_id"]
         or row[2] != root_submission["producer_type"]
     ):
@@ -2175,7 +2278,7 @@ def resolve_submission_attempt_evidence(
         status=SUBMISSION_EVIDENCE_VALID_MODERN,
         submission={
             **root_submission,
-            "canonical_submission_id": root_submission["submission_id"],
+            "canonical_submission_id": canonical_id,
             "submission_id": row[0],
             "producer_version": row[3],
             "correlation_id": row[4],

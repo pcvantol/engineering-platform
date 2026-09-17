@@ -950,8 +950,7 @@ def report_consistency_errors(
         re.MULTILINE | re.DOTALL,
     )
     if answer_section is not None and re.search(
-        r"(?i)(?:final deliverable answer\s*:.*\b(?:YES|PASS|GO|NO-GO)\b|"
-        r"\b(?:YES|PASS|GO)\b\s*[/-]\s*(?:PASS|GO)\b)",
+        r"(?i)\b(?:YES|PASS|GO|NO-GO)\b",
         answer_section.group("body"),
     ):
         errors.append("deliverable answer contains an unscoped acceptance conclusion")
@@ -960,7 +959,9 @@ def report_consistency_errors(
         body,
         re.MULTILINE | re.DOTALL,
     )
-    if summary is not None:
+    if summary is None:
+        errors.append("Engineering Evidence Summary machine projection is missing")
+    else:
         try:
             summary_payload = json.loads(summary.group("body"))
         except json.JSONDecodeError:
