@@ -23,7 +23,7 @@ const TELEMETRY_PHASES = [
   "CAPABILITY_REVIEW", "EXECUTION_PREPARATION", "PROVIDER_EXECUTION", "VALIDATION",
   "QUALITY_CONTROL", "REPAIR", "REPOSITORY_FINALIZATION", "PR_OR_MERGE", "FINALIZATION",
   "REPORT_GENERATION", "EVIDENCE_PERSISTENCE", "REPOSITORY_CLEANUP", "RECONCILIATION",
-  "EXTERNAL_CI_WAIT", "TOTAL_EXECUTION",
+  "EXTERNAL_CI_WAIT", "TOTAL_EXECUTION", "PARALLEL_OVERLAP", "UNASSIGNED",
 ];
 
 function canonicalPlatformComponents(overrides = {}) {
@@ -5312,6 +5312,123 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(content).toContainText("gpt-5.6-terra");
     await expect(content).toContainText("33,3%");
     await expect(content.locator(".dashboard-action, .execution-dismiss, .predecessor-retry")).toHaveCount(0);
+  });
+
+  test("qualifies canonical telemetry coverage, timing, invocation and chain scopes", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const runId = "inbox-cd4ba8cb829a4ee1b852369c602c3653";
+    const invocations = Array.from({ length: 9 }, (_, index) => ({
+      invocation_id: `invocation-${index + 1}`, phase: index < 6 ? "PROVIDER_EXECUTION" : "CAPABILITY_REVIEW",
+      role: index ? "REVIEWER" : "PRIMARY", provider: "codex-cli", state: "COMPLETE",
+      duration_ms: 120000 + index * 1000, model: index === 0 ? "gpt-6-codex-experimental" : null,
+      model_provenance: index === 0 ? "AUTHORITATIVE" : "UNAVAILABLE", retry_ordinal: 0,
+      input_tokens: index === 8 ? null : index === 0 ? 3847785 : 672000,
+      cached_input_tokens: index === 8 ? null : index === 0 ? 3610000 : 610000,
+      uncached_input_tokens: index === 8 ? null : index === 0 ? 237785 : 62000,
+      output_tokens: index === 8 ? null : 8219,
+      usage_coverage: index === 8 ? "UNAVAILABLE" : "COMPLETE",
+      missing_usage_fields: index === 8 ? ["input_tokens", "cached_input_tokens", "output_tokens"] : [],
+    }));
+    const timeline = [
+      { phase_id: "total", parent_phase_id: null, phase_name: "TOTAL_EXECUTION", duration_ms: 2721545, outcome: "COMPLETE" },
+      { phase_id: "provider", parent_phase_id: "total", phase_name: "PROVIDER_EXECUTION", duration_ms: 1233062, outcome: "COMPLETE" },
+      { phase_id: "validation", parent_phase_id: "total", phase_name: "VALIDATION", duration_ms: 148244, outcome: "COMPLETE" },
+      { phase_id: "nested", parent_phase_id: "validation", phase_name: "VALIDATION", duration_ms: 4200, outcome: "COMPLETE" },
+    ];
+    const chainRuns = Array.from({ length: 7 }, (_, index) => ({
+      run_id: index === 6 ? runId : `inbox-chain-${index + 1}`, relation: index ? "RETRY" : "ORIGINAL",
+      state: index === 6 ? "COMPLETE" : "BLOCKED", started_at: `2026-09-${String(10 + index).padStart(2, "0")}T10:00:00Z`,
+      provider_invocation_count: index === 6 ? 9 : 5,
+    }));
+    const detail = {
+      contract_version: "telemetry-contract@2.0", source_snapshot_references: [runId], scope: "EP_RUN_ATTEMPTS_IN_UTC_DAY",
+      summary: {
+        executions: 1, population: 1, completed: 1, blocked: 0, failed: 0,
+        total_wall_time: { average_ms: 2721545, median_ms: 2721545, population: 1 },
+        provider_unique_coverage: { average_ms: 1233072, population: 1 },
+        provider_cumulative_process: { average_ms: 1233062, population: 1 },
+        external_wait: { average_ms: 364132, population: 1 }, unassigned: { average_ms: 648751, population: 1 },
+        usage: {
+          input_tokens: { value: 8558573, coverage: "PARTIAL", observed_observations: 8, expected_observations: 9 },
+          output_tokens: { value: 65758, coverage: "PARTIAL", observed_observations: 8, expected_observations: 9 },
+        }, cache_ratio_percent: 92.557,
+      },
+      inclusive_phases: [
+        { phase: "PROVIDER_EXECUTION", average_ms: 1233062, median_ms: 1233062, total_ms: 1233062, share_percent: 45.307, runs: 1 },
+        { phase: "VALIDATION", average_ms: 148244, median_ms: 148244, total_ms: 148244, share_percent: 5.447, runs: 1 },
+      ],
+      exclusive_distribution: [
+        { category: "PARALLEL_OVERLAP", duration_ms: 795744, share_percent: 29.239 },
+        { category: "UNASSIGNED", duration_ms: 648751, share_percent: 23.838 },
+        { category: "PROVIDER_EXECUTION", duration_ms: 435628, share_percent: 16.006 },
+        { category: "EXTERNAL_CI_WAIT", duration_ms: 364175, share_percent: 13.381 },
+        { category: "VALIDATION", duration_ms: 477247, share_percent: 17.536 },
+      ],
+      exclusive_distribution_closes: true,
+      bottlenecks: {
+        longest_average_phase: { phase: "PROVIDER_EXECUTION" }, largest_accumulated_phase: { phase: "PROVIDER_EXECUTION" },
+        longest_individual_span: { phase: "FINALIZATION", label: "FINALIZATION", duration_ms: 495136 }, top_time_consumers: [],
+      },
+      runs: [{
+        run_id: runId, started_at: "2026-09-17T10:00:00Z", status: "COMPLETE", total_duration_ms: 2721545,
+        provider_duration_ms: 1233072, provider_cumulative_duration_ms: 1233062, external_wait_ms: 364132,
+        unassigned_ms: 648751, input_tokens: 8558573, output_tokens: 65758, cache_ratio_percent: 92.557,
+        largest_phase: "PROVIDER_EXECUTION", producer_type: "FORGE", repository: "pcvantol/engineering-platform",
+        model: "gpt-6-codex-experimental", phase_telemetry: "RECORDED",
+        usage_coverage: { input_tokens: "PARTIAL", output_tokens: "PARTIAL" }, timing_coverage: { state: "COMPLETE" },
+        telemetry_snapshot: {
+          contract_version: "telemetry-contract@2.0",
+          attempt: { scope: "EP_RUN_ATTEMPT", timing: {
+            total_wall_time_ms: 2721545, provider_unique_coverage_ms: 1233072, provider_cumulative_process_duration_ms: 1233062,
+            external_wait_time_ms: 364132, unassigned_time_ms: 648751, coverage: { state: "COMPLETE" }, timeline,
+          }, usage: {
+            invocations, cache_ratio_percent: 92.557, cache_ratio_population: { coverage: "PARTIAL", observed_observations: 8, expected_observations: 9 },
+            metrics: {
+              input_tokens: { value: 8558573, coverage: "PARTIAL", observed_observations: 8, expected_observations: 9 },
+              output_tokens: { value: 65758, coverage: "PARTIAL", observed_observations: 8, expected_observations: 9 },
+            },
+          } },
+          chain: {
+            scope: "EXECUTION_CHAIN", coverage: "COMPLETE", mission_scope_label: "EP execution within this Mission",
+            attempt_count: 7, original_attempt_count: 1, retry_count: 6, resume_count: 0, elapsed_ms: 30281903,
+            processing_time_ms: 14040669, inter_attempt_gap_ms: 16217525, outside_selected_window_count: 6, runs: chainRuns,
+          },
+        },
+      }],
+    };
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/telemetry/2026-09-17", (route) => route.fulfill({ json: detail }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await selectDashboardLocale(page, "nl");
+    await page.evaluate(() => window.executionTelemetry([{ date: "2026-09-17", prompt_count: 1, average_total_execution_seconds: 2721.545, input_tokens: 8558573, output_tokens: 65758, complete_count: 1, blocked_count: 0, failed_count: 0 }]));
+    await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator("#executionTelemetryRows .telemetry-row"));
+    const content = page.locator("#telemetryDetailContent");
+    await expect(content).toContainText("N=1");
+    await expect(content).toContainText("8.558.573 · Gedeeltelijk (8/9)");
+    await expect(content).toContainText("Inclusieve fasewerklast");
+    await expect(content).toContainText("Exclusieve doorlooptijdverdeling");
+    await expect(content).toContainText("Parallel / overlap");
+    await expect(content).toContainText("gpt-6-codex-experimental (AUTHORITATIVE)");
+    await expect(content).toContainText("3.847.785");
+    await expect(content).not.toContainText("Actieve context");
+    await content.getByRole("tab", { name: "Hele uitvoeringsketen" }).click();
+    await expect(content).toContainText("Pogingen in keten");
+    await expect(content).toContainText("6");
+    await expect(content).toContainText("EP execution within this Mission");
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    expect(overflow).toBe(false);
+    const screenshotDirectory = process.env.TELEMETRY_SCREENSHOT_DIR;
+    if (screenshotDirectory) {
+      mkdirSync(screenshotDirectory, { recursive: true });
+      await page.screenshot({ path: path.join(screenshotDirectory, "telemetry-desktop.png"), fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(page.locator("#telemetryDetailModal")).toBeVisible();
+      const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+      expect(mobileOverflow).toBe(false);
+      await content.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+      await page.screenshot({ path: path.join(screenshotDirectory, "telemetry-mobile.png"), fullPage: true });
+    }
   });
 
   test("uses one uninterrupted selected-row treatment for telemetry rows", async ({ page }) => {

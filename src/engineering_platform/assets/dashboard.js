@@ -4337,6 +4337,7 @@ function renderLegacyExecutionTelemetry(rows) {
 }
 function telemetryDuration(seconds) {
   if (typeof seconds !== "number" || seconds < 0) return "—";
+  if (seconds > 0 && seconds < 1) return t("telemetry.less_than_one_second");
   const minutes = Math.floor(seconds / 60),
     remaining = Math.round(seconds % 60);
   return (minutes ? minutes + " min " : "") + remaining + " sec";
@@ -4619,6 +4620,23 @@ function executionTelemetry(rows) {
 }
 let telemetryDetailTrigger = null, telemetryDetailPayload = null, telemetryDetailDate = null, telemetryDetailRequestId = 0;
 function telemetryMs(value) { return typeof value === "number" && value >= 0 ? telemetryDuration(value / 1000) : t("format.unavailable"); }
+function telemetryNumber(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? locale.number(value, { maximumFractionDigits: 3 })
+    : t("format.unavailable");
+}
+function telemetryCoverage(metric) {
+  if (!metric || typeof metric !== "object") return t("format.unavailable");
+  const state = t("telemetry.coverage." + String(metric.coverage || metric.state || "UNAVAILABLE").toLowerCase(), {}, metric.coverage || metric.state || "UNAVAILABLE");
+  const observed = metric.observed_observations, expected = metric.expected_observations;
+  return Number.isFinite(observed) && Number.isFinite(expected) ? `${state} (${observed}/${expected})` : state;
+}
+function telemetryMetricValue(metric) {
+  if (!metric || typeof metric !== "object" || metric.value == null) {
+    return metric?.missing_reason ? `${t("format.unavailable")} — ${metric.missing_reason}` : t("format.unavailable");
+  }
+  return `${telemetryNumber(metric.value)} · ${telemetryCoverage(metric)}`;
+}
 function telemetryPercent(value) {
   const percent = Number(value);
   return Number.isFinite(percent)
@@ -4708,39 +4726,71 @@ function telemetryMarkdownTable(headings, rows) {
   ].join("\n");
 }
 function telemetryDetailMarkdown(detail, date) {
-  const summary = detail?.summary || {}, phases = Array.isArray(detail?.phases) ? detail.phases : [];
+  const summary = detail?.summary || {}, phases = Array.isArray(detail?.inclusive_phases) ? detail.inclusive_phases : Array.isArray(detail?.phases) ? detail.phases : [];
+  const exclusive = Array.isArray(detail?.exclusive_distribution) ? detail.exclusive_distribution : [];
   const runs = Array.isArray(detail?.runs) ? detail.runs : [], bottlenecks = detail?.bottlenecks || {};
+  const usage = summary.usage || {};
   const summaryRows = [
     [t("telemetry.executions"), summary.executions ?? 0], [t("telemetry.complete"), summary.completed ?? 0],
     [t("telemetry.blocked"), summary.blocked ?? 0], [t("telemetry.failed"), summary.failed ?? 0],
-    [t("telemetry.average_total"), telemetryMs(summary.total_wall_time?.average_ms)],
-    [t("telemetry.median_total"), telemetryMs(summary.total_wall_time?.median_ms)],
-    [t("telemetry.active_processing"), telemetryMs(summary.active_processing_time?.average_ms)],
-    [t("telemetry.average_wait"), telemetryMs(summary.queue_wait?.average_ms)],
-    [t("telemetry.provider"), telemetryMs(summary.provider_execution?.average_ms)],
-    [t("telemetry.validation"), telemetryMs(summary.validation?.average_ms)],
+    [t("telemetry.population"), `N=${summary.population ?? summary.executions ?? 0}`],
+    [t("telemetry.elapsed"), telemetryMs(summary.total_wall_time?.average_ms)],
+    [t("telemetry.provider_unique_coverage"), telemetryMs(summary.provider_unique_coverage?.average_ms)],
+    [t("telemetry.provider_cumulative_process"), telemetryMs(summary.provider_cumulative_process?.average_ms)],
     [t("telemetry.external_wait"), telemetryMs(summary.external_wait?.average_ms)],
-    [t("telemetry.overhead"), telemetryMs(summary.overhead?.average_ms)],
+    [t("telemetry.unassigned"), telemetryMs(summary.unassigned?.average_ms)],
+    [t("telemetry.observed_input"), telemetryMetricValue(usage.input_tokens)],
+    [t("telemetry.observed_output"), telemetryMetricValue(usage.output_tokens)],
+    [t("telemetry.cache_ratio"), telemetryPercent(summary.cache_ratio_percent)],
+    [t("telemetry.contract_version"), detail?.contract_version || t("format.unavailable")],
   ];
   const phaseRows = phases.map((phase) => [telemetryLabel(phase.phase), telemetryMs(phase.average_ms), telemetryMs(phase.median_ms), telemetryMs(phase.total_ms), telemetryPercent(phase.share_percent), phase.runs]);
+  const exclusiveRows = exclusive.map((row) => [telemetryLabel(row.category), telemetryMs(row.duration_ms), telemetryPercent(row.share_percent)]);
   const runRows = runs.map((run) => [
     run.run_id, run.started_at ? locale.dateTime(new Date(run.started_at)) : t("format.unavailable"), translate(run.status),
-    telemetryMs(run.total_duration_ms), telemetryRunMetric(run.queue_wait_ms, run.phase_telemetry), telemetryRunMetric(run.provider_duration_ms, run.phase_telemetry),
-    telemetryRunMetric(run.validation_duration_ms, run.phase_telemetry), telemetryRunMetric(run.external_wait_ms, run.phase_telemetry),
+    telemetryMs(run.total_duration_ms), telemetryRunMetric(run.provider_duration_ms, run.phase_telemetry),
+    telemetryRunMetric(run.external_wait_ms, run.phase_telemetry), telemetryRunMetric(run.unassigned_ms, run.phase_telemetry),
+    telemetryNumber(run.input_tokens), telemetryNumber(run.output_tokens), telemetryPercent(run.cache_ratio_percent),
     run.largest_phase ? telemetryLabel(run.largest_phase) : telemetryRunMetric(null, run.phase_telemetry), run.producer_type,
     run.repository, run.model,
   ]);
   const bottleneckLines = [
     `${t("telemetry.longest_average_phase")}: ${bottlenecks.longest_average_phase ? telemetryLabel(bottlenecks.longest_average_phase.phase) : t("format.unavailable")}`,
     `${t("telemetry.largest_accumulated_phase")}: ${bottlenecks.largest_accumulated_phase ? telemetryLabel(bottlenecks.largest_accumulated_phase.phase) : t("format.unavailable")}`,
+    `${t("telemetry.longest_individual_span")}: ${bottlenecks.longest_individual_span ? bottlenecks.longest_individual_span.label || telemetryLabel(bottlenecks.longest_individual_span.phase) : t("format.unavailable")}`,
     ...(Array.isArray(bottlenecks.top_time_consumers) ? bottlenecks.top_time_consumers.map((item) => `${telemetryLabel(item.phase)} — ${telemetryPercent(item.share_percent)}`) : []),
   ];
+  const runDetails = [];
+  for (const run of runs) {
+    const snapshot = run.telemetry_snapshot || {}, attempt = snapshot.attempt || {}, chain = snapshot.chain || {};
+    const invocations = Array.isArray(attempt.usage?.invocations) ? attempt.usage.invocations : [];
+    runDetails.push(`## ${t("telemetry.scope_attempt")} — ${run.run_id}`, "",
+      `${t("telemetry.measurement_coverage")}: ${attempt.timing?.coverage?.state || t("format.unavailable")}`, "",
+      invocations.length ? telemetryMarkdownTable(
+        [t("telemetry.phase"), t("telemetry.role"), t("telemetry.model"), t("telemetry.duration"), t("telemetry.input"), t("telemetry.cached_input"), t("telemetry.uncached_input"), t("telemetry.output"), t("telemetry.usage_coverage"), t("telemetry.invocation_id")],
+        invocations.map((item) => [telemetryLabel(item.phase), item.role, `${item.model || t("format.unavailable")} (${item.model_provenance || t("format.unavailable")})`, telemetryMs(item.duration_ms), telemetryNumber(item.input_tokens), telemetryNumber(item.cached_input_tokens), telemetryNumber(item.uncached_input_tokens), telemetryNumber(item.output_tokens), item.usage_coverage, item.invocation_id]),
+      ) : t("format.unavailable"), "",
+      `### ${t("telemetry.scope_chain")}`, "",
+      telemetryMarkdownTable([t("table.details"), t("history.markdown_value")], [
+        [t("telemetry.chain_coverage"), chain.coverage || t("format.unavailable")],
+        [t("telemetry.chain_attempts"), chain.attempt_count ?? t("format.unavailable")],
+        [t("telemetry.original_attempts"), chain.original_attempt_count ?? t("format.unavailable")],
+        [t("telemetry.retries"), chain.retry_count ?? t("format.unavailable")],
+        [t("telemetry.resumes"), chain.resume_count ?? t("format.unavailable")],
+        [t("telemetry.chain_elapsed"), telemetryMs(chain.elapsed_ms)],
+        [t("telemetry.chain_processing"), telemetryMs(chain.processing_time_ms)],
+        [t("telemetry.inter_attempt_gaps"), telemetryMs(chain.inter_attempt_gap_ms)],
+        [t("telemetry.outside_window"), chain.outside_selected_window_count ?? 0],
+      ]), "");
+  }
   return [
     `# ${t("telemetry.detail_title", { date: telemetryDate(date) })}`, "", t("telemetry.detail_description"), "",
     `## ${t("telemetry.summary")}`, "", telemetryMarkdownTable([t("table.details"), t("history.markdown_value")], summaryRows), "",
-    `## ${t("telemetry.phase_timing")}`, "", phaseRows.length ? telemetryMarkdownTable([t("telemetry.phase"), t("telemetry.average"), t("telemetry.median"), t("telemetry.accumulated"), t("telemetry.share"), t("telemetry.runs")], phaseRows) : t("telemetry.not_recorded"), "",
+    `## ${t("telemetry.inclusive_title")}`, "", t("telemetry.inclusive_help"), "", phaseRows.length ? telemetryMarkdownTable([t("telemetry.phase"), t("telemetry.average"), t("telemetry.median"), t("telemetry.accumulated"), t("telemetry.share"), t("telemetry.runs")], phaseRows) : t("telemetry.not_recorded"), "",
+    `## ${t("telemetry.exclusive_title")}`, "", t("telemetry.exclusive_help"), "", exclusiveRows.length ? telemetryMarkdownTable([t("telemetry.category"), t("telemetry.duration"), t("telemetry.share")], exclusiveRows) : t("telemetry.not_recorded"), "",
     `## ${t("telemetry.bottlenecks")}`, "", ...bottleneckLines.map((line) => `- ${line}`), "",
-    `## ${t("telemetry.runs")}`, "", runRows.length ? telemetryMarkdownTable([t("telemetry.run_id"), t("telemetry.start_time"), t("telemetry.status"), t("telemetry.average_total"), t("telemetry.average_wait"), t("telemetry.provider"), t("telemetry.validation"), t("telemetry.external_wait"), t("telemetry.largest_phase"), t("telemetry.producer_type"), t("telemetry.target_repository"), t("telemetry.model")], runRows) : t("format.unavailable"), "",
+    `## ${t("telemetry.runs")}`, "", runRows.length ? telemetryMarkdownTable([t("telemetry.run_id"), t("telemetry.start_time"), t("telemetry.status"), t("telemetry.duration"), t("telemetry.provider_unique_coverage"), t("telemetry.external_wait"), t("telemetry.unassigned"), t("telemetry.input"), t("telemetry.output"), t("telemetry.cache_ratio"), t("telemetry.largest_phase"), t("telemetry.producer_type"), t("telemetry.target_repository"), t("telemetry.model")], runRows) : t("format.unavailable"), "",
+    ...runDetails,
   ].join("\n");
 }
 function downloadTelemetryDetail(format) {
@@ -4790,77 +4840,190 @@ function openTelemetryDetail(date, trigger) {
     })
     .catch(() => { if (requestId === telemetryDetailRequestId) content.textContent = t("telemetry.details_unavailable"); });
 }
-function renderTelemetryDetail(detail, content) {
-  content.replaceChildren(); const summary = detail?.summary || {};
-  const metrics = document.createElement("section"); metrics.className = "telemetry-detail-metrics";
-  metrics.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.summary") }));
-  const grid = document.createElement("div"); grid.className = "technical-grid";
-  for (const [label, value] of [[t("telemetry.executions"), summary.executions], [t("telemetry.complete"), summary.completed], [t("telemetry.blocked"), summary.blocked], [t("telemetry.failed"), summary.failed]]) grid.append(Object.assign(document.createElement("div"), { className: "field", textContent: `${label}: ${value ?? 0}` }));
-  for (const [label, key] of [["telemetry.average_total", "total_wall_time"], ["telemetry.median_total", "total_wall_time"], ["telemetry.active_processing", "active_processing_time"], ["telemetry.average_wait", "queue_wait"], ["telemetry.provider", "provider_execution"], ["telemetry.validation", "validation"], ["telemetry.external_wait", "external_wait"], ["telemetry.overhead", "overhead"]]) grid.append(telemetryMetric(t(label), key === "total_wall_time" && label === "telemetry.median_total" ? summary[key]?.median_ms : summary[key]?.average_ms));
-  metrics.append(grid); content.append(metrics);
-  const phases = Array.isArray(detail?.phases) ? detail.phases : [];
-  const phaseSection = document.createElement("section"); phaseSection.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.phase_timing") }));
-  if (!phases.length) phaseSection.append(Object.assign(document.createElement("p"), { textContent: detail?.phase_telemetry_available ? t("telemetry.not_executed") : t("telemetry.not_recorded") }));
-  else {
-    const phaseColumns = [
-      ["phase", "telemetry.phase"], ["average_ms", "telemetry.average"], ["median_ms", "telemetry.median"],
-      ["total_ms", "telemetry.accumulated"], ["share_percent", "telemetry.share"], ["runs", "telemetry.runs"],
-    ].map(([key, label]) => ({ key, label, value: (phase) => key === "phase" ? telemetryLabel(phase.phase) : Number(phase[key]) || 0 }));
-    const phaseTable = telemetryDetailSortableTable(phaseColumns, phases, { key: "phase", direction: "asc" }, (phase, body) => {
+function telemetryTextField(label, value, title) {
+  const field = document.createElement("div"); field.className = "field";
+  const name = document.createElement("span"); name.className = "label"; name.textContent = label;
+  const strong = document.createElement("strong"); strong.textContent = value == null ? t("format.unavailable") : String(value);
+  if (title) { strong.title = title; strong.tabIndex = 0; }
+  field.append(name, strong); return field;
+}
+function renderCanonicalRunDetail(run, host) {
+  host.replaceChildren();
+  const snapshot = run?.telemetry_snapshot || {}, attempt = snapshot.attempt || {}, chain = snapshot.chain || {};
+  const timing = attempt.timing || {}, usage = attempt.usage || {}, invocations = Array.isArray(usage.invocations) ? usage.invocations : [];
+  const attemptPanel = document.createElement("div"), chainPanel = document.createElement("div"), switcher = document.createElement("div");
+  switcher.className = "telemetry-scope-switcher"; switcher.setAttribute("role", "tablist");
+  const attemptButton = Object.assign(document.createElement("button"), { type: "button", textContent: t("telemetry.scope_attempt") });
+  const chainButton = Object.assign(document.createElement("button"), { type: "button", textContent: t("telemetry.scope_chain") });
+  attemptButton.setAttribute("role", "tab"); chainButton.setAttribute("role", "tab");
+  const select = (showChain) => {
+    attemptPanel.hidden = showChain; chainPanel.hidden = !showChain;
+    attemptButton.setAttribute("aria-selected", String(!showChain)); chainButton.setAttribute("aria-selected", String(showChain));
+  };
+  attemptButton.addEventListener("click", () => select(false)); chainButton.addEventListener("click", () => select(true));
+  switcher.append(attemptButton, chainButton); select(false); host.append(switcher);
+
+  const attemptGrid = document.createElement("div"); attemptGrid.className = "technical-grid";
+  const metric = (name) => usage.metrics?.[name];
+  attemptGrid.append(
+    telemetryTextField(t("telemetry.duration"), telemetryMs(timing.total_wall_time_ms)),
+    telemetryTextField(t("telemetry.provider_unique_coverage"), telemetryMs(timing.provider_unique_coverage_ms)),
+    telemetryTextField(t("telemetry.provider_cumulative_process"), telemetryMs(timing.provider_cumulative_process_duration_ms)),
+    telemetryTextField(t("telemetry.external_wait"), telemetryMs(timing.external_wait_time_ms)),
+    telemetryTextField(t("telemetry.unassigned"), telemetryMs(timing.unassigned_time_ms)),
+    telemetryTextField(t("telemetry.observed_input"), telemetryMetricValue(metric("input_tokens")), metric("input_tokens")?.missing_reason),
+    telemetryTextField(t("telemetry.observed_output"), telemetryMetricValue(metric("output_tokens")), metric("output_tokens")?.missing_reason),
+    telemetryTextField(t("telemetry.cache_ratio"), telemetryPercent(usage.cache_ratio_percent), telemetryCoverage(usage.cache_ratio_population)),
+    telemetryTextField(t("telemetry.measurement_coverage"), timing.coverage?.state || t("format.unavailable"), timing.coverage?.reason),
+    telemetryTextField(t("telemetry.technical_completion"), translate(run.status)),
+    telemetryTextField(t("telemetry.qualification_status"), run.qualification_status || t("format.unavailable")),
+    telemetryTextField(t("telemetry.autonomy_acceptance"), run.autonomy_acceptance || t("format.unavailable")),
+    telemetryTextField(t("telemetry.producer_type"), run.producer_type || t("format.unavailable")),
+    telemetryTextField(t("telemetry.target_repository"), run.repository || t("format.unavailable")),
+  );
+  attemptPanel.append(attemptGrid);
+
+  const timeline = Array.isArray(timing.timeline) ? timing.timeline : [];
+  const timelineSection = document.createElement("section");
+  timelineSection.append(Object.assign(document.createElement("h4"), { textContent: t("telemetry.timeline") }));
+  if (timeline.length) {
+    const byId = new Map(timeline.map((span) => [span.phase_id, span]));
+    const depth = (span) => { let value = 0, parent = span.parent_phase_id, seen = new Set(); while (parent && byId.has(parent) && !seen.has(parent)) { seen.add(parent); value += 1; parent = byId.get(parent).parent_phase_id; } return value; };
+    const list = document.createElement("ol"); list.className = "telemetry-timeline";
+    timeline.forEach((span) => {
+      const item = document.createElement("li"); item.style.setProperty("--timeline-depth", String(depth(span)));
+      item.textContent = `${telemetryLabel(span.phase_name)} · ${telemetryMs(span.duration_ms)} · ${translate(span.outcome)}`;
+      item.title = String(span.phase_id || ""); list.append(item);
+    });
+    timelineSection.append(list);
+    if (timing.timeline_truncated) timelineSection.append(Object.assign(document.createElement("p"), { className: "telemetry-note", textContent: t("telemetry.timeline_truncated", { count: timing.timeline_limit }) }));
+  } else timelineSection.append(Object.assign(document.createElement("p"), { textContent: t("telemetry.not_recorded") }));
+  attemptPanel.append(timelineSection);
+
+  const invocationSection = document.createElement("section");
+  invocationSection.append(Object.assign(document.createElement("h4"), { textContent: `${t("telemetry.invocations")} (${invocations.length})` }));
+  if (invocations.length) {
+    const columns = [
+      ["phase", "telemetry.phase"], ["role", "telemetry.role"], ["model", "telemetry.model"], ["duration_ms", "telemetry.duration", "desc"],
+      ["input_tokens", "telemetry.input", "desc"], ["cached_input_tokens", "telemetry.cached_input"], ["uncached_input_tokens", "telemetry.uncached_input"],
+      ["output_tokens", "telemetry.output"], ["usage_coverage", "telemetry.usage_coverage"], ["invocation_id", "telemetry.invocation_id"], ["retry_ordinal", "telemetry.retry_identity"],
+    ].map(([key, label, defaultDirection]) => ({ key, label, defaultDirection, value: (item) => key === "phase" ? telemetryLabel(item.phase) : Number.isFinite(Number(item[key])) ? Number(item[key]) : String(item[key] || "") }));
+    const table = telemetryDetailSortableTable(columns, invocations, { key: "input_tokens", direction: "desc" }, (item, body) => {
       const row = document.createElement("tr");
-      [telemetryLabel(phase.phase), telemetryMs(phase.average_ms), telemetryMs(phase.median_ms), telemetryMs(phase.total_ms), telemetryPercent(phase.share_percent), phase.runs]
+      const model = item.model ? `${item.model} (${item.model_provenance || t("format.unavailable")})` : t("format.unavailable");
+      [telemetryLabel(item.phase), item.role || t("format.unavailable"), model, telemetryMs(item.duration_ms), telemetryNumber(item.input_tokens), telemetryNumber(item.cached_input_tokens), telemetryNumber(item.uncached_input_tokens), telemetryNumber(item.output_tokens), item.usage_coverage || t("format.unavailable"), item.invocation_id || t("format.unavailable"), item.retry_ordinal ?? t("format.unavailable")]
         .forEach((value) => row.append(Object.assign(document.createElement("td"), { textContent: String(value) })));
       body.append(row);
     });
-    phaseTable.classList.add("telemetry-phase-table");
-    phaseSection.append(telemetryDetailTableScroll(phaseTable, t("telemetry.phase_timing")));
+    invocationSection.append(telemetryDetailTableScroll(table, t("telemetry.invocations")));
+  } else invocationSection.append(Object.assign(document.createElement("p"), { textContent: t("telemetry.not_recorded") }));
+  attemptPanel.append(invocationSection);
+
+  const chainGrid = document.createElement("div"); chainGrid.className = "technical-grid";
+  chainGrid.append(
+    telemetryTextField(t("telemetry.chain_coverage"), chain.coverage, Array.isArray(chain.reasons) ? chain.reasons.join("; ") : chain.reason),
+    telemetryTextField(t("telemetry.chain_attempts"), chain.attempt_count),
+    telemetryTextField(t("telemetry.original_attempts"), chain.original_attempt_count),
+    telemetryTextField(t("telemetry.retries"), chain.retry_count),
+    telemetryTextField(t("telemetry.resumes"), chain.resume_count),
+    telemetryTextField(t("telemetry.chain_elapsed"), telemetryMs(chain.elapsed_ms)),
+    telemetryTextField(t("telemetry.chain_processing"), telemetryMs(chain.processing_time_ms)),
+    telemetryTextField(t("telemetry.inter_attempt_gaps"), telemetryMs(chain.inter_attempt_gap_ms)),
+    telemetryTextField(t("telemetry.outside_window"), chain.outside_selected_window_count ?? 0),
+    telemetryTextField(t("telemetry.mission_scope"), chain.mission_scope_label || t("format.unavailable")),
+  );
+  chainPanel.append(chainGrid);
+  const chainRuns = Array.isArray(chain.runs) ? chain.runs : [];
+  if (chainRuns.length) {
+    const table = document.createElement("table"); table.className = "telemetry-table";
+    const head = document.createElement("thead"), headRow = document.createElement("tr"), body = document.createElement("tbody");
+    ["telemetry.run_id", "telemetry.relation", "telemetry.status", "telemetry.start_time", "telemetry.invocations"].forEach((key) => headRow.append(Object.assign(document.createElement("th"), { scope: "col", textContent: t(key) })));
+    for (const item of chainRuns) {
+      const row = document.createElement("tr");
+      [item.run_id, item.relation, translate(item.state), item.started_at ? locale.dateTime(new Date(item.started_at)) : t("format.unavailable"), item.provider_invocation_count]
+        .forEach((value) => row.append(Object.assign(document.createElement("td"), { textContent: String(value ?? t("format.unavailable")) })));
+      body.append(row);
+    }
+    head.append(headRow); table.append(head, body); chainPanel.append(telemetryDetailTableScroll(table, t("telemetry.scope_chain")));
   }
-  content.append(phaseSection);
-  const bottlenecks = document.createElement("section"), top = detail?.bottlenecks?.top_time_consumers || [];
-  bottlenecks.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.bottlenecks") }));
+  host.append(attemptPanel, chainPanel);
+}
+function renderTelemetryDetail(detail, content) {
+  content.replaceChildren(); const summary = detail?.summary || {}, usage = summary.usage || {};
+  const metrics = document.createElement("section"); metrics.className = "telemetry-detail-metrics";
+  metrics.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.summary") }));
+  const grid = document.createElement("div"); grid.className = "technical-grid";
+  grid.append(
+    telemetryTextField(t("telemetry.population"), `N=${summary.population ?? summary.executions ?? 0}`),
+    telemetryTextField(t("telemetry.elapsed"), telemetryMs(summary.total_wall_time?.average_ms)),
+    telemetryTextField(t("telemetry.external_wait"), telemetryMs(summary.external_wait?.average_ms)),
+    telemetryTextField(t("telemetry.provider_unique_coverage"), telemetryMs(summary.provider_unique_coverage?.average_ms)),
+    telemetryTextField(t("telemetry.unassigned"), telemetryMs(summary.unassigned?.average_ms)),
+    telemetryTextField(t("telemetry.observed_input"), telemetryMetricValue(usage.input_tokens), usage.input_tokens?.missing_reason),
+    telemetryTextField(t("telemetry.observed_output"), telemetryMetricValue(usage.output_tokens), usage.output_tokens?.missing_reason),
+    telemetryTextField(t("telemetry.cache_ratio"), telemetryPercent(summary.cache_ratio_percent)),
+  );
+  metrics.append(grid); content.append(metrics);
+
+  const addDistribution = (titleKey, helpKey, values, categoryKey, durationKey, columns) => {
+    const section = document.createElement("section");
+    section.append(Object.assign(document.createElement("h3"), { textContent: t(titleKey) }), Object.assign(document.createElement("p"), { className: "telemetry-note", textContent: t(helpKey) }));
+    if (!values.length) section.append(Object.assign(document.createElement("p"), { textContent: t("telemetry.not_recorded") }));
+    else {
+      const columnKeys = durationKey === "total_ms"
+        ? [categoryKey, "average_ms", "median_ms", "total_ms", "share_percent", "runs"]
+        : [categoryKey, "duration_ms", "share_percent"];
+      const table = telemetryDetailSortableTable(columns.map((label, index) => ({
+        key: columnKeys[index], label,
+        value: (item) => index === 0 ? telemetryLabel(item[categoryKey]) : Number(item[columnKeys[index]]) || 0,
+      })), values, { key: categoryKey, direction: "asc" }, (item, body) => {
+        const row = document.createElement("tr"), category = telemetryLabel(item[categoryKey]);
+        const rendered = durationKey === "total_ms"
+          ? [category, telemetryMs(item.average_ms), telemetryMs(item.median_ms), telemetryMs(item.total_ms), telemetryPercent(item.share_percent), item.runs]
+          : [category, telemetryMs(item.duration_ms), telemetryPercent(item.share_percent)];
+        rendered.forEach((value) => row.append(Object.assign(document.createElement("td"), { textContent: String(value) }))); body.append(row);
+      });
+      table.classList.add("telemetry-phase-table"); section.append(telemetryDetailTableScroll(table, t(titleKey)));
+    }
+    content.append(section);
+  };
+  addDistribution("telemetry.inclusive_title", "telemetry.inclusive_help", Array.isArray(detail?.inclusive_phases) ? detail.inclusive_phases : Array.isArray(detail?.phases) ? detail.phases : [], "phase", "total_ms", ["telemetry.phase", "telemetry.average", "telemetry.median", "telemetry.accumulated", "telemetry.share", "telemetry.runs"]);
+  addDistribution("telemetry.exclusive_title", "telemetry.exclusive_help", Array.isArray(detail?.exclusive_distribution) ? detail.exclusive_distribution : [], "category", "duration_ms", ["telemetry.category", "telemetry.duration", "telemetry.share"]);
+
+  const bottlenecks = document.createElement("section"); bottlenecks.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.bottlenecks") }));
   const fields = document.createElement("div"); fields.className = "technical-grid";
-  for (const [label, item] of [["telemetry.longest_average_phase", detail?.bottlenecks?.longest_average_phase], ["telemetry.largest_accumulated_phase", detail?.bottlenecks?.largest_accumulated_phase]]) fields.append(Object.assign(document.createElement("div"), { className: "field", textContent: `${t(label)}: ${item ? telemetryLabel(item.phase) : t("format.unavailable")}` }));
-  for (const [label, value] of Object.entries(detail?.bottlenecks?.shares || {})) fields.append(Object.assign(document.createElement("div"), { className: "field", textContent: `${t("telemetry.share." + label)}: ${telemetryPercent(value)}` }));
+  const longest = detail?.bottlenecks?.longest_individual_span;
+  fields.append(
+    telemetryTextField(t("telemetry.longest_average_phase"), detail?.bottlenecks?.longest_average_phase ? telemetryLabel(detail.bottlenecks.longest_average_phase.phase) : t("format.unavailable")),
+    telemetryTextField(t("telemetry.largest_accumulated_phase"), detail?.bottlenecks?.largest_accumulated_phase ? telemetryLabel(detail.bottlenecks.largest_accumulated_phase.phase) : t("format.unavailable")),
+    telemetryTextField(t("telemetry.longest_individual_span"), longest ? `${longest.label || telemetryLabel(longest.phase)} · ${telemetryMs(longest.duration_ms)}` : t("format.unavailable")),
+  );
+  for (const [label, value] of Object.entries(detail?.bottlenecks?.shares || {})) fields.append(telemetryTextField(t("telemetry.share." + label), telemetryPercent(value)));
   bottlenecks.append(fields);
-  const list = document.createElement("ol"); for (const item of top) list.append(Object.assign(document.createElement("li"), { textContent: `${telemetryLabel(item.phase)} — ${telemetryPercent(item.share_percent)}` })); bottlenecks.append(list); content.append(bottlenecks);
-  const runSection = document.createElement("section"), runs = Array.isArray(detail?.runs) ? detail.runs : [];
+  const top = Array.isArray(detail?.bottlenecks?.top_time_consumers) ? detail.bottlenecks.top_time_consumers : [];
+  if (top.length) { const list = document.createElement("ol"); top.forEach((item) => list.append(Object.assign(document.createElement("li"), { textContent: `${telemetryLabel(item.phase)} — ${telemetryPercent(item.share_percent)}` }))); bottlenecks.append(list); }
+  content.append(bottlenecks);
+
+  const runSection = document.createElement("section"), runs = Array.isArray(detail?.runs) ? detail.runs : [], runDetailHost = document.createElement("div");
+  runDetailHost.className = "telemetry-run-detail";
   runSection.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.runs") }));
   const runColumns = [
-    ["run_id", "telemetry.run_id"], ["started_at", "telemetry.start_time", "desc"], ["status", "telemetry.status"],
-    ["total_duration_ms", "telemetry.average_total"], ["queue_wait_ms", "telemetry.average_wait"], ["provider_duration_ms", "telemetry.provider"],
-    ["validation_duration_ms", "telemetry.validation"], ["external_wait_ms", "telemetry.external_wait"], ["largest_phase", "telemetry.largest_phase"],
-    ["producer_type", "telemetry.producer_type"], ["repository", "telemetry.target_repository"], ["model", "telemetry.model"],
+    ["run_id", "telemetry.run_id"], ["started_at", "telemetry.start_time", "desc"], ["status", "telemetry.status"], ["total_duration_ms", "telemetry.duration"],
+    ["provider_duration_ms", "telemetry.provider_unique_coverage"], ["external_wait_ms", "telemetry.external_wait"], ["unassigned_ms", "telemetry.unassigned"],
+    ["input_tokens", "telemetry.input"], ["output_tokens", "telemetry.output"], ["cache_ratio_percent", "telemetry.cache_ratio"], ["largest_phase", "telemetry.largest_phase"],
+    ["model", "telemetry.model"],
   ].map(([key, label, defaultDirection]) => ({ key, label, defaultDirection, value: (run) => key === "largest_phase" ? telemetryLabel(run[key]) : key === "started_at" ? Date.parse(run[key]) || 0 : Number.isFinite(Number(run[key])) ? Number(run[key]) : String(run[key] || "") }));
   const runTable = telemetryDetailSortableTable(runColumns, runs, { key: "started_at", direction: "desc" }, (run, runBody) => {
-    const row = document.createElement("tr"), id = document.createElement("button");
-    row.className = "telemetry-row";
-    row.tabIndex = 0;
-    row.setAttribute("role", "button");
-    row.setAttribute("aria-label", String(run.run_id || t("format.unavailable")));
-    id.type = "button";
-    id.className = "telemetry-run-link";
-    id.textContent = run.run_id;
-    const open = () => {
-      runBody.querySelectorAll('.telemetry-row[data-selected="true"]')
-        .forEach((candidate) => { candidate.dataset.selected = "false"; });
-      row.dataset.selected = "true";
-      openPromptHistoryDetail({ run_id: run.run_id, title: run.run_id });
-    };
-    row.addEventListener("click", open);
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
-    });
-    id.addEventListener("click", (event) => { event.stopPropagation(); open(); });
-    const phaseTelemetry = run.phase_telemetry;
-    const values = [id, run.started_at ? locale.dateTime(new Date(run.started_at)) : t("format.unavailable"), translate(run.status), telemetryMs(run.total_duration_ms), telemetryRunMetric(run.queue_wait_ms, phaseTelemetry), telemetryRunMetric(run.provider_duration_ms, phaseTelemetry), telemetryRunMetric(run.validation_duration_ms, phaseTelemetry), telemetryRunMetric(run.external_wait_ms, phaseTelemetry), run.largest_phase ? telemetryLabel(run.largest_phase) : (phaseTelemetry === "RECORDED" ? t("telemetry.not_executed") : t("telemetry.not_recorded_short")), run.producer_type || t("format.unavailable"), run.repository || t("format.unavailable"), run.model || t("format.unavailable")];
-    values.forEach((value) => {
-      const cell = document.createElement("td");
-      if (value instanceof Element) cell.append(value); else cell.textContent = String(value);
-      row.append(cell);
-    });
+    const row = document.createElement("tr"), id = document.createElement("button"); row.className = "telemetry-row"; row.tabIndex = 0; row.setAttribute("role", "button");
+    row.setAttribute("aria-label", String(run.run_id || t("format.unavailable"))); id.type = "button"; id.className = "telemetry-run-link"; id.textContent = run.run_id;
+    const selectRun = () => { runBody.querySelectorAll('.telemetry-row[data-selected="true"]').forEach((candidate) => { candidate.dataset.selected = "false"; }); row.dataset.selected = "true"; renderCanonicalRunDetail(run, runDetailHost); };
+    row.addEventListener("click", selectRun); row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectRun(); } });
+    id.addEventListener("click", (event) => { event.stopPropagation(); selectRun(); openPromptHistoryDetail({ run_id: run.run_id, title: run.run_id }); });
+    [id, run.started_at ? locale.dateTime(new Date(run.started_at)) : t("format.unavailable"), translate(run.status), telemetryMs(run.total_duration_ms), telemetryMs(run.provider_duration_ms), telemetryMs(run.external_wait_ms), telemetryMs(run.unassigned_ms), telemetryNumber(run.input_tokens), telemetryNumber(run.output_tokens), telemetryPercent(run.cache_ratio_percent), run.largest_phase ? telemetryLabel(run.largest_phase) : t("format.unavailable"), run.model || t("format.unavailable")].forEach((value) => { const cell = document.createElement("td"); if (value instanceof Element) cell.append(value); else cell.textContent = String(value); row.append(cell); });
     runBody.append(row);
   });
-  runSection.append(telemetryDetailTableScroll(runTable, t("telemetry.runs"))); content.append(runSection);
+  runSection.append(telemetryDetailTableScroll(runTable, t("telemetry.runs")), runDetailHost); content.append(runSection);
+  if (runs.length) renderCanonicalRunDetail(runs[0], runDetailHost);
 }
 $("telemetryDetailClose").addEventListener("click", closeTelemetryDetail);
 $("telemetryDetailDownloadMarkdown").addEventListener("click", () => downloadTelemetryDetail("markdown"));
@@ -6156,11 +6319,29 @@ function updateLocalePicker() {
     option.setAttribute("aria-selected", String(selected));
   });
 }
+let lastOpenModalFocus = null;
+document.addEventListener("focusin", (event) => {
+  if (event.target instanceof HTMLElement && event.target.closest("dialog[open]"))
+    lastOpenModalFocus = event.target;
+});
 function changeDashboardLocale(value) {
-  const scroll = { x: window.scrollX, y: window.scrollY }, focused = document.activeElement;
+  const active = document.activeElement;
+  const priorModalFocus = lastOpenModalFocus instanceof HTMLElement
+    && lastOpenModalFocus.isConnected
+    && lastOpenModalFocus.closest("dialog[open]")
+    ? lastOpenModalFocus
+    : null;
+  const focused = active?.closest?.("dialog[open]") ? active : priorModalFocus || active;
+  const scroll = { x: window.scrollX, y: window.scrollY };
   const focusable = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex='0']";
   const focusedModal = focused?.closest("dialog[open]");
   const focusedIndex = focusedModal ? [...focusedModal.querySelectorAll(focusable)].indexOf(focused) : -1;
+  const focusedIdentity = focusedModal && focused instanceof HTMLElement ? {
+    tag: focused.localName,
+    testId: focused.getAttribute("data-testid"),
+    name: focused.getAttribute("name"),
+    classes: [...focused.classList],
+  } : null;
   const controls = [...document.querySelectorAll("input[id], textarea[id], select[id]")]
     .filter((element) => element.id !== "dashboardLocale" && element.type !== "file")
     .map((element) => ({ id: element.id, value: element.value, checked: element.checked }));
@@ -6211,8 +6392,17 @@ function changeDashboardLocale(value) {
   if (focused?.isConnected) focused.focus({ preventScroll: true });
   else {
     // Rebuilt modal content needs an equivalent focus target, not the removed
-    // node. Keep keyboard navigation inside the same open context.
+    // node. Prefer semantic control identity over DOM position so adding a
+    // translated field cannot move keyboard focus to a different control.
+    const semanticSelector = focusedIdentity?.testId
+      ? `[data-testid="${CSS.escape(focusedIdentity.testId)}"]`
+      : focusedIdentity?.name
+        ? `${focusedIdentity.tag}[name="${CSS.escape(focusedIdentity.name)}"]`
+        : focusedIdentity?.classes.length
+          ? `${focusedIdentity.tag}.${focusedIdentity.classes.map((value) => CSS.escape(value)).join(".")}`
+          : null;
     const replacement = (focused?.id && $(focused.id))
+      || (semanticSelector && focusedModal?.querySelector(semanticSelector))
       || (focusedIndex >= 0 && focusedModal?.querySelectorAll(focusable)[focusedIndex])
       || focusedModal?.querySelector(focusable);
     replacement?.focus({ preventScroll: true });

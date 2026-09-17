@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+from statistics import median
 from time import monotonic
 from typing import Mapping
 import uuid
@@ -99,6 +100,7 @@ def complete_phase(root: Path, active: ActivePhase, *, outcome: str = "COMPLETE"
         raise EngineeringStorageError("Execution phase outcome is invalid.")
     connection = _connection(root, active.central_database)
     try:
+        measurement_basis = "MONOTONIC"
         if active.started_monotonic is None:
             # A phase can outlive the runner process.  Its terminal boundary
             # is still observable, but monotonic state is intentionally not
@@ -112,12 +114,16 @@ def complete_phase(root: Path, active: ActivePhase, *, outcome: str = "COMPLETE"
             started = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
             ended = completed_at or datetime.now(timezone.utc)
             duration_ms = max(0, round((ended - started).total_seconds() * 1000))
+            measurement_basis = "RECONCILED_WALL_CLOCK"
         else:
             elapsed = (monotonic() if monotonic_clock is None else monotonic_clock) - active.started_monotonic
             duration_ms = max(0, round(elapsed * 1000))
         changed = connection.execute(
-            "UPDATE execution_phase_spans SET completed_at=?,duration_ms=?,outcome=? WHERE phase_id=? AND run_id=? AND outcome='ACTIVE'",
-            (_utc(completed_at), duration_ms, outcome, active.phase_id, active.run_id),
+            """UPDATE execution_phase_spans
+                  SET completed_at=?,duration_ms=?,outcome=?,
+                      metadata=json_set(metadata,'$.measurement_basis',?)
+                WHERE phase_id=? AND run_id=? AND outcome='ACTIVE'""",
+            (_utc(completed_at), duration_ms, outcome, measurement_basis, active.phase_id, active.run_id),
         ).rowcount
         if changed != 1:
             raise EngineeringStorageError("Execution phase is not active.")
@@ -198,7 +204,11 @@ def reconcile_interrupted_phases(root: Path, run_id: str, *, outcome: str = "STA
         # Monotonic state cannot survive a process restart, so a reconciled
         # duration is intentionally wall-clock bounded and explicitly STALE.
         return connection.execute(
-            "UPDATE execution_phase_spans SET completed_at=?,duration_ms=MAX(0,CAST((julianday(?) - julianday(started_at))*86400000 AS INTEGER)),outcome=? WHERE run_id=? AND outcome='ACTIVE'",
+            """UPDATE execution_phase_spans
+                  SET completed_at=?,
+                      duration_ms=MAX(0,CAST((julianday(?) - julianday(started_at))*86400000 AS INTEGER)),
+                      outcome=?,metadata=json_set(metadata,'$.measurement_basis','RECONCILED_WALL_CLOCK')
+                WHERE run_id=? AND outcome='ACTIVE'""",
             (now, now, outcome, run_id),
         ).rowcount
     finally:
@@ -247,196 +257,412 @@ def phase_spans(root: Path, run_id: str, *, central_database: Path | None = None
     return result
 
 
-def timing_summary(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object]:
-    """Return the one canonical timing read model for a completed run.
+TIMING_CALCULATION_VERSION = "telemetry-contract@2.0"
+TIMING_COMPLETE, TIMING_PARTIAL, TIMING_UNAVAILABLE, TIMING_CONFLICT = (
+    "COMPLETE", "PARTIAL", "UNAVAILABLE", "CONFLICT"
+)
+_NO_HISTORICAL_TOTAL = object()
 
-    ``phase_aggregates`` and ``longest_individual_spans`` intentionally answer
-    different questions.  Aggregates suppress only a same-category ancestor,
-    so a category is represented once without inventing a critical path.
-    Individual spans retain every observed occurrence (apart from the total
-    envelope) and are ranked independently.  Consumers must use these fields
-    rather than deriving their own bottleneck order.
+
+def _timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _union_duration(intervals: list[tuple[datetime, datetime]]) -> int:
+    if not intervals:
+        return 0
+    merged: list[list[datetime]] = []
+    for start, end in sorted(intervals):
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        elif end > merged[-1][1]:
+            merged[-1][1] = end
+    return round(sum((end - start).total_seconds() * 1000 for start, end in merged))
+
+
+def timing_summary(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+    _spans: list[dict[str, object]] | None = None,
+    _historical_total: object = _NO_HISTORICAL_TOTAL,
+) -> dict[str, object]:
+    """Return inclusive workload and an interval-derived elapsed-time partition.
+
+    The inclusive projection retains measured span workload and may overlap.
+    The exclusive projection sweeps the TOTAL_EXECUTION envelope.  A nested
+    child owns its segment; simultaneous independent categories are assigned
+    to ``PARALLEL_OVERLAP``; uncovered envelope time is ``UNASSIGNED``.
     """
-    spans = phase_spans(root, run_id, central_database=central_database)
+    spans = phase_spans(root, run_id, central_database=central_database) if _spans is None else _spans
     historical_total: int | None = None
     if not spans:
-        # Earlier runs already have a coarse immutable execution receipt.  It
-        # remains useful total-duration evidence, but never becomes invented
-        # phase detail.
-        connection = _connection(root, central_database)
-        try:
-            row = connection.execute(
-                "SELECT total_execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)
-            ).fetchone()
-        finally:
-            connection.close()
-        if row and isinstance(row[0], (int, float)) and not isinstance(row[0], bool) and row[0] >= 0:
-            historical_total = round(float(row[0]) * 1000)
-    completed = [span for span in spans if span["outcome"] != "ACTIVE" and isinstance(span["duration_ms"], int)]
-    top_level = [span for span in completed if span["parent_phase_id"] is None]
+        if _historical_total is _NO_HISTORICAL_TOTAL:
+            connection = _connection(root, central_database)
+            try:
+                row = connection.execute(
+                    "SELECT total_execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)
+                ).fetchone()
+            finally:
+                connection.close()
+            candidate = row[0] if row else None
+        else:
+            candidate = _historical_total
+        if isinstance(candidate, (int, float)) and not isinstance(candidate, bool) and candidate >= 0:
+            historical_total = round(float(candidate) * 1000)
+        return {
+            "contract_version": TIMING_CALCULATION_VERSION,
+            "scope": "EP_RUN_ATTEMPT",
+            "phase_telemetry_available": False,
+            "historical_total_available": historical_total is not None,
+            "total_wall_time_ms": historical_total,
+            "coverage": {
+                "state": TIMING_PARTIAL if historical_total is not None else TIMING_UNAVAILABLE,
+                "reason": "Only the historical run total is retained" if historical_total is not None else "No timing observations are retained",
+                "expected_observations": 1, "observed_observations": int(historical_total is not None),
+            },
+            "phase_durations_ms": {}, "phase_aggregates": [], "inclusive_phase_rows": [],
+            "exclusive_distribution": [], "timeline": [], "longest_individual_spans": [],
+            "top_phase_categories": [], "top_time_consumers": [],
+        }
+
+    completed = [
+        span for span in spans
+        if span.get("outcome") != "ACTIVE"
+        and isinstance(span.get("duration_ms"), int)
+        and int(span["duration_ms"]) >= 0
+    ]
     by_id = {str(span["phase_id"]): span for span in completed}
+    parent_conflicts: list[str] = []
 
-    def has_same_phase_ancestor(span: dict[str, object]) -> bool:
-        parent = span["parent_phase_id"]
-        while isinstance(parent, str) and parent in by_id:
-            ancestor = by_id[parent]
-            if ancestor["phase_name"] == span["phase_name"]:
-                return True
-            parent = ancestor["parent_phase_id"]
-        return False
+    def ancestors(span: Mapping[str, object]) -> list[str]:
+        result: list[str] = []
+        parent = span.get("parent_phase_id")
+        while isinstance(parent, str):
+            if parent in result:
+                parent_conflicts.append(f"cycle:{span['phase_id']}")
+                break
+            result.append(parent)
+            if parent not in by_id:
+                parent_conflicts.append(f"missing-parent:{span['phase_id']}")
+                break
+            parent = by_id[parent].get("parent_phase_id")
+        return result
 
-    semantic = [span for span in completed if not has_same_phase_ancestor(span)]
-    by_phase: dict[str, int] = {}
-    for span in top_level:
-        by_phase[span["phase_name"]] = by_phase.get(span["phase_name"], 0) + int(span["duration_ms"])
-    total = by_phase.get("TOTAL_EXECUTION")
-    if total is None:
-        total = historical_total if historical_total is not None else sum(
-            duration for name, duration in by_phase.items() if name != "QUEUE_WAIT"
+    ancestor_map = {str(span["phase_id"]): ancestors(span) for span in completed}
+
+    def same_phase_ancestor(span: Mapping[str, object]) -> bool:
+        return any(
+            parent in by_id and by_id[parent].get("phase_name") == span.get("phase_name")
+            for parent in ancestor_map[str(span["phase_id"])]
         )
 
-    def timestamp(span: dict[str, object], key: str) -> datetime | None:
-        value = span.get(key)
-        if not isinstance(value, str):
-            return None
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-
-    total_envelopes = [
-        (timestamp(span, "started_at"), timestamp(span, "completed_at"))
-        for span in top_level
-        if span["phase_name"] == "TOTAL_EXECUTION"
-    ]
-    total_envelopes = [
-        (started, completed) for started, completed in total_envelopes
-        if started is not None and completed is not None and completed >= started
-    ]
-    if total_envelopes:
-        observed_total = round(sum((completed - started).total_seconds() * 1000 for started, completed in total_envelopes))
-        # Unit and recovery paths can preserve monotonic durations while their
-        # wall-clock timestamps are only boundary markers. Do not turn such
-        # non-comparable timestamps into invented overlap evidence.
-        if abs(observed_total - total) > 5_000:
-            total_envelopes = []
-
-    def envelope_overlap(span: dict[str, object]) -> int:
-        """Return the measurable overlap with TOTAL_EXECUTION, never raw stale tail time."""
-        duration = int(span["duration_ms"])
-        if not total_envelopes:
-            return min(duration, total)
-        started, completed = timestamp(span, "started_at"), timestamp(span, "completed_at")
-        if started is None or completed is None or completed < started:
-            return min(duration, total)
-        overlap = sum(
-            max(0.0, (min(completed, envelope_end) - max(started, envelope_start)).total_seconds())
-            for envelope_start, envelope_end in total_envelopes
-        )
-        return min(duration, total, round(overlap * 1000))
-
-    def measured(name: str) -> int:
-        return sum(int(span["duration_ms"]) for span in semantic if span["phase_name"] == name)
-
-    provider = measured("PROVIDER_EXECUTION")
-    validation = measured("VALIDATION")
-    external = measured("EXTERNAL_CI_WAIT")
-    queue = by_phase.get("QUEUE_WAIT", 0)
-    report_generation = measured("REPORT_GENERATION")
-    evidence_persistence = measured("EVIDENCE_PERSISTENCE")
-    repository_finalization = measured("REPOSITORY_FINALIZATION")
-    active = max(0, total - external)
-
-    def has_processing_ancestor(span: dict[str, object]) -> bool:
-        """Whether this work is already covered by an enclosing work span.
-
-        Provider command-boundary validation is deliberately nested under the
-        provider process.  It remains independently measurable, but cannot
-        also consume a second portion of overhead.  This ancestry rule keeps
-        the accounting partition deterministic even where the persisted UTC
-        timestamps have the normal small clock-resolution differences from
-        monotonic duration measurement.
-        """
-        parent = span["parent_phase_id"]
-        while isinstance(parent, str) and parent in by_id:
-            if by_id[parent]["phase_name"] in {"PROVIDER_EXECUTION", "VALIDATION"}:
-                return True
-            parent = by_id[parent]["parent_phase_id"]
-        return False
-
-    processing_coverage = sum(
-        envelope_overlap(span)
-        for span in semantic
-        if span["phase_name"] in {"PROVIDER_EXECUTION", "VALIDATION"}
-        and not has_processing_ancestor(span)
-    )
-    overhead = max(0, active - processing_coverage)
-    # Category aggregates use the same semantic selection as the named
-    # metrics.  The deterministic category-name tie break keeps reports, API
-    # projections and dashboard detail identical.
-    aggregate_by_phase: dict[str, int] = {}
-    share_by_phase: dict[str, int] = {}
+    semantic = [span for span in completed if not same_phase_ancestor(span)]
+    inclusive: dict[str, int] = {}
+    occurrences: dict[str, int] = {}
+    phase_observations: dict[str, list[int]] = {}
     for span in semantic:
         name = str(span["phase_name"])
-        if name != "TOTAL_EXECUTION":
-            aggregate_by_phase[name] = aggregate_by_phase.get(name, 0) + int(span["duration_ms"])
-            share_by_phase[name] = min(total, share_by_phase.get(name, 0) + envelope_overlap(span))
-    phase_aggregates = [
-        {"phase": phase, "duration_ms": duration}
-        for phase, duration in sorted(aggregate_by_phase.items(), key=lambda item: (-item[1], item[0]))
-    ]
+        if name == "TOTAL_EXECUTION":
+            continue
+        inclusive[name] = inclusive.get(name, 0) + int(span["duration_ms"])
+        occurrences[name] = occurrences.get(name, 0) + 1
+        phase_observations.setdefault(name, []).append(int(span["duration_ms"]))
 
-    def span_label(span: dict[str, object]) -> str:
-        """Give repeated spans bounded, typed context without prompt content."""
+    total_spans = [span for span in completed if span.get("phase_name") == "TOTAL_EXECUTION"]
+    envelope: tuple[datetime, datetime] | None = None
+    boundary_conflicts: list[str] = []
+    total = None
+    wall_clock_total = None
+    if len(total_spans) == 1:
+        start, end = _timestamp(total_spans[0].get("started_at")), _timestamp(total_spans[0].get("completed_at"))
+        if start is not None and end is not None and end >= start:
+            wall_duration = round((end - start).total_seconds() * 1000)
+            wall_clock_total = wall_duration
+            measured_duration = int(total_spans[0]["duration_ms"])
+            if abs(wall_duration - measured_duration) <= max(250, round(measured_duration * .01)):
+                envelope, total = (start, end), measured_duration
+            else:
+                boundary_conflicts.append("TOTAL_EXECUTION wall-clock and monotonic duration conflict")
+                total = measured_duration
+        else:
+            boundary_conflicts.append("TOTAL_EXECUTION has missing or invalid UTC boundaries")
+            total = int(total_spans[0]["duration_ms"])
+    elif len(total_spans) > 1:
+        boundary_conflicts.append("Multiple TOTAL_EXECUTION envelopes are not unambiguous")
+        total = sum(int(span["duration_ms"]) for span in total_spans)
+    else:
+        boundary_conflicts.append("TOTAL_EXECUTION envelope is missing")
+
+    interval_rows: list[tuple[datetime, datetime, dict[str, object]]] = []
+    if envelope is not None:
+        envelope_start, envelope_end = envelope
+        for span in semantic:
+            if span.get("phase_name") in {"TOTAL_EXECUTION", "QUEUE_WAIT"}:
+                continue
+            start, end = _timestamp(span.get("started_at")), _timestamp(span.get("completed_at"))
+            if start is None or end is None or end < start:
+                boundary_conflicts.append(f"Invalid boundaries for {span['phase_id']}")
+                continue
+            wall_duration = round((end - start).total_seconds() * 1000)
+            measured_duration = int(span["duration_ms"])
+            if abs(wall_duration - measured_duration) > max(250, round(measured_duration * .02)):
+                boundary_conflicts.append(f"Wall-clock/monotonic conflict for {span['phase_id']}")
+                continue
+            clipped_start, clipped_end = max(start, envelope_start), min(end, envelope_end)
+            if clipped_end > clipped_start:
+                interval_rows.append((clipped_start, clipped_end, span))
+
+    exclusive: dict[str, int] = {}
+    if envelope is not None and total is not None and not boundary_conflicts:
+        boundaries = {envelope[0], envelope[1]}
+        for start, end, _ in interval_rows:
+            boundaries.update((start, end))
+        ordered_boundaries = sorted(boundaries)
+        for start, end in zip(ordered_boundaries, ordered_boundaries[1:]):
+            duration = round((end - start).total_seconds() * 1000)
+            if duration <= 0:
+                continue
+            active = [span for span_start, span_end, span in interval_rows if span_start < end and span_end > start]
+            if not active:
+                category = "UNASSIGNED"
+            else:
+                active_ids = {str(span["phase_id"]) for span in active}
+                leaves = [
+                    span for span in active
+                    if not any(str(span["phase_id"]) in ancestor_map[other] for other in active_ids if other != str(span["phase_id"]))
+                ]
+                categories = {str(span["phase_name"]) for span in leaves}
+                category = next(iter(categories)) if len(categories) == 1 else "PARALLEL_OVERLAP"
+            exclusive[category] = exclusive.get(category, 0) + duration
+        rounding_delta = total - sum(exclusive.values())
+        if rounding_delta:
+            exclusive["UNASSIGNED"] = exclusive.get("UNASSIGNED", 0) + rounding_delta
+
+    interval_union_by_phase: dict[str, int] = {}
+    for phase in inclusive:
+        interval_union_by_phase[phase] = _union_duration([
+            (start, end) for start, end, span in interval_rows if span.get("phase_name") == phase
+        ])
+
+    state = (
+        TIMING_CONFLICT if boundary_conflicts
+        else TIMING_PARTIAL if parent_conflicts
+        else TIMING_COMPLETE if exclusive and total is not None
+        else TIMING_UNAVAILABLE
+    )
+    reasons = list(dict.fromkeys(boundary_conflicts + parent_conflicts))
+    share = lambda value: round(value * 100 / total, 3) if isinstance(total, int) and total else 0.0
+    inclusive_rows = [
+        {
+            "phase": phase, "duration_ms": duration, "share_percent": share(duration),
+            "span_count": occurrences[phase], "shares_additive": False,
+            "average_span_duration_ms": round(duration / occurrences[phase]),
+            "median_span_duration_ms": round(median(phase_observations[phase])),
+        }
+        for phase, duration in sorted(inclusive.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    exclusive_rows = [
+        {"category": category, "duration_ms": duration, "share_percent": share(duration)}
+        for category, duration in sorted(exclusive.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    def span_label(span: Mapping[str, object]) -> str:
         name = str(span["phase_name"])
         metadata = span.get("metadata")
-        context: str | None = None
-        if isinstance(metadata, dict):
+        if isinstance(metadata, Mapping):
             for key in ("validation_kind", "operation", "reason"):
                 value = metadata.get(key)
                 if isinstance(value, str) and value:
-                    context = value.replace("_", " ")[:80]
-                    break
-            if context is None and isinstance(metadata.get("iteration"), int):
-                context = f"iteration {metadata['iteration']}"
+                    return f"{name} — {value.replace('_', ' ')[:80]}"
         attempt = span.get("attempt")
-        if context:
-            return f"{name} — {context}"
-        if isinstance(attempt, int) and attempt > 1:
-            return f"{name} — attempt {attempt}"
-        return name
+        return f"{name} — attempt {attempt}" if isinstance(attempt, int) and attempt > 1 else name
 
-    longest_individual_spans = [
+    longest_spans = [
         {
-            "phase_id": item["phase_id"], "phase": item["phase_name"], "label": span_label(item),
-            "duration_ms": item["duration_ms"], "attempt": item["attempt"],
-            "ordinal": item["ordinal"], "outcome": item["outcome"],
+            "phase_id": span["phase_id"], "phase": span["phase_name"],
+            "label": span_label(span), "duration_ms": span["duration_ms"],
+            "attempt": span["attempt"], "ordinal": span["ordinal"], "outcome": span["outcome"],
         }
-        for item in sorted(
-            (span for span in completed if span["phase_name"] != "TOTAL_EXECUTION"),
+        for span in sorted(
+            (item for item in completed if item.get("phase_name") != "TOTAL_EXECUTION"),
             key=lambda item: (-int(item["duration_ms"]), str(item["phase_name"]), int(item["ordinal"])),
-        )
+        )[:3]
     ]
-    def share(value: int) -> float:
-        return round(value * 100 / total, 3) if total else 0.0
-    return {"phase_durations_ms": by_phase, "total_wall_time_ms": total,
-            "occurred_phases": tuple(sorted({str(span["phase_name"]) for span in completed})),
-            "active_ep_processing_time_ms": active, "provider_execution_time_ms": provider,
-            "validation_time_ms": validation, "external_wait_time_ms": external,
-            "queue_wait_time_ms": queue, "report_generation_time_ms": report_generation,
-            "evidence_persistence_time_ms": evidence_persistence,
-            "repository_finalization_time_ms": repository_finalization, "overhead_time_ms": overhead,
-            "provider_share_percent": share(share_by_phase.get("PROVIDER_EXECUTION", 0)), "validation_share_percent": share(share_by_phase.get("VALIDATION", 0)),
-            "external_wait_share_percent": share(share_by_phase.get("EXTERNAL_CI_WAIT", 0)), "queue_share_percent": share(share_by_phase.get("QUEUE_WAIT", 0)),
-            "overhead_share_percent": share(overhead),
-            "longest_phase": phase_aggregates[0]["phase"] if phase_aggregates else None,
-            "longest_phase_duration_ms": phase_aggregates[0]["duration_ms"] if phase_aggregates else None,
-            "phase_aggregates": phase_aggregates,
-            "phase_share_durations_ms": share_by_phase,
-            "top_phase_categories": phase_aggregates[:3],
-            "longest_individual_spans": longest_individual_spans[:3],
-            # Compatibility alias for pre-reconciliation API clients.  It is
-            # intentionally category-only and no longer mixes individual spans.
-            "top_time_consumers": phase_aggregates[:3],
-            "phase_telemetry_available": bool(spans),
-            "historical_total_available": historical_total is not None}
+    highest_average = next(iter(sorted(
+        inclusive_rows,
+        key=lambda row: (-int(row["average_span_duration_ms"]), str(row["phase"])),
+    )), None)
+    provider_intervals = [(start, end) for start, end, span in interval_rows if span.get("phase_name") == "PROVIDER_EXECUTION"]
+    provider_unique = _union_duration(provider_intervals)
+    unassigned = exclusive.get("UNASSIGNED") if exclusive else None
+    parallel = exclusive.get("PARALLEL_OVERLAP", 0) if exclusive else None
+    by_phase = dict(inclusive)
+    if total is not None:
+        by_phase["TOTAL_EXECUTION"] = total
+    queue = inclusive.get("QUEUE_WAIT", 0)
+    provider = inclusive.get("PROVIDER_EXECUTION", 0)
+    validation = inclusive.get("VALIDATION", 0)
+    external = inclusive.get("EXTERNAL_CI_WAIT", 0)
+    def processing_ancestor(span: Mapping[str, object]) -> bool:
+        return any(
+            parent in by_id and by_id[parent].get("phase_name") in {"PROVIDER_EXECUTION", "VALIDATION"}
+            for parent in ancestor_map[str(span["phase_id"])]
+        )
+    processing_coverage = sum(
+        min(int(span["duration_ms"]), total or int(span["duration_ms"]))
+        for span in semantic
+        if span.get("phase_name") in {"PROVIDER_EXECUTION", "VALIDATION"}
+        and not processing_ancestor(span)
+    )
+    legacy_active = max(0, total - external) if isinstance(total, int) else None
+    legacy_overhead = max(0, legacy_active - processing_coverage) if isinstance(legacy_active, int) else None
+    timeline_rows = []
+    for span in spans[:500]:
+        projected = dict(span)
+        metadata = span.get("metadata")
+        basis = metadata.get("measurement_basis") if isinstance(metadata, Mapping) else None
+        projected["measurement_basis"] = basis or (
+            "RECONCILED_WALL_CLOCK" if span.get("outcome") == "STALE" else "UNKNOWN_HISTORICAL"
+        )
+        timeline_rows.append(projected)
+    return {
+        "contract_version": TIMING_CALCULATION_VERSION,
+        "scope": "EP_RUN_ATTEMPT",
+        "coverage": {
+            "state": state, "reason": "; ".join(reasons) if reasons else None,
+            "expected_observations": len(completed),
+            "observed_observations": len(completed) - len(boundary_conflicts),
+        },
+        "phase_telemetry_available": True, "historical_total_available": False,
+        "total_wall_time_ms": total,
+        "total_monotonic_duration_ms": total,
+        "total_wall_clock_observed_ms": wall_clock_total,
+        "boundary_reconciliation_ms": (
+            total - wall_clock_total
+            if isinstance(total, int) and isinstance(wall_clock_total, int) else None
+        ),
+        "measurement_basis": {
+            "monotonic_spans": sum(
+                isinstance(span.get("metadata"), Mapping)
+                and span["metadata"].get("measurement_basis") == "MONOTONIC"
+                for span in completed
+            ),
+            "reconciled_wall_clock_spans": sum(
+                (
+                    isinstance(span.get("metadata"), Mapping)
+                    and span["metadata"].get("measurement_basis") == "RECONCILED_WALL_CLOCK"
+                ) or span.get("outcome") == "STALE"
+                for span in completed
+            ),
+            "unknown_historical_spans": sum(
+                span.get("outcome") != "STALE" and (
+                    not isinstance(span.get("metadata"), Mapping)
+                    or not span["metadata"].get("measurement_basis")
+                )
+                for span in completed
+            ),
+        },
+        "phase_durations_ms": by_phase,
+        "inclusive_phase_rows": inclusive_rows, "phase_aggregates": [
+            {"phase": row["phase"], "duration_ms": row["duration_ms"]} for row in inclusive_rows
+        ],
+        "phase_share_durations_ms": interval_union_by_phase,
+        "exclusive_distribution": exclusive_rows,
+        "exclusive_distribution_total_ms": sum(exclusive.values()) if exclusive else None,
+        "exclusive_distribution_closes": bool(
+            state == TIMING_COMPLETE and exclusive and sum(exclusive.values()) == total
+        ),
+        "timeline": timeline_rows,
+        "timeline_observation_count": len(spans),
+        "timeline_limit": 500,
+        "timeline_truncated": len(spans) > 500,
+        "provider_execution_time_ms": provider,
+        "provider_cumulative_process_duration_ms": provider,
+        "provider_unique_coverage_ms": provider_unique if envelope is not None else None,
+        "model_inference_time_ms": None,
+        "model_inference_time_coverage": TIMING_UNAVAILABLE,
+        "validation_time_ms": validation, "external_wait_time_ms": external,
+        "queue_wait_time_ms": queue,
+        "report_generation_time_ms": inclusive.get("REPORT_GENERATION", 0),
+        "evidence_persistence_time_ms": inclusive.get("EVIDENCE_PERSISTENCE", 0),
+        "repository_finalization_time_ms": inclusive.get("REPOSITORY_FINALIZATION", 0),
+        "unassigned_time_ms": unassigned,
+        "parallel_overlap_time_ms": parallel,
+        "overhead_time_ms": legacy_overhead,
+        "active_ep_processing_time_ms": legacy_active,
+        "provider_share_percent": share(provider_unique),
+        "validation_share_percent": share(next((row["duration_ms"] for row in exclusive_rows if row["category"] == "VALIDATION"), 0)),
+        "external_wait_share_percent": share(next((row["duration_ms"] for row in exclusive_rows if row["category"] == "EXTERNAL_CI_WAIT"), 0)),
+        "queue_share_percent": share(queue),
+        "overhead_share_percent": share(legacy_overhead or 0),
+        "longest_phase": inclusive_rows[0]["phase"] if inclusive_rows else None,
+        "longest_phase_duration_ms": inclusive_rows[0]["duration_ms"] if inclusive_rows else None,
+        "top_phase_categories": [
+            {"phase": row["phase"], "duration_ms": row["duration_ms"]} for row in inclusive_rows[:3]
+        ],
+        "longest_individual_spans": longest_spans,
+        "top_time_consumers": [
+            {"phase": row["phase"], "duration_ms": row["duration_ms"]} for row in inclusive_rows[:3]
+        ],
+        "bottlenecks": {
+            "largest_accumulated_category": inclusive_rows[0] if inclusive_rows else None,
+            "category_highest_average_span": highest_average,
+            "longest_individual_span": longest_spans[0] if longest_spans else None,
+        },
+        "deprecated_fields": {
+            "overhead_time_ms": "Compatibility alias for unassigned_time_ms; not proven waste",
+            "active_ep_processing_time_ms": "Elapsed run time minus external wait; not CPU time",
+            "phase_share_durations_ms": "Inclusive category durations; shares are not additive",
+        },
+    }
+
+
+def timing_summaries(
+    root: Path, run_ids: list[str], *, central_database: Path | None = None,
+) -> dict[str, dict[str, object]]:
+    """Load a bounded run population without one timing query per row."""
+    identifiers = list(dict.fromkeys(value for value in run_ids if isinstance(value, str) and value))[:1000]
+    if not identifiers:
+        return {}
+    connection = _connection(root, central_database)
+    placeholders = ",".join("?" for _ in identifiers)
+    keys = (
+        "phase_id", "run_id", "phase_name", "phase_category", "parent_phase_id",
+        "attempt", "ordinal", "started_at", "completed_at", "duration_ms", "outcome", "metadata",
+    )
+    try:
+        rows = connection.execute(
+            f"""SELECT phase_id,run_id,phase_name,phase_category,parent_phase_id,
+                       attempt,ordinal,started_at,completed_at,duration_ms,outcome,metadata
+                  FROM execution_phase_spans WHERE run_id IN ({placeholders})
+                  ORDER BY run_id,ordinal""",
+            identifiers,
+        ).fetchall()
+        historical_rows = connection.execute(
+            f"SELECT run_id,total_execution_seconds FROM execution_runs WHERE run_id IN ({placeholders})",
+            identifiers,
+        ).fetchall()
+    finally:
+        connection.close()
+    spans_by_run: dict[str, list[dict[str, object]]] = {run_id: [] for run_id in identifiers}
+    for row in rows:
+        item = dict(zip(keys, row, strict=True))
+        try:
+            item["metadata"] = json.loads(str(item["metadata"]))
+        except json.JSONDecodeError:
+            item["metadata"] = {}
+        spans_by_run[str(item["run_id"])].append({key: value for key, value in item.items() if key != "run_id"})
+    historical = {str(row[0]): row[1] for row in historical_rows}
+    return {
+        run_id: timing_summary(
+            root, run_id, central_database=central_database,
+            _spans=spans_by_run[run_id], _historical_total=historical.get(run_id),
+        )
+        for run_id in identifiers
+    }

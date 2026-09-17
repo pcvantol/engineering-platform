@@ -1699,7 +1699,8 @@ class EngineeringRunner:
                             diagnostic_code="VALIDATION_COMMAND_TERMINAL_EVIDENCE_UNAVAILABLE", error=error,
                         )
                 active = validation_spans.pop(command_id, None)
-                complete_phase(self.root, active)
+                if active is not None:
+                    complete_phase(self.root, active)
 
         command_callback = getattr(self.agent, "set_command_callback", None)
         if callable(command_callback):

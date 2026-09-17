@@ -101,8 +101,9 @@ from .codex_chat import (
 )
 from .ep_consumer_credentials import verifier
 from .execution_lifecycle import projection as lifecycle_projection
-from .execution_timing import timing_summary
-from .provider_usage import provider_usage_summary
+from .execution_timing import timing_summaries, timing_summary
+from .provider_usage import provider_usage_summaries, provider_usage_summary
+from .telemetry_contract import load_lineage_graph, run_telemetry_snapshot
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import CURRENT_PLATFORM_VERSION, EngineeringPlatformManifest
 from .providers import (
@@ -122,6 +123,7 @@ SERVER_CONFIGURATION_FILENAME = "server.json"
 SERVER_IDENTITY_FILENAME = "runtime-identity.json"
 SERVER_RUNTIME_FILENAME = "runtime.json"
 SERVER_DATABASE_FILENAME = central_database.DATABASE_FILENAME
+MAX_TELEMETRY_DAY_RUNS = 100
 SERVER_CONFIGURATION_VERSION = 3
 # ADR-0026 defines the first standalone store as the canonical schema-40
 # product definitions plus immutable control provenance.  This server-owned
@@ -3854,6 +3856,9 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
         "execution": execution,
         "runtime": runtime,
         "usage": _central_console_provider_usage(data_root, run_id),
+        "telemetry_snapshot": run_telemetry_snapshot(
+            data_root, run_id, central_database=data_root / SERVER_DATABASE_FILENAME,
+        ),
         "reviewers": _central_console_reviewer_agents(data_root, project_id, run_id),
         "assurance_reviews": _central_console_assurance_reviews(lifecycle),
         "evidence": _central_console_validation_evidence(data_root, project_id, run_id),
@@ -3881,15 +3886,27 @@ def _central_console_terminal_execution_diagnostic(data_root: Path, run_id: str)
 
 
 def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[str, object]]:
-    """Aggregate CENTRAL run rows and immutable phase spans by UTC day.
+    """Aggregate canonical run snapshots by UTC day.
 
     The retired ``execution_runs`` telemetry projection is intentionally not
     consulted: Forge runs are admitted directly into ``ep_execution_runs``.
     """
     grouped: dict[str, list[tuple[Mapping[str, object], dict[str, object]]]] = {}
-    for record in _central_console_run_records(data_root, project_id):
-        if record.get("state") not in {"COMPLETE", "BLOCKED", "FAILED"}:
-            continue
+    terminal_records = [
+        record for record in _central_console_run_records(data_root, project_id)
+        if record.get("state") in {"COMPLETE", "BLOCKED", "FAILED"}
+    ]
+    identifiers = [str(record["run_id"]) for record in terminal_records]
+    try:
+        timing_by_run = timing_summaries(
+            data_root, identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
+        )
+        usage_by_run = provider_usage_summaries(
+            data_root, identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
+        )
+    except (storage.EngineeringStorageError, sqlite3.DatabaseError):
+        timing_by_run, usage_by_run = {}, {}
+    for record in terminal_records:
         completed_at = record.get("updated_at")
         if not isinstance(completed_at, str):
             continue
@@ -3897,37 +3914,73 @@ def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[st
             date = datetime.fromisoformat(completed_at.replace("Z", "+00:00")).astimezone(timezone.utc).date().isoformat()
         except ValueError:
             continue
-        try:
-            timing = timing_summary(
-                data_root, str(record["run_id"]), central_database=data_root / SERVER_DATABASE_FILENAME,
-            )
-        except (storage.EngineeringStorageError, sqlite3.DatabaseError):
-            timing = {}
-        grouped.setdefault(date, []).append((record, timing))
+        run_id = str(record["run_id"])
+        snapshot = {
+            "contract_version": (timing_by_run.get(run_id) or usage_by_run.get(run_id) or {}).get("contract_version"),
+            "attempt": {"timing": timing_by_run.get(run_id, {}), "usage": usage_by_run.get(run_id, {})},
+        }
+        grouped.setdefault(date, []).append((record, snapshot))
     entries: list[dict[str, object]] = []
     for date, rows in grouped.items():
+        def projection(snapshot: Mapping[str, object], name: str) -> Mapping[str, object]:
+            attempt = snapshot.get("attempt", {})
+            value = attempt.get(name, {}) if isinstance(attempt, Mapping) else {}
+            return value if isinstance(value, Mapping) else {}
+
         def average(key: str) -> float | None:
-            values = [int(timing[key]) / 1000 for _, timing in rows
+            values = [int(timing[key]) / 1000 for _, snapshot in rows
+                      for timing in (projection(snapshot, "timing"),)
                       if isinstance(timing.get(key), int) and timing[key] >= 0]
             return round(sum(values) / len(values), 3) if values else None
+        usage_metrics: dict[str, list[Mapping[str, object]]] = {}
+        for _, snapshot in rows:
+            usage = projection(snapshot, "usage")
+            metrics = usage.get("metrics", {})
+            if isinstance(metrics, Mapping):
+                for name, metric in metrics.items():
+                    if isinstance(metric, Mapping):
+                        usage_metrics.setdefault(str(name), []).append(metric)
+        def observed_tokens(name: str) -> int | None:
+            values = [int(metric["value"]) for metric in usage_metrics.get(name, [])
+                      if isinstance(metric.get("value"), int)]
+            return sum(values) if values else None
+        input_tokens, output_tokens = observed_tokens("input_tokens"), observed_tokens("output_tokens")
+        coverage_states = {
+            str(metric.get("coverage"))
+            for metrics in usage_metrics.values() for metric in metrics
+            if metric.get("coverage")
+        }
+        measurement_coverage = (
+            "CONFLICT" if "CONFLICT" in coverage_states else
+            "PARTIAL" if "PARTIAL" in coverage_states or "UNAVAILABLE" in coverage_states else
+            "COMPLETE" if coverage_states else "UNAVAILABLE"
+        )
         entries.append({
             "date": date,
             "prompt_count": len(rows),
             "complete_count": sum(row.get("state") == "COMPLETE" for row, _ in rows),
             "blocked_count": sum(row.get("state") == "BLOCKED" for row, _ in rows),
             "failed_count": sum(row.get("state") == "FAILED" for row, _ in rows),
-            "average_execution_seconds": average("provider_execution_time_ms"),
+            "average_execution_seconds": average("provider_unique_coverage_ms"),
             "average_total_execution_seconds": average("total_wall_time_ms"),
             "average_queue_wait_seconds": average("queue_wait_time_ms"),
-            "average_provider_execution_seconds": average("provider_execution_time_ms"),
+            "average_provider_execution_seconds": average("provider_unique_coverage_ms"),
             "average_validation_seconds": average("validation_time_ms"),
-            # Tokens are not part of the retained CENTRAL phase evidence.
-            "input_tokens": None, "output_tokens": None, "total_tokens": None,
+            "average_external_wait_seconds": average("external_wait_time_ms"),
+            "average_unassigned_seconds": average("unassigned_time_ms"),
+            "input_tokens": input_tokens, "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
+            if input_tokens is not None and output_tokens is not None else None,
+            "measurement_coverage": measurement_coverage,
+            "contract_version": selected_version if (
+                selected_version := next((snapshot.get("contract_version") for _, snapshot in rows
+                                          if snapshot.get("contract_version")), None)
+            ) else None,
         })
     return sorted(entries, key=lambda entry: str(entry["date"]), reverse=True)[:360]
 
 
-def _central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
+def _legacy_central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
     """Provide a project-isolated CENTRAL telemetry day without root fallback."""
     if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", execution_date):
         return None
@@ -3999,6 +4052,198 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
                     "report_generation": timing_aggregate("report_generation_time_ms"),
                     "evidence_persistence": timing_aggregate("evidence_persistence_time_ms")},
         "bottlenecks": {"longest_average_phase": phases[0]["phase"] if phases else None, "largest_accumulated_phase": phases[0]["phase"] if phases else None, "top_time_consumers": phases[:3], "shares": {}},
+    }
+
+
+def _central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
+    """Return the canonical contract used by UI, Markdown and JSON export."""
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", execution_date):
+        return None
+    day = datetime.strptime(execution_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    day_end = day + timedelta(days=1)
+    matching: list[Mapping[str, object]] = []
+    for record in _central_console_run_records(data_root, project_id):
+        if record.get("state") not in {"COMPLETE", "BLOCKED", "FAILED"}:
+            continue
+        timestamp = record.get("updated_at")
+        try:
+            observed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            continue
+        if not day <= observed < day_end:
+            continue
+        matching.append(record)
+    if not matching:
+        return None
+    selected_records = matching[:MAX_TELEMETRY_DAY_RUNS]
+    identifiers = [str(record["run_id"]) for record in selected_records]
+    lineage_graph = load_lineage_graph(
+        data_root, central_database=data_root / SERVER_DATABASE_FILENAME,
+    )
+    contexts = lineage_graph[0]
+    related = set(identifiers)
+    # Expand only explicit parent/child edges. This preloads each related
+    # attempt once and avoids a query per rendered run or retry row.
+    changed = True
+    while changed and len(related) < 1000:
+        changed = False
+        for context in contexts:
+            child = str(context["run_id"])
+            parent = context["retry_parent_run_id"] or context["resume_parent_run_id"]
+            parent_id = str(parent) if parent is not None else None
+            if child in related or (parent_id is not None and parent_id in related):
+                for candidate in (child, parent_id):
+                    if candidate is not None and candidate not in related and len(related) < 1000:
+                        related.add(candidate)
+                        changed = True
+    telemetry_identifiers = identifiers + sorted(related.difference(identifiers))
+    try:
+        usage_cache = provider_usage_summaries(
+            data_root, telemetry_identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
+        )
+        timing_cache = timing_summaries(
+            data_root, telemetry_identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
+        )
+    except (storage.EngineeringStorageError, sqlite3.DatabaseError):
+        usage_cache, timing_cache = {}, {}
+    selected: list[tuple[Mapping[str, object], dict[str, object]]] = []
+    for record in selected_records:
+        snapshot = run_telemetry_snapshot(
+            data_root, str(record["run_id"]),
+            central_database=data_root / SERVER_DATABASE_FILENAME,
+            window_start=day, window_end=day_end,
+            _usage_cache=usage_cache, _timing_cache=timing_cache,
+            _lineage_graph=lineage_graph,
+        )
+        selected.append((record, snapshot))
+
+    def attempt(snapshot: Mapping[str, object], key: str) -> Mapping[str, object]:
+        value = snapshot.get("attempt", {})
+        nested = value.get(key, {}) if isinstance(value, Mapping) else {}
+        return nested if isinstance(nested, Mapping) else {}
+
+    run_rows: list[dict[str, object]] = []
+    for record, snapshot in selected:
+        timing, usage = attempt(snapshot, "timing"), attempt(snapshot, "usage")
+        metrics = usage.get("metrics", {}) if isinstance(usage.get("metrics"), Mapping) else {}
+        def metric_value(name: str) -> object:
+            metric = metrics.get(name)
+            return metric.get("value") if isinstance(metric, Mapping) else None
+        run_rows.append({
+            "run_id": str(record["run_id"]), "started_at": record.get("created_at"),
+            "status": record.get("state"), "duration_label": "duration",
+            "total_duration_ms": timing.get("total_wall_time_ms"),
+            "queue_wait_ms": timing.get("queue_wait_time_ms"),
+            "provider_duration_ms": timing.get("provider_unique_coverage_ms"),
+            "provider_cumulative_duration_ms": timing.get("provider_cumulative_process_duration_ms"),
+            "validation_duration_ms": timing.get("validation_time_ms"),
+            "external_wait_ms": timing.get("external_wait_time_ms"),
+            "unassigned_ms": timing.get("unassigned_time_ms"),
+            "largest_phase": timing.get("longest_phase"),
+            "producer_type": record.get("producer_type"),
+            "repository": record.get("target_repository"),
+            "provider": (usage.get("invocations") or [{}])[-1].get("provider") if usage.get("invocations") else None,
+            "model": (usage.get("invocations") or [{}])[-1].get("model") if usage.get("invocations") else None,
+            "input_tokens": metric_value("input_tokens"), "output_tokens": metric_value("output_tokens"),
+            "cache_ratio_percent": usage.get("cache_ratio_percent"),
+            "usage_coverage": {name: value.get("coverage") for name, value in metrics.items() if isinstance(value, Mapping)},
+            "timing_coverage": timing.get("coverage"),
+            "phase_telemetry": "RECORDED" if timing.get("phase_telemetry_available") else "NOT_RECORDED",
+            "chain": snapshot.get("chain"), "telemetry_snapshot": snapshot,
+        })
+
+    def aggregate(values: list[int]) -> dict[str, int] | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        middle = len(ordered) // 2
+        median_value = ordered[middle] if len(ordered) % 2 else round((ordered[middle - 1] + ordered[middle]) / 2)
+        return {"average_ms": round(sum(values) / len(values)), "median_ms": median_value,
+                "total_ms": sum(values), "runs": len(values), "population": len(values)}
+
+    timings = [attempt(snapshot, "timing") for _, snapshot in selected]
+    usages = [attempt(snapshot, "usage") for _, snapshot in selected]
+    phase_values: dict[str, list[int]] = {}
+    exclusive_values: dict[str, int] = {}
+    longest_spans: list[Mapping[str, object]] = []
+    for timing in timings:
+        for row in timing.get("inclusive_phase_rows", []):
+            if isinstance(row, Mapping) and isinstance(row.get("phase"), str) and isinstance(row.get("duration_ms"), int):
+                phase_values.setdefault(str(row["phase"]), []).append(int(row["duration_ms"]))
+        for row in timing.get("exclusive_distribution", []):
+            if isinstance(row, Mapping) and isinstance(row.get("category"), str) and isinstance(row.get("duration_ms"), int):
+                exclusive_values[str(row["category"])] = exclusive_values.get(str(row["category"]), 0) + int(row["duration_ms"])
+        longest_spans.extend(row for row in timing.get("longest_individual_spans", []) if isinstance(row, Mapping))
+    wall_total = sum(int(value) for value in (timing.get("total_wall_time_ms") for timing in timings) if isinstance(value, int))
+    phases = [
+        {"phase": phase, **aggregate(values),
+         "share_percent": round(sum(values) * 100 / wall_total, 3) if wall_total else None,
+         "shares_additive": False}
+        for phase, values in sorted(phase_values.items(), key=lambda item: (-sum(item[1]), item[0]))
+    ]
+    exclusive = [
+        {"category": category, "duration_ms": value,
+         "share_percent": round(value * 100 / wall_total, 3) if wall_total else None}
+        for category, value in sorted(exclusive_values.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    longest_average = next(iter(sorted(
+        phases, key=lambda item: (-int(item["average_ms"]), str(item["phase"])),
+    )), None)
+    largest_accumulated = next(iter(sorted(
+        phases, key=lambda item: (-int(item["total_ms"]), str(item["phase"])),
+    )), None)
+    longest_individual = next(iter(sorted(
+        longest_spans,
+        key=lambda item: (-int(item.get("duration_ms", 0)), str(item.get("phase", "")), int(item.get("ordinal", 0))),
+    )), None)
+    def values(key: str) -> list[int]:
+        return [int(timing[key]) for timing in timings if isinstance(timing.get(key), int)]
+    observed_usage: dict[str, dict[str, object]] = {}
+    for name in ("input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens"):
+        metric_rows = [usage.get("metrics", {}).get(name) for usage in usages if isinstance(usage.get("metrics"), Mapping)]
+        numeric = [int(metric["value"]) for metric in metric_rows if isinstance(metric, Mapping) and isinstance(metric.get("value"), int)]
+        expected = sum(int(metric.get("expected_observations", 0)) for metric in metric_rows if isinstance(metric, Mapping))
+        observed = sum(int(metric.get("observed_observations", 0)) for metric in metric_rows if isinstance(metric, Mapping))
+        observed_usage[name] = {
+            "value": sum(numeric) if numeric else None,
+            "coverage": "COMPLETE" if expected and observed == expected else "PARTIAL" if observed else "UNAVAILABLE",
+            "expected_observations": expected, "observed_observations": observed,
+        }
+    cache_inputs = sum(int(usage.get("cache_ratio_population", {}).get("input_tokens", 0) or 0) for usage in usages if isinstance(usage.get("cache_ratio_population"), Mapping))
+    cache_cached = sum(int(usage.get("cache_ratio_population", {}).get("cached_input_tokens", 0) or 0) for usage in usages if isinstance(usage.get("cache_ratio_population"), Mapping))
+    summary = {
+        "executions": len(run_rows), "population": len(run_rows),
+        "completed": sum(row["status"] == "COMPLETE" for row in run_rows),
+        "blocked": sum(row["status"] == "BLOCKED" for row in run_rows),
+        "failed": sum(row["status"] == "FAILED" for row in run_rows),
+        "total_wall_time": aggregate(values("total_wall_time_ms")),
+        "queue_wait": aggregate(values("queue_wait_time_ms")),
+        "provider_unique_coverage": aggregate(values("provider_unique_coverage_ms")),
+        "provider_cumulative_process": aggregate(values("provider_cumulative_process_duration_ms")),
+        "validation": aggregate(values("validation_time_ms")),
+        "external_wait": aggregate(values("external_wait_time_ms")),
+        "unassigned": aggregate(values("unassigned_time_ms")),
+        "usage": observed_usage,
+        "cache_ratio_percent": round(cache_cached * 100 / cache_inputs, 3) if cache_inputs else None,
+    }
+    return {
+        "contract_version": selected[0][1].get("contract_version"),
+        "source_snapshot_references": [str(record["run_id"]) for record, _ in selected],
+        "date": execution_date, "timezone": "UTC", "scope": "EP_RUN_ATTEMPTS_IN_UTC_DAY",
+        "matching_run_count": len(matching), "returned_run_count": len(selected),
+        "runs_truncated": len(matching) > len(selected), "run_limit": MAX_TELEMETRY_DAY_RUNS,
+        "summary": summary, "runs": run_rows,
+        "inclusive_phases": phases, "phases": phases,
+        "inclusive_shares_additive": False,
+        "exclusive_distribution": exclusive,
+        "exclusive_distribution_closes": bool(wall_total and sum(exclusive_values.values()) == wall_total),
+        "phase_telemetry_available": bool(phases),
+        "bottlenecks": {
+            "longest_average_phase": longest_average,
+            "largest_accumulated_phase": largest_accumulated,
+            "longest_individual_span": longest_individual,
+            "top_time_consumers": phases[:3], "shares": {},
+        },
     }
 
 

@@ -46,6 +46,7 @@ CLASSIFIED_FALLBACKS = {
     "storage.py": "HISTORICAL_FORENSIC_STORAGE_IMPLEMENTATION",
     "server_console_services.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "telemetry.py": "HISTORICAL_COMPATIBILITY_ONLY",
+    "telemetry_contract.py": "CENTRAL_BOUND_TELEMETRY_READ_MODEL",
     "worktree_provenance.py": "FORENSIC_MIGRATION_ONLY",
 }
 

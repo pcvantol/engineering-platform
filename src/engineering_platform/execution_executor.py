@@ -501,9 +501,12 @@ class CodexCliClient:
                 )
             self.last_context_escalations = proxy.context_escalations()
             self.last_execution_seconds = round(time.monotonic() - started, 3)
-            self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
-            self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
             self.last_usage_snapshots = usage_snapshots_from_jsonl(completed.stdout, completed.stderr)
+            self.last_usage = (
+                usage_from_jsonl(completed.stdout, completed.stderr)
+                if self.last_usage_snapshots
+                else extract_codex_usage(completed.stdout, completed.stderr)
+            )
             self.last_churn = churn_from_jsonl(completed.stdout, completed.stderr)
             self.last_runtime_metadata.update(extract_codex_runtime_metadata(
                 completed.stdout, completed.stderr
@@ -647,11 +650,15 @@ class CodexCliClient:
                 completed = self._run_invocation(tuple(command), root, environment)
             self.last_context_escalations = proxy.context_escalations()
             self.last_execution_seconds = round(time.monotonic() - started, 3)
-            self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
-            # Prefer one final explicit usage snapshot; legacy extraction stays
-            # in place for compatibility with older Codex JSONL variants.
-            self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
             self.last_usage_snapshots = usage_snapshots_from_jsonl(completed.stdout, completed.stderr)
+            # Final turn snapshots are the supported 0.154.0 contract.  When
+            # they conflict, usage_from_jsonl intentionally returns no total;
+            # a broad recursive legacy scan must not overwrite that conflict.
+            self.last_usage = (
+                usage_from_jsonl(completed.stdout, completed.stderr)
+                if self.last_usage_snapshots
+                else extract_codex_usage(completed.stdout, completed.stderr)
+            )
             self.last_churn = churn_from_jsonl(completed.stdout, completed.stderr)
             self.last_runtime_metadata.update(extract_codex_runtime_metadata(
                 completed.stdout, completed.stderr
@@ -760,6 +767,7 @@ class CodexCliClient:
         lines: list[str] = []
         last_workspace_progress: dict[str, int] | None = None
         observed_command_ids: set[str] = set()
+        completed_command_ids: set[str] = set()
         watchdog_stop = Event()
         handoff_timed_out = Event()
 
@@ -814,12 +822,23 @@ class CodexCliClient:
                 if self._command_callback is not None:
                     command_event = project_codex_command_event(event)
                     if command_event is not None:
-                        if command_event[0] == "started" and command_event[1] not in observed_command_ids:
-                            observed_command_ids.add(command_event[1])
-                            self.last_execution_metadata["codex_commands_executed"] += 1
-                            if self._workspace_progress_callback is not None:
-                                self._workspace_progress_callback(dict(self.last_execution_metadata))
-                        self._command_callback(*command_event)
+                        boundary, command_id = command_event[0], command_event[1]
+                        emit = True
+                        if boundary == "started":
+                            if command_id in observed_command_ids:
+                                emit = False
+                            else:
+                                observed_command_ids.add(command_id)
+                                self.last_execution_metadata["codex_commands_executed"] += 1
+                                if self._workspace_progress_callback is not None:
+                                    self._workspace_progress_callback(dict(self.last_execution_metadata))
+                        elif boundary == "completed":
+                            if command_id in completed_command_ids:
+                                emit = False
+                            else:
+                                completed_command_ids.add(command_id)
+                        if emit:
+                            self._command_callback(*command_event)
             if handoff_timed_out.is_set():
                 raise CodexHandoffTimeout("Agent did not return after the host-owned PR hand-off deadline.")
             returncode = process.wait()

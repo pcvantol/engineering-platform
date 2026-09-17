@@ -14,7 +14,6 @@ from .drift_diagnostics import summary as drift_summary
 from .execution_evidence import TerminalEvidenceBundle
 from .execution_errors import RunnerError
 from .execution_lease import history as lease_history, liveness as lease_liveness
-from .execution_timing import timing_summary
 from .execution_models import PullRequestEvidence, RepositoryEvidence
 from .execution_repository import github_repository_slug
 from .host_preflight import latest as latest_host_preflight
@@ -27,7 +26,7 @@ from .providers import GitProvider
 from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
 from .storage import EngineeringStorageError, load_readiness_evaluation, load_run_qualification_snapshot, load_submission_for_run, load_run_lineage, load_validation_context
-from .provider_usage import provider_usage_summary
+from .telemetry_contract import run_telemetry_snapshot
 from .provider_recovery import load_recovery_state
 from .execution_activity import build_terminal_activity_summary, persist_terminal_activity_summary, terminal_activity_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
@@ -1216,33 +1215,81 @@ def generate_terminal_report(
     activity_summary = persist_terminal_activity_summary(
         root, build_terminal_activity_summary(root, state, bundle)
     )
-    timing = timing_summary(root, state.run_id, central_database=central_database)
-    provider_usage = provider_usage_summary(root, state.run_id, central_database=central_database)
+    telemetry_snapshot = run_telemetry_snapshot(
+        root, state.run_id, central_database=central_database,
+    )
+    attempt_telemetry = telemetry_snapshot.get("attempt", {})
+    timing = attempt_telemetry.get("timing", {}) if isinstance(attempt_telemetry, dict) else {}
+    provider_usage = attempt_telemetry.get("usage", {}) if isinstance(attempt_telemetry, dict) else {}
     churn = provider_usage.get("context_churn") if isinstance(provider_usage.get("context_churn"), dict) else {}
+    usage_metrics = provider_usage.get("metrics") if isinstance(provider_usage.get("metrics"), dict) else {}
+    def usage_metric(name: str) -> str:
+        metric = usage_metrics.get(name)
+        if not isinstance(metric, dict):
+            return "UNAVAILABLE"
+        value = metric.get("value", "UNAVAILABLE")
+        observed = metric.get("observed_observations", 0)
+        expected = metric.get("expected_observations", 0)
+        coverage = metric.get("coverage", "UNAVAILABLE")
+        reason = f"; {metric['missing_reason']}" if metric.get("missing_reason") else ""
+        return f"{value} ({coverage}; {observed}/{expected} invocations{reason})"
+    def observed(value: object) -> object:
+        return "UNAVAILABLE" if value is None else value
+    invocation_lines = [
+        "### Invocation Detail",
+        "| Phase | Role | Provider | Model (provenance) | Duration | Input | Cached | Uncached | Output | Usage coverage | Invocation |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+    ]
+    for invocation in provider_usage.get("invocations", []):
+        if not isinstance(invocation, dict):
+            continue
+        model = invocation.get("model") or "UNAVAILABLE"
+        duration = invocation.get("duration_ms")
+        invocation_lines.append(
+            "| " + " | ".join(str(value).replace("|", "\\|") for value in (
+                invocation.get("phase") or "UNAVAILABLE", invocation.get("role") or "UNAVAILABLE",
+                invocation.get("provider") or "UNAVAILABLE",
+                f"{model} ({invocation.get('model_provenance') or 'UNAVAILABLE'})",
+                f"{duration / 1000:.3f} s" if isinstance(duration, int) else "UNAVAILABLE",
+                invocation.get("input_tokens") if invocation.get("input_tokens") is not None else "UNAVAILABLE",
+                invocation.get("cached_input_tokens") if invocation.get("cached_input_tokens") is not None else "UNAVAILABLE",
+                invocation.get("uncached_input_tokens") if invocation.get("uncached_input_tokens") is not None else "UNAVAILABLE",
+                invocation.get("output_tokens") if invocation.get("output_tokens") is not None else "UNAVAILABLE",
+                invocation.get("usage_coverage") or "UNAVAILABLE",
+                invocation.get("invocation_id") or "UNAVAILABLE",
+            )) + " |"
+        )
     provider_usage_lines = (
         "## Provider Usage",
+        f"- Telemetry Contract: `{telemetry_snapshot.get('contract_version', 'UNAVAILABLE')}`",
+        f"- Source Snapshot: `{telemetry_snapshot.get('source_snapshot_reference', state.run_id)}`",
+        "- Scope: `this EP execution attempt`",
         f"- Provider Invocations: `{provider_usage.get('provider_invocation_count', 0)}`",
-        f"- Run Cumulative Input Tokens: `{provider_usage.get('input_tokens', 'UNAVAILABLE')}`",
-        f"- Cached Input Tokens: `{provider_usage.get('cached_input_tokens', 'UNAVAILABLE')}`",
-        f"- Uncached Input Tokens: `{provider_usage.get('uncached_input_tokens', 'UNAVAILABLE')}`",
-        f"- Output Tokens: `{provider_usage.get('output_tokens', 'UNAVAILABLE')}`",
-        f"- Maximum Provider Invocation Cumulative Input: `{provider_usage.get('max_input_tokens_per_invocation', 'UNAVAILABLE')}`",
+        f"- Observed Cumulative Invocation Input: `{usage_metric('input_tokens')}`",
+        f"- Observed Cached Input: `{usage_metric('cached_input_tokens')}` (component of input, not additional volume)",
+        f"- Derived Uncached Input: `{usage_metric('uncached_input_tokens')}`",
+        f"- Observed Cumulative Invocation Output: `{usage_metric('output_tokens')}`",
+        f"- Cache Ratio: `{observed(provider_usage.get('cache_ratio_percent'))}`% over compatible observations; coverage `{(provider_usage.get('cache_ratio_population') or {}).get('coverage', 'UNAVAILABLE')}`",
+        f"- Largest Cumulative Invocation Input: `{observed(provider_usage.get('max_input_tokens_per_invocation'))}` (not a context-window measurement)",
         f"- Observed Final Usage Snapshots: `{provider_usage.get('usage_snapshot_count') or 'UNAVAILABLE'}`",
-        f"- Intermediate Usage Delta Available: `{'yes' if provider_usage.get('intermediate_usage_delta_available') else 'no'}`",
-        f"- Maximum Intermediate Input Delta: `{provider_usage.get('maximum_incremental_input_tokens') or 'UNAVAILABLE'}`",
         "- Actual Single-Request Context Size: `UNAVAILABLE` (not emitted by Codex CLI JSONL).",
         "- Active Context Size: `UNAVAILABLE` (not emitted by Codex CLI JSONL).",
-        f"- Estimated Credits: `{provider_usage.get('estimated_credits', 'UNAVAILABLE')}`",
-        f"- Estimated EUR: `{provider_usage.get('estimated_eur', 'UNAVAILABLE')}` (derived estimate; not account billing)",
+        f"- Estimated Credits: `{observed(provider_usage.get('estimated_credits'))}`",
+        f"- Estimated EUR: `{observed(provider_usage.get('estimated_eur'))}` (derived estimate; not account billing)",
         f"- Rate Table Version: `{provider_usage.get('rate_table_version', 'UNAVAILABLE')}`",
         f"- Usage Authority: `{provider_usage.get('usage_authority', 'UNAVAILABLE')}`",
         f"- Speed State: `{provider_usage.get('speed_state', 'UNKNOWN')}`",
         "",
-        "## Observable Provider Input Correlation",
-        f"- File Reads: `{churn.get('file_read_count', 'UNAVAILABLE')}`",
-        f"- Repeated File Reads: `{churn.get('repeated_file_read_count', 'UNAVAILABLE')}`",
-        f"- Tool Output Bytes: `{churn.get('tool_output_bytes', 'UNAVAILABLE')}`",
-        f"- Test Output Bytes: `{(churn.get('passing_test_output_bytes', 0) + churn.get('failed_test_diagnostic_bytes', 0)) if churn else 'UNAVAILABLE'}`",
+        *invocation_lines,
+        "",
+        "## Observable Provider Activity",
+        f"- Actual File-Read Observations: `{observed(provider_usage.get('file_read_observations'))}`; coverage `{provider_usage.get('file_read_observation_coverage', 'UNAVAILABLE')}`",
+        f"- Unique Executed Read Commands: `{observed(provider_usage.get('unique_read_commands'))}` (DERIVED; not file-read proof)",
+        f"- Repeated Read Commands: `{observed(provider_usage.get('repeated_read_commands'))}` (DERIVED; not repeated file-read proof)",
+        f"- Deduplicated Observed Tool Output Bytes: `{churn.get('observed_tool_output_bytes', churn.get('tool_output_bytes', 'UNAVAILABLE'))}`",
+        f"- Passing Test Output Bytes: `{churn.get('passing_test_output_bytes', 'UNAVAILABLE')}`",
+        f"- Failing Test Diagnostic Bytes: `{churn.get('failed_test_diagnostic_bytes', 'UNAVAILABLE')}`",
+        f"- Unknown-Exit Test Output Bytes: `{churn.get('unknown_test_output_bytes', 'UNAVAILABLE')}`",
         "- Dominant Churn Indicators: derived only from bounded invocation counters; raw prompts and outputs are not retained.",
         "",
         "## Provider Context Scope",
@@ -1251,38 +1298,49 @@ def generate_terminal_report(
         f"- Effective Scope: `{churn.get('context_scope_effective', 'UNAVAILABLE')}`",
         f"- Context Escalations: `{churn.get('context_escalation_count', 'UNAVAILABLE')}`",
         f"- Escalation Reasons: `{churn.get('context_escalation_reasons', 'NONE')}`",
-        f"- Historical PRs Inspected: `{provider_usage.get('historical_pr_results') if provider_usage.get('historical_context_metrics_authority') != 'UNAVAILABLE' else 'UNAVAILABLE'}`",
+        f"- Historical PR Search/List Queries: `{observed(provider_usage.get('historical_pr_queries'))}`",
+        f"- Structured PR Result Occurrences: `{observed(provider_usage.get('historical_pr_result_occurrences'))}`; coverage `{provider_usage.get('historical_pr_metrics_coverage', 'UNAVAILABLE')}`",
+        f"- Unique Structured PR Results: `{observed(provider_usage.get('historical_unique_pr_results'))}`",
+        f"- PR Details/Diffs Actually Fetched: `{observed(provider_usage.get('historical_pr_details_fetched'))}`",
+        f"- Legacy PR Output Lines: `{observed(provider_usage.get('legacy_historical_pr_output_lines'))}` (legacy derived counter; not PRs inspected)",
         f"- Historical Commits Inspected: `{provider_usage.get('historical_commit_results') if provider_usage.get('historical_context_metrics_authority') != 'UNAVAILABLE' else 'UNAVAILABLE'}`",
         f"- Historical Context Bytes: `{provider_usage.get('historical_context_bytes') if provider_usage.get('historical_context_metrics_authority') != 'UNAVAILABLE' else 'UNAVAILABLE'}`",
         "",
     )
-    timing_lines = ["## Execution Phase Timing"]
+    timing_lines = [
+        "## Execution Phase Timing",
+        f"- Coverage: `{(timing.get('coverage') or {}).get('state', 'UNAVAILABLE')}`; reason: `{(timing.get('coverage') or {}).get('reason') or 'none'}`",
+    ]
     if timing.get("phase_telemetry_available"):
-        occurred = set(timing.get("occurred_phases", ()))
+        def duration_value(name: str) -> str:
+            value = timing.get(name)
+            return f"{value / 1000:.3f} s" if isinstance(value, int) else "UNAVAILABLE"
         timing_lines.extend((
-            f"- Total Wall Time: `{timing['total_wall_time_ms'] / 1000:.3f}` s",
-            f"- Active EP Processing Time: `{timing['active_ep_processing_time_ms'] / 1000:.3f}` s",
+            f"- Total Wall Time: `{duration_value('total_wall_time_ms')}`",
+            f"- Provider Process Duration (cumulative): `{duration_value('provider_cumulative_process_duration_ms')}`",
+            f"- Provider Coverage in Elapsed Time (interval union): `{duration_value('provider_unique_coverage_ms')}`",
+            "- Model Inference Time: `UNAVAILABLE` (provider process lifetime may include tool and I/O waits)",
+            f"- External Wait: `{duration_value('external_wait_time_ms')}`",
+            f"- Unassigned Time: `{duration_value('unassigned_time_ms')}`",
+            f"- Parallel/Overlap Time: `{duration_value('parallel_overlap_time_ms')}`",
+            "### Inclusive Phase Workload",
+            "- These measured category totals may overlap; their shares are not additive.",
+            "| Phase | Duration | Share | Spans |",
+            "| --- | ---: | ---: | ---: |",
+            *(f"| {item['phase']} | {item['duration_ms'] / 1000:.3f} s | {item['share_percent']:.3f}% | {item['span_count']} |" for item in timing.get("inclusive_phase_rows", [])),
+            "### Exclusive Elapsed-Time Distribution",
+            "- Deterministic non-overlapping interval partition; independent concurrency is PARALLEL_OVERLAP.",
+            "| Category | Duration | Share |",
+            "| --- | ---: | ---: |",
+            *(f"| {item['category']} | {item['duration_ms'] / 1000:.3f} s | {item['share_percent']:.3f}% |" for item in timing.get("exclusive_distribution", [])),
+            f"- Exact closure: `{'yes' if timing.get('exclusive_distribution_closes') else 'no'}`",
+            "### Bottlenecks",
+            f"- Largest accumulated inclusive category: `{((timing.get('bottlenecks') or {}).get('largest_accumulated_category') or {}).get('phase', 'UNAVAILABLE')}`",
+            f"- Longest individual span: `{((timing.get('bottlenecks') or {}).get('longest_individual_span') or {}).get('label', 'UNAVAILABLE')}`",
         ))
-        for phase, label, value, share in (
-            ("PROVIDER_EXECUTION", "Provider Execution Time", "provider_execution_time_ms", "provider_share_percent"),
-            ("VALIDATION", "Validation Time", "validation_time_ms", "validation_share_percent"),
-            ("EXTERNAL_CI_WAIT", "External Wait Time", "external_wait_time_ms", "external_wait_share_percent"),
-            ("QUEUE_WAIT", "Queue Wait Time", "queue_wait_time_ms", "queue_share_percent"),
-            ("REPORT_GENERATION", "Report Generation Time", "report_generation_time_ms", None),
-            ("EVIDENCE_PERSISTENCE", "Evidence Persistence Time", "evidence_persistence_time_ms", None),
-            ("REPOSITORY_FINALIZATION", "Repository Finalization Time", "repository_finalization_time_ms", None),
-        ):
-            if phase in occurred:
-                suffix = f" ({timing[share]:.3f}%)" if share else ""
-                timing_lines.append(f"- {label}: `{timing[value] / 1000:.3f}` s{suffix}")
         timing_lines.extend((
-            f"- Overhead Time: `{timing['overhead_time_ms'] / 1000:.3f}` s ({timing['overhead_share_percent']:.3f}%)",
-            "### Top Phase Categories",
-            *(f"- {index}. {item['phase']} — `{item['duration_ms'] / 1000:.3f}` s" for index, item in enumerate(timing["top_phase_categories"], 1)),
             "### Longest Individual Spans",
             *(f"- {index}. {item['label']} — `{item['duration_ms'] / 1000:.3f}` s" for index, item in enumerate(timing["longest_individual_spans"], 1)),
-            "- Aggregation: category totals suppress only a same-category ancestor; ties sort by canonical phase name. Individual spans are independently retained and ranked by duration, phase name and ordinal.",
-            "- Overhead: Total Wall Time excludes Queue Wait; it subtracts only External Wait and outer provider/validation processing coverage, so nested spans are not double-counted.",
         ))
     else:
         timing_lines.append("- Phase-level telemetry: unavailable for this historical run.")
@@ -1290,6 +1348,18 @@ def generate_terminal_report(
             timing_lines.append(
                 f"- Historical Total Wall Time: `{timing['total_wall_time_ms'] / 1000:.3f}` s (phase telemetry incomplete)."
             )
+    chain = telemetry_snapshot.get("chain") if isinstance(telemetry_snapshot.get("chain"), dict) else {}
+    timing_lines.extend((
+        "",
+        "## Execution Chain Scope",
+        f"- Coverage: `{chain.get('coverage', 'UNAVAILABLE')}`",
+        f"- Mission Scope: `{chain.get('mission_scope_label', 'UNAVAILABLE')}`",
+        f"- Attempts: `{chain.get('attempt_count', 'UNAVAILABLE')}` (original `{chain.get('original_attempt_count', 'UNAVAILABLE')}`, retries `{chain.get('retry_count', 'UNAVAILABLE')}`, resumes `{chain.get('resume_count', 'UNAVAILABLE')}`)",
+        f"- Chain Elapsed Time: `{chain.get('elapsed_ms') / 1000:.3f} s`" if isinstance(chain.get("elapsed_ms"), int) else "- Chain Elapsed Time: `UNAVAILABLE`",
+        f"- Measured Attempt Processing Time: `{chain.get('processing_time_ms') / 1000:.3f} s`" if isinstance(chain.get("processing_time_ms"), int) else "- Measured Attempt Processing Time: `UNAVAILABLE`",
+        f"- Inter-Attempt Gaps: `{chain.get('inter_attempt_gap_ms') / 1000:.3f} s`" if isinstance(chain.get("inter_attempt_gap_ms"), int) else "- Inter-Attempt Gaps: `UNAVAILABLE`",
+        f"- Related Attempts Outside Selected Window: `{chain.get('outside_selected_window_count', 0)}`",
+    ))
     qualification_status = qualification.get("qualification") if qualification else "not recorded"
     qualification_summary_line = (
         f"`{qualification_status}`" if qualification else "not recorded"
