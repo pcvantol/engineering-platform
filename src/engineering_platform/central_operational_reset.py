@@ -1598,17 +1598,19 @@ def resume(data_root: Path, *, operation_id: str, plan_digest: str,
 
 
 def contract_readback(
-    data_root: Path, *, command: str, operation_id: str | None, details: dict[str, object],
+    data_root: Path, *, command: str, operation_id: str | None,
 ) -> dict[str, object]:
-    """Project the shared operator contract without exposing protected values."""
+    """Project the shared operator contract from persisted, public state only.
+
+    Command return values can contain implementation diagnostics or protected
+    configuration.  They are deliberately not accepted by this projection and
+    can therefore never be copied to stdout by the maintenance CLI.
+    """
     observed = preview(data_root)
     persisted: object = None
     if operation_id is not None:
         persisted = status(data_root, operation_id=operation_id).get("operation")
-    operation = (
-        persisted if isinstance(persisted, dict) else
-        (details.get("operation") if isinstance(details.get("operation"), dict) else details)
-    )
+    operation = persisted if isinstance(persisted, dict) else {}
     if not isinstance(operation, dict):
         operation = {}
     selected_operation = operation_id or (
@@ -1656,7 +1658,10 @@ def contract_readback(
             "foreign_key_findings": observed["foreign_key_findings"],
         },
         "preserved_bindings_digest": observed["preserved_bindings_digest"],
-        "details": details,
+        "details": {
+            "credentials_included_in_receipt": False,
+            "projection": "PERSISTED_PUBLIC_MAINTENANCE_STATE",
+        },
     }
 
 
@@ -1724,8 +1729,10 @@ def main(argv: list[str] | None = None) -> int:
                 result = abort(args.data_root, operation_id=args.operation_id, plan_digest=args.plan_digest)
             else:
                 result = finish(args.data_root, operation_id=args.operation_id, plan_digest=args.plan_digest)
+        # Do not serialize ``result``.  The shared receipt is reconstructed
+        # from the schema-owned public projection after the command completes.
         print(json.dumps(contract_readback(
-            args.data_root, command=args.command, operation_id=args.operation_id, details=result,
+            args.data_root, command=args.command, operation_id=args.operation_id,
         ), sort_keys=True))
         return 0
     except OperationalResetError as error:

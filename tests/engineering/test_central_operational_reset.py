@@ -697,7 +697,7 @@ class CentralOperationalResetTests(unittest.TestCase):
         self._populate()
         plan = reset.preview(self.root)
         contract = reset.contract_readback(
-            self.root, command="preview", operation_id=None, details=plan,
+            self.root, command="preview", operation_id=None,
         )
         self.assertEqual(contract["contract_version"], "operational-reset-v1")
         self.assertEqual(contract["product"], "engineering-platform")
@@ -705,6 +705,13 @@ class CentralOperationalResetTests(unittest.TestCase):
         rendered = json.dumps(contract)
         self.assertNotIn((b"v" * 32).hex(), rendered)
         self.assertNotIn((b"f" * 32).hex(), rendered)
+        self.assertEqual(
+            contract["details"],
+            {
+                "credentials_included_in_receipt": False,
+                "projection": "PERSISTED_PUBLIC_MAINTENANCE_STATE",
+            },
+        )
 
     def test_cli_state_machine_emits_stable_shared_contract(self) -> None:
         def invoke(*arguments: str) -> tuple[int, dict[str, object]]:
