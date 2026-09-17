@@ -124,7 +124,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 66
+SERVER_STORE_SCHEMA_VERSION = 67
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -591,6 +591,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_forge_planning_context_envelopes",
         "ep_execution_host_evidence",
         "ep_technical_diagnostics",
+        "ep_terminal_evidence_reconciliation_operations",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -614,6 +615,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_forge_action_context_envelopes_project_lookup",
         "ep_forge_planning_context_envelopes_project_lookup",
         "ep_technical_diagnostics_created_lookup",
+        "execution_artifact_records_active_terminal_run",
     }
 )
 SERVER_REQUIRED_VIEWS = frozenset({"execution_submission_run_links"})
@@ -813,6 +815,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     _install_execution_host_evidence_schema(connection)
     _install_technical_diagnostics_schema(connection)
     owner_credential_recovery.install_schema(connection)
+    submission_service.install_terminal_evidence_reconciliation_schema(connection)
 
     connection.execute(
         "INSERT INTO engineering_schema_migrations(version) VALUES(?)",
@@ -1960,6 +1963,25 @@ def _migrate_schema_66(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=66")
 
 
+def _migrate_schema_67(connection: sqlite3.Connection) -> None:
+    """Add guarded terminal-evidence projection reconciliation."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema66")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN "
+        "(41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67)))"
+    )
+    connection.execute(
+        "INSERT INTO ep_installations SELECT instance_id,created_at,67 "
+        "FROM ep_installations_schema66"
+    )
+    connection.execute("DROP TABLE ep_installations_schema66")
+    submission_service.install_terminal_evidence_reconciliation_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(67)")
+    connection.execute("UPDATE engineering_metadata SET value='67' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=67")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -1986,6 +2008,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (64, _migrate_schema_64),
     (65, _migrate_schema_65),
     (66, _migrate_schema_66),
+    (67, _migrate_schema_67),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -2026,6 +2049,8 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         "ep_execution_host_evidence_immutable_delete",
         "ep_technical_diagnostics_immutable_update",
         "ep_technical_diagnostics_immutable_delete",
+        "ep_terminal_evidence_reconciliation_immutable_update",
+        "ep_terminal_evidence_reconciliation_immutable_delete",
     } <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
         raise ServerConfigurationError(

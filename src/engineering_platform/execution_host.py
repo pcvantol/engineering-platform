@@ -3663,6 +3663,8 @@ First implementation pull-request publication gate:
                     action = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE", "FINALIZATION": "FINALIZATION_MERGE", "RECONCILIATION": "RECONCILIATION_MERGE"}[state.transaction_kind]
                     self._managed_action(state, action, "EXPECTED_OPERATOR_GATE", actor="operator", evidence_ref="github_merge")
                     state = self._record_merged_evidence(state, pr, evidence)
+                    if state.terminal:
+                        return state
                     if state.owner_authorized and state.transaction_kind == "IMPLEMENTATION":
                         return self._start_finalization(state, pr.number)
                     if state.owner_authorized and state.transaction_kind == "FINALIZATION":
@@ -4145,6 +4147,26 @@ First implementation pull-request publication gate:
     def _record_merged_evidence(
         self, state: TransactionState, pr: PullRequestEvidence, evidence: RepositoryEvidence
     ) -> TransactionState:
+        expected_head = (
+            (state.implementation_head_sha or state.last_verified_sha)
+            if state.transaction_kind == "IMPLEMENTATION"
+            else (state.finalization_head_sha or state.last_verified_sha)
+            if state.transaction_kind == "FINALIZATION"
+            else None
+        )
+        if (
+            state.transaction_kind in {"IMPLEMENTATION", "FINALIZATION"}
+            and isinstance(expected_head, str)
+            and isinstance(pr.head_sha, str)
+            and pr.head_sha != expected_head
+        ):
+            return self._save_terminal(
+                state,
+                "BLOCKED",
+                "merged_pull_request_candidate_mismatch",
+                "Merged pull-request evidence does not match the exact phase candidate.",
+            )
+        phase_head = pr.head_sha or expected_head
         common = {
             "last_verified_sha": evidence.head_sha,
             "latest_repository_evidence": _repository_summary(evidence),
@@ -4155,7 +4177,7 @@ First implementation pull-request publication gate:
                 state,
                 implementation_branch=state.branch,
                 implementation_pull_request=pr.number,
-                implementation_head_sha=state.last_verified_sha,
+                implementation_head_sha=phase_head,
                 implementation_merge_commit=pr.merge_commit,
                 **common,
             )
@@ -4168,7 +4190,7 @@ First implementation pull-request publication gate:
                 state,
                 finalization_branch=state.branch or state.finalization_branch,
                 finalization_pull_request=pr.number,
-                finalization_head_sha=state.last_verified_sha,
+                finalization_head_sha=phase_head,
                 finalization_merge_commit=pr.merge_commit,
                 **common,
             )

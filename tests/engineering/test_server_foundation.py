@@ -1023,7 +1023,21 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/api/health") as response:
             health_alias = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
-        self.assertEqual(health_alias, platform_health)
+        # Both routes are independent live observations. Crossing a process
+        # uptime-second boundary between the two GETs does not make the
+        # compatibility alias semantically different.
+        def without_uptime(value: object) -> object:
+            if isinstance(value, dict):
+                return {
+                    key: without_uptime(item)
+                    for key, item in value.items()
+                    if key != "uptime_seconds"
+                }
+            if isinstance(value, list):
+                return [without_uptime(item) for item in value]
+            return value
+
+        self.assertEqual(without_uptime(health_alias), without_uptime(platform_health))
         self.assertEqual(platform_health["health"], "ok")
         self.assertEqual(platform_health["product_version"], server._console_platform_version())
         runtime_identity = platform_health["runtime_identity"]
@@ -1321,6 +1335,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         identity = server.initialize(self.root)
         database = self.root / server.SERVER_DATABASE_FILENAME
         with sqlite_connection(database) as connection:
+            connection.execute("DROP TRIGGER ep_terminal_evidence_reconciliation_immutable_update")
+            connection.execute("DROP TRIGGER ep_terminal_evidence_reconciliation_immutable_delete")
+            connection.execute("DROP TABLE ep_terminal_evidence_reconciliation_operations")
+            connection.execute("DROP INDEX execution_artifact_records_active_terminal_run")
             connection.execute("DROP INDEX execution_artifact_records_ep_run_lookup")
             connection.execute("ALTER TABLE execution_artifact_records DROP COLUMN ep_run_id")
             connection.execute("ALTER TABLE execution_artifact_records DROP COLUMN ep_submission_id")

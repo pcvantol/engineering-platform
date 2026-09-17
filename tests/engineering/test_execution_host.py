@@ -3177,6 +3177,73 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIsNone(result.pull_request)
         self.assertEqual(validated.implementation_head_sha, sha)
 
+    def test_merged_phase_heads_are_bound_to_pr_head_not_prior_checkout(self) -> None:
+        baseline, implementation, implementation_merge = "a" * 40, "b" * 40, "c" * 40
+        finalization, finalization_merge = "d" * 40, "e" * 40
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE")), lambda _: None,
+        )
+        implementation_state = TransactionState(
+            "merged-phase-heads", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", transaction_kind="IMPLEMENTATION",
+            branch="codex/implementation", last_verified_sha=baseline,
+            implementation_head_sha=implementation,
+        )
+        recorded_implementation = runner._record_merged_evidence(
+            implementation_state,
+            PullRequestEvidence(
+                120, "MERGED", True, True, merge_commit=implementation_merge,
+                head_branch="codex/implementation", base_branch="main",
+                head_sha=implementation,
+            ),
+            RepositoryEvidence("pcvantol/djconnect", "main", implementation_merge, True, True),
+        )
+        self.assertEqual(recorded_implementation.implementation_head_sha, implementation)
+        self.assertEqual(recorded_implementation.implementation_merge_commit, implementation_merge)
+
+        finalization_state = replace(
+            recorded_implementation,
+            transaction_kind="FINALIZATION", branch="codex/finalization",
+            last_verified_sha=finalization,
+        )
+        recorded_finalization = runner._record_merged_evidence(
+            finalization_state,
+            PullRequestEvidence(
+                121, "MERGED", True, True, merge_commit=finalization_merge,
+                head_branch="codex/finalization", base_branch="main",
+                head_sha=finalization,
+            ),
+            RepositoryEvidence("pcvantol/djconnect", "main", finalization_merge, True, True),
+        )
+        self.assertEqual(recorded_finalization.implementation_head_sha, implementation)
+        self.assertEqual(recorded_finalization.finalization_head_sha, finalization)
+        self.assertEqual(recorded_finalization.finalization_merge_commit, finalization_merge)
+
+    def test_merged_pr_with_changed_candidate_fails_closed(self) -> None:
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE")), lambda _: None,
+        )
+        state = TransactionState(
+            "merged-candidate-mismatch", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", transaction_kind="IMPLEMENTATION",
+            branch="codex/implementation", implementation_head_sha="a" * 40,
+        )
+
+        blocked = runner._record_merged_evidence(
+            state,
+            PullRequestEvidence(
+                122, "MERGED", True, True, merge_commit="c" * 40,
+                head_branch="codex/implementation", base_branch="main",
+                head_sha="b" * 40,
+            ),
+            RepositoryEvidence("pcvantol/djconnect", "main", "c" * 40, True, True),
+        )
+
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "merged_pull_request_candidate_mismatch")
+
     def test_validation_profile_failure_keeps_verified_repair_pr_and_candidate(self) -> None:
         branch, sha, pull_number = "codex/validation-failure-keeps-pr", "a" * 40, 118
         runner = EngineeringRunner(
