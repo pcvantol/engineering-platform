@@ -103,7 +103,10 @@ contributing set is explicitly complete. Otherwise the exact value is `null`,
 coverage is `PARTIAL`/`UNAVAILABLE`/`CONFLICT` as applicable, and a safe lower
 bound is the greater of the retained union and each source's own lower bound.
 Legacy rows without an explicit set-completeness marker are never promoted to
-an exact complete union.
+an exact complete union. A modern record that claims completeness while its
+declared unique count, retained count, opaque identities, truncation marker or
+coverage disagree fails closed as `CONFLICT`; its safe lower bound may remain
+visible, but it is not projected as an exact unique total.
 
 Read-command counters are derived command observations. Exact file-read
 observations require reliable tool metadata for opaque file identity, revision
@@ -158,10 +161,17 @@ transaction. The transaction is released before serialization or download.
 The already projected, privacy-safe model is retained in a bounded in-memory
 cache for ten minutes so Markdown and JSON can read back the same snapshot ID.
 A missing, expired, project-foreign or selection-foreign ID fails explicitly;
-it is never replaced silently by a newer read.
+it is never replaced silently by a newer read. The cache has independent
+per-model, item-count and total encoded-byte limits. It evicts oldest snapshots
+within that process-wide budget; a single model that cannot fit is rejected as
+an explicit `TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE` product response rather than
+being truncated or retained without a bound.
 
-The overview export contains every retained row in the active project/filter
-scope rather than only the visible page. Detail export can select the UTC day,
+The overview export reads the entire active project/filter population through
+bounded 500-record database pages inside the same read transaction; the
+1,000-run Console preview limit and 360-day UI limit are not export limits.
+It therefore contains every retained row rather than only the visible page.
+Detail export can select the UTC day,
 one attempt, or its verified execution chain. Full exports disable the UI
 preview limits for runs, invocations and spans. A chain detail includes a safe
 full attempt record, invocations, spans, timing distribution and coverage for

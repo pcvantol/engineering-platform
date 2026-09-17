@@ -74,6 +74,35 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "single_operational_installation_status": "UNVERIFIED_SCOPE",
         }
 
+    def test_full_telemetry_overview_pages_beyond_console_preview_limit(self) -> None:
+        server.initialize(self.root)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.executemany(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) "
+                "VALUES(?,?,?,?,?,'MANAGED')",
+                [
+                    (
+                        f"full-overview-{index:04d}", "full-overview", "COMPLETE",
+                        "2026-09-17T10:00:00+00:00", "2026-09-17T10:00:10+00:00",
+                    )
+                    for index in range(1001)
+                ],
+            )
+        with patch("engineering_platform.server.timing_summaries", return_value={}), patch(
+            "engineering_platform.server.provider_usage_summaries", return_value={},
+        ):
+            rows = server._central_console_telemetry(
+                self.root, "full-overview", full=True,
+            )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["prompt_count"], 1001)
+        model = server.telemetry_export.overview_model(
+            project_id="full-overview", rows=rows, sort_key="date",
+            sort_direction="desc", locale="en",
+        )
+        self.assertEqual(model["data"]["overview"]["summary"]["run_count"], 1001)
+        self.assertEqual(model["completeness"]["export"], "COMPLETE")
+
     def _resolved_system_service(self, selected: Path) -> tuple[object, dict[str, object], None]:
         return (
             server.system_server_service.SystemServerService(
@@ -2727,3 +2756,14 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "TELEMETRY_EXPORT_SNAPSHOT_UNAVAILABLE",
         )
         mismatch.exception.close()
+        httpd.telemetry_export_snapshots = server.telemetry_export.ExportSnapshotStore(
+            max_snapshots=1, max_snapshot_bytes=1, max_retained_bytes=1,
+        )
+        with self.assertRaises(HTTPError) as oversized:
+            urlopen(overview_selection.replace("locale=nl", "locale=es") + "&prepare=1")
+        self.assertEqual(oversized.exception.code, 413)
+        self.assertEqual(
+            json.loads(oversized.exception.read())["error"],
+            "TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE",
+        )
+        oversized.exception.close()

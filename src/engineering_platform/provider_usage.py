@@ -545,6 +545,29 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation, *, c
             churn["historical_pr_identity_set_complete"] = False
             churn["historical_pr_identity_set_truncated"] = True
             churn["historical_pr_identity_retained_count"] = _MAX_PR_IDENTITY_HASHES
+        retained_identity_count = len(churn.get("historical_pr_identity_hashes", []))
+        declared_unique_count = _number(
+            (invocation.churn or {}).get("historical_unique_pr_results")
+        )
+        declared_retained_count = _number(
+            (invocation.churn or {}).get("historical_pr_identity_retained_count")
+        )
+        claims_complete = churn.get("historical_pr_identity_set_complete") is True
+        identity_metadata_conflict = claims_complete and (
+            churn.get("historical_pr_identity_coverage") != COMPLETE
+            or churn.get("historical_pr_identity_set_truncated") is True
+            or declared_unique_count is None
+            or declared_unique_count != supplied_identity_count
+            or retained_identity_count != supplied_identity_count
+            or declared_retained_count not in {None, retained_identity_count}
+        )
+        churn["historical_pr_identity_retained_count"] = retained_identity_count
+        churn["historical_pr_unique_lower_bound"] = max(
+            retained_identity_count, declared_unique_count or 0,
+        )
+        if identity_metadata_conflict:
+            churn["historical_pr_identity_set_complete"] = False
+            churn["historical_pr_identity_coverage"] = CONFLICT
     snapshots = tuple(
         {
             key: _number(snapshot.get(key))

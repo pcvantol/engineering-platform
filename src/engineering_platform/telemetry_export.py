@@ -20,31 +20,55 @@ from .telemetry_metrics import aggregate_numeric_metric, metric_coverage
 EXPORT_SCHEMA_VERSION = "telemetry-export@1.1"
 SUPPORTED_LOCALES = frozenset({"en", "nl", "de", "fr", "es"})
 SNAPSHOT_TTL_SECONDS = 600
-MAX_RETAINED_SNAPSHOTS = 32
-MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024
+MAX_RETAINED_SNAPSHOTS = 16
+MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
+MAX_RETAINED_SNAPSHOT_BYTES = 64 * 1024 * 1024
 
 
 class ExportSnapshotStore:
     """Bounded in-memory readback for already projected, privacy-safe models."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, max_snapshots: int = MAX_RETAINED_SNAPSHOTS,
+        max_snapshot_bytes: int = MAX_SNAPSHOT_BYTES,
+        max_retained_bytes: int = MAX_RETAINED_SNAPSHOT_BYTES,
+    ) -> None:
+        if not 0 < max_snapshot_bytes <= max_retained_bytes or max_snapshots < 1:
+            raise ValueError("TELEMETRY_EXPORT_SNAPSHOT_LIMIT_INVALID")
         self._lock = RLock()
-        self._models: dict[str, tuple[float, str, dict[str, object]]] = {}
+        self._max_snapshots = max_snapshots
+        self._max_snapshot_bytes = max_snapshot_bytes
+        self._max_retained_bytes = max_retained_bytes
+        self._retained_bytes = 0
+        self._models: dict[str, tuple[float, str, int, dict[str, object]]] = {}
 
     def retain(self, model: Mapping[str, object], *, binding: str) -> str:
         snapshot_id = model.get("snapshot_id")
         if not isinstance(snapshot_id, str) or not snapshot_id.startswith("sha256:"):
             raise ValueError("TELEMETRY_EXPORT_SNAPSHOT_INVALID")
         encoded = json.dumps(model, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if len(encoded) > MAX_SNAPSHOT_BYTES:
+        encoded_size = len(encoded)
+        if encoded_size > self._max_snapshot_bytes:
             raise ValueError("TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE")
         now = monotonic()
         with self._lock:
             self._expire(now)
-            if len(self._models) >= MAX_RETAINED_SNAPSHOTS and snapshot_id not in self._models:
+            previous = self._models.pop(snapshot_id, None)
+            if previous is not None:
+                self._retained_bytes -= previous[2]
+            while self._models and (
+                len(self._models) >= self._max_snapshots
+                or self._retained_bytes + encoded_size > self._max_retained_bytes
+            ):
                 oldest = min(self._models, key=lambda key: self._models[key][0])
-                self._models.pop(oldest, None)
-            self._models[snapshot_id] = (now + SNAPSHOT_TTL_SECONDS, binding, deepcopy(dict(model)))
+                evicted = self._models.pop(oldest)
+                self._retained_bytes -= evicted[2]
+            if self._retained_bytes + encoded_size > self._max_retained_bytes:
+                raise ValueError("TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE")
+            self._models[snapshot_id] = (
+                now + SNAPSHOT_TTL_SECONDS, binding, encoded_size, deepcopy(dict(model)),
+            )
+            self._retained_bytes += encoded_size
         return snapshot_id
 
     def read(self, snapshot_id: str, *, binding: str) -> dict[str, object] | None:
@@ -54,12 +78,13 @@ class ExportSnapshotStore:
             retained = self._models.get(snapshot_id)
             if retained is None or retained[1] != binding:
                 return None
-            return deepcopy(retained[2])
+            return deepcopy(retained[3])
 
     def _expire(self, now: float) -> None:
-        for key, (expires_at, _, _) in list(self._models.items()):
+        for key, (expires_at, _, encoded_size, _) in list(self._models.items()):
             if expires_at <= now:
                 self._models.pop(key, None)
+                self._retained_bytes -= encoded_size
 
 
 def download_model(model: Mapping[str, object]) -> dict[str, object]:

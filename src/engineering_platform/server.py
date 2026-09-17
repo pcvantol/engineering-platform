@@ -3282,14 +3282,16 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
 
 def _central_console_run_records(
     data_root: Path, project_id: str, *, _read_connection: sqlite3.Connection | None = None,
+    record_limit: int | None = 1000,
 ) -> list[dict[str, object]]:
-    """Read all project runs with their admitted CENTRAL submission lineage."""
+    """Read project runs with bounded pages from one consistent source view."""
     owns_connection = _read_connection is None
     connection = _read_connection or sqlite3.connect(data_root / SERVER_DATABASE_FILENAME)
     try:
         connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,r.execution_mode,
+        if owns_connection and record_limit is None:
+            connection.execute("BEGIN")
+        query = """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,r.execution_mode,
                       d.submission_id,d.state AS dispatch_state,d.operator_resolution,
                       d.resolution_submission_id,
                       retry.run_id AS retry_child_run_id,
@@ -3319,12 +3321,22 @@ def _central_console_run_records(
                  LEFT JOIN ep_forge_action_context_envelopes AS a ON a.submission_id=s.submission_id
                  LEFT JOIN ep_forge_planning_context_envelopes AS p ON p.submission_id=s.submission_id
                  LEFT JOIN ep_execution_host_evidence AS h ON h.run_id=r.run_id
-                 LEFT JOIN execution_activity_summaries AS activity_summary ON activity_summary.run_id=r.run_id
+                LEFT JOIN execution_activity_summaries AS activity_summary ON activity_summary.run_id=r.run_id
                 WHERE r.project_id=?
-                ORDER BY r.created_at DESC,r.run_id DESC LIMIT 1000""",
-            (project_id,),
-        ).fetchall()
+                ORDER BY r.created_at DESC,r.run_id DESC LIMIT ? OFFSET ?"""
+        page_size = 500
+        rows: list[sqlite3.Row] = []
+        offset = 0
+        while record_limit is None or offset < record_limit:
+            batch_size = page_size if record_limit is None else min(page_size, record_limit - offset)
+            page = connection.execute(query, (project_id, batch_size, offset)).fetchall()
+            rows.extend(page)
+            if len(page) < batch_size:
+                break
+            offset += len(page)
     finally:
+        if owns_connection and connection.in_transaction:
+            connection.rollback()
         if owns_connection:
             connection.close()
     return [_central_run_record(row, project_id) for row in rows]
@@ -3969,8 +3981,26 @@ def _telemetry_export_store(server_instance: object) -> telemetry_export.ExportS
         return store
 
 
+def _retain_telemetry_export_snapshot(
+    store: telemetry_export.ExportSnapshotStore,
+    model: Mapping[str, object], *, binding: str,
+) -> tuple[str | None, tuple[int, str] | None]:
+    """Retain one model or return a safe HTTP status/diagnostic pair."""
+    try:
+        return store.retain(model, binding=binding), None
+    except ValueError as error:
+        code = str(error)
+        safe_code = (
+            code if code.startswith("TELEMETRY_EXPORT_")
+            else "TELEMETRY_EXPORT_SNAPSHOT_INVALID"
+        )
+        return None, (
+            413 if safe_code == "TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE" else 500,
+            safe_code,
+        )
 def _central_console_telemetry(
-    data_root: Path, project_id: str, *, _read_connection: sqlite3.Connection | None = None,
+    data_root: Path, project_id: str, *, full: bool = False,
+    _read_connection: sqlite3.Connection | None = None,
 ) -> list[dict[str, object]]:
     """Aggregate canonical run snapshots by UTC day.
 
@@ -3981,6 +4011,7 @@ def _central_console_telemetry(
     terminal_records = [
         record for record in _central_console_run_records(
             data_root, project_id, _read_connection=_read_connection,
+            record_limit=None if full else 1000,
         )
         if record.get("state") in {"COMPLETE", "BLOCKED", "FAILED"}
     ]
@@ -4072,7 +4103,8 @@ def _central_console_telemetry(
                                           if snapshot.get("contract_version")), None)
             ) else None,
         })
-    return sorted(entries, key=lambda entry: str(entry["date"]), reverse=True)[:360]
+    ordered = sorted(entries, key=lambda entry: str(entry["date"]), reverse=True)
+    return ordered if full else ordered[:360]
 
 
 def _legacy_central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
@@ -4162,6 +4194,7 @@ def _central_console_telemetry_detail(
     matching: list[Mapping[str, object]] = []
     all_records = _central_console_run_records(
         data_root, project_id, _read_connection=_read_connection,
+        record_limit=None if full else 1000,
     )
     for record in all_records:
         if record.get("state") not in {"COMPLETE", "BLOCKED", "FAILED"}:
@@ -6293,13 +6326,19 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                             project_id=selected,
                             rows=_central_console_telemetry(
                                 self.server.data_root, selected,  # type: ignore[attr-defined]
+                                full=True,
                                 _read_connection=read_connection,
                             ),
                             sort_key=sort_key, sort_direction=direction, locale=locale,
                             retention_days=_telemetry_retention_days(read_connection),
                             source_as_of=source_as_of, source_reference=source_reference,
                         )
-                    snapshot_id = store.retain(model, binding=binding)
+                    snapshot_id, snapshot_error = _retain_telemetry_export_snapshot(
+                        store, model, binding=binding,
+                    )
+                    if snapshot_error is not None:
+                        self._send(snapshot_error[0], {"error": snapshot_error[1]})
+                        return
                 if prepare:
                     self._send(200, {
                         "snapshot_id": snapshot_id,
@@ -6368,7 +6407,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         except ValueError:
                             self._send(404, {"error": "TELEMETRY_EXPORT_RUN_NOT_FOUND"})
                             return
-                    snapshot_id = store.retain(model, binding=binding)
+                    snapshot_id, snapshot_error = _retain_telemetry_export_snapshot(
+                        store, model, binding=binding,
+                    )
+                    if snapshot_error is not None:
+                        self._send(snapshot_error[0], {"error": snapshot_error[1]})
+                        return
                 if prepare:
                     self._send(200, {
                         "snapshot_id": snapshot_id,

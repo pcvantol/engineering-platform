@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -301,6 +302,35 @@ class CanonicalUsageAndTimingTests(unittest.TestCase):
         self.assertIsNone(legacy["historical_unique_pr_results"])
         self.assertEqual(legacy["historical_unique_pr_results_lower_bound"], 4)
         self.assertEqual(legacy["historical_unique_pr_coverage"], "PARTIAL")
+
+    def test_inconsistent_complete_pr_identity_metadata_fails_closed(self) -> None:
+        persist_provider_invocation(self.root, ProviderInvocation(
+            "conflicting-pr-identities", 1, "codex_cli", None,
+            "PROVIDER_EXECUTION", "IMPLEMENTATION",
+            "2026-09-17T00:00:00+00:00", "2026-09-17T00:00:01+00:00", 1000,
+            {}, invocation_id="conflicting-pr-identity", churn={
+                "historical_pr_queries": 1,
+                "historical_unique_pr_results": 2,
+                "historical_pr_identity_hashes": ["a" * 64],
+                "historical_pr_identity_set_complete": True,
+                "historical_pr_identity_set_truncated": False,
+                "historical_pr_identity_retained_count": 1,
+                "historical_pr_metrics_coverage": "COMPLETE",
+                "historical_pr_identity_coverage": "COMPLETE",
+            },
+        ))
+        with open_storage(self.root) as connection:
+            stored = json.loads(connection.execute(
+                "SELECT churn FROM provider_invocations WHERE invocation_id=?",
+                ("conflicting-pr-identity",),
+            ).fetchone()[0])
+        self.assertFalse(stored["historical_pr_identity_set_complete"])
+        self.assertEqual(stored["historical_pr_identity_coverage"], "CONFLICT")
+        self.assertEqual(stored["historical_pr_unique_lower_bound"], 2)
+        summary = provider_usage_summary(self.root, "conflicting-pr-identities")
+        self.assertIsNone(summary["historical_unique_pr_results"])
+        self.assertEqual(summary["historical_unique_pr_results_lower_bound"], 2)
+        self.assertEqual(summary["historical_unique_pr_coverage"], "CONFLICT")
 
     def test_churn_maximum_and_partial_coverage_keep_their_metric_semantics(self) -> None:
         for ordinal, coverage, maximum in ((1, "PARTIAL", 900), (2, "COMPLETE", 400)):
@@ -730,25 +760,34 @@ class CanonicalLineageTests(unittest.TestCase):
 
     def test_export_read_transaction_never_mixes_writer_commits_between_loaders(self) -> None:
         self._run("snapshot-run", "sub-snapshot", "2026-09-17T10:00:00+00:00", "2026-09-17T10:00:10+00:00")
-        with sqlite_connection(self.database) as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-        with server._telemetry_read_snapshot(self.root) as (read_connection, source_as_of, source_reference):
-            before = server._central_console_telemetry_detail(
-                self.root, "forge", "2026-09-17", full=True,
-                _read_connection=read_connection,
-            )
-            persist_provider_invocation(self.root, ProviderInvocation(
-                "snapshot-run", 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
-                "2026-09-17T10:00:00+00:00", "2026-09-17T10:00:01+00:00", 1000,
-                {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 10},
-                invocation_id="snapshot-invocation",
-            ), central_database=self.database)
-            during = server._central_console_telemetry_detail(
-                self.root, "forge", "2026-09-17", full=True,
-                _read_connection=read_connection,
-            )
-            self.assertTrue(source_as_of.endswith("+00:00"))
-            self.assertIn("central-schema:", source_reference)
+        # Keep one WAL-capable connection alive. SQLite on macOS cannot open a
+        # WAL database read-only after the final WAL owner has removed -shm,
+        # whereas the installed CENTRAL writer remains alive in production.
+        wal_keeper = sqlite3.connect(self.database)
+        try:
+            wal_keeper.execute("PRAGMA journal_mode=WAL")
+            wal_keeper.execute("SELECT COUNT(*) FROM engineering_schema_migrations").fetchone()
+            with server._telemetry_read_snapshot(self.root) as (
+                read_connection, source_as_of, source_reference,
+            ):
+                before = server._central_console_telemetry_detail(
+                    self.root, "forge", "2026-09-17", full=True,
+                    _read_connection=read_connection,
+                )
+                persist_provider_invocation(self.root, ProviderInvocation(
+                    "snapshot-run", 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+                    "2026-09-17T10:00:00+00:00", "2026-09-17T10:00:01+00:00", 1000,
+                    {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 10},
+                    invocation_id="snapshot-invocation",
+                ), central_database=self.database)
+                during = server._central_console_telemetry_detail(
+                    self.root, "forge", "2026-09-17", full=True,
+                    _read_connection=read_connection,
+                )
+                self.assertTrue(source_as_of.endswith("+00:00"))
+                self.assertIn("central-schema:", source_reference)
+        finally:
+            wal_keeper.close()
         after = server._central_console_telemetry_detail(
             self.root, "forge", "2026-09-17", full=True,
         )
@@ -818,6 +857,32 @@ class CanonicalTelemetryExportTests(unittest.TestCase):
         self.assertIsNone(model["downloaded_at"])
         with patch("engineering_platform.telemetry_export.monotonic", return_value=701.0):
             self.assertIsNone(store.read(snapshot_id, binding="project=forge"))
+
+    def test_retained_export_snapshots_enforce_item_and_process_byte_budgets(self) -> None:
+        first = overview_model(
+            project_id="first", rows=[], sort_key="date", sort_direction="desc", locale="en",
+        )
+        second = overview_model(
+            project_id="second", rows=[], sort_key="date", sort_direction="desc", locale="en",
+        )
+        encoded_sizes = [
+            len(json.dumps(model, sort_keys=True, separators=(",", ":"), allow_nan=False).encode())
+            for model in (first, second)
+        ]
+        store = ExportSnapshotStore(
+            max_snapshots=8,
+            max_snapshot_bytes=max(encoded_sizes),
+            max_retained_bytes=max(encoded_sizes) + 1,
+        )
+        first_id = store.retain(first, binding="first")
+        second_id = store.retain(second, binding="second")
+        self.assertIsNone(store.read(first_id, binding="first"))
+        self.assertEqual(store.read(second_id, binding="second"), second)
+        too_small = ExportSnapshotStore(
+            max_snapshots=1, max_snapshot_bytes=1, max_retained_bytes=1,
+        )
+        with self.assertRaisesRegex(ValueError, "TELEMETRY_EXPORT_SNAPSHOT_TOO_LARGE"):
+            too_small.retain(first, binding="first")
 
     def test_equal_observation_counts_do_not_upgrade_partial_or_conflict(self) -> None:
         partial = aggregate_coverage([{
