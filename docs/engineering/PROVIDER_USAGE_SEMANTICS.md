@@ -3,7 +3,7 @@
 ## Owning contract
 
 Engineering Platform owns the read model defined by
-`telemetry-contract@2.0`. `provider_usage.py`, `execution_timing.py` and
+`telemetry-contract@2.1`. `provider_usage.py`, `execution_timing.py` and
 `telemetry_contract.py` are the calculation authority. The API, dashboard,
 Engineering Report, Markdown download and JSON export project that contract;
 they must not independently calculate totals or bottlenecks.
@@ -13,6 +13,13 @@ calculation version, source snapshot, expected observations, observed
 observations and coverage. Coverage is `COMPLETE`, `PARTIAL`, `UNAVAILABLE` or
 `CONFLICT`. `AUTHORITATIVE` describes provenance, not completeness. A measured
 zero, an unknown value and an unavailable observation are distinct.
+
+Coverage aggregation retains expected, present, valid, missing and conflicting
+observations. A source `CONFLICT` remains `CONFLICT` at run, UTC-day and chain
+scope even when its numeric present count equals the expected count. Unknown
+expected populations remain unknown. Independent metrics propagate only their
+own dependencies; one invalid cached-input observation does not invalidate an
+otherwise valid output observation.
 
 The scopes are:
 
@@ -100,6 +107,13 @@ segment; simultaneous independent categories become `PARALLEL_OVERLAP`; gaps
 become `UNASSIGNED`. No proportional rescaling is used. Complete compatible
 intervals close exactly on elapsed time except presentation rounding.
 
+The exclusive distribution uses the wall-clock interval envelope for both its
+positions and durations. The independently measured monotonic process duration
+remains `total_monotonic_duration_ms`. Their signed difference is reported as
+`clock_difference_ms`; it is never inserted into `UNASSIGNED`. Category
+durations are accumulated at timestamp precision and rounded together only for
+the integer-millisecond presentation, so no category can become negative.
+
 Provider process duration is cumulative monotonic process lifetime. Provider
 coverage is the wall-clock interval union inside the run envelope. Neither is
 model inference time. Conflicting clocks or boundaries produce `CONFLICT`
@@ -113,3 +127,26 @@ autonomy acceptance remain separate states.
 Immutable historical reports and qualification evidence are never rewritten.
 Read-time reprojection retains its calculation version and source reference;
 missing historical event metadata is never fabricated.
+
+## Export contract
+
+`telemetry-export@1.0` is the read-only export envelope for the overview and
+detail Markdown/JSON downloads. Each envelope carries a snapshot digest,
+as-of timestamp, project, UTC selection, scope, source references, displayed
+and full population, export completeness and metric coverage. Markdown and
+JSON serialize that one model; neither recalculates totals.
+
+The overview export contains every retained row in the active project/filter
+scope rather than only the visible page. Detail export can select the UTC day,
+one attempt, or its verified execution chain. Full exports disable the UI
+preview limits for runs, invocations and spans. JSON retains numeric machine
+values and `null`; Markdown localizes human headings and explicitly renders
+unavailable values. Neither export includes prompts, replies, commands,
+secrets, raw tool output, or span metadata outside the telemetry allow-list.
+
+Synthetic, secret-free examples are retained with this contract:
+
+- [overview Markdown](examples/telemetry-followup/telemetry-overview-example.md)
+- [overview JSON](examples/telemetry-followup/telemetry-overview-example.json)
+- [detail Markdown](examples/telemetry-followup/telemetry-detail-example.md)
+- [detail JSON](examples/telemetry-followup/telemetry-detail-example.json)

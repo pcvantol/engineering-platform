@@ -17,6 +17,7 @@ from .provider_usage import (
     COMPLETE, CONFLICT, PARTIAL, TELEMETRY_CALCULATION_VERSION, UNAVAILABLE,
     provider_usage_summary,
 )
+from .telemetry_metrics import aggregate_coverage, aggregate_numeric_metric, metric_coverage
 from .storage import open_storage
 
 
@@ -167,11 +168,13 @@ def execution_chain_summary(
         issues.append(f"chain-limit:{MAX_CHAIN_RUNS}")
 
     chain_rows: list[dict[str, object]] = []
-    invocation_ids: set[str] = set()
     duplicate_invocations = 0
-    usage_totals = {key: 0 for key in ("input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens")}
-    usage_observed = {key: 0 for key in usage_totals}
-    usage_expected = 0
+    metric_names = ("input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens")
+    usage_sources: dict[str, list[Mapping[str, object]]] = {key: [] for key in metric_names}
+    provider_invocation_count = 0
+    cache_ratio_sources: list[Mapping[str, object]] = []
+    cache_ratio_input = 0
+    cache_ratio_cached = 0
     intervals: list[tuple[datetime, datetime]] = []
     processing_ms = 0
     mission_values: set[str] = set()
@@ -204,28 +207,35 @@ def execution_chain_summary(
         if usage is None:
             usage = provider_usage_summary(root, member, central_database=central_database)
             usage_cache[member] = usage
-        invocations = usage.get("invocations", []) if isinstance(usage, Mapping) else []
-        if isinstance(invocations, list):
-            for invocation in invocations:
-                identity_value = invocation.get("invocation_id") if isinstance(invocation, Mapping) else None
-                if not isinstance(identity_value, str):
-                    issues.append(f"missing-invocation-identity:{member}")
-                    continue
-                if identity_value in invocation_ids:
-                    duplicate_invocations += 1
-                    continue
-                invocation_ids.add(identity_value)
-                usage_expected += 1
-                conflicts = invocation.get("conflicting_usage_fields", [])
-                if isinstance(conflicts, list) and conflicts:
-                    issues.append(f"conflicting-usage:{identity_value}")
-                for key in usage_totals:
-                    value = invocation.get(key)
-                    if isinstance(value, int) and not isinstance(value, bool):
-                        usage_totals[key] += value
-                        usage_observed[key] += 1
-        if isinstance(usage, Mapping) and usage.get("invocation_table_truncated"):
-            issues.append(f"invocation-projection-truncated:{member}")
+        if isinstance(usage, Mapping):
+            count = usage.get("provider_invocation_count")
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                provider_invocation_count += count
+            metrics = usage.get("metrics")
+            for key in metric_names:
+                metric = metrics.get(key) if isinstance(metrics, Mapping) else None
+                if isinstance(metric, Mapping):
+                    usage_sources[key].append(metric)
+                else:
+                    usage_sources[key].append({
+                        "value": None, "provenance": UNAVAILABLE, "unit": "tokens",
+                        **metric_coverage(expected=None, present=0, valid=0,
+                                          reason=f"Usage projection unavailable for {member}"),
+                        "source_snapshot_reference": member,
+                    })
+            population = usage.get("cache_ratio_population")
+            if isinstance(population, Mapping):
+                cache_ratio_sources.append(population)
+                if population.get("coverage") != CONFLICT:
+                    if isinstance(population.get("input_tokens"), int):
+                        cache_ratio_input += int(population["input_tokens"])
+                    if isinstance(population.get("cached_input_tokens"), int):
+                        cache_ratio_cached += int(population["cached_input_tokens"])
+            else:
+                cache_ratio_sources.append(metric_coverage(
+                    expected=None, present=0, valid=0,
+                    reason=f"Cache-ratio population unavailable for {member}",
+                ))
         timing = timing_cache.get(member)
         if timing is None:
             timing = timing_summary(root, member, central_database=central_database)
@@ -272,17 +282,17 @@ def execution_chain_summary(
     if root_context is None or not bool(root_context["fresh_submission"]):
         issues.append("original-attempt-not-proven")
     coverage = CONFLICT if any(value.startswith(("cycle", "conflicting", "duplicate")) for value in issues) else PARTIAL if issues else COMPLETE
-    usage_metrics = {}
-    for key, value in usage_totals.items():
-        observed = usage_observed[key]
-        usage_metrics[key] = {
-            "value": value if observed else None,
-            "coverage": COMPLETE if observed == usage_expected and usage_expected else PARTIAL if observed else UNAVAILABLE,
-            "expected_observations": usage_expected, "observed_observations": observed,
-            "provenance": "AUTHORITATIVE", "unit": "tokens",
-            "aggregation_level": "EXECUTION_CHAIN", "calculation_version": TELEMETRY_CALCULATION_VERSION,
-            "missing_reason": None if observed == usage_expected and usage_expected else f"{key} observed for {observed} of {usage_expected} invocations",
-        }
+    usage_metrics = {
+        key: aggregate_numeric_metric(
+            values, aggregation_level="EXECUTION_CHAIN", aggregation="sum", unit="tokens",
+        )
+        for key, values in usage_sources.items()
+    }
+    cache_ratio_coverage = aggregate_coverage(cache_ratio_sources)
+    cache_ratio = (
+        round(cache_ratio_cached * 100 / cache_ratio_input, 3)
+        if cache_ratio_input and cache_ratio_coverage["coverage"] != CONFLICT else None
+    )
     return {
         "contract_version": TELEMETRY_CALCULATION_VERSION,
         "scope": "EXECUTION_CHAIN", "selected_run_id": run_id, "root_run_id": root_run,
@@ -298,9 +308,16 @@ def execution_chain_summary(
         "last_completed_at": last_end.isoformat() if last_end else None,
         "elapsed_ms": elapsed_ms, "processing_time_ms": processing_ms,
         "covered_elapsed_ms": covered_ms if intervals else None, "inter_attempt_gap_ms": gaps_ms,
-        "provider_invocation_count": usage_expected,
+        "provider_invocation_count": provider_invocation_count,
         "duplicate_invocation_count": duplicate_invocations,
-        "usage_metrics": usage_metrics, "outside_selected_window_count": outside_window,
+        "usage_metrics": usage_metrics,
+        "cache_ratio_percent": cache_ratio,
+        "cache_ratio_population": {
+            **cache_ratio_coverage,
+            "input_tokens": cache_ratio_input or None,
+            "cached_input_tokens": cache_ratio_cached or None,
+        },
+        "outside_selected_window_count": outside_window,
         "runs": sorted(chain_rows, key=lambda row: str(row.get("started_at") or "")),
     }
 

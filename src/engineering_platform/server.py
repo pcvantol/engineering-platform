@@ -71,6 +71,7 @@ from . import server_relay
 from . import server_service
 from . import system_server_service
 from . import storage
+from . import telemetry_export
 from . import managed_codex_runtime
 from . import provider_readiness
 from .platform_components import (
@@ -104,6 +105,11 @@ from .execution_lifecycle import projection as lifecycle_projection
 from .execution_timing import timing_summaries, timing_summary
 from .provider_usage import provider_usage_summaries, provider_usage_summary
 from .telemetry_contract import load_lineage_graph, run_telemetry_snapshot
+from .telemetry_metrics import (
+    aggregate_coverage as aggregate_telemetry_coverage,
+    aggregate_numeric_metric,
+    metric_coverage,
+)
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import CURRENT_PLATFORM_VERSION, EngineeringPlatformManifest
 from .providers import (
@@ -3932,28 +3938,32 @@ def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[st
                       for timing in (projection(snapshot, "timing"),)
                       if isinstance(timing.get(key), int) and timing[key] >= 0]
             return round(sum(values) / len(values), 3) if values else None
-        usage_metrics: dict[str, list[Mapping[str, object]]] = {}
+        usage_metrics: dict[str, list[Mapping[str, object]]] = {
+            name: [] for name in ("input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens")
+        }
         for _, snapshot in rows:
             usage = projection(snapshot, "usage")
             metrics = usage.get("metrics", {})
-            if isinstance(metrics, Mapping):
-                for name, metric in metrics.items():
-                    if isinstance(metric, Mapping):
-                        usage_metrics.setdefault(str(name), []).append(metric)
-        def observed_tokens(name: str) -> int | None:
-            values = [int(metric["value"]) for metric in usage_metrics.get(name, [])
-                      if isinstance(metric.get("value"), int)]
-            return sum(values) if values else None
-        input_tokens, output_tokens = observed_tokens("input_tokens"), observed_tokens("output_tokens")
-        coverage_states = {
-            str(metric.get("coverage"))
-            for metrics in usage_metrics.values() for metric in metrics
-            if metric.get("coverage")
+            for name in usage_metrics:
+                metric = metrics.get(name) if isinstance(metrics, Mapping) else None
+                usage_metrics[name].append(metric if isinstance(metric, Mapping) else {
+                    "value": None, "unit": "tokens", "provenance": "UNAVAILABLE",
+                    **metric_coverage(
+                        expected=None, present=0, valid=0,
+                        reason=f"Usage projection unavailable for {snapshot.get('run_id', 'run')}",
+                    ),
+                })
+        daily_usage = {
+            name: aggregate_numeric_metric(values, aggregation_level="UTC_DAY", unit="tokens")
+            for name, values in usage_metrics.items()
         }
+        input_tokens = daily_usage["input_tokens"]["value"]
+        output_tokens = daily_usage["output_tokens"]["value"]
+        coverage_states = {str(metric["coverage"]) for metric in daily_usage.values()}
         measurement_coverage = (
             "CONFLICT" if "CONFLICT" in coverage_states else
             "PARTIAL" if "PARTIAL" in coverage_states or "UNAVAILABLE" in coverage_states else
-            "COMPLETE" if coverage_states else "UNAVAILABLE"
+            "COMPLETE"
         )
         entries.append({
             "date": date,
@@ -3972,6 +3982,7 @@ def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[st
             "total_tokens": input_tokens + output_tokens
             if input_tokens is not None and output_tokens is not None else None,
             "measurement_coverage": measurement_coverage,
+            "usage_metrics": daily_usage,
             "contract_version": selected_version if (
                 selected_version := next((snapshot.get("contract_version") for _, snapshot in rows
                                           if snapshot.get("contract_version")), None)
@@ -4055,7 +4066,9 @@ def _legacy_central_console_telemetry_detail(data_root: Path, project_id: str, e
     }
 
 
-def _central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
+def _central_console_telemetry_detail(
+    data_root: Path, project_id: str, execution_date: str, *, full: bool = False,
+) -> dict[str, object] | None:
     """Return the canonical contract used by UI, Markdown and JSON export."""
     if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", execution_date):
         return None
@@ -4075,7 +4088,7 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
         matching.append(record)
     if not matching:
         return None
-    selected_records = matching[:MAX_TELEMETRY_DAY_RUNS]
+    selected_records = matching if full else matching[:MAX_TELEMETRY_DAY_RUNS]
     identifiers = [str(record["run_id"]) for record in selected_records]
     lineage_graph = load_lineage_graph(
         data_root, central_database=data_root / SERVER_DATABASE_FILENAME,
@@ -4100,9 +4113,11 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
     try:
         usage_cache = provider_usage_summaries(
             data_root, telemetry_identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
+            invocation_limit=None if full else 250,
         )
         timing_cache = timing_summaries(
             data_root, telemetry_identifiers, central_database=data_root / SERVER_DATABASE_FILENAME,
+            timeline_limit=None if full else 500,
         )
     except (storage.EngineeringStorageError, sqlite3.DatabaseError):
         usage_cache, timing_cache = {}, {}
@@ -4175,6 +4190,10 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
                 exclusive_values[str(row["category"])] = exclusive_values.get(str(row["category"]), 0) + int(row["duration_ms"])
         longest_spans.extend(row for row in timing.get("longest_individual_spans", []) if isinstance(row, Mapping))
     wall_total = sum(int(value) for value in (timing.get("total_wall_time_ms") for timing in timings) if isinstance(value, int))
+    exclusive_envelope_total = sum(
+        int(value) for value in (timing.get("exclusive_envelope_duration_ms") for timing in timings)
+        if isinstance(value, int)
+    )
     phases = [
         {"phase": phase, **aggregate(values),
          "share_percent": round(sum(values) * 100 / wall_total, 3) if wall_total else None,
@@ -4183,7 +4202,7 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
     ]
     exclusive = [
         {"category": category, "duration_ms": value,
-         "share_percent": round(value * 100 / wall_total, 3) if wall_total else None}
+         "share_percent": round(value * 100 / exclusive_envelope_total, 3) if exclusive_envelope_total else None}
         for category, value in sorted(exclusive_values.items(), key=lambda item: (-item[1], item[0]))
     ]
     longest_average = next(iter(sorted(
@@ -4200,17 +4219,50 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
         return [int(timing[key]) for timing in timings if isinstance(timing.get(key), int)]
     observed_usage: dict[str, dict[str, object]] = {}
     for name in ("input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens"):
-        metric_rows = [usage.get("metrics", {}).get(name) for usage in usages if isinstance(usage.get("metrics"), Mapping)]
-        numeric = [int(metric["value"]) for metric in metric_rows if isinstance(metric, Mapping) and isinstance(metric.get("value"), int)]
-        expected = sum(int(metric.get("expected_observations", 0)) for metric in metric_rows if isinstance(metric, Mapping))
-        observed = sum(int(metric.get("observed_observations", 0)) for metric in metric_rows if isinstance(metric, Mapping))
-        observed_usage[name] = {
-            "value": sum(numeric) if numeric else None,
-            "coverage": "COMPLETE" if expected and observed == expected else "PARTIAL" if observed else "UNAVAILABLE",
-            "expected_observations": expected, "observed_observations": observed,
+        metric_rows: list[Mapping[str, object]] = []
+        for index, usage in enumerate(usages):
+            metrics = usage.get("metrics")
+            metric = metrics.get(name) if isinstance(metrics, Mapping) else None
+            metric_rows.append(metric if isinstance(metric, Mapping) else {
+                "value": None, "unit": "tokens", "provenance": "UNAVAILABLE",
+                **metric_coverage(
+                    expected=None, present=0, valid=0,
+                    reason=f"Usage projection unavailable for {identifiers[index]}",
+                ),
+                "source_snapshot_reference": identifiers[index],
+            })
+        observed_usage[name] = aggregate_numeric_metric(
+            metric_rows, aggregation_level="UTC_DAY", unit="tokens",
+        )
+    cache_sources: list[Mapping[str, object]] = []
+    cache_inputs = 0
+    cache_cached = 0
+    for index, usage in enumerate(usages):
+        population = usage.get("cache_ratio_population")
+        if isinstance(population, Mapping):
+            cache_sources.append(population)
+            if population.get("coverage") != "CONFLICT":
+                if isinstance(population.get("input_tokens"), int):
+                    cache_inputs += int(population["input_tokens"])
+                if isinstance(population.get("cached_input_tokens"), int):
+                    cache_cached += int(population["cached_input_tokens"])
+        else:
+            cache_sources.append(metric_coverage(
+                expected=None, present=0, valid=0,
+                reason=f"Cache-ratio population unavailable for {identifiers[index]}",
+            ))
+    cache_coverage = aggregate_telemetry_coverage(cache_sources)
+    timing_coverage_sources = [
+        {
+            "coverage": timing.get("coverage", {}).get("state"),
+            **{key: timing.get("coverage", {}).get(key) for key in (
+                "expected_observations", "present_observations", "valid_observations",
+                "observed_observations", "conflicting_observations", "missing_reason",
+            )},
         }
-    cache_inputs = sum(int(usage.get("cache_ratio_population", {}).get("input_tokens", 0) or 0) for usage in usages if isinstance(usage.get("cache_ratio_population"), Mapping))
-    cache_cached = sum(int(usage.get("cache_ratio_population", {}).get("cached_input_tokens", 0) or 0) for usage in usages if isinstance(usage.get("cache_ratio_population"), Mapping))
+        for timing in timings if isinstance(timing.get("coverage"), Mapping)
+    ]
+    timing_coverage = aggregate_telemetry_coverage(timing_coverage_sources)
     summary = {
         "executions": len(run_rows), "population": len(run_rows),
         "completed": sum(row["status"] == "COMPLETE" for row in run_rows),
@@ -4224,19 +4276,34 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
         "external_wait": aggregate(values("external_wait_time_ms")),
         "unassigned": aggregate(values("unassigned_time_ms")),
         "usage": observed_usage,
-        "cache_ratio_percent": round(cache_cached * 100 / cache_inputs, 3) if cache_inputs else None,
+        "cache_ratio_percent": (
+            round(cache_cached * 100 / cache_inputs, 3)
+            if cache_inputs and cache_coverage["coverage"] != "CONFLICT" else None
+        ),
+        "cache_ratio_population": {
+            **cache_coverage,
+            "input_tokens": cache_inputs or None,
+            "cached_input_tokens": cache_cached or None,
+        },
+        "timing_coverage": timing_coverage,
     }
     return {
         "contract_version": selected[0][1].get("contract_version"),
         "source_snapshot_references": [str(record["run_id"]) for record, _ in selected],
         "date": execution_date, "timezone": "UTC", "scope": "EP_RUN_ATTEMPTS_IN_UTC_DAY",
         "matching_run_count": len(matching), "returned_run_count": len(selected),
-        "runs_truncated": len(matching) > len(selected), "run_limit": MAX_TELEMETRY_DAY_RUNS,
+        "runs_truncated": len(matching) > len(selected), "run_limit": None if full else MAX_TELEMETRY_DAY_RUNS,
         "summary": summary, "runs": run_rows,
         "inclusive_phases": phases, "phases": phases,
         "inclusive_shares_additive": False,
         "exclusive_distribution": exclusive,
-        "exclusive_distribution_closes": bool(wall_total and sum(exclusive_values.values()) == wall_total),
+        "exclusive_envelope_duration_ms": exclusive_envelope_total or None,
+        "exclusive_distribution_closes": bool(
+            exclusive_envelope_total
+            and timing_coverage["coverage"] == "COMPLETE"
+            and all(bool(timing.get("exclusive_distribution_closes")) for timing in timings)
+            and sum(exclusive_values.values()) == exclusive_envelope_total
+        ),
         "phase_telemetry_available": bool(phases),
         "bottlenecks": {
             "longest_average_phase": longest_average,
@@ -5205,6 +5272,23 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _send_download(self, payload: bytes, *, content_type: str, filename: str) -> None:
+        """Return one bounded read-only export with explicit browser metadata."""
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        route = getattr(self, "_console_route", None)
+        if route is not None:
+            self.send_header("EP-Console-Route-Owner", route.owner)
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _send_artifact_bytes(self, payload: bytes, instance_id: str) -> None:
         """Return the verified immutable artifact bytes without JSON re-encoding."""
         self.send_response(200)
@@ -6033,6 +6117,82 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "lifecycle": detail.get("lifecycle", {}),
                         "source": "CENTRAL",
                     })
+                return
+            if request.path == "/api/telemetry/export":
+                parameters = parse_qs(request.query)
+                export_format = (parameters.get("format") or [""])[0]
+                locale = (parameters.get("locale") or ["en"])[0]
+                sort_key = (parameters.get("sort") or ["date"])[0]
+                direction = (parameters.get("direction") or ["desc"])[0]
+                allowed_sort = {
+                    "date", "prompt_count", "average_total_execution_seconds",
+                    "average_queue_wait_seconds", "input_tokens", "output_tokens",
+                    "total_tokens", "complete_count", "blocked_count", "failed_count",
+                }
+                if (
+                    export_format not in {"markdown", "json"}
+                    or locale not in telemetry_export.SUPPORTED_LOCALES
+                    or sort_key not in allowed_sort or direction not in {"asc", "desc"}
+                ):
+                    self._send(400, {"error": "TELEMETRY_EXPORT_SELECTION_INVALID"})
+                    return
+                configuration = _central_console_configuration(self.server.data_root)  # type: ignore[attr-defined]
+                model = telemetry_export.overview_model(
+                    project_id=selected,
+                    rows=_central_console_telemetry(self.server.data_root, selected),  # type: ignore[attr-defined]
+                    sort_key=sort_key, sort_direction=direction, locale=locale,
+                    retention_days=configuration.get("telemetry_retention_days")
+                    if isinstance(configuration.get("telemetry_retention_days"), int) else None,
+                )
+                markdown = export_format == "markdown"
+                payload = telemetry_export.serialize_markdown(model) if markdown else telemetry_export.serialize_json(model)
+                self._send_download(
+                    payload,
+                    content_type="text/markdown; charset=utf-8" if markdown else "application/json; charset=utf-8",
+                    filename=f"telemetry-overview-{selected}-utc.{('md' if markdown else 'json')}",
+                )
+                return
+            telemetry_export_match = re.fullmatch(
+                r"/api/telemetry/([0-9]{4}-[0-9]{2}-[0-9]{2})/export", request.path,
+            )
+            if telemetry_export_match:
+                parameters = parse_qs(request.query)
+                export_format = (parameters.get("format") or [""])[0]
+                locale = (parameters.get("locale") or ["en"])[0]
+                scope = (parameters.get("scope") or ["UTC_DAY_DETAIL"])[0]
+                run_id = (parameters.get("run_id") or [None])[0]
+                if (
+                    export_format not in {"markdown", "json"}
+                    or locale not in telemetry_export.SUPPORTED_LOCALES
+                    or scope not in {"UTC_DAY_DETAIL", "EP_RUN_ATTEMPT", "EXECUTION_CHAIN"}
+                    or (run_id is not None and not _SAFE_REPORT_ID.fullmatch(run_id))
+                    or (scope != "UTC_DAY_DETAIL" and run_id is None)
+                ):
+                    self._send(400, {"error": "TELEMETRY_EXPORT_SELECTION_INVALID"})
+                    return
+                export_date = telemetry_export_match.group(1)
+                detail = _central_console_telemetry_detail(
+                    self.server.data_root, selected, export_date, full=True,  # type: ignore[attr-defined]
+                )
+                if detail is None:
+                    self._send(404, {"error": "TELEMETRY_NOT_FOUND"})
+                    return
+                try:
+                    model = telemetry_export.detail_model(
+                        project_id=selected, execution_date=export_date, detail=detail,
+                        scope=scope, run_id=run_id, locale=locale,
+                    )
+                except ValueError:
+                    self._send(404, {"error": "TELEMETRY_EXPORT_RUN_NOT_FOUND"})
+                    return
+                markdown = export_format == "markdown"
+                payload = telemetry_export.serialize_markdown(model) if markdown else telemetry_export.serialize_json(model)
+                context = run_id if run_id is not None else export_date
+                self._send_download(
+                    payload,
+                    content_type="text/markdown; charset=utf-8" if markdown else "application/json; charset=utf-8",
+                    filename=f"telemetry-detail-{selected}-{scope.casefold().replace('_', '-')}-{context}.{('md' if markdown else 'json')}",
+                )
                 return
             telemetry_match = re.fullmatch(r"/api/telemetry/([0-9]{4}-[0-9]{2}-[0-9]{2})", request.path)
             if telemetry_match:

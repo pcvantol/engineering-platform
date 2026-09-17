@@ -1357,18 +1357,21 @@ def generate_terminal_report(
     provider_usage = attempt_telemetry.get("usage", {}) if isinstance(attempt_telemetry, dict) else {}
     churn = provider_usage.get("context_churn") if isinstance(provider_usage.get("context_churn"), dict) else {}
     usage_metrics = provider_usage.get("metrics") if isinstance(provider_usage.get("metrics"), dict) else {}
-    def usage_metric(name: str) -> str:
-        metric = usage_metrics.get(name)
+    def usage_metric(name: str, metrics: object = usage_metrics) -> str:
+        metric = metrics.get(name) if isinstance(metrics, dict) else None
         if not isinstance(metric, dict):
             return "UNAVAILABLE"
         value = metric.get("value", "UNAVAILABLE")
-        observed = metric.get("observed_observations", 0)
-        expected = metric.get("expected_observations", 0)
+        observed = metric.get("observed_observations")
+        expected = metric.get("expected_observations")
         coverage = metric.get("coverage", "UNAVAILABLE")
         reason = f"; {metric['missing_reason']}" if metric.get("missing_reason") else ""
-        return f"{value} ({coverage}; {observed}/{expected} invocations{reason})"
+        population = f"{observed if isinstance(observed, int) else 'UNKNOWN'}/{expected if isinstance(expected, int) else 'UNKNOWN'}"
+        return f"{value} ({coverage}; {population} invocations{reason})"
     def observed(value: object) -> object:
         return "UNAVAILABLE" if value is None else value
+    def percentage(value: object) -> str:
+        return f"{value}%" if isinstance(value, (int, float)) and not isinstance(value, bool) else "UNAVAILABLE"
     invocation_lines = [
         "### Invocation Detail",
         "| Phase | Role | Provider | Model (provenance) | Duration | Input | Cached | Uncached | Output | Usage coverage | Invocation |",
@@ -1403,7 +1406,7 @@ def generate_terminal_report(
         f"- Observed Cached Input: `{usage_metric('cached_input_tokens')}` (component of input, not additional volume)",
         f"- Derived Uncached Input: `{usage_metric('uncached_input_tokens')}`",
         f"- Observed Cumulative Invocation Output: `{usage_metric('output_tokens')}`",
-        f"- Cache Ratio: `{observed(provider_usage.get('cache_ratio_percent'))}`% over compatible observations; coverage `{(provider_usage.get('cache_ratio_population') or {}).get('coverage', 'UNAVAILABLE')}`",
+        f"- Cache Ratio: `{percentage(provider_usage.get('cache_ratio_percent'))}` over compatible observations; coverage `{(provider_usage.get('cache_ratio_population') or {}).get('coverage', 'UNAVAILABLE')}`",
         f"- Largest Cumulative Invocation Input: `{observed(provider_usage.get('max_input_tokens_per_invocation'))}` (not a context-window measurement)",
         f"- Observed Final Usage Snapshots: `{provider_usage.get('usage_snapshot_count') or 'UNAVAILABLE'}`",
         "- Actual Single-Request Context Size: `UNAVAILABLE` (not emitted by Codex CLI JSONL).",
@@ -1450,7 +1453,9 @@ def generate_terminal_report(
             value = timing.get(name)
             return f"{value / 1000:.3f} s" if isinstance(value, int) else "UNAVAILABLE"
         timing_lines.extend((
-            f"- Total Wall Time: `{duration_value('total_wall_time_ms')}`",
+            f"- Monotonic Process Duration: `{duration_value('total_monotonic_duration_ms')}`",
+            f"- Exclusive Wall-Clock Envelope: `{duration_value('exclusive_envelope_duration_ms')}`; basis `{timing.get('exclusive_measurement_basis') or 'UNAVAILABLE'}`",
+            f"- Wall/Monotonic Clock Difference: `{duration_value('clock_difference_ms')}`; diagnostic `{timing.get('clock_difference_diagnostic') or 'UNAVAILABLE'}`",
             f"- Provider Process Duration (cumulative): `{duration_value('provider_cumulative_process_duration_ms')}`",
             f"- Provider Coverage in Elapsed Time (interval union): `{duration_value('provider_unique_coverage_ms')}`",
             "- Model Inference Time: `UNAVAILABLE` (provider process lifetime may include tool and I/O waits)",
@@ -1483,6 +1488,7 @@ def generate_terminal_report(
                 f"- Historical Total Wall Time: `{timing['total_wall_time_ms'] / 1000:.3f}` s (phase telemetry incomplete)."
             )
     chain = telemetry_snapshot.get("chain") if isinstance(telemetry_snapshot.get("chain"), dict) else {}
+    chain_usage = chain.get("usage_metrics") if isinstance(chain.get("usage_metrics"), dict) else {}
     timing_lines.extend((
         "",
         "## Execution Chain Scope",
@@ -1493,6 +1499,12 @@ def generate_terminal_report(
         f"- Measured Attempt Processing Time: `{chain.get('processing_time_ms') / 1000:.3f} s`" if isinstance(chain.get("processing_time_ms"), int) else "- Measured Attempt Processing Time: `UNAVAILABLE`",
         f"- Inter-Attempt Gaps: `{chain.get('inter_attempt_gap_ms') / 1000:.3f} s`" if isinstance(chain.get("inter_attempt_gap_ms"), int) else "- Inter-Attempt Gaps: `UNAVAILABLE`",
         f"- Related Attempts Outside Selected Window: `{chain.get('outside_selected_window_count', 0)}`",
+        f"- Provider Invocations: `{chain.get('provider_invocation_count', 'UNAVAILABLE')}`",
+        f"- Observed Cumulative Chain Input: `{usage_metric('input_tokens', chain_usage)}`",
+        f"- Observed Cached Chain Input: `{usage_metric('cached_input_tokens', chain_usage)}`",
+        f"- Derived Uncached Chain Input: `{usage_metric('uncached_input_tokens', chain_usage)}`",
+        f"- Observed Cumulative Chain Output: `{usage_metric('output_tokens', chain_usage)}`",
+        f"- Chain Cache Ratio: `{percentage(chain.get('cache_ratio_percent'))}` over compatible observations; coverage `{(chain.get('cache_ratio_population') or {}).get('coverage', 'UNAVAILABLE')}`",
     ))
     qualification_status = qualification.get("qualification") if qualification else "not recorded"
     qualification_summary_line = (

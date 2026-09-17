@@ -1,0 +1,91 @@
+{
+  "as_of": "2026-09-17T10:00:00+00:00",
+  "completeness": {
+    "displayed_population": 1,
+    "export": "COMPLETE",
+    "full_population": 1,
+    "metrics_may_be_partial": true
+  },
+  "contract_version": "telemetry-contract@2.1",
+  "data": {
+    "attempt": {
+      "run_id": "synthetic-run-1",
+      "status": "COMPLETE",
+      "telemetry_snapshot": {
+        "attempt": {
+          "run_id": "synthetic-run-1",
+          "scope": "EP_RUN_ATTEMPT",
+          "timing": {
+            "clock_difference_ms": 0,
+            "coverage": {"state": "COMPLETE"},
+            "exclusive_distribution": [
+              {"category": "PROVIDER_EXECUTION", "duration_ms": 6000, "share_percent": 60.0},
+              {"category": "UNASSIGNED", "duration_ms": 4000, "share_percent": 40.0}
+            ],
+            "exclusive_distribution_closes": true,
+            "exclusive_envelope_duration_ms": 10000,
+            "exclusive_measurement_basis": "WALL_CLOCK_INTERVAL_ENVELOPE",
+            "timeline": [
+              {
+                "completed_at": "2026-09-17T10:00:06+00:00",
+                "duration_ms": 6000,
+                "measurement_basis": "MONOTONIC",
+                "outcome": "COMPLETE",
+                "parent_phase_id": "total",
+                "phase_id": "provider",
+                "phase_name": "PROVIDER_EXECUTION",
+                "relative_end_ms": 6000,
+                "relative_start_ms": 0,
+                "started_at": "2026-09-17T10:00:00+00:00"
+              }
+            ],
+            "total_monotonic_duration_ms": 10000
+          },
+          "usage": {
+            "cache_ratio_percent": 80.0,
+            "invocations": [
+              {
+                "cached_input_tokens": 1000,
+                "duration_ms": 6000,
+                "input_tokens": 1250,
+                "invocation_id": "synthetic-invocation-1",
+                "model": "observed-model",
+                "model_provenance": "AUTHORITATIVE",
+                "output_tokens": 75,
+                "phase": "PROVIDER_EXECUTION",
+                "role": "IMPLEMENTATION",
+                "timing_correlation": "UNAVAILABLE",
+                "uncached_input_tokens": 250,
+                "usage_coverage": "COMPLETE"
+              }
+            ],
+            "metrics": {
+              "input_tokens": {
+                "coverage": "COMPLETE",
+                "expected_observations": 1,
+                "observed_observations": 1,
+                "provenance": "AUTHORITATIVE",
+                "unit": "tokens",
+                "value": 1250
+              }
+            }
+          }
+        },
+        "contract_version": "telemetry-contract@2.1",
+        "source_snapshot_reference": "synthetic-run-1"
+      }
+    }
+  },
+  "export_schema_version": "telemetry-export@1.0",
+  "locale": "nl",
+  "selection": {
+    "date": "2026-09-17",
+    "filters": {"selected_utc_date": "2026-09-17"},
+    "project_id": "synthetic-project",
+    "run_id": "synthetic-run-1",
+    "scope": "EP_RUN_ATTEMPT",
+    "timezone": "UTC"
+  },
+  "snapshot_id": "sha256:synthetic-detail-example",
+  "source_snapshot_references": ["synthetic-run-1"]
+}

@@ -17,6 +17,8 @@ from engineering_platform.provider_usage import (
 from engineering_platform.storage import open_storage
 from engineering_platform.storage import EngineeringStorageError
 from engineering_platform.telemetry_contract import execution_chain_summary
+from engineering_platform.telemetry_export import detail_model, overview_model, serialize_json, serialize_markdown
+from engineering_platform.telemetry_metrics import aggregate_coverage
 
 
 def command_event(kind: str, item_id: str | None, command: str, output: str = "", exit_code: object = 0) -> str:
@@ -167,6 +169,26 @@ class CanonicalUsageAndTimingTests(unittest.TestCase):
         self.assertEqual(summary["cache_ratio_population"]["observed_observations"], 1)
         self.assertEqual(summary["metrics"]["cached_input_tokens"]["coverage"], "PARTIAL")
 
+    def test_conflicting_snapshot_is_not_promoted_by_matching_counts(self) -> None:
+        persist_provider_invocation(self.root, ProviderInvocation(
+            "conflict", 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+            "2026-09-17T00:00:00+00:00", "2026-09-17T00:00:01+00:00", 1000,
+            {"input_tokens": 90, "cached_input_tokens": 40, "output_tokens": 5},
+            invocation_id="conflicting-invocation",
+            usage_snapshots=(
+                {"input_tokens": 100, "cached_input_tokens": 50, "output_tokens": 6},
+                {"input_tokens": 90, "cached_input_tokens": 40, "output_tokens": 5},
+            ),
+        ))
+        summary = provider_usage_summary(self.root, "conflict")
+        metric = summary["metrics"]["input_tokens"]
+        self.assertEqual(metric["coverage"], "CONFLICT")
+        self.assertEqual(metric["present_observations"], 1)
+        self.assertEqual(metric["valid_observations"], 0)
+        self.assertEqual(metric["conflicting_observations"], 1)
+        self.assertIsNone(metric["value"])
+        self.assertIsNone(summary["cache_ratio_percent"])
+
     def test_invocation_receipt_replay_is_idempotent_and_conflict_fails_closed(self) -> None:
         invocation = ProviderInvocation(
             "receipt", 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
@@ -181,6 +203,43 @@ class CanonicalUsageAndTimingTests(unittest.TestCase):
             persist_provider_invocation(self.root, ProviderInvocation(
                 **{**invocation.__dict__, "usage": {"input_tokens": 101, "cached_input_tokens": 80, "output_tokens": 1}}
             ))
+
+    def test_pr_uniqueness_is_union_across_invocations_and_repositories(self) -> None:
+        def pr_churn(item: str, repository: str) -> dict[str, object]:
+            payload = json.dumps([{"number": 17, "repository": {"nameWithOwner": repository}}])
+            return churn_from_jsonl(command_event("item.completed", item, "gh pr list --json number,repository", payload))
+        for ordinal, repository in enumerate(("owner/repo", "owner/repo", "other/repo"), 1):
+            persist_provider_invocation(self.root, ProviderInvocation(
+                "prs", ordinal, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+                "2026-09-17T00:00:00+00:00", "2026-09-17T00:00:01+00:00", 1000,
+                {}, invocation_id=f"pr-invocation-{ordinal}", churn=pr_churn(f"pr-{ordinal}", repository),
+            ))
+        summary = provider_usage_summary(self.root, "prs")
+        self.assertEqual(summary["historical_pr_result_occurrences"], 3)
+        self.assertEqual(summary["historical_unique_pr_results"], 2)
+        self.assertEqual(summary["historical_pr_metrics_coverage"], "COMPLETE")
+
+    def test_churn_maximum_and_partial_coverage_keep_their_metric_semantics(self) -> None:
+        for ordinal, coverage, maximum in ((1, "PARTIAL", 900), (2, "COMPLETE", 400)):
+            persist_provider_invocation(self.root, ProviderInvocation(
+                "churn-semantics", ordinal, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+                "2026-09-17T00:00:00+00:00", "2026-09-17T00:00:01+00:00", 1000,
+                {}, invocation_id=f"churn-{ordinal}", churn={
+                    "historical_pr_metrics_coverage": coverage,
+                    "maximum_tool_output_bytes": maximum,
+                },
+            ))
+        summary = provider_usage_summary(self.root, "churn-semantics")
+        self.assertEqual(summary["context_churn"]["maximum_tool_output_bytes"], 900)
+        self.assertEqual(summary["historical_pr_metrics_coverage"], "PARTIAL")
+
+    def test_structured_pr_without_repository_is_not_fabricated(self) -> None:
+        payload = json.dumps([{"number": 17}])
+        churn = churn_from_jsonl(command_event(
+            "item.completed", "pr-missing-repository", "gh pr list --json number", payload,
+        ))
+        self.assertEqual(churn["historical_pr_metrics_coverage"], "PARTIAL")
+        self.assertEqual(churn["historical_unique_pr_results"], 0)
 
     def test_exclusive_timing_closes_and_parallel_is_visible(self) -> None:
         start = datetime(2026, 9, 17, tzinfo=timezone.utc)
@@ -206,6 +265,41 @@ class CanonicalUsageAndTimingTests(unittest.TestCase):
         summary = timing_summary(self.root, "conflict")
         self.assertEqual(summary["coverage"]["state"], "CONFLICT")
         self.assertFalse(summary["exclusive_distribution_closes"])
+
+    def test_clock_difference_uses_wall_envelope_without_negative_rest(self) -> None:
+        start = datetime(2026, 9, 17, tzinfo=timezone.utc)
+        record_phase(self.root, "clock", "TOTAL_EXECUTION", started_at=start, completed_at=start + timedelta(milliseconds=10_100))
+        record_phase(self.root, "clock", "PROVIDER_EXECUTION", started_at=start, completed_at=start + timedelta(milliseconds=10_100))
+        with open_storage(self.root) as connection:
+            connection.execute("UPDATE execution_phase_spans SET duration_ms=10000 WHERE run_id='clock' AND phase_name='TOTAL_EXECUTION'")
+        summary = timing_summary(self.root, "clock")
+        distribution = {row["category"]: row["duration_ms"] for row in summary["exclusive_distribution"]}
+        self.assertEqual(summary["coverage"]["state"], "COMPLETE")
+        self.assertEqual(summary["total_monotonic_duration_ms"], 10_000)
+        self.assertEqual(summary["exclusive_envelope_duration_ms"], 10_100)
+        self.assertEqual(summary["clock_difference_ms"], 100)
+        self.assertEqual(distribution, {"PROVIDER_EXECUTION": 10_100})
+        self.assertTrue(summary["exclusive_distribution_closes"])
+        self.assertTrue(all(value >= 0 for value in distribution.values()))
+
+    def test_opposite_clock_difference_and_small_segments_close_own_envelope(self) -> None:
+        start = datetime(2026, 9, 17, tzinfo=timezone.utc)
+        record_phase(self.root, "clock-opposite", "TOTAL_EXECUTION", started_at=start, completed_at=start + timedelta(seconds=10))
+        with open_storage(self.root) as connection:
+            connection.execute("UPDATE execution_phase_spans SET duration_ms=10100 WHERE run_id='clock-opposite' AND phase_name='TOTAL_EXECUTION'")
+            for index in range(20):
+                segment_start = start + timedelta(microseconds=index * 500_000)
+                connection.execute(
+                    """INSERT INTO execution_phase_spans(phase_id,run_id,phase_name,phase_category,parent_phase_id,attempt,ordinal,started_at,completed_at,duration_ms,outcome,metadata)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (f"small-{index}", "clock-opposite", "VALIDATION", "VALIDATION", None, 1, index + 2,
+                     segment_start.isoformat(), (segment_start + timedelta(microseconds=500_000)).isoformat(), 500, "COMPLETE", '{"measurement_basis":"MONOTONIC"}'),
+                )
+        summary = timing_summary(self.root, "clock-opposite")
+        self.assertEqual(summary["clock_difference_ms"], -100)
+        self.assertEqual(summary["exclusive_distribution_total_ms"], 10_000)
+        self.assertTrue(summary["exclusive_distribution_closes"])
+        self.assertTrue(all(row["duration_ms"] >= 0 for row in summary["exclusive_distribution"]))
 
     def test_missing_parent_is_partial_and_recovery_basis_is_explicit(self) -> None:
         start = datetime(2026, 9, 17, tzinfo=timezone.utc)
@@ -300,7 +394,7 @@ class CanonicalLineageTests(unittest.TestCase):
         run = detail["runs"][0]
         snapshot = run["telemetry_snapshot"]
         metrics = snapshot["attempt"]["usage"]["metrics"]
-        self.assertEqual(detail["contract_version"], "telemetry-contract@2.0")
+        self.assertEqual(detail["contract_version"], "telemetry-contract@2.1")
         self.assertEqual(detail["summary"]["usage"]["input_tokens"]["value"], metrics["input_tokens"]["value"])
         self.assertEqual(run["input_tokens"], metrics["input_tokens"]["value"])
         self.assertEqual(detail["summary"]["provider_unique_coverage"]["average_ms"], snapshot["attempt"]["timing"]["provider_unique_coverage_ms"])
@@ -309,6 +403,33 @@ class CanonicalLineageTests(unittest.TestCase):
         overview = server._central_console_telemetry(self.root, "forge")
         self.assertEqual(overview[0]["input_tokens"], metrics["input_tokens"]["value"])
         self.assertEqual(overview[0]["contract_version"], detail["contract_version"])
+
+    def test_conflict_survives_run_day_and_chain_aggregation(self) -> None:
+        self._run("conflict-run", "sub-conflict", "2026-09-17T11:00:00+00:00", "2026-09-17T11:00:10+00:00")
+        persist_provider_invocation(self.root, ProviderInvocation(
+            "conflict-run", 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+            "2026-09-17T11:00:00+00:00", "2026-09-17T11:00:01+00:00", 1000,
+            {"input_tokens": 90, "cached_input_tokens": 40, "output_tokens": 5},
+            invocation_id="conflict-chain-invocation",
+            usage_snapshots=(
+                {"input_tokens": 100, "cached_input_tokens": 50, "output_tokens": 6},
+                {"input_tokens": 90, "cached_input_tokens": 40, "output_tokens": 5},
+            ),
+        ), central_database=self.database)
+        run = provider_usage_summary(self.root, "conflict-run", central_database=self.database)
+        day = server._central_console_telemetry_detail(self.root, "forge", "2026-09-17")
+        chain = execution_chain_summary(self.root, "conflict-run", central_database=self.database)
+        self.assertEqual(run["metrics"]["input_tokens"]["coverage"], "CONFLICT")
+        assert day is not None
+        self.assertEqual(day["summary"]["usage"]["input_tokens"]["coverage"], "CONFLICT")
+        self.assertEqual(chain["usage_metrics"]["input_tokens"]["coverage"], "CONFLICT")
+        self.assertIsNone(chain["cache_ratio_percent"])
+
+    def test_missing_usage_projection_keeps_day_metric_incomplete(self) -> None:
+        self._run("missing-usage", "sub-missing", "2026-09-17T12:00:00+00:00", "2026-09-17T12:00:10+00:00")
+        detail = server._central_console_telemetry_detail(self.root, "forge", "2026-09-17")
+        assert detail is not None
+        self.assertNotEqual(detail["summary"]["usage"]["input_tokens"]["coverage"], "COMPLETE")
 
 
 class CanonicalTelemetryBatchTests(unittest.TestCase):
@@ -319,7 +440,7 @@ class CanonicalTelemetryBatchTests(unittest.TestCase):
             "updated_at": "2026-09-17T10:00:01+00:00",
         } for index in range(150)]
         snapshot = {
-            "contract_version": "telemetry-contract@2.0",
+            "contract_version": "telemetry-contract@2.1",
             "attempt": {"usage": {"metrics": {}, "invocations": []}, "timing": {}},
             "chain": {"coverage": "PARTIAL", "runs": []},
         }
@@ -341,6 +462,93 @@ class CanonicalTelemetryBatchTests(unittest.TestCase):
         self.assertEqual(timing_batch.call_count, 1)
         self.assertEqual(len(usage_batch.call_args.args[1]), server.MAX_TELEMETRY_DAY_RUNS)
         self.assertEqual(composer.call_count, server.MAX_TELEMETRY_DAY_RUNS)
+
+
+class CanonicalTelemetryExportTests(unittest.TestCase):
+    def test_equal_observation_counts_do_not_upgrade_partial_or_conflict(self) -> None:
+        partial = aggregate_coverage([{
+            "coverage": "PARTIAL", "expected_observations": 1,
+            "present_observations": 1, "valid_observations": 1,
+            "missing_reason": "Parent relation unavailable",
+        }])
+        conflict = aggregate_coverage([{
+            "coverage": "CONFLICT", "expected_observations": 1,
+            "present_observations": 1, "valid_observations": 1,
+            "missing_reason": "Clock basis conflict",
+        }])
+        self.assertEqual(partial["coverage"], "PARTIAL")
+        self.assertEqual(conflict["coverage"], "CONFLICT")
+
+    def test_overview_and_detail_json_markdown_share_snapshot_model(self) -> None:
+        rows = [{
+            "date": "2026-09-17", "prompt_count": 1, "input_tokens": None,
+            "measurement_coverage": "PARTIAL", "contract_version": "telemetry-contract@2.1",
+        }]
+        overview = overview_model(
+            project_id="forge", rows=rows, sort_key="date", sort_direction="desc", locale="nl",
+        )
+        overview_json = json.loads(serialize_json(overview))
+        overview_markdown = serialize_markdown(overview).decode()
+        self.assertEqual(overview_json["snapshot_id"], overview["snapshot_id"])
+        self.assertIsNone(overview_json["data"]["overview"]["rows"][0]["input_tokens"])
+        self.assertIn("Niet beschikbaar", overview_markdown)
+
+        detail = {
+            "contract_version": "telemetry-contract@2.1", "timezone": "UTC",
+            "source_snapshot_references": ["run-1"], "matching_run_count": 1,
+            "returned_run_count": 1, "runs_truncated": False,
+            "summary": {
+                "cache_ratio_percent": None,
+                "usage": {"input_tokens": {"value": None, "coverage": "PARTIAL", "missing_reason": "One invocation lacks input usage"}},
+            },
+            "inclusive_phases": [], "exclusive_distribution": [],
+            "bottlenecks": {"longest_average_phase": {"phase": "VALIDATION", "average_ms": 1250}},
+            "runs": [{"run_id": "run-1", "telemetry_snapshot": {
+                "contract_version": "telemetry-contract@2.1", "source_snapshot_reference": "run-1",
+                "attempt": {"scope": "EP_RUN_ATTEMPT", "run_id": "run-1", "usage": {
+                    "invocations": [{"invocation_id": f"inv-{index}", "input_tokens": index} for index in range(251)],
+                }, "timing": {"timeline": [{"phase_id": f"span-{index}", "duration_ms": 1} for index in range(501)]}},
+                "chain": {"runs": [{"run_id": "run-1"}]},
+            }}],
+        }
+        exported = detail_model(
+            project_id="forge", execution_date="2026-09-17", detail=detail,
+            scope="UTC_DAY_DETAIL", run_id=None, locale="en",
+        )
+        parsed = json.loads(serialize_json(exported))
+        snapshot = parsed["data"]["day_detail"]["runs"][0]["telemetry_snapshot"]["attempt"]
+        self.assertEqual(len(snapshot["usage"]["invocations"]), 251)
+        self.assertEqual(len(snapshot["timing"]["timeline"]), 501)
+        detail_markdown = serialize_markdown(exported).decode()
+        self.assertIn("Provider invocations", detail_markdown)
+        self.assertIn("## Bottlenecks", detail_markdown)
+        self.assertIn("## Limitations and conflicts", detail_markdown)
+        self.assertIn("One invocation lacks input usage", detail_markdown)
+        chain_export = detail_model(
+            project_id="forge", execution_date="2026-09-17", detail=detail,
+            scope="EXECUTION_CHAIN", run_id="run-1", locale="en",
+        )
+        self.assertEqual(chain_export["selection"]["scope"], "EXECUTION_CHAIN")
+        self.assertEqual(chain_export["completeness"]["displayed_population"], 1)
+        self.assertEqual(chain_export["completeness"]["full_population"], 1)
+
+    def test_markdown_escapes_table_and_html_text_while_json_preserves_data(self) -> None:
+        model = overview_model(
+            project_id="forge", locale="fr", sort_key="date", sort_direction="desc",
+            rows=[{
+                "date": "2026-09-17", "prompt_count": 1,
+                "measurement_coverage": "PARTIAL | <conflict>\nnext",
+                "contract_version": "telemetry-contract@2.1",
+            }],
+        )
+        markdown = serialize_markdown(model).decode("utf-8")
+        parsed = json.loads(serialize_json(model))
+        self.assertIn("PARTIAL \\| &lt;conflict&gt; next", markdown)
+        self.assertNotIn("<conflict>", markdown)
+        self.assertEqual(
+            parsed["data"]["overview"]["rows"][0]["measurement_coverage"],
+            "PARTIAL | <conflict>\nnext",
+        )
 
 
 if __name__ == "__main__":

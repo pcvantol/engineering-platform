@@ -3,6 +3,7 @@ from __future__ import annotations
 from engineering_platform.storage import sqlite_connection
 
 import json
+import http.server
 import inspect
 import io
 import logging
@@ -11,11 +12,12 @@ import plistlib
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import socket
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import call, patch
@@ -23,7 +25,9 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from engineering_platform import file_inbox, local_repository_binding, project_topology, providers, server, submission_service
+from engineering_platform.execution_timing import complete_phase, start_phase
 from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
+from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
 from engineering_platform.providers import LaunchdRuntimeDetails, ProviderStatus
 
 
@@ -2517,3 +2521,114 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console") as response:
             remaining = json.loads(response.read())
         self.assertNotIn("central_console_test", [entry["event"] for entry in remaining["entries"]])
+
+    def test_four_telemetry_exports_use_one_full_server_side_snapshot(self) -> None:
+        """Exercise all product download routes against a real isolated Server."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        declaration = json.loads(
+            (Path(__file__).parent / "fixtures" / "repository_attachment" / "python-authority.json").read_text(encoding="utf-8")
+        )
+        declaration["project"]["id"] = "telemetry-export"
+        declaration["project"]["authority_repository_id"] = "telemetry-export"
+        declaration["repository"]["id"] = "telemetry-export"
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            project_topology.register_server_local_topology(connection, declaration=declaration)
+            for index in range(105):
+                run_id = f"export-run-{index:03d}"
+                connection.execute(
+                    "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,'MANAGED')",
+                    (run_id, "telemetry-export", "COMPLETE", "2026-09-17T10:00:00+00:00", "2026-09-17T10:00:10+00:00"),
+                )
+        started = datetime(2026, 9, 17, 10, tzinfo=timezone.utc)
+        total = start_phase(
+            self.root, "export-run-000", "TOTAL_EXECUTION", started_at=started,
+            monotonic_clock=0, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        provider = start_phase(
+            self.root, "export-run-000", "PROVIDER_EXECUTION", started_at=started,
+            parent_phase_id=total.phase_id, monotonic_clock=0,
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        complete_phase(self.root, provider, completed_at=started + timedelta(seconds=6), monotonic_clock=6)
+        complete_phase(self.root, total, completed_at=started + timedelta(seconds=10), monotonic_clock=10)
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                "export-run-000", 1, "codex_cli", "observed-model", "PROVIDER_EXECUTION", "IMPLEMENTATION",
+                started.isoformat(), (started + timedelta(seconds=6)).isoformat(), 6000,
+                {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 10},
+                invocation_id="export-invocation",
+            ),
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        # Exercise the exact in-process read models as well as the installed
+        # HTTP boundary below.  The Server itself runs in a child process, so
+        # this assertion keeps per-module coverage tied to the canonical
+        # aggregation implementation rather than to a copied fixture.
+        projected_overview = server._central_console_telemetry(self.root, "telemetry-export")
+        self.assertEqual(projected_overview[0]["prompt_count"], 105)
+        projected_detail = server._central_console_telemetry_detail(
+            self.root, "telemetry-export", "2026-09-17", full=True,
+        )
+        self.assertIsNotNone(projected_detail)
+        self.assertEqual(projected_detail["matching_run_count"], 105)
+        self.assertEqual(len(projected_detail["runs"]), 105)
+        # Run the same production request handler in-process so route,
+        # serializer and response-header coverage belongs to this exact
+        # candidate.  Separate lifecycle tests retain the installed child-
+        # process startup qualification.
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), server._HealthHandler)
+        httpd.data_root = self.root.resolve()
+        httpd.central_data_transfer_lock = threading.RLock()
+        httpd.central_data_transfer_active = False
+        httpd.restart_after_shutdown = False
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        def stop_httpd() -> None:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=2)
+
+        self.addCleanup(stop_httpd)
+
+        base = f"http://127.0.0.1:{port}"
+        urls = {
+            "overview_json": f"{base}/api/telemetry/export?project=telemetry-export&format=json&locale=nl&sort=date&direction=desc",
+            "overview_markdown": f"{base}/api/telemetry/export?project=telemetry-export&format=markdown&locale=nl&sort=date&direction=desc",
+            "detail_json": f"{base}/api/telemetry/2026-09-17/export?project=telemetry-export&format=json&locale=nl&scope=UTC_DAY_DETAIL",
+            "detail_markdown": f"{base}/api/telemetry/2026-09-17/export?project=telemetry-export&format=markdown&locale=nl&scope=UTC_DAY_DETAIL",
+        }
+        downloads: dict[str, tuple[object, bytes]] = {}
+        for name, url in urls.items():
+            with urlopen(url) as response:
+                downloads[name] = (response.headers, response.read())
+                self.assertIn("attachment; filename=\"telemetry-", response.headers["Content-Disposition"])
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                if name.endswith("json"):
+                    self.assertEqual(response.headers["Content-Type"], "application/json; charset=utf-8")
+                    self.assertTrue(response.headers["Content-Disposition"].endswith('.json"'))
+                else:
+                    self.assertEqual(response.headers["Content-Type"], "text/markdown; charset=utf-8")
+                    self.assertTrue(response.headers["Content-Disposition"].endswith('.md"'))
+
+        overview = json.loads(downloads["overview_json"][1])
+        detail = json.loads(downloads["detail_json"][1])
+        self.assertEqual(overview["data"]["overview"]["summary"]["run_count"], 105)
+        self.assertEqual(overview["completeness"]["export"], "COMPLETE")
+        self.assertEqual(len(detail["data"]["day_detail"]["runs"]), 105)
+        self.assertEqual(detail["completeness"]["full_population"], 105)
+        self.assertEqual(detail["completeness"]["displayed_population"], 105)
+        self.assertEqual(detail["completeness"]["export"], "COMPLETE")
+        self.assertNotIn("NaN", downloads["detail_json"][1].decode("utf-8"))
+        overview_markdown = downloads["overview_markdown"][1].decode("utf-8")
+        detail_markdown = downloads["detail_markdown"][1].decode("utf-8")
+        self.assertIn("# Telemetrieoverzicht", overview_markdown)
+        self.assertIn("## Samenvatting", overview_markdown)
+        self.assertIn("# Telemetriedetail", detail_markdown)
+        self.assertIn("export-run-104", detail_markdown)
+        self.assertIn(str(overview["snapshot_id"]), overview_markdown)
+        self.assertIn(str(detail["snapshot_id"]), detail_markdown)
+        self.assertEqual(detail["contract_version"], overview["contract_version"])
