@@ -2482,6 +2482,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "validation_kind": "tests",
             "validation_id": "validation_tests",
             "command_id": "command-1",
+            "measurement_basis": "MONOTONIC",
         })
         self.assertIsNotNone(validation["parent_phase_id"])
 
@@ -2503,6 +2504,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "validation_kind": "browser_e2e",
             "validation_id": "dashboard_browser",
             "command_id": "dashboard-command",
+            "measurement_basis": "MONOTONIC",
         })
         self.assertEqual(validation["outcome"], "COMPLETE")
 
@@ -5362,15 +5364,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
 
-        self.assertIn("- Run Cumulative Input Tokens: `400`", body)
-        self.assertIn("- Maximum Provider Invocation Cumulative Input: `400`", body)
+        self.assertIn("- Observed Cumulative Invocation Input: `400 (COMPLETE; 1/1 invocations)`", body)
+        self.assertIn("- Largest Cumulative Invocation Input: `400` (not a context-window measurement)", body)
         self.assertIn("- Actual Single-Request Context Size: `UNAVAILABLE`", body)
         self.assertIn("- Active Context Size: `UNAVAILABLE`", body)
         self.assertIn("## Provider Context Scope", body)
         self.assertIn("- Policy: `provider-context-v1`", body)
         self.assertIn("- Initial Scope: `NORMAL`", body)
         self.assertIn("- Context Escalations: `0`", body)
-        self.assertIn("- Historical PRs Inspected: `UNAVAILABLE`", body)
+        self.assertIn("- Structured PR Result Occurrences: `UNAVAILABLE`; coverage `UNAVAILABLE`", body)
         self.assertNotRegex(
             body,
             r"(?mi)^-\s*.*(?:context size|active context|request context).*:\s*`400`",

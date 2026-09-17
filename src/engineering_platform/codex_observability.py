@@ -29,7 +29,12 @@ def extract_codex_usage(*outputs: str) -> dict[str, int | float | str]:
         if isinstance(value, dict):
             for key, candidate in value.items():
                 normalized = str(key).lower().replace("-", "_")
-                if normalized in USAGE_KEYS and isinstance(candidate, (int, float)) and candidate >= 0:
+                if (
+                    normalized in USAGE_KEYS
+                    and isinstance(candidate, (int, float))
+                    and not isinstance(candidate, bool)
+                    and candidate >= 0
+                ):
                     usage[normalized] = candidate
                 elif normalized in {"usage", "token_usage"}:
                     collect(candidate)
@@ -118,7 +123,8 @@ def write_codex_usage(root: Path, run_id: str, usage: dict[str, int | float | st
     safe_usage = {
         key: value
         for key, value in usage.items()
-        if key in USAGE_KEYS and isinstance(value, (int, float)) and value >= 0
+        if key in USAGE_KEYS and isinstance(value, (int, float))
+        and not isinstance(value, bool) and value >= 0
     }
     if not safe_usage:
         return

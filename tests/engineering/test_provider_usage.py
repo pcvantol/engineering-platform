@@ -233,21 +233,31 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual(churn["tool_loop_operations"], 1)
 
     def test_primary_tool_loop_fixture_reduces_redundant_operations_without_skipping_validation(self) -> None:
+        sequence = 0
         def event(command: str, output: str = "") -> str:
+            nonlocal sequence
+            sequence += 1
             return json.dumps({"type": "item.completed", "item": {
-                "type": "command_execution", "command": command,
+                "type": "command_execution", "id": f"tool-{sequence}", "command": command,
                 "exit_code": 0, "aggregated_output": output,
             }})
 
-        required = (
+        before = (
+            event("git status --short --branch", "## main"),
+            event("sed -n '1,80p' src/engineering_platform/execution_host.py"),
+            *(event("git log --oneline --decorate", "x" * 300) for _ in range(8)),
+            event("pytest tests/engineering/test_execution_host.py", "passed"),
+            event("git diff --check"),
+            event("git status --short --branch", "## feature"),
+            *(event("sed -n '1,80p' src/engineering_platform/execution_host.py") for _ in range(7)),
+        )
+        after = (
             event("git status --short --branch", "## main"),
             event("sed -n '1,80p' src/engineering_platform/execution_host.py"),
             event("pytest tests/engineering/test_execution_host.py", "passed"),
             event("git diff --check"),
             event("git status --short --branch", "## feature"),
         )
-        before = required[:2] + (event("git log --oneline --decorate", "x" * 300),) * 8 + required[2:] + (event("sed -n '1,80p' src/engineering_platform/execution_host.py"),) * 7
-        after = required
         baseline = churn_from_jsonl("\n".join(before))
         optimized = churn_from_jsonl("\n".join(after))
         reduction = 1 - optimized["tool_loop_operations"] / baseline["tool_loop_operations"]
@@ -259,16 +269,20 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertLess(optimized["git_output_bytes"], baseline["git_output_bytes"])
         self.assertLess(optimized["tool_output_bytes"], baseline["tool_output_bytes"])
 
-    def test_comparable_fixture_shows_duplicate_logical_read_reduction(self) -> None:
-        event = ('{"type":"item.completed","item":{"type":"command_execution",'
-                 '"command":"sed -n \'1,120p\' src/engineering_platform/execution_host.py"}}')
-        before = "\n".join((event,) * 49)
-        after = "\n".join((event,) * 25)
+    def test_comparable_fixture_counts_repeat_commands_not_exact_file_reads(self) -> None:
+        def events(count: int) -> str:
+            return "\n".join(json.dumps({"type": "item.completed", "item": {
+                "type": "command_execution", "id": f"read-{index}",
+                "command": "sed -n '1,120p' src/engineering_platform/execution_host.py",
+            }}) for index in range(count))
+        before = events(49)
+        after = events(25)
         baseline = churn_from_jsonl(before)
         optimized = churn_from_jsonl(after)
-        self.assertEqual(baseline["repeated_file_read_count"], 48)
-        self.assertEqual(optimized["repeated_file_read_count"], 24)
-        self.assertEqual(optimized["file_read_count"], 25)
+        self.assertEqual(baseline["repeated_read_commands"], 48)
+        self.assertEqual(optimized["repeated_read_commands"], 24)
+        self.assertEqual(optimized["unique_read_commands"], 1)
+        self.assertEqual(optimized["file_read_observation_coverage"], "UNAVAILABLE")
 
     def test_current_codex_final_usage_is_one_cumulative_snapshot_not_context_size(self) -> None:
         output = '{"type":"turn.completed","usage":{"input_tokens":160,"cached_input_tokens":110,"output_tokens":9}}'
