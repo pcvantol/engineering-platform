@@ -2640,6 +2640,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(result), lambda _: None)._record_validation_evidence(state, result)
                 self.assertEqual(load_validation_context(self.root, state.run_id)["controls"]["git_diff_check"]["result"], "FAIL")
 
+    def test_provider_summary_is_not_required_when_it_is_outside_the_host_profile(self) -> None:
+        state = TransactionState(
+            "optional-provider-validation", "pcvantol/djconnect", str(self.prompt),
+            "LOCAL_REPOSITORY_VALIDATION",
+        )
+        record_validation_profile(
+            self.root, run_id=state.run_id, selected_validation_tier="DOCUMENTATION",
+            validation_profile_version="1.0", required_validation_controls=("git_diff_check",),
+            recorded_at="2026-08-30T00:00:00+00:00",
+        )
+        result = AgentResult("COMPLETE", validation_evidence=({
+            "command": "python3 -m unittest focused", "result": "Validation failed",
+        },))
+
+        EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(result), lambda _: None,
+        )._record_validation_evidence(state, result)
+
+        with open_storage(self.root) as connection:
+            row = connection.execute(
+                "SELECT control,state,required FROM managed_validation_observations WHERE run_id=?",
+                (state.run_id,),
+            ).fetchone()
+        self.assertEqual(row, ("validation_tests", "FAIL", 0))
+
     def test_combined_documentation_validation_no_errors_does_not_create_false_failure(self) -> None:
         state = TransactionState(
             "documentation-no-errors", "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION",
@@ -5152,6 +5177,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             finalization_branch="codex/final", finalization_merge_commit="c" * 40,
             branch="codex/reconcile-cleanup-run", pull_request=26,
             reconciliation_pull_request=26,
+            terminal_condition="operator_merge_required",
         )
         github = FakeGitHub([PullRequestEvidence(26, "MERGED", True, True, "d" * 40)])
         result = EngineeringRunner(
@@ -5159,6 +5185,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             FakeAgent(AgentResult("WAITING")), lambda _: None,
         )._poll(state)
         self.assertEqual(result.phase, "COMPLETE")
+        self.assertEqual(result.terminal_condition, "repository_reconciled")
         self.assertEqual(
             repository.cleanup_calls,
             [("codex/implementation", "codex/final", "codex/reconcile-cleanup-run")],
@@ -5646,6 +5673,29 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Component: `Engineering Report Generator`", body)
         self.assertIn("Repository file: `src/engineering_platform/execution_host.py`", body)
 
+    def test_implementation_evidence_accepts_source_paths_owned_by_other_products(self) -> None:
+        subprocess.run(("git", "init", "-b", "main", str(self.root)), check=True, capture_output=True)
+        subprocess.run(("git", "-C", str(self.root), "config", "user.email", "report@example.invalid"), check=True)
+        subprocess.run(("git", "-C", str(self.root), "config", "user.name", "Report Test"), check=True)
+        implementation = self.root / "forge" / "runtime" / "health.py"
+        implementation.parent.mkdir(parents=True)
+        implementation.write_text("before\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(self.root), "add", "."), check=True)
+        subprocess.run(("git", "-C", str(self.root), "commit", "-m", "baseline"), check=True, capture_output=True)
+        implementation.write_text("after\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(self.root), "add", "."), check=True)
+        subprocess.run(("git", "-C", str(self.root), "commit", "-m", "health"), check=True, capture_output=True)
+        commit = subprocess.check_output(("git", "-C", str(self.root), "rev-parse", "HEAD"), text=True).strip()
+        state = TransactionState(
+            "forge-implementation-evidence", "pcvantol/forge", str(self.prompt), "COMPLETE",
+            implementation_merge_commit=commit, terminal=True, terminal_condition="repository_reconciled",
+        )
+
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+
+        self.assertIn("- Implemented components: `forge/runtime/health.py`", body)
+        self.assertNotIn("- Implemented components: none recorded", body)
+
     def test_report_consistency_validation_rejects_missing_evidence_2_sections(self) -> None:
         state = TransactionState("inconsistent-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
         errors = report_consistency_errors(
@@ -5669,6 +5719,27 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "- Retry Parent: `inbox-parent`", "- Resume Parent: `NONE`",
         ))
         self.assertIn("fresh submission conflicts with retry or resume parent", report_consistency_errors(body, state, bundle, ""))
+
+    def test_report_consistency_rejects_complete_with_waiting_receipt_resolution(self) -> None:
+        state = TransactionState(
+            "receipt-resolution-conflict", "pcvantol/djconnect", str(self.prompt),
+            "COMPLETE", terminal=True, terminal_condition="operator_merge_required",
+        )
+        bundle = collect_terminal_evidence(self.root, state)
+        body = "\n".join((
+            "## Component Inventory", "## Deliverable Projection", "## Qualification Projection",
+            "## Runtime Projection", "## Execution Receipt Projection",
+            "- Receipt Resolution: `operator_merge_required`",
+            "## Decision Evidence Projection", "## Statistics Projection", "## Commit Strategy",
+            "## Branch Traceability", "## Requirement Traceability", "## Validation Traceability",
+            "## Execution Statistics", "## Engineering Evidence Summary", "## Evidence Bundle",
+            bundle.target_commit,
+        ))
+
+        self.assertIn(
+            "complete report has a nonterminal receipt resolution",
+            report_consistency_errors(body, state, bundle, ""),
+        )
 
     def test_complete_genesis_report_keeps_host_and_target_identities_distinct(self) -> None:
         target = self.root / "genesis-report-target"
@@ -5984,6 +6055,29 @@ class LocalAgentRunnerTest(unittest.TestCase):
         records = ({"reviewer": "documentation", "selected_because": "documentation-oriented objective", "contribution": "Navigation checked.", "accepted_recommendations": 3, "rejected_recommendations": 1, "failed": False},)
         report = generate_terminal_report(self.root, state, EngineeringPlatformManifest.load(self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"), "0.146.0", records)
         self.assertIn("Reviewer: documentation", report.read_text(encoding="utf-8"))
+
+    def test_terminal_report_projects_candidate_bound_assurance_separately(self) -> None:
+        candidate = "a" * 40
+        reviews = (
+            {"reviewer": "quality", "status": "PASS", "candidate_sha": candidate,
+             "profile_digest": "sha256:" + "b" * 64, "invocation_id": "quality-1", "findings": []},
+            {"reviewer": "security", "status": "PASS", "candidate_sha": candidate,
+             "profile_digest": "sha256:" + "b" * 64, "invocation_id": "security-1",
+             "findings": [{"severity": "MEDIUM", "disposition": "NON_BLOCKING", "blocking": False,
+                           "evidence_ref": "src/example.py:10"}]},
+        )
+        state = TransactionState(
+            "assurance-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE",
+            terminal=True, terminal_condition="repository_reconciled", assurance_reviews=reviews,
+        )
+
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+
+        self.assertIn("## Candidate-bound Quality and Security Assurance", body)
+        self.assertIn("- Reviewer: `quality`", body)
+        self.assertIn("- Reviewer: `security`", body)
+        self.assertEqual(body.count(f"- Candidate SHA: `{candidate}`"), 2)
+        self.assertIn("severity `MEDIUM`; disposition `NON_BLOCKING`; blocking `NO`", body)
 
     def test_product_capability_reviewers_are_selected_from_repository_evidence(self) -> None:
         cases = (

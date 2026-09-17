@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from engineering_platform.storage import load_submission_for_run, sqlite_connection
+from engineering_platform.storage import load_submission_attempt_for_run, load_submission_for_run, sqlite_connection
 
 from pathlib import Path
 import os
@@ -651,6 +651,17 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertIn((original, first.run_id), links)
         self.assertIn((retry.submission_id, second.run_id), links)
         self.assertEqual(lineage, (retry.submission_id, 0, first.run_id))
+        attempt = load_submission_attempt_for_run(
+            self.roots["alpha"], second.run_id,
+            central_database=self.data / server.SERVER_DATABASE_FILENAME,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertEqual(attempt["submission_id"], retry.submission_id)
+        self.assertEqual(attempt["canonical_submission_id"], original)
+        self.assertEqual(
+            attempt["constraints"]["forge_execution"]["correlation_id"],
+            "forge-runtime-correlation-0006",
+        )
         with sqlite_connection(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             parent_readback = submission_service.producer_readback(
                 connection, project_id="alpha", submission_id=original,
