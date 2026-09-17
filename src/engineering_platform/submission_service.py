@@ -770,6 +770,51 @@ def _findings_artifact_id(run_id: str) -> str:
     return f"assurance-findings:{run_id}"
 
 
+def install_terminal_evidence_reconciliation_schema(connection: sqlite3.Connection) -> None:
+    """Install the one-run/one-current-projection repair authority."""
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS ep_terminal_evidence_reconciliation_operations (
+            operation_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+            project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+            source_artifact_id TEXT NOT NULL REFERENCES execution_artifact_records(artifact_id),
+            source_digest TEXT NOT NULL,
+            replacement_artifact_id TEXT NOT NULL UNIQUE REFERENCES execution_artifact_records(artifact_id),
+            replacement_digest TEXT NOT NULL,
+            reason_code TEXT NOT NULL CHECK(reason_code='MERGE_CANDIDATE_PROJECTION_V1'),
+            recorded_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS execution_artifact_records_active_terminal_run
+            ON execution_artifact_records(COALESCE(ep_run_id,run_id))
+            WHERE artifact_type='EP_TERMINAL_EVIDENCE'
+              AND projection_status='AVAILABLE'
+              AND COALESCE(ep_run_id,run_id) IS NOT NULL;
+        CREATE TRIGGER IF NOT EXISTS ep_terminal_evidence_reconciliation_immutable_update
+        BEFORE UPDATE ON ep_terminal_evidence_reconciliation_operations
+        BEGIN SELECT RAISE(ABORT, 'Terminal evidence reconciliation is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS ep_terminal_evidence_reconciliation_immutable_delete
+        BEFORE DELETE ON ep_terminal_evidence_reconciliation_operations
+        BEGIN SELECT RAISE(ABORT, 'Terminal evidence reconciliation is immutable'); END;
+    """)
+
+
+def _active_terminal_artifact(
+    connection: sqlite3.Connection, run_id: str,
+) -> tuple[object, ...] | None:
+    rows = connection.execute(
+        """SELECT artifact_id,digest_algorithm,digest,content_type,integrity_status,storage_location
+             FROM execution_artifact_records
+            WHERE artifact_type='EP_TERMINAL_EVIDENCE'
+              AND projection_status='AVAILABLE'
+              AND (ep_run_id=? OR (ep_run_id IS NULL AND run_id=?))
+            ORDER BY artifact_id LIMIT 2""",
+        (run_id, run_id),
+    ).fetchall()
+    if len(rows) > 1:
+        raise SubmissionError("TERMINAL_EVIDENCE_PROJECTION_AMBIGUOUS", 500)
+    return tuple(rows[0]) if rows else None
+
+
 def _current_assurance(checkpoint: object) -> tuple[str, list[dict[str, object]], list[dict[str, object]]]:
     """Project final assurance from one complete current review set.
 
@@ -973,6 +1018,17 @@ def write_terminal_evidence(
     artifact_id = _terminal_artifact_id(run_id)
     report_id = f"report:{run_id}"
     target = data_root / "artifacts" / "projects" / str(row[1]) / "runs" / run_id / "terminal-evidence-v1.json"
+    with sqlite_connection(database) as connection:
+        active_artifact = _active_terminal_artifact(connection, run_id)
+    if active_artifact is not None and verify_artifact_integrity(
+        repository_root, str(active_artifact[0]), central_database=database,
+        artifact_root=data_root / "artifacts",
+    ):
+        # Reconciliation may revisit a run after its original immutable
+        # projection was superseded through the guarded owning repair route.
+        # Return the one currently selected, integrity-verified artifact; do
+        # not reconstruct or overwrite either historical payload.
+        return str(active_artifact[0])
     if _is_retained_v13_terminal_artifact(
         target, run_id=run_id, submission_id=str(row[0]), project_id=str(row[1]),
         repository_id=str(row[2]),
@@ -980,10 +1036,6 @@ def write_terminal_evidence(
         repository_root, artifact_id, central_database=database,
         artifact_root=data_root / "artifacts",
     ):
-        # Reconciliation may revisit terminal runs long after a new artifact
-        # contract ships. The older evidence remains immutable and truthful;
-        # require its pre-existing CENTRAL digest record rather than adopting
-        # a same-account filesystem payload as evidence.
         return artifact_id
     assurance_status, current_reviews, reviews = _current_assurance(checkpoint)
     findings = [finding for review in reviews for finding in review.get("findings", [])]
@@ -1162,13 +1214,14 @@ def producer_readback(
             evidence["status"] = "INCOMPLETE"
         elif terminal:
             run.update(timing)
-            artifact = connection.execute(
-                """SELECT artifact_id,digest_algorithm,digest,content_type,integrity_status,storage_location
-                     FROM execution_artifact_records WHERE artifact_id=? AND (run_id=? OR ep_run_id=?)""",
-                (_terminal_artifact_id(str(run_id)), run_id, run_id),
-            ).fetchone()
+            try:
+                artifact = _active_terminal_artifact(connection, str(run_id))
+            except SubmissionError:
+                artifact = None
+                evidence["status"] = "CORRUPT"
             if artifact is None:
-                evidence["status"] = "MISSING"
+                if evidence["status"] != "CORRUPT":
+                    evidence["status"] = "MISSING"
             elif artifact[1] != "sha256" or not isinstance(artifact[2], str) or len(str(artifact[2])) != 64:
                 evidence["status"] = "CORRUPT"
             else:

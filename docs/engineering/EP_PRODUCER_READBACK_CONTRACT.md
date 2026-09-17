@@ -118,6 +118,21 @@ v1.3 terminal artifacts remain their original bytes during reconciliation;
 they are registered and read as historical evidence rather than rewritten as
 v1.4.
 
+The Execution Host binds each merged implementation and finalization phase to
+the exact head SHA reported by the independently read GitHub pull request. A
+previously observed checkout SHA cannot replace that phase candidate. A small
+set of v1.4 artifacts emitted by the retired writer instead projected the
+execution baseline as `repository.candidate` while their immutable assurance
+profile named a different reviewed candidate. EP retains those original bytes
+and permits one installed-owner reconciliation only when the terminal run,
+source digest, baseline-shaped projection, complete passing current assurance
+set and replacement candidate all agree. The operation records an immutable
+source/replacement receipt, marks the original projection `SUPERSEDED`, and
+selects one separately stored canonical v1.4 replacement. It never changes the
+accepted request, terminal run, review evidence, delivery revision or source
+artifact bytes, and cannot be used for an absent, ambiguous or merely
+different candidate.
+
 An operator-authorized retry retains the requested revision but records the
 freshly observed protected-main revision as its one permitted transition. EP
 requires a clean local `main`, refreshes `origin/main` without changing the

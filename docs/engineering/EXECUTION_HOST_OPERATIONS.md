@@ -258,11 +258,23 @@ artifact/submission bindings on existing installations, so producer readback
 can locate that immutable artifact without crossing the historical-run foreign
 keys.
 
+An installed owner may reconcile the one retired v1.4 candidate-projection
+defect with `python -m engineering_platform.terminal_evidence_reconciliation
+--data-root <installed-data-root> --run-id <run-id> --operation-id
+<unique-operation-id>`. The route is idempotent per operation and per run. It
+requires an existing `COMPLETE` mutating run whose active source artifact still
+projects the exact execution baseline while its embedded, complete passing
+assurance profile proves another candidate. It preserves the source bytes,
+adds a digest-bound replacement, atomically selects exactly one active
+projection and records an immutable reconciliation receipt. It does not retry
+execution or mutate submission, checkpoint, assurance, delivery, report or
+historical evidence.
+
 ## Current-schema bootstrap
 
 A new, empty EP data root is initialized atomically at the current Server
-schema revision (currently **60**).  It records that single revision in
-`engineering_schema_migrations`; it does not replay the historical 41–59
+schema revision (currently **67**).  It records that single revision in
+`engineering_schema_migrations`; it does not replay the historical 41–66
 migration sequence.  The resulting store contains the same current tables,
 constraints, indexes, immutable-audit triggers and CENTRAL compatibility
 structures as a fully upgraded installation.  A DDL failure rolls the whole

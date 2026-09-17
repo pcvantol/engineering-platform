@@ -200,7 +200,7 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "ep"
         identity = server.initialize(self.root)
-        self.assertEqual(server.SERVER_STORE_SCHEMA_VERSION, 66)
+        self.assertEqual(server.SERVER_STORE_SCHEMA_VERSION, 67)
         self.instance = identity.instance_id
         with self.connection() as connection:
             connection.execute(
@@ -1547,13 +1547,13 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
 
         identity = server.initialize(self.root)
         report = server.validate_store(self.root, identity)
-        self.assertEqual(report["schema_version"], 66)
+        self.assertEqual(report["schema_version"], server.SERVER_STORE_SCHEMA_VERSION)
         with self.connection() as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT schema_version FROM ep_installations"
                 ).fetchone(),
-                (66,),
+                (server.SERVER_STORE_SCHEMA_VERSION,),
             )
             self.assertIsNotNone(connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' "
@@ -1610,7 +1610,10 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
             )
 
         identity = server.initialize(self.root)
-        self.assertEqual(server.validate_store(self.root, identity)["schema_version"], 66)
+        self.assertEqual(
+            server.validate_store(self.root, identity)["schema_version"],
+            server.SERVER_STORE_SCHEMA_VERSION,
+        )
         with self.connection() as connection:
             rows = connection.execute(
                 "SELECT operation_id,state FROM ep_consumer_credential_recovery_operations "
