@@ -4621,6 +4621,10 @@ test.describe("Engineering Status browser smoke", () => {
           { reviewer: "validation", capability: "ENGINEERING", status: "completed", accepted_recommendations: 2, selected_because: "validation-related objective" },
           { reviewer: "documentation", capability: "ENGINEERING", status: "completed", accepted_recommendations: 1, selected_because: "documentation-oriented objective" },
         ],
+        assurance_reviews: [
+          { reviewer: "quality", status: "PASS", candidate_sha: "b".repeat(40), findings: [] },
+          { reviewer: "security", status: "PASS", candidate_sha: "b".repeat(40), findings: [{ severity: "MEDIUM", disposition: "NON_BLOCKING", observation: "Freshness edge case recorded." }] },
+        ],
       });
       document.querySelector("#promptHistoryDetailModal").showModal();
     });
@@ -4653,6 +4657,14 @@ test.describe("Engineering Status browser smoke", () => {
     expect(reviewerBounds).not.toBeNull();
     expect(reviewerBounds.x).toBeGreaterThanOrEqual(stackBounds.x - 1);
     expect(reviewerBounds.x + reviewerBounds.width).toBeLessThanOrEqual(stackBounds.x + stackBounds.width + 1);
+    const assuranceCard = page.locator("#promptHistoryDetailContent .prompt-detail-card--assurance-reviews");
+    await expect(assuranceCard).toHaveCount(1);
+    await expect(assuranceCard).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_assurance"]);
+    await expect(assuranceCard).toContainText(DASHBOARD_MESSAGES.nl["reviewer.quality"]);
+    await expect(assuranceCard).toContainText(DASHBOARD_MESSAGES.nl["reviewer.security"]);
+    await expect(assuranceCard).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
+    await expect(assuranceCard).toContainText("Freshness edge case recorded.");
+    await expect(assuranceCard).toContainText("b".repeat(40));
 
     await page.setViewportSize({ width: 390, height: 844 });
     const [narrowUsage, narrowTimeline] = await Promise.all([

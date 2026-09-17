@@ -3670,6 +3670,48 @@ def _central_console_reviewer_agents(
     return from_report or _central_console_invocation_reviewers(data_root, run_id)
 
 
+def _central_console_assurance_reviews(
+    lifecycle: Mapping[str, object],
+) -> list[dict[str, object]]:
+    """Project the candidate-bound Quality/Security evidence separately.
+
+    Capability reviewers explain why a specialist was selected. Mandatory
+    post-implementation assurance instead proves Quality and Security against
+    one exact candidate. Keeping these contracts separate prevents terminal
+    detail from hiding assurance or presenting a PASS as a recommendation.
+    """
+    steps = lifecycle.get("steps")
+    if not isinstance(steps, list):
+        return []
+    quality_step = next((
+        step for step in steps
+        if isinstance(step, Mapping) and step.get("id") == "QUALITY_CONTROL_AGENT"
+    ), None)
+    reviews = quality_step.get("assurance_reviews") if isinstance(quality_step, Mapping) else None
+    if not isinstance(reviews, list) or len(reviews) > 16:
+        return []
+    projected: list[dict[str, object]] = []
+    for review in reviews:
+        if not isinstance(review, Mapping):
+            continue
+        reviewer = review.get("reviewer")
+        status = review.get("status")
+        candidate_sha = review.get("candidate_sha")
+        findings = review.get("findings")
+        if (
+            reviewer not in {"quality", "security"}
+            or status not in {"PASS", "FAIL", "UNRESOLVED"}
+            or not isinstance(candidate_sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", candidate_sha) is None
+            or not isinstance(findings, list)
+            or len(findings) > 12
+            or any(not isinstance(finding, Mapping) for finding in findings)
+        ):
+            continue
+        projected.append(dict(review))
+    return projected
+
+
 def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
     """Return the project status and terminal-history projections from CENTRAL.
 
@@ -3813,6 +3855,7 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
         "runtime": runtime,
         "usage": _central_console_provider_usage(data_root, run_id),
         "reviewers": _central_console_reviewer_agents(data_root, project_id, run_id),
+        "assurance_reviews": _central_console_assurance_reviews(lifecycle),
         "evidence": _central_console_validation_evidence(data_root, project_id, run_id),
         # The historical detail dialog uses the same read-only bubble flow as
         # the active card.  Terminal history remains separate in the table,
@@ -5736,6 +5779,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "execution": detail.get("execution", {}),
                         "runtime": detail.get("runtime", {}),
                         "reviewers": detail.get("reviewers", []),
+                        "assurance_reviews": detail.get("assurance_reviews", []),
                         "commits": {},
                         "commit_timeline": detail.get("commit_timeline", []),
                         "pull_requests": [],
