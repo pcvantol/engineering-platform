@@ -40,6 +40,7 @@ from uuid import uuid4
 from . import agent_trust
 from . import central_database
 from . import central_data_transfer
+from . import central_operational_reset
 from . import console_route_ownership
 from . import console_presentation
 from . import development_profile
@@ -139,7 +140,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 67
+SERVER_STORE_SCHEMA_VERSION = 68
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -616,6 +617,9 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_execution_host_evidence",
         "ep_technical_diagnostics",
         "ep_terminal_evidence_reconciliation_operations",
+        "ep_operational_reset_operations",
+        "ep_operational_dataset_state",
+        "ep_operational_identity_tombstones",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -840,6 +844,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     _install_technical_diagnostics_schema(connection)
     owner_credential_recovery.install_schema(connection)
     submission_service.install_terminal_evidence_reconciliation_schema(connection)
+    central_operational_reset.install_schema(connection)
 
     connection.execute(
         "INSERT INTO engineering_schema_migrations(version) VALUES(?)",
@@ -2006,6 +2011,29 @@ def _migrate_schema_67(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=67")
 
 
+def _migrate_schema_68(connection: sqlite3.Connection) -> None:
+    """Install product-owned reset control and repair the CENTRAL chat parent.
+
+    Existing chat rows are copied unchanged.  The migration validates that
+    every row belongs to its canonical execution run; it never fabricates a
+    prompt-history parent and never deletes historical chat evidence.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema67")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 68))"
+    )
+    connection.execute(
+        "INSERT INTO ep_installations SELECT instance_id,created_at,68 "
+        "FROM ep_installations_schema67"
+    )
+    connection.execute("DROP TABLE ep_installations_schema67")
+    central_operational_reset.install_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(68)")
+    connection.execute("UPDATE engineering_metadata SET value='68' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=68")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2033,6 +2061,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (65, _migrate_schema_65),
     (66, _migrate_schema_66),
     (67, _migrate_schema_67),
+    (68, _migrate_schema_68),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -4588,7 +4617,9 @@ def _central_console_chat_history(data_root: Path, project_id: str, run_id: str)
     """Return a project-authorized CENTRAL transcript; no root fallback exists."""
     with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
-            "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND run_id=?",
+            "SELECT 1 FROM ep_parity_lifecycle_dispatches AS dispatch "
+            "JOIN ep_execution_runs AS run ON run.run_id=dispatch.run_id "
+            "WHERE dispatch.project_id=? AND dispatch.run_id=?",
             (project_id, run_id),
         ).fetchone()
         if belongs is None:
@@ -4682,7 +4713,9 @@ def _central_console_append_chat_message(
     cutoff = (datetime.now(timezone.utc) - timedelta(days=CHAT_RETENTION_DAYS)).isoformat()
     with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
-            "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND run_id=?",
+            "SELECT 1 FROM ep_parity_lifecycle_dispatches AS dispatch "
+            "JOIN ep_execution_runs AS run ON run.run_id=dispatch.run_id "
+            "WHERE dispatch.project_id=? AND dispatch.run_id=?",
             (project_id, run_id),
         ).fetchone()
         if belongs is None:
@@ -7063,6 +7096,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
 
 def serve(data_root: Path, *, development: development_profile.DevelopmentProfile | None = None) -> int:
+    if central_operational_reset.maintenance_active(data_root):
+        raise ServerConfigurationError("EP_OPERATIONAL_MAINTENANCE_ACTIVE")
     relocation = installation_relocation.apply_pending(data_root)
     if relocation is not None:
         data_root = Path(relocation["value"])
@@ -7183,6 +7218,8 @@ def start(data_root: Path, *, development: development_profile.DevelopmentProfil
     current = status(data_root)
     if current["running"]:
         return current
+    if central_operational_reset.maintenance_active(data_root):
+        raise ServerConfigurationError("EP_OPERATIONAL_MAINTENANCE_ACTIVE")
     # The installed entrypoint supplies the interpreter.  Run from the
     # installation-owned data root and discard Python import overrides so a
     # caller's checkout can never become the child Server's import authority.
@@ -7776,6 +7813,8 @@ def main(argv: list[str] | None = None) -> int:
             result = {"instance_id": initialize(args.data_root, bind_host=args.bind_host, bind_port=args.bind_port).instance_id, "initialized": True}
         elif args.command == "start":
             initialize(args.data_root)
+            if central_operational_reset.maintenance_active(args.data_root):
+                raise ServerConfigurationError("EP_OPERATIONAL_MAINTENANCE_ACTIVE")
             configuration = ServerConfiguration.load(args.data_root)
             if (configuration.bind_host, configuration.bind_port) != (args.bind_host, args.bind_port):
                 _write_json(args.data_root / SERVER_CONFIGURATION_FILENAME, asdict(ServerConfiguration(

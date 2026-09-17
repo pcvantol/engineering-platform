@@ -460,6 +460,44 @@ def _same_idempotent_request(row: tuple[object, ...], request: SubmissionRequest
     return stored == requested
 
 
+def _idempotency_request_digest(request: SubmissionRequest) -> str:
+    """Bind retired idempotency evidence without retaining request content."""
+    payload = {
+        "repository_id": request.repository_id, "producer_id": request.producer_id,
+        "producer_type": request.producer_type, "producer_version": request.producer_version,
+        "prompt": request.prompt, "constraints": json.dumps(request.constraints or {}, sort_keys=True),
+        "correlation_id": request.correlation_id, "mission_id": request.mission_id,
+        "engineering_action_id": request.engineering_action_id,
+        "transport_receipt_id": request.transport_receipt_id,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    ).hexdigest()
+
+
+def _allocate_submission_id(connection: sqlite3.Connection) -> str:
+    """Allocate without reusing an active or reset-retired external identity."""
+    tables = {
+        str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    for _attempt in range(32):
+        candidate = "sub-" + secrets.token_hex(16)
+        if connection.execute(
+            "SELECT 1 FROM ep_submissions WHERE submission_id=?", (candidate,)
+        ).fetchone() is not None:
+            continue
+        retired = connection.execute(
+            "SELECT 1 FROM ep_operational_identity_tombstones "
+            "WHERE identity_kind='submission_id' AND identity_digest=?",
+            (hashlib.sha256(candidate.encode("utf-8")).hexdigest(),),
+        ).fetchone() if "ep_operational_identity_tombstones" in tables else None
+        if retired is None:
+            return candidate
+    raise SubmissionError("IDENTITY_ALLOCATION_EXHAUSTED", 503)
+
+
 def _persist_lifecycle_events(
     connection: sqlite3.Connection,
     *, submission_id: str,
@@ -503,6 +541,15 @@ def lifecycle(connection: sqlite3.Connection, submission_id: str) -> dict[str, s
 
 def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_forge_exchange: bool = True) -> SubmissionResult:
     """Persist and admit one request; no provider or Agent is selected here."""
+    tables = {
+        str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "ep_operational_reset_operations" in tables and connection.execute(
+        "SELECT 1 FROM ep_operational_reset_operations WHERE state!='COMPLETED' LIMIT 1"
+    ).fetchone() is not None:
+        raise SubmissionError("PLATFORM_MAINTENANCE_ACTIVE", 503)
     _transport(request.transport)
     _validate_execution_mode(request)
     _forge_provenance(request)
@@ -521,6 +568,20 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
     if repository[0] != request.project_id:
         raise SubmissionError("REPOSITORY_PROJECT_CONFLICT", 409)
     if request.idempotency_key:
+        identity = hashlib.sha256(
+            f"{request.project_id}\0{request.idempotency_key}".encode("utf-8")
+        ).hexdigest()
+        retired = connection.execute(
+            "SELECT request_digest FROM ep_operational_identity_tombstones "
+            "WHERE identity_kind='submission_idempotency' AND identity_digest=?",
+            (identity,),
+        ).fetchone() if "ep_operational_identity_tombstones" in tables else None
+        if retired is not None:
+            code = (
+                "IDEMPOTENCY_RETIRED" if retired[0] == _idempotency_request_digest(request)
+                else "IDEMPOTENCY_CONFLICT"
+            )
+            raise SubmissionError(code, 409)
         duplicate = connection.execute(
             "SELECT submission_id,created_at,state,admission,repository_id,producer_id,producer_type,producer_version,prompt,constraints,correlation_id,mission_id,engineering_action_id,transport_receipt_id,transport "
             "FROM ep_submissions WHERE project_id=? AND idempotency_key=?",
@@ -538,7 +599,7 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
                 str(duplicate[1]), str(duplicate[3]), str(duplicate[14]), str(duplicate[5]), True,
                 receipt,
             )
-    submission_id, created_at = "sub-" + secrets.token_hex(16), _now()
+    submission_id, created_at = _allocate_submission_id(connection), _now()
     # Admission intentionally validates CENTRAL topology only at submission
     # time. Agent selection, leases and provider execution remain downstream.
     admission, state = "ADMITTED", "QUEUED"

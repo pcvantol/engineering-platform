@@ -9,6 +9,14 @@ the exclusive source of a published version change.
 Any historic branch-create workflow remains evidence for prior releases only.
 It is not authority to publish, re-publish, or rewrite EP release bytes.
 
+The 2.3.81 patch candidate adds schema-68 CENTRAL operational-reset support.
+Its release uses this unchanged protected main-first policy. Schema activation
+may retarget chat evidence to its canonical run parent and install dormant
+maintenance controls; neither publication nor installation authorizes
+`prepare`/`apply`, orphan deletion, submission creation or a Mission. Exact
+artifact qualification and an installed read-only preview are required before
+the capability can be reported installed.
+
 ## Release-operation lifecycle V1
 
 After both the production-wheel and dashboard qualifications succeed, the

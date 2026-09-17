@@ -458,3 +458,12 @@ creating an autonomous retry loop.
 
 Neither control rewrites history, stashes work, or deletes a branch without
 the explicit second confirmation.
+
+## CENTRAL operational-history maintenance
+
+The product-owned local reset route, exact preservation/purge mapping,
+protected backup protocol and stopped-Server command sequence are specified in
+[EP CENTRAL operational reset V1](EP_CENTRAL_OPERATIONAL_RESET_V1.md). The
+installed entry point is `engineering-platform-maintenance`; preview is
+read-only, while prepare activates a durable writer fence and apply is
+destructive. Normal Server startup and package installation never invoke it.

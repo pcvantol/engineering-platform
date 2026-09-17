@@ -461,6 +461,32 @@ Not required unless the canary proves otherwise: generalized Agent separation; m
 
 After standalone + self-development proofs, continue separately with generalized Project-Agent separation/dispatch, multi-host routing, richer queue policy/capacity/ordering, multi-repository leases/parallelism, broader recovery/retry and remaining B8E parity/productization.
 
+## Bounded clean-CENTRAL preparation
+
+`EP::CENTRAL_OPERATIONAL_RESET_V1` is the small product-owned maintenance
+slice needed before a later clean-state Mission preflight. It preserves
+installation/configuration/security authority, archives and removes only
+schema-classified operational history, advances dataset generation, retains
+anti-replay tombstones and uses a verified protected backup plus durable
+writer fence. Its implementation does not require the full Operations Console,
+generalized Project-Agent topology, universal installer or Workspace UI.
+
+The lane is:
+
+```text
+schema-68 implementation + fixture qualification
+  -> protected review/full EP gates
+  -> 2.3.81 exact-artifact release and authorized installation
+  -> installed read-only preview
+  -> later explicit coordinated Forge+EP clean-CENTRAL preflight
+```
+
+Source implementation, qualification, release, installation, preview and
+destructive apply remain distinct evidence states. The present slice must not
+turn an unstarted Mission/telemetry trial into a reported runtime failure and
+does not reopen the closed #271/#272 reporting/telemetry work without a new
+defect.
+
 ## Forge integration after standalone/self-development proof
 
 ```text
