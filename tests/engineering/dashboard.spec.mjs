@@ -5412,7 +5412,18 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(content).toContainText("gpt-6-codex-experimental (AUTHORITATIVE)");
     await expect(content).toContainText("3.847.785");
     await expect(content).not.toContainText("Actieve context");
-    await content.getByRole("tab", { name: "Hele uitvoeringsketen" }).click();
+    const scopeButtons = content.locator(".telemetry-scope-switcher button");
+    await expect(scopeButtons).toHaveCount(2);
+    for (const button of await scopeButtons.all()) {
+      await expect(button).toHaveCSS("border-radius", "7px");
+      await expect(button).toHaveCSS("min-height", "32px");
+      await expect(button).toHaveCSS("font-size", "12px");
+    }
+    await expect(content.getByRole("tab", { name: "Deze poging" })).toHaveCSS("box-shadow", /3px 0px 0px/);
+    const chainScopeButton = content.getByRole("tab", { name: "Hele uitvoeringsketen" });
+    await chainScopeButton.click();
+    await chainScopeButton.evaluate((element) => element.blur());
+    await expect(chainScopeButton).toHaveCSS("box-shadow", /3px 0px 0px/);
     await expect(content).toContainText("Pogingen in keten");
     await expect(content).toContainText("6");
     await expect(content).toContainText("EP execution within this Mission");
