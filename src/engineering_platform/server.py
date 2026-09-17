@@ -6199,7 +6199,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
         artifact = re.fullmatch(
-            r"/v1/projects/([^/]+)/artifacts/((?:terminal-evidence|assurance-findings):[^/]+)",
+            r"/v1/projects/([^/]+)/artifacts/((?:terminal-evidence(?:-reconciled)?|assurance-findings):[^/]+)",
             unquote(request.path),
         )
         if artifact:

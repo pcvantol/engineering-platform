@@ -425,6 +425,62 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             urlopen(wrong)  # nosec B310
         self.assertEqual(rejected.exception.code, 401)
 
+    def test_http_readback_accepts_only_supported_reconciled_terminal_artifact_ids(self) -> None:
+        now = "2026-01-01T00:00:00+00:00"
+        run_id = "run-reconciled-route"
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            submitted = submission_service.submit(
+                connection,
+                submission_service.request_from_mapping(
+                    "djconnect", self.forge_payload("reconciled-route"), transport="HTTP",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)",
+                (run_id, "djconnect", "COMPLETE", now, now, "MANAGED"),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)",
+                (submitted.submission_id, "djconnect", "djconnect", run_id, "COMPLETE", "prompt", now, now, "NONE"),
+            )
+        artifact_id = f"terminal-evidence-reconciled:{run_id}:0123456789abcdef"
+        artifact_path = (
+            self.root / "artifacts" / "projects" / "djconnect" / "runs" /
+            run_id / "terminal-evidence-v1-reconciled-0123456789abcdef.json"
+        )
+        artifact_path.parent.mkdir(parents=True)
+        artifact_bytes = b'{"artifact_type":"EP_TERMINAL_EVIDENCE","contract_version":"1.4"}\n'
+        artifact_path.write_bytes(artifact_bytes)
+        record_artifact(
+            self.root,
+            artifact_path,
+            artifact_id=artifact_id,
+            artifact_type="EP_TERMINAL_EVIDENCE",
+            content_type="application/json",
+            created_at=now,
+            producer_id="forge",
+            ep_run_id=run_id,
+            ep_submission_id=submitted.submission_id,
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+            artifact_root=self.root / "artifacts",
+        )
+        server.start(self.root)
+        base = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/artifacts/"
+        headers = {"Authorization": f"Bearer {self.credential}"}
+        with urlopen(Request(base + quote(artifact_id, safe=""), headers=headers)) as response:  # nosec B310
+            self.assertEqual(response.read(), artifact_bytes)
+
+        with self.assertRaises(HTTPError) as unsupported:
+            urlopen(Request(  # nosec B310
+                base + quote(f"terminal-evidence-migrated:{run_id}:0123456789abcdef", safe=""),
+                headers=headers,
+            ))
+        self.assertEqual(unsupported.exception.code, 404)
+
+        with self.assertRaises(HTTPError) as unauthenticated:
+            urlopen(base + quote(artifact_id, safe=""))  # nosec B310
+        self.assertEqual(unauthenticated.exception.code, 401)
+
     def test_console_queue_actions_change_only_the_selected_submission_and_are_audited(self) -> None:
         """Exercise the browser-facing queue action endpoint against CENTRAL."""
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
