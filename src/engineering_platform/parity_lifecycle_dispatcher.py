@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 import os
@@ -225,9 +226,22 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _allocate_run_id() -> str:
-    """Allocate a canonical CENTRAL lifecycle run identity."""
-    return f"inbox-{uuid.uuid4().hex}"
+def _allocate_run_id(connection: sqlite3.Connection) -> str:
+    """Allocate a canonical run identity without reusing a retired value."""
+    for _attempt in range(32):
+        candidate = f"inbox-{uuid.uuid4().hex}"
+        if connection.execute(
+            "SELECT 1 FROM ep_execution_runs WHERE run_id=?", (candidate,)
+        ).fetchone() is not None:
+            continue
+        retired = connection.execute(
+            "SELECT 1 FROM ep_operational_identity_tombstones "
+            "WHERE identity_kind='run_id' AND identity_digest=?",
+            (hashlib.sha256(candidate.encode("utf-8")).hexdigest(),),
+        ).fetchone()
+        if retired is None:
+            return candidate
+    raise ParityLifecycleDispatchError("RUN_IDENTITY_ALLOCATION_EXHAUSTED")
 
 
 def _lifecycle_logger(data_root: Path):
@@ -400,7 +414,7 @@ class ParityLifecycleDispatcher:
                 connection.execute("ROLLBACK")
                 raise ParityLifecycleDispatchError("PROJECT_RUN_ALREADY_ACTIVE")
             candidate = historical_candidate(connection, context=context, submission_id=submission_id)
-            run_id = _allocate_run_id()
+            run_id = _allocate_run_id(connection)
             prompt = self._prompt_path(context, run_id)
             now = _utcnow()
             connection.execute(

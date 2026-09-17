@@ -9475,7 +9475,14 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("never renders a white focus ring on visible interactive elements", async ({ page }) => {
+    await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
+      providers: {
+        codex: { provider: "CODEX", state: "UNAVAILABLE" },
+        github: { provider: "GITHUB", state: "READY" },
+      },
+    } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
     await page.evaluate(() => {
       document.querySelectorAll("details").forEach((element) => { element.open = true; });
     });

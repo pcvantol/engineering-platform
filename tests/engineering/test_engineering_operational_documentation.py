@@ -82,6 +82,30 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("Retry Execution", operations)
         self.assertIn("Queue Recovery", operations)
 
+    def test_central_operational_reset_runbook_is_product_owned_and_explicit(self) -> None:
+        reset = (ROOT / "docs" / "engineering" / "EP_CENTRAL_OPERATIONAL_RESET_V1.md").read_text(
+            encoding="utf-8"
+        )
+        for command in (
+            "preview", "prepare", "apply", "status", "resume", "verify", "finish", "abort",
+        ):
+            self.assertIn(f"engineering-platform-maintenance {command}", reset)
+        self.assertIn("ROOT_CAUSE_UNCONFIRMED", reset)
+        self.assertIn("ep_consumer_credentials", reset)
+        self.assertIn("operational-reset-v1", reset)
+        self.assertIn("DESTRUCTIVE", reset)
+        self.assertIn("must not automatically prepare/apply", reset)
+        self.assertIn("tools/qualification/operational_reset_coordinator.py", reset)
+        for command in (
+            "preview", "prepare", "revalidate", "apply --product forge",
+            "apply --product engineering-platform", "verify", "authorize-resume",
+            "finish --product forge", "finish --product engineering-platform",
+            "status", "reconcile", "resume --product engineering-platform",
+        ):
+            self.assertIn(command, reset)
+        self.assertIn("RECONCILIATION_REQUIRED", reset)
+        self.assertIn("no automatic destructive rollback", reset)
+
     def test_execution_host_architecture_bounds_provider_interruption_recovery(self) -> None:
         architecture = (ROOT / "docs" / "engineering" / "EXECUTION_HOST_ARCHITECTURE.md").read_text(
             encoding="utf-8"
