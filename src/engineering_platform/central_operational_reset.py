@@ -36,6 +36,11 @@ PROFILE = "EP_CENTRAL_OPERATIONAL_HISTORY_V1"
 PLAN_VERSION = 1
 SCHEMA_VERSION = 68
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}")
+_UPDATE_STEPS = (
+    "INSTALLATION_LOCK", "INVENTORY_AND_COMPATIBILITY", "EXACT_ARTIFACT",
+    "QUIESCE", "BACKUP_AND_MIGRATION", "ACTIVATE", "VERIFY", "CLEANUP",
+)
+_UPDATE_CLEANUP_DIRECTORIES = ("build", "download", "pip-cache")
 _ACTIVE_STATES = frozenset({
     "PREPARING", "AUTHORIZED", "ARTIFACTS_ARCHIVING", "ARTIFACTS_ARCHIVED",
     "DB_APPLIED", "VERIFIED", "FAILED",
@@ -585,7 +590,8 @@ def _safe_files(directory: Path, logical_root: str) -> list[dict[str, object]]:
 
 
 def _candidate_runtime_marker(
-    operation_root: Path, *, require_staged_artifact: bool,
+    operation_root: Path, *, expected_installation_id: str,
+    require_staged_artifact: bool,
 ) -> dict[str, object] | None:
     """Read the updater's exact, closed, token-free candidate identity."""
     operation_id = operation_root.name
@@ -600,8 +606,7 @@ def _candidate_runtime_marker(
         }
         or marker.get("schema_version") != 1
         or marker.get("operation_id") != operation_id
-        or not isinstance(marker.get("installation_id"), str)
-        or not marker["installation_id"]
+        or marker.get("installation_id") != expected_installation_id
         or marker.get("candidate_venv") != expected_candidate
         or re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)",
                         str(marker.get("target_version", ""))) is None
@@ -617,7 +622,9 @@ def _candidate_runtime_marker(
         not staged_path.is_absolute()
         or staged_path != Path(os.path.normpath(staged))
         or staged_path.parent != operation_root / "download"
-        or staged_path.suffix != ".whl"
+        or staged_path.name != (
+            f"engineering_platform-{marker['target_version']}-py3-none-any.whl"
+        )
     ):
         return None
     if require_staged_artifact:
@@ -625,7 +632,10 @@ def _candidate_runtime_marker(
             metadata = staged_path.lstat()
         except OSError:
             return None
-        if not stat.S_ISREG(metadata.st_mode):
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or _regular_file_digest(staged_path) != marker["target_digest"]
+        ):
             return None
     return marker
 
@@ -641,15 +651,20 @@ def _path_is_absent(path: Path) -> bool:
     return False
 
 
-def _unbound_candidate_runtime_marker(operation_root: Path) -> dict[str, object] | None:
+def _unbound_candidate_runtime_marker(
+    operation_root: Path, *, expected_installation_id: str,
+) -> dict[str, object] | None:
     """Return a closed candidate marker only in the pre-journal crash window."""
     if not _path_is_absent(operation_root / "operation.json"):
         return None
-    return _candidate_runtime_marker(operation_root, require_staged_artifact=True)
+    return _candidate_runtime_marker(
+        operation_root, expected_installation_id=expected_installation_id,
+        require_staged_artifact=True,
+    )
 
 
 def _opaque_update_directory_classification(
-    root_name: str, directory: Path, relative: str,
+    root_name: str, directory: Path, relative: str, *, expected_installation_id: str,
 ) -> str | None:
     """Recognize only an identity-bound updater runtime/staging directory.
 
@@ -669,14 +684,19 @@ def _opaque_update_directory_classification(
 
     operation_id = parts[0]
     operation_root = directory.parent
-    unbound_marker = _unbound_candidate_runtime_marker(operation_root)
+    unbound_marker = _unbound_candidate_runtime_marker(
+        operation_root, expected_installation_id=expected_installation_id,
+    )
     if unbound_marker is not None:
         return "INSTALLATION_RUNTIME_STAGING_UNBOUND"
     if parts[1] != "candidate-venv":
         return None
     data_root = operation_root.parent.parent
     journal = _regular_json_object(operation_root / "operation.json")
-    marker = _candidate_runtime_marker(operation_root, require_staged_artifact=False)
+    marker = _candidate_runtime_marker(
+        operation_root, expected_installation_id=expected_installation_id,
+        require_staged_artifact=False,
+    )
     if journal is None:
         return None
     if marker is None:
@@ -717,14 +737,20 @@ def _opaque_update_directory_classification(
         "artifact", "cleanup_targets", "steps",
     }
     installation_id = plan.get("installation_id")
+    expected_cleanup = [
+        str(operation_root / name) for name in _UPDATE_CLEANUP_DIRECTORIES
+    ]
     if (
         frozenset(plan) not in {frozenset(plan_fields), frozenset(plan_fields | {"legacy_adoption"})}
         or journal.get("operation_id") != operation_id
         or plan.get("operation_id") != operation_id
-        or not isinstance(installation_id, str) or not installation_id
+        or installation_id != expected_installation_id
         or plan.get("data_root") != str(data_root)
-        or not isinstance(plan.get("cleanup_targets"), list)
-        or not isinstance(plan.get("steps"), list)
+        or plan.get("cleanup_targets") != expected_cleanup
+        or plan.get("steps") != list(_UPDATE_STEPS)
+        or re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)",
+                        str(plan.get("current_version", ""))) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(plan.get("current_digest", ""))) is None
     ):
         return None
     try:
@@ -786,6 +812,7 @@ def _opaque_update_directory_classification(
         or not isinstance(package, dict)
         or set(package) != {"interpreter", "version", "metadata", "package"}
         or package.get("interpreter") != expected_interpreter
+        or package.get("version") != plan.get("target_version")
         or not all(isinstance(package.get(field), str) and package[field]
                    for field in ("version", "metadata", "package"))
         or not all(_lexically_within(directory, Path(str(package[field])))
@@ -838,16 +865,38 @@ def _regular_json_object(path: Path) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
+def _regular_file_digest(path: Path) -> str | None:
+    """Hash one regular file while refusing a final-component link swap."""
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+    except OSError:
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _walk_preserved_files(
-    directory: Path, *, root_name: str, code: str,
-) -> tuple[list[Path], list[tuple[Path, str]]]:
+    directory: Path, *, root_name: str, code: str, expected_installation_id: str,
+    opaque_bindings: list[tuple[Path, str, int, int, int]],
+) -> tuple[list[Path], list[tuple[Path, str, int, int, int]]]:
     """Walk preserved product data while treating exact updater venvs as opaque."""
     if not directory.exists():
         return [], []
     if directory.is_symlink() or not directory.is_dir():
         raise OperationalResetError(code)
     files: list[Path] = []
-    opaque: list[tuple[Path, str]] = []
+    opaque: list[tuple[Path, str, int, int, int]] = []
     pending = [directory]
     while pending:
         current = pending.pop()
@@ -857,19 +906,29 @@ def _walk_preserved_files(
             raise OperationalResetError(code) from error
         for entry in entries:
             try:
-                if entry.is_symlink():
-                    raise OperationalResetError(code)
                 path = Path(entry.path)
-                if entry.is_dir(follow_symlinks=False):
+                metadata = path.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise OperationalResetError(code)
+                if stat.S_ISDIR(metadata.st_mode):
                     relative = path.relative_to(directory).as_posix()
                     classification = _opaque_update_directory_classification(
                         root_name, path, relative,
+                        expected_installation_id=expected_installation_id,
                     )
                     if classification is not None:
-                        opaque.append((path, classification))
+                        descriptor = _open_opaque_directory(
+                            path, device=metadata.st_dev, inode=metadata.st_ino,
+                        )
+                        binding = (
+                            path, classification, metadata.st_dev, metadata.st_ino,
+                            descriptor,
+                        )
+                        opaque.append(binding)
+                        opaque_bindings.append(binding)
                     else:
                         pending.append(path)
-                elif entry.is_file(follow_symlinks=False):
+                elif stat.S_ISREG(metadata.st_mode):
                     files.append(path)
                 else:
                     raise OperationalResetError(code)
@@ -878,11 +937,57 @@ def _walk_preserved_files(
     return sorted(files), sorted(opaque, key=lambda item: item[0])
 
 
+def _open_opaque_directory(path: Path, *, device: int, inode: int) -> int:
+    """Pin the accepted real directory until the inventory is published."""
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_dev != device
+            or metadata.st_ino != inode
+        ):
+            raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE")
+        return descriptor
+    except OSError as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE") from error
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+
+
+def _recheck_opaque_directory(
+    path: Path, *, device: int, inode: int, descriptor: int,
+) -> None:
+    """Bind the final opaque receipt to the still-pinned original directory."""
+    try:
+        pinned = os.fstat(descriptor)
+        current = path.lstat()
+    except OSError as error:
+        raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE") from error
+    if (
+        not stat.S_ISDIR(pinned.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or pinned.st_dev != device or pinned.st_ino != inode
+        or current.st_dev != device or current.st_ino != inode
+    ):
+        raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE")
+
+
 def _known_top_level(name: str) -> bool:
     return name in _KNOWN_TOP_LEVEL or _VERSIONED_RECOVERY_BACKUP.fullmatch(name) is not None
 
 
-def _nested_preserved_classification(root_name: str, relative: str, path: Path) -> str | None:
+def _nested_preserved_classification(
+    root_name: str, relative: str, path: Path, *, expected_installation_id: str,
+) -> str | None:
     """Classify only product-owned shapes inside preserved top-level roots."""
     parts = Path(relative).parts
     if root_name == "runtime":
@@ -899,7 +1004,9 @@ def _nested_preserved_classification(root_name: str, relative: str, path: Path) 
             return "INSTALLATION_OPERATION_AUDIT"
         if parts and _OPERATION.fullmatch(parts[0]) is not None:
             operation_root = path.parents[len(parts) - 2]
-            if _unbound_candidate_runtime_marker(operation_root) is not None:
+            if _unbound_candidate_runtime_marker(
+                operation_root, expected_installation_id=expected_installation_id,
+            ) is not None:
                 if parts[1:] == ("candidate-runtime.json",):
                     return "INSTALLATION_RUNTIME_STAGING_UNBOUND"
                 # The exact staging subtrees are normally opaque. This branch
@@ -953,8 +1060,9 @@ def _nested_preserved_classification(root_name: str, relative: str, path: Path) 
     return None
 
 
-def _external_inventory(
-    data_root: Path,
+def _external_inventory_bound(
+    data_root: Path, *, expected_installation_id: str,
+    opaque_bindings: list[tuple[Path, str, int, int, int]],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str], list[str]]:
     unknown = sorted(path.name for path in data_root.iterdir() if not _known_top_level(path.name))
     rows: list[dict[str, object]] = []
@@ -997,8 +1105,10 @@ def _external_inventory(
         }:
             nested_files, opaque_boundaries = _walk_preserved_files(
                 path, root_name=path.name, code="EXTERNAL_SYMLINK_UNSAFE",
+                expected_installation_id=expected_installation_id,
+                opaque_bindings=opaque_bindings,
             )
-            for boundary, classification in opaque_boundaries:
+            for boundary, classification, _device, _inode, _descriptor in opaque_boundaries:
                 relative = boundary.relative_to(path).as_posix()
                 entry = {
                     "path": f"{path.name}/{relative}",
@@ -1013,7 +1123,10 @@ def _external_inventory(
                 relative = nested.relative_to(path).as_posix()
                 if path.name == "runtime" and relative.startswith("central-data-imports/"):
                     continue
-                classification = _nested_preserved_classification(path.name, relative, nested)
+                classification = _nested_preserved_classification(
+                    path.name, relative, nested,
+                    expected_installation_id=expected_installation_id,
+                )
                 if classification is None:
                     unknown.append(f"{path.name}/{relative}")
                     continue
@@ -1025,6 +1138,32 @@ def _external_inventory(
                 if classification == "ACTIVE_INGEST_CONTROL":
                     active_ingest_controls.append(f"{path.name}/{relative}")
     return rows, preserved, sorted(set(unknown)), active_ingest_controls
+
+
+def _external_inventory(
+    data_root: Path, *, expected_installation_id: str,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str], list[str]]:
+    """Inventory external data while pinning every published opaque boundary."""
+    bindings: list[tuple[Path, str, int, int, int]] = []
+    try:
+        result = _external_inventory_bound(
+            data_root, expected_installation_id=expected_installation_id,
+            opaque_bindings=bindings,
+        )
+        # This is intentionally the final work before returning the receipt.
+        # A path swapped after initial acceptance cannot be represented as the
+        # pinned directory that was actually classified.
+        for path, _classification, device, inode, descriptor in bindings:
+            _recheck_opaque_directory(
+                path, device=device, inode=inode, descriptor=descriptor,
+            )
+        return result
+    finally:
+        for _path, _classification, _device, _inode, descriptor in bindings:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _runtime_activity(data_root: Path) -> dict[str, object]:
@@ -1123,7 +1262,9 @@ def preview(data_root: Path) -> dict[str, object]:
         raise OperationalResetError("CENTRAL_INSPECTION_FAILED") from error
     external_error: str | None = None
     try:
-        external, preserved_external, unknown_paths, active_ingest_controls = _external_inventory(root)
+        external, preserved_external, unknown_paths, active_ingest_controls = _external_inventory(
+            root, expected_installation_id=str(identity["instance_id"]),
+        )
     except OperationalResetError as error:
         external, preserved_external, unknown_paths, active_ingest_controls = [], [], [], []
         external_error = error.code
@@ -2041,6 +2182,7 @@ def _verify_under_lock(
         credentials = int(connection.execute("SELECT COUNT(*) FROM ep_consumer_credentials").fetchone()[0])
         projects = int(connection.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0])
         repositories = int(connection.execute("SELECT COUNT(*) FROM ep_repository_registrations").fetchone()[0])
+        expected_installation_id = str(_identity(root, connection)["instance_id"])
     archive = root / "operational-reset-archive" / operation_id
     boundary: dict[str, object] | None = None
     boundary_path_value = row.get("finish_boundary_path")
@@ -2066,7 +2208,9 @@ def _verify_under_lock(
             raise OperationalResetError("FINISH_BOUNDARY_INVALID")
         if not allow_boundary_recovery:
             frozen_modes = _verify_frozen_empty_active_roots(root)
-    external, _preserved, unknown, active_controls = _external_inventory(root)
+    external, _preserved, unknown, active_controls = _external_inventory(
+        root, expected_installation_id=expected_installation_id,
+    )
     backup = verify_backup(
         Path(str(row["backup_path"])), operation_id=operation_id, plan_digest=plan_digest,
         expected_manifest_digest=str(row["backup_manifest_digest"]),

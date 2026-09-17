@@ -166,7 +166,8 @@ explicit active-ingest blocker.
 An exact `operations/<operation-id>/candidate-venv/` below a parseable owning
 `operation.json` and `candidate-runtime.json` is one opaque
 `INSTALLATION_RUNTIME` preserve boundary only when both records bind the same
-operation, installation, plan and exact candidate path. The
+operation, the currently inspected CENTRAL installation identity, the exact
+owning update steps/cleanup roots, plan and candidate path. The
 preview records the directory boundary but does not descend into, hash, copy or
 follow its contents; normal Python virtual-environment links therefore do not
 become reset targets or false symlink findings. The `candidate-venv` directory
@@ -179,13 +180,20 @@ Candidate preparation intentionally precedes journal creation. In that exact
 crash window, a closed-schema `candidate-runtime.json` may be the only durable
 owner record. If it binds the parent operation ID, installation, exact
 `candidate-venv`, contained staged wheel, target version/digest and source
-revision, preview preserves the exact `candidate-venv`, `download` and
+revision—and the staged wheel's bytes and canonical filename verify against
+that digest/identity—preview preserves the exact `candidate-venv`, `download` and
 `pip-cache` boundaries opaquely as
 `INSTALLATION_RUNTIME_STAGING_UNBOUND` and reports
 `INCOMPLETE_NO_OPERATION_JOURNAL`. It does not follow or copy their contents.
 This fallback applies only while `operation.json` is genuinely absent;
 malformed, linked or conflicting records fail closed. Any sibling outside
 those exact updater staging boundaries remains unknown.
+
+Every accepted opaque directory is held through a non-following directory
+descriptor. Immediately before the inventory receipt returns, preview requires
+both that pinned descriptor and the current path to remain the same directory
+device/inode. A directory-to-link replacement, including one after initial
+classification, fails closed without publishing a stale preserve receipt.
 
 ## Protected backup and recovery
 
