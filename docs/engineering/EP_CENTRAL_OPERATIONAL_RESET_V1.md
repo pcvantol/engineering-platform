@@ -313,6 +313,107 @@ engineering-platform-maintenance abort \
   --plan-digest "$PREVIEW_PLAN_DIGEST"
 ```
 
+## Joint qualification coordinator
+
+`tools/qualification/operational_reset_coordinator.py` is the bounded operator
+harness for the later coordinated Forge and EP maintenance window. It is not a
+third product service and it does not open either database. It records only a
+secret-free joint progress receipt and invokes the two installed, owning CLIs
+as subprocesses. Its receipt directory is mode `0700`, its receipt and lock are
+mode `0600`, updates are atomic and fsynced, and symlinks or a concurrent
+coordinator process are rejected.
+
+Choose a new joint reference and two distinct product operation IDs. Bind the
+exact installed CLI files, target roots and protected EP backup root during the
+initial preview:
+
+```bash
+COORDINATOR_ID="central-clean-coordinator-<reference>"
+COORDINATOR_RECEIPTS="/exact/protected/coordinator-receipts"
+FORGE_OPERATION_ID="forge-clean-<reference>"
+EP_OPERATION_ID="ep-clean-<reference>"
+
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" \
+  --coordinator-id "$COORDINATOR_ID" \
+  preview \
+  --forge-cli "/exact/installed/bin/forge" \
+  --forge-data-root "/exact/Forge/data" \
+  --forge-operation-id "$FORGE_OPERATION_ID" \
+  --ep-cli "/exact/installed/bin/engineering-platform-maintenance" \
+  --ep-data-root "/exact/Engineering Platform Server/data" \
+  --ep-operation-id "$EP_OPERATION_ID" \
+  --ep-backup-root "/exact/protected/ep-recovery"
+```
+
+`preview` is read-only for both product datasets. If either preview reports an
+explicitly reviewable operational foreign-key finding, retain that receipt as
+read-only evidence, choose a new coordinator reference before any `prepare`,
+and repeat the initial preview with the exact finding identity bound as
+`--forge-fk-acknowledgement <identity>` or
+`--ep-fk-acknowledgement <identity>`. The acknowledgement is used only by the
+later owning `prepare`; it is not a general integrity bypass.
+
+The remaining commands load the already-bound configuration from the receipt:
+
+```bash
+# MUTATING: both products enter durable maintenance and make verified backups.
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" prepare
+
+# Read-only under both writer fences: prove both exact plans are still current.
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" revalidate
+
+# DESTRUCTIVE: invoke one owning reset at a time. Order is an operator choice.
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" \
+  apply --product forge
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" \
+  apply --product engineering-platform
+
+# Read-only proofs. Authorization is local to the joint receipt.
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" verify
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" authorize-resume
+
+# MUTATING: owning products may leave maintenance only after both verified.
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" \
+  finish --product forge
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" \
+  finish --product engineering-platform
+```
+
+These destructive commands are qualified only against isolated fixture stores
+in this delivery; do not run them against CENTRAL as part of installation. The
+joint receipt reaches `COMPLETE` only after both owning verifications, explicit
+resume authorization and both owning finishes.
+
+After any interruption or owning failure, inspect without creating a new
+operation and reconcile the same product operation IDs:
+
+```bash
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" status
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" reconcile
+
+# Use only when an owning status proves that product needs forward recovery.
+python3 tools/qualification/operational_reset_coordinator.py \
+  --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" \
+  resume --product engineering-platform
+```
+
+Once an owning apply may have started, every command failure is
+`RECONCILIATION_REQUIRED`: both products stay in maintenance, there is no
+automatic finish and no automatic destructive rollback. The harness never
+calls a peer CLI from product code, imports Forge or EP, creates a Mission,
+provider invocation or submission, or treats delayed callbacks as new work.
+
 The repository document `missions/MISSION-0003.md`, a future test label and an
 operational Forge Mission are distinct namespaces. EP reset readback names its
 own runtime run/submission namespace and does not make a Mission-ID allocation

@@ -95,6 +95,16 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("operational-reset-v1", reset)
         self.assertIn("DESTRUCTIVE", reset)
         self.assertIn("must not automatically prepare/apply", reset)
+        self.assertIn("tools/qualification/operational_reset_coordinator.py", reset)
+        for command in (
+            "preview", "prepare", "revalidate", "apply --product forge",
+            "apply --product engineering-platform", "verify", "authorize-resume",
+            "finish --product forge", "finish --product engineering-platform",
+            "status", "reconcile", "resume --product engineering-platform",
+        ):
+            self.assertIn(command, reset)
+        self.assertIn("RECONCILIATION_REQUIRED", reset)
+        self.assertIn("no automatic destructive rollback", reset)
 
     def test_execution_host_architecture_bounds_provider_interruption_recovery(self) -> None:
         architecture = (ROOT / "docs" / "engineering" / "EXECUTION_HOST_ARCHITECTURE.md").read_text(
