@@ -6324,6 +6324,12 @@ function changeDashboardLocale(value) {
   const focusable = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex='0']";
   const focusedModal = focused?.closest("dialog[open]");
   const focusedIndex = focusedModal ? [...focusedModal.querySelectorAll(focusable)].indexOf(focused) : -1;
+  const focusedIdentity = focusedModal && focused instanceof HTMLElement ? {
+    tag: focused.localName,
+    testId: focused.getAttribute("data-testid"),
+    name: focused.getAttribute("name"),
+    classes: [...focused.classList],
+  } : null;
   const controls = [...document.querySelectorAll("input[id], textarea[id], select[id]")]
     .filter((element) => element.id !== "dashboardLocale" && element.type !== "file")
     .map((element) => ({ id: element.id, value: element.value, checked: element.checked }));
@@ -6374,8 +6380,17 @@ function changeDashboardLocale(value) {
   if (focused?.isConnected) focused.focus({ preventScroll: true });
   else {
     // Rebuilt modal content needs an equivalent focus target, not the removed
-    // node. Keep keyboard navigation inside the same open context.
+    // node. Prefer semantic control identity over DOM position so adding a
+    // translated field cannot move keyboard focus to a different control.
+    const semanticSelector = focusedIdentity?.testId
+      ? `[data-testid="${CSS.escape(focusedIdentity.testId)}"]`
+      : focusedIdentity?.name
+        ? `${focusedIdentity.tag}[name="${CSS.escape(focusedIdentity.name)}"]`
+        : focusedIdentity?.classes.length
+          ? `${focusedIdentity.tag}.${focusedIdentity.classes.map((value) => CSS.escape(value)).join(".")}`
+          : null;
     const replacement = (focused?.id && $(focused.id))
+      || (semanticSelector && focusedModal?.querySelector(semanticSelector))
       || (focusedIndex >= 0 && focusedModal?.querySelectorAll(focusable)[focusedIndex])
       || focusedModal?.querySelector(focusable);
     replacement?.focus({ preventScroll: true });
