@@ -1157,6 +1157,57 @@ class CentralOperationalResetTests(unittest.TestCase):
         allowed = reset.preview(self.root)
         self.assertNotIn("EXTERNAL_SYMLINK_UNSAFE", allowed["blocking_codes"])
 
+    def test_empty_database_identity_and_empty_updater_bindings_never_become_opaque(self) -> None:
+        runtime_identity = json.loads(
+            (self.root / "runtime-identity.json").read_text(encoding="utf-8")
+        )["instance_id"]
+        self.assertRegex(
+            runtime_identity,
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
+        operation = self.root / "operations" / "update-empty-identity-0001"
+        operation.mkdir(parents=True)
+        candidate = operation / "candidate-venv"
+        candidate.mkdir()
+        unknown = candidate / "unknown-application-data.bin"
+        unknown.write_bytes(b"preserve")
+        self._bind_update_candidate_fixture(operation)
+
+        journal_path = operation / "operation.json"
+        marker_path = operation / "candidate-runtime.json"
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        plan = journal["plan"]
+        prepared = journal["prepared_candidate"]
+        assert isinstance(plan, dict) and isinstance(prepared, dict)
+        plan["installation_id"] = ""
+        prepared["installation_id"] = ""
+        marker["installation_id"] = ""
+        journal["plan_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+            plan, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        journal["prepared_candidate_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+            prepared, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+        with reset._central_connection(self.root / "epdata.sqlite") as connection:
+            connection.execute("UPDATE ep_installations SET instance_id=''")
+            connection.execute(
+                "UPDATE engineering_metadata SET value='' "
+                "WHERE key='installation.instance_id'"
+            )
+
+        with self.assertRaisesRegex(reset.OperationalResetError, "TARGET_IDENTITY_CONFLICT"):
+            reset.preview(self.root)
+        with self.assertRaisesRegex(reset.OperationalResetError, "TARGET_IDENTITY_CONFLICT"):
+            reset._external_inventory(self.root, expected_installation_id="")
+        self.assertIsNone(reset._opaque_update_directory_classification(
+            "operations", candidate, f"{operation.name}/candidate-venv",
+            expected_installation_id="",
+        ))
+        self.assertEqual(unknown.read_bytes(), b"preserve")
+
     def test_opaque_directory_swap_before_receipt_fails_closed(self) -> None:
         operation = self.root / "operations" / "update-swap-race-0001"
         operation.mkdir(parents=True)

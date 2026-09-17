@@ -83,6 +83,10 @@ changes execution semantics.
   publication, while malformed or unbound records, path swaps, linked venv
   roots, symlinks elsewhere, active ingest roots and unknown sibling data
   remain fail-closed.
+- Operational-reset identity readback independently requires the same non-empty
+  canonical UUID in the runtime identity, installation table and installation
+  metadata. Empty, malformed or pairwise-conflicting values cannot authorize
+  opaque updater classification.
 - A candidate prepared before its update journal was durably created is
   read back as `INSTALLATION_RUNTIME_STAGING_UNBOUND` only from its exact
   closed-schema candidate marker. Its candidate/download/cache boundaries are

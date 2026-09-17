@@ -36,6 +36,9 @@ PROFILE = "EP_CENTRAL_OPERATIONAL_HISTORY_V1"
 PLAN_VERSION = 1
 SCHEMA_VERSION = 68
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}")
+_INSTANCE_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
 _UPDATE_STEPS = (
     "INSTALLATION_LOCK", "INVENTORY_AND_COMPATIBILITY", "EXACT_ARTIFACT",
     "QUIESCE", "BACKUP_AND_MIGRATION", "ACTIVATE", "VERIFY", "CLEANUP",
@@ -474,6 +477,10 @@ def _actor(data_root: Path) -> str:
     return f"uid:{uid}:{name}"
 
 
+def _valid_instance_id(value: object) -> bool:
+    return isinstance(value, str) and _INSTANCE_ID.fullmatch(value) is not None
+
+
 def _identity(data_root: Path, connection: sqlite3.Connection) -> dict[str, object]:
     try:
         file_identity = json.loads((data_root / "runtime-identity.json").read_text(encoding="utf-8"))
@@ -483,16 +490,22 @@ def _identity(data_root: Path, connection: sqlite3.Connection) -> dict[str, obje
     metadata = connection.execute(
         "SELECT value FROM engineering_metadata WHERE key='installation.instance_id'"
     ).fetchone()
+    runtime_instance = file_identity.get("instance_id") if isinstance(file_identity, dict) else None
+    database_instance = row[0] if row is not None else None
+    metadata_instance = metadata[0] if metadata is not None else None
     if (
-        not isinstance(file_identity, dict) or not isinstance(file_identity.get("instance_id"), str)
-        or row is None or metadata is None or file_identity["instance_id"] != row[0] != ""
-        or row[0] != metadata[0]
+        not _valid_instance_id(runtime_instance)
+        or not _valid_instance_id(database_instance)
+        or not _valid_instance_id(metadata_instance)
+        or runtime_instance != database_instance
+        or runtime_instance != metadata_instance
+        or database_instance != metadata_instance
     ):
         raise OperationalResetError("TARGET_IDENTITY_CONFLICT")
     database = (data_root / central_database.DATABASE_FILENAME).resolve()
     stat = database.stat()
     return {
-        "product": "engineering-platform", "instance_id": str(row[0]),
+        "product": "engineering-platform", "instance_id": str(database_instance),
         "data_root": str(data_root), "database": str(database), "schema_version": int(row[1]),
         "database_device": stat.st_dev, "database_inode": stat.st_ino,
     }
@@ -594,6 +607,8 @@ def _candidate_runtime_marker(
     require_staged_artifact: bool,
 ) -> dict[str, object] | None:
     """Read the updater's exact, closed, token-free candidate identity."""
+    if not _valid_instance_id(expected_installation_id):
+        return None
     operation_id = operation_root.name
     marker = _regular_json_object(operation_root / "candidate-runtime.json")
     if marker is None or _OPERATION.fullmatch(operation_id) is None:
@@ -606,6 +621,7 @@ def _candidate_runtime_marker(
         }
         or marker.get("schema_version") != 1
         or marker.get("operation_id") != operation_id
+        or not _valid_instance_id(marker.get("installation_id"))
         or marker.get("installation_id") != expected_installation_id
         or marker.get("candidate_venv") != expected_candidate
         or re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)",
@@ -1144,6 +1160,8 @@ def _external_inventory(
     data_root: Path, *, expected_installation_id: str,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str], list[str]]:
     """Inventory external data while pinning every published opaque boundary."""
+    if not _valid_instance_id(expected_installation_id):
+        raise OperationalResetError("TARGET_IDENTITY_CONFLICT")
     bindings: list[tuple[Path, str, int, int, int]] = []
     try:
         result = _external_inventory_bound(

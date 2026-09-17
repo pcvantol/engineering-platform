@@ -176,6 +176,13 @@ without its owning identity records, malformed or path-conflicting records,
 symlinks in other staging trees and unclassified sibling data remain
 fail-closed.
 
+The target identity is a non-empty canonical UUID and must match independently
+in `runtime-identity.json`, `ep_installations` and
+`engineering_metadata['installation.instance_id']`. Empty or malformed values
+and any pairwise disagreement block preview before updater staging can be
+classified. Marker, journal and prepared-candidate installation IDs must equal
+that same verified target UUID.
+
 Candidate preparation intentionally precedes journal creation. In that exact
 crash window, a closed-schema `candidate-runtime.json` may be the only durable
 owner record. If it binds the parent operation ID, installation, exact
