@@ -2,7 +2,7 @@
 
 **Owning product:** Engineering Platform.  **Profile:**
 `EP_CENTRAL_OPERATIONAL_HISTORY_V1`.  **Server schema:** 68.  **Candidate
-release:** 2.3.81.
+release:** 2.3.82.
 
 This is a bounded local maintenance route for removing EP operational history
 while retaining installation identity, project and repository attachment,
@@ -162,6 +162,30 @@ classification. An arbitrary file hidden inside `runtime/`, `operations/`,
 `recovery/`, `migration/`, `backups/` or a reset archive is unsupported and
 blocks prepare without being moved or deleted. A pending CENTRAL import is an
 explicit active-ingest blocker.
+
+An exact `operations/<operation-id>/candidate-venv/` below a parseable owning
+`operation.json` and `candidate-runtime.json` is one opaque
+`INSTALLATION_RUNTIME` preserve boundary only when both records bind the same
+operation, installation, plan and exact candidate path. The
+preview records the directory boundary but does not descend into, hash, copy or
+follow its contents; normal Python virtual-environment links therefore do not
+become reset targets or false symlink findings. The `candidate-venv` directory
+itself must be a real directory. A linked venv root, a venv-shaped directory
+without its owning identity records, malformed or path-conflicting records,
+symlinks in other staging trees and unclassified sibling data remain
+fail-closed.
+
+Candidate preparation intentionally precedes journal creation. In that exact
+crash window, a closed-schema `candidate-runtime.json` may be the only durable
+owner record. If it binds the parent operation ID, installation, exact
+`candidate-venv`, contained staged wheel, target version/digest and source
+revision, preview preserves the exact `candidate-venv`, `download` and
+`pip-cache` boundaries opaquely as
+`INSTALLATION_RUNTIME_STAGING_UNBOUND` and reports
+`INCOMPLETE_NO_OPERATION_JOURNAL`. It does not follow or copy their contents.
+This fallback applies only while `operation.json` is genuinely absent;
+malformed, linked or conflicting records fail closed. Any sibling outside
+those exact updater staging boundaries remains unknown.
 
 ## Protected backup and recovery
 
@@ -462,8 +486,11 @@ decision.
 
 ## Delivery status
 
-At source-candidate creation this slice is `IMPLEMENTED` and locally fixture
-qualified, while protected PR review, hosted full gates, release publication,
-artifact-byte qualification and installed live preview remain separate
+The installed 2.3.81 read-only preview proved schema 68, `quick_check`, foreign
+keys and counts, but exposed a false `EXTERNAL_SYMLINK_UNSAFE` blocker by
+descending into a preserved updater `candidate-venv`. Release 2.3.82 contains
+the targeted opaque-boundary correction and synthetic positive/negative
+qualification. Protected PR review, hosted full gates, release publication,
+artifact-byte qualification and a new installed live preview remain separate
 evidence. Installation may activate schema 68 and the chat relationship repair
 but must not automatically prepare/apply a reset or delete historical rows.

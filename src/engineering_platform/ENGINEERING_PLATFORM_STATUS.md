@@ -75,6 +75,17 @@ changes execution semantics.
   It targets the installation-owned CENTRAL database, executes `PRAGMA
   optimize` and `VACUUM` only when no CENTRAL lifecycle is active, and never
   opens, compacts or configures a project-local database.
+- The installation-owner maintenance preview inventories preserved updater
+  operations without entering a `candidate-venv` whose owning journal and
+  candidate marker bind the exact operation, installation and path. That venv
+  remains an opaque installation-runtime boundary, while malformed or unbound
+  records, linked venv roots, symlinks elsewhere, active ingest roots and
+  unknown sibling data remain fail-closed.
+- A candidate prepared before its update journal was durably created is
+  read back as `INSTALLATION_RUNTIME_STAGING_UNBOUND` only from its exact
+  closed-schema candidate marker. Its candidate/download/cache boundaries are
+  preserved opaquely with an explicit incomplete state; arbitrary siblings
+  and malformed, missing or conflicting markers remain blocking.
 - During an active run, a fully successful specialist review remains visible
   as compact historical evidence after the review phase. Partial, failed or
   running reviewer projections remain phase-scoped and are never presented as

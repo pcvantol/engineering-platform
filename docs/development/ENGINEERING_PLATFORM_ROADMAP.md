@@ -477,6 +477,7 @@ The lane is:
 schema-68 implementation + fixture qualification
   -> protected review/full EP gates
   -> 2.3.81 exact-artifact release and authorized installation
+  -> 2.3.82 installed-preview inventory correction and exact-artifact release
   -> installed read-only preview
   -> later explicit coordinated Forge+EP clean-CENTRAL preflight
 ```
