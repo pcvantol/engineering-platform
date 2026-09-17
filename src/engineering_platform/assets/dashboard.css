@@ -1213,7 +1213,7 @@ html[data-theme="light"] .dashboard-health__tooltip .dashboard-health__reason{co
 /* A missing provider is a blocking error.  The generic button hover/focus
    rule above otherwise wins by specificity and turns the repair action
    orange, which incorrectly reads as a recoverable warning. */
-.dashboard-status-banner--provider-unavailable .provider-readiness-banner__action{background:#7a2230!important;border-color:#ff91a1!important;color:#fff0f2!important}
+.dashboard-status-banner--provider-unavailable .provider-readiness-banner__action{background:#7a2230!important;border-color:#ff91a1!important;color:#ffb4c0!important}
 .dashboard-status-banner--provider-unavailable .provider-readiness-banner__action:hover:not(:disabled){background:#a92b40!important;border-color:#ffc0c9!important;color:#fff!important}
 .dashboard-status-banner--provider-unavailable .provider-readiness-banner__action:is(:focus,:focus-visible){box-shadow:0 0 0 4px #ff91a188!important;outline:2px solid #ff91a1!important;outline-color:#ff91a1!important;outline-offset:2px!important}
 :is(#codexProviderReadinessBanner,#githubProviderReadinessBanner).dashboard-status-banner--provider-unavailable .provider-readiness-banner__action:is(:focus,:focus-visible){box-shadow:0 0 0 4px #ff91a188!important;outline:2px solid #ff91a1!important;outline-color:#ff91a1!important;outline-offset:2px!important}
