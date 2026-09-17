@@ -6319,8 +6319,20 @@ function updateLocalePicker() {
     option.setAttribute("aria-selected", String(selected));
   });
 }
+let lastOpenModalFocus = null;
+document.addEventListener("focusin", (event) => {
+  if (event.target instanceof HTMLElement && event.target.closest("dialog[open]"))
+    lastOpenModalFocus = event.target;
+});
 function changeDashboardLocale(value) {
-  const scroll = { x: window.scrollX, y: window.scrollY }, focused = document.activeElement;
+  const active = document.activeElement;
+  const priorModalFocus = lastOpenModalFocus instanceof HTMLElement
+    && lastOpenModalFocus.isConnected
+    && lastOpenModalFocus.closest("dialog[open]")
+    ? lastOpenModalFocus
+    : null;
+  const focused = active?.closest?.("dialog[open]") ? active : priorModalFocus || active;
+  const scroll = { x: window.scrollX, y: window.scrollY };
   const focusable = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex='0']";
   const focusedModal = focused?.closest("dialog[open]");
   const focusedIndex = focusedModal ? [...focusedModal.querySelectorAll(focusable)].indexOf(focused) : -1;
