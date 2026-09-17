@@ -1825,6 +1825,29 @@ class InstallationBoundaryTests(unittest.TestCase):
             "accepted_recommendations": 2, "status": "completed",
         }])
 
+        assurance = [
+            {
+                "reviewer": "quality", "status": "PASS",
+                "candidate_sha": "a" * 40, "profile_digest": "sha256:" + "b" * 64,
+                "invocation_id": f"{run_id}:quality:0", "findings": [],
+            },
+            {
+                "reviewer": "security", "status": "PASS",
+                "candidate_sha": "a" * 40, "profile_digest": "sha256:" + "b" * 64,
+                "invocation_id": f"{run_id}:security:1",
+                "findings": [{"severity": "MEDIUM", "disposition": "NON_BLOCKING", "observation": "Bounded finding."}],
+            },
+        ]
+        lifecycle = {
+            "steps": [{"id": "QUALITY_CONTROL_AGENT", "assurance_reviews": assurance}],
+        }
+        self.assertEqual(server._central_console_assurance_reviews(lifecycle), assurance)
+        self.assertEqual(server._central_console_assurance_reviews({
+            "steps": [{"id": "QUALITY_CONTROL_AGENT", "assurance_reviews": [
+                {**assurance[0], "candidate_sha": "not-a-candidate"},
+            ]}],
+        }), [])
+
     def test_central_console_does_not_render_unmeasured_primary_execution_as_zero(self) -> None:
         """Reviewer timing cannot manufacture a primary Codex CLI duration."""
         with patch("engineering_platform.server.timing_summary", return_value={
@@ -1992,6 +2015,10 @@ class InstallationBoundaryTests(unittest.TestCase):
             "usage": {"provider_invocation_count": 5, "usage_snapshot_count": 5},
             "evidence": [{"kind": "VALIDATION", "result": "PASSED: immutable validation result"}],
             "reviewers": [{"reviewer": "validation", "capability": "engineering", "status": "completed"}],
+            "assurance_reviews": [{
+                "reviewer": "quality", "status": "PASS", "candidate_sha": "b" * 40,
+                "findings": [],
+            }],
         }
         with patch("engineering_platform.server._console_projects", return_value=projects), patch(
             "engineering_platform.server._central_console_run_detail", return_value=detail
@@ -2011,6 +2038,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["usage"], detail["usage"])
         self.assertEqual(payload["evidence"], detail["evidence"])
         self.assertEqual(payload["reviewers"], detail["reviewers"])
+        self.assertEqual(payload["assurance_reviews"], detail["assurance_reviews"])
         self.assertNotIn("run", payload)
 
     def test_central_console_detail_projects_terminal_checkpoint_diagnostic(self) -> None:

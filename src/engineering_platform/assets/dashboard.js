@@ -8209,6 +8209,29 @@ function promptDetailReviewersSection(reviewers, { wide = true } = {}) {
   );
   return promptDetailCard(t("detail.specialist_reviews"), fields, wide, "prompt-detail-card--reviewers");
 }
+function promptDetailAssuranceReviewsSection(reviews) {
+  if (!reviews.length) return null;
+  const fields = reviews.map((review) => {
+    const findings = Array.isArray(review.findings) ? review.findings : [];
+    const candidate = String(review.candidate_sha || "").trim();
+    const lines = [
+      assuranceStatusLabel(review.status || "UNRESOLVED"),
+      candidate ? t("detail.candidate_sha") + ": " + candidate : null,
+      ...(findings.length
+        ? findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean)
+        : [t("lifecycle.assurance_no_findings")]),
+    ].filter(Boolean);
+    return detailField(
+      reviewerLabel(review.reviewer, t("detail.specialist_review")),
+      lines.join("\n"),
+      true,
+    );
+  });
+  return promptDetailCard(
+    t("lifecycle.detail_assurance"), fields, true,
+    "prompt-detail-card--assurance-reviews",
+  );
+}
 function promptDetailProviderReviewSections(usage, reviewers, commitTimeline) {
   const usageCard = promptDetailUsageSection(usage);
   const reviewerCard = promptDetailReviewersSection(reviewers, { wide: false });
@@ -8242,6 +8265,11 @@ function renderPromptHistoryDetail(payload) {
     commitTimeline = payload?.commit_timeline || [],
     evidence = Array.isArray(payload?.evidence) ? payload.evidence : [],
     reviewers = Array.isArray(payload?.reviewers) ? payload.reviewers : [],
+    assuranceReviews = Array.isArray(payload?.assurance_reviews)
+      ? payload.assurance_reviews
+      : (Array.isArray(payload?.lifecycle?.steps)
+        ? payload.lifecycle.steps.find((step) => step?.id === "QUALITY_CONTROL_AGENT")?.assurance_reviews || []
+        : []),
     activity = history.execution_activity_summary,
     recommendationHandoff = payload?.recommendation_handoff;
   const [executionSummary, executionContext] = promptDetailExecutionSections(history);
@@ -8266,6 +8294,7 @@ function renderPromptHistoryDetail(payload) {
       lifecycleFlow(payload?.lifecycle, { historical: true }),
       statusReconciliationCard(payload?.lifecycle?.recovery),
       promptDetailProviderReviewSections(usage, reviewers, commitTimeline),
+      promptDetailAssuranceReviewsSection(assuranceReviews),
       promptDetailRecommendationHandoff(recommendationHandoff),
     ].filter(Boolean),
   );
