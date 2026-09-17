@@ -49,9 +49,11 @@ Every terminal report includes these derived sections:
 - **Statistics Projection** — Mission, execution, Engineering Action and
   runtime counts are separately scoped. An Engineering execution never implies
   Mission completion.
-- **Deliverable Answer** — an explicit `YES`/`NO`, `PASS`/`FAIL` and `GO`/
-  `NO-GO` answer when the prompt requests one, derived from the persisted
-  terminal checkpoint.
+- **Deliverable Answer** — three separately scoped facts: technical delivery
+  from the terminal checkpoint, EP Run Qualification from the persisted
+  qualification snapshot, and Forge Mission/autonomy acceptance only when an
+  owning acceptance source exists. Prompt words such as `PASS` or `GO` never
+  create an acceptance outcome. `COMPLETE` is technical completion only.
 - **Commit Strategy** — Genesis Local Commit, Managed Pull Request, Managed
   Merge, Finalization or managed execution evidence, including the applicable
   commit and PR evidence.
@@ -127,8 +129,11 @@ Engineering Platform consumes only its declared, immutable audit metadata:
 Producer ID, Type, Version, Correlation ID, optional Mission ID and Engineering
 Action ID, plus Execution Constraint Version. Reports expose those values in a
 **Producer** section without exposing Forge implementation details. When a
-legacy prompt has no Producer metadata, the report records `HUMAN` and
-`legacy`. Producer metadata never changes execution behaviour.
+supported legacy run has positively established absence of a modern
+submission binding, the report records prompt metadata as limited
+`LEGACY_PROMPT_METADATA_ONLY` provenance. Missing, unreadable, corrupt or
+identity-conflicting modern evidence fails closed and is never replaced with
+prompt metadata. Producer metadata never changes execution behaviour.
 
 The report is execution evidence, not Forge Decision Evidence. It does not
 interpret, recreate or recommend Missions, Runtime Prompts, Runtime Instances
@@ -149,6 +154,16 @@ and separately names its canonical root submission. Attempt-scoped immutable
 constraints are loaded through the persisted run-to-attempt binding. This
 prevents a canonical root envelope from hiding the action intent, Runtime
 Prompt or other Forge execution provenance that applied to the actual run.
+The attempt, canonical root, retry parent and available qualification lineage
+must agree. A historical parent without a local attempt is accepted only when
+CENTRAL explicitly binds that parent run to the current retry and its Producer
+correlation. A local retry read without its attempt-scoped source is therefore
+unavailable, not silently replaced by the root envelope.
+An absent expected attempt link, invalid stored constraints, unavailable
+CENTRAL read or Producer/root identity conflict is reported with a safe
+submission-evidence diagnostic code and prevents publication of a misleading
+authoritative report. Raw constraints and prompts are not included in that
+diagnostic.
 
 ## Forge Mission Recommendation Handoff
 

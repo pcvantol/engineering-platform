@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import argparse
 import json
@@ -37,6 +38,25 @@ CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT = "EP_CENTRAL_OPERATIONAL_DATABASE"
 
 class EngineeringStorageError(RuntimeError):
     """Raised when the local Engineering evidence database is unsafe to use."""
+
+
+SUBMISSION_EVIDENCE_VALID_MODERN = "VALID_MODERN"
+SUBMISSION_EVIDENCE_LEGACY_ABSENT = "LEGACY_ABSENT"
+SUBMISSION_EVIDENCE_MISSING_MODERN_BINDING = "MISSING_MODERN_BINDING"
+SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE = "STORAGE_UNAVAILABLE"
+SUBMISSION_EVIDENCE_CORRUPT = "CORRUPT"
+SUBMISSION_EVIDENCE_IDENTITY_CONFLICT = "IDENTITY_CONFLICT"
+
+
+@dataclass(frozen=True)
+class SubmissionAttemptEvidence:
+    """Safe typed result for one run-bound submission evidence read."""
+
+    run_id: str
+    status: str
+    submission: dict[str, object] | None = None
+    diagnostic_code: str | None = None
+    provenance: str = "UNAVAILABLE"
 
 
 class _ClosingSQLiteConnection(sqlite3.Connection):
@@ -2038,69 +2058,257 @@ def load_submission_for_run(root: Path, run_id: str, *, central_database: Path |
     }
 
 
-def load_submission_attempt_for_run(
+def resolve_submission_attempt_evidence(
     root: Path, run_id: str, *, central_database: Path | None = None,
-) -> dict[str, object] | None:
-    """Load the concrete admitted submission attempt bound to one run.
+) -> SubmissionAttemptEvidence:
+    """Resolve modern, legacy and invalid submission evidence without fallback.
 
-    ``load_submission_for_run`` deliberately returns the immutable root
-    submission for a correlated retry. A terminal report also needs the
-    attempt identity and its admitted constraints; otherwise it can combine
-    the root submission ID with retry-scoped qualification evidence. Keep the
-    root metadata as provenance authority while overlaying only fields that
-    CENTRAL persisted immutably for the exact run-bound attempt.
+    A CENTRAL-bound run is modern by construction and therefore requires its
+    concrete attempt link.  A local run without either a submission record or
+    qualification-lineage record is the only supported legacy absence.  The
+    result contains safe codes and identities only; corrupt payloads are never
+    copied into diagnostics.
     """
-    root_submission = load_submission_for_run(
-        root, run_id, central_database=central_database,
-    )
-    if root_submission is None or central_database is None:
-        return root_submission
-    connection = _evidence_connection(root, central_database)
     try:
-        row = connection.execute(
-            "SELECT accepted.submission_id,accepted.producer_id,accepted.producer_type,"
-            "accepted.producer_version,accepted.correlation_id,accepted.mission_id,"
-            "accepted.engineering_action_id,accepted.constraints,attempt.canonical_submission_id "
-            "FROM execution_submission_attempt_links AS link "
-            "JOIN execution_submission_attempts AS attempt "
-            "ON attempt.submission_id=link.submission_id "
-            "JOIN ep_submissions AS accepted "
-            "ON accepted.submission_id=link.submission_id "
-            "WHERE link.run_id=?",
-            (run_id,),
-        ).fetchone()
-    finally:
-        connection.close()
+        connection = _evidence_connection(root, central_database)
+        try:
+            attempt_row = connection.execute(
+                "SELECT attempt.submission_id,attempt.canonical_submission_id,"
+                "attempt.retry_parent_submission_id,parent.canonical_submission_id,"
+                "parent_link.run_id "
+                "FROM execution_submission_attempt_links AS link "
+                "JOIN execution_submission_attempts AS attempt "
+                "ON attempt.submission_id=link.submission_id "
+                "LEFT JOIN execution_submission_attempts AS parent "
+                "ON parent.submission_id=attempt.retry_parent_submission_id "
+                "LEFT JOIN execution_submission_attempt_links AS parent_link "
+                "ON parent_link.submission_id=parent.submission_id "
+                "WHERE link.run_id=?",
+                (run_id,),
+            ).fetchone()
+            lineage_row = connection.execute(
+                "SELECT submission_id,fresh_submission,retry_parent_run_id,resume_parent_run_id "
+                "FROM execution_run_qualification_context WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except (EngineeringStorageError, sqlite3.DatabaseError, OSError):
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE,
+            diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_READ_FAILED",
+        )
+    try:
+        root_submission = load_submission_for_run(
+            root, run_id, central_database=central_database,
+        )
+    except (EngineeringStorageError, sqlite3.DatabaseError, OSError) as error:
+        unavailable = "unavailable" in str(error).casefold() or isinstance(error, (sqlite3.DatabaseError, OSError))
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=(SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE if unavailable else SUBMISSION_EVIDENCE_CORRUPT),
+            diagnostic_code=(
+                "SUBMISSION_EVIDENCE_STORAGE_READ_FAILED"
+                if unavailable else "SUBMISSION_EVIDENCE_ROOT_CORRUPT"
+            ),
+        )
+    if attempt_row is None:
+        if root_submission is not None or central_database is not None or lineage_row is not None:
+            return SubmissionAttemptEvidence(
+                run_id=run_id,
+                status=SUBMISSION_EVIDENCE_MISSING_MODERN_BINDING,
+                diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_BINDING_MISSING",
+            )
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_LEGACY_ABSENT,
+            diagnostic_code="SUBMISSION_EVIDENCE_LEGACY_ABSENT",
+            provenance="LEGACY_PROMPT_METADATA",
+        )
+    attempt_id = str(attempt_row[0])
+    canonical_id = str(attempt_row[1])
+    retry_parent_id = attempt_row[2]
+    parent_canonical_id = attempt_row[3]
+    parent_run_id = attempt_row[4]
+    if root_submission is None:
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_MISSING_MODERN_BINDING,
+            diagnostic_code="SUBMISSION_EVIDENCE_ROOT_BINDING_MISSING",
+        )
+    if root_submission.get("submission_id") != canonical_id:
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_IDENTITY_CONFLICT,
+            diagnostic_code="SUBMISSION_EVIDENCE_ROOT_IDENTITY_CONFLICT",
+        )
+    if retry_parent_id is not None and (
+        parent_canonical_id is None
+        or str(parent_canonical_id) != canonical_id
+        or parent_run_id is None
+    ):
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_IDENTITY_CONFLICT,
+            diagnostic_code="SUBMISSION_EVIDENCE_RETRY_PARENT_CONFLICT",
+        )
+    if lineage_row is not None:
+        lineage_submission_id = str(lineage_row[0])
+        lineage_fresh = bool(lineage_row[1])
+        lineage_retry_run = lineage_row[2]
+        lineage_resume_run = lineage_row[3]
+        lineage_conflicts = lineage_submission_id != attempt_id
+        if retry_parent_id is not None:
+            historical_parent_verified = False
+            if lineage_retry_run != parent_run_id and central_database is not None:
+                try:
+                    connection = _evidence_connection(root, central_database)
+                    try:
+                        historical_parent = connection.execute(
+                            "SELECT submission.producer_id,submission.producer_type,"
+                            "submission.correlation_id,dispatch.operator_resolution,"
+                            "historical_attempt.submission_id "
+                            "FROM ep_parity_lifecycle_dispatches AS dispatch "
+                            "JOIN ep_submissions AS submission "
+                            "ON submission.submission_id=dispatch.submission_id "
+                            "LEFT JOIN execution_submission_attempts AS historical_attempt "
+                            "ON historical_attempt.submission_id=dispatch.submission_id "
+                            "WHERE dispatch.run_id=? AND dispatch.resolution_submission_id=?",
+                            (lineage_retry_run, attempt_id),
+                        ).fetchone()
+                    finally:
+                        connection.close()
+                except (EngineeringStorageError, sqlite3.DatabaseError, OSError):
+                    historical_parent = None
+                historical_parent_verified = bool(
+                    historical_parent is not None
+                    and root_submission.get("correlation_id") is not None
+                    and historical_parent[0] == root_submission.get("producer_id")
+                    and historical_parent[1] == root_submission.get("producer_type")
+                    and historical_parent[2] == root_submission.get("correlation_id")
+                    and historical_parent[3] == "RETRIED"
+                    and historical_parent[4] is None
+                )
+            lineage_conflicts = lineage_conflicts or (
+                lineage_fresh
+                or lineage_resume_run is not None
+                or (
+                    lineage_retry_run != parent_run_id
+                    and not historical_parent_verified
+                )
+            )
+        elif lineage_retry_run is not None:
+            lineage_conflicts = True
+        if lineage_conflicts:
+            return SubmissionAttemptEvidence(
+                run_id=run_id,
+                status=SUBMISSION_EVIDENCE_IDENTITY_CONFLICT,
+                diagnostic_code="SUBMISSION_EVIDENCE_QUALIFICATION_LINEAGE_CONFLICT",
+            )
+    if central_database is None:
+        if attempt_id != canonical_id:
+            return SubmissionAttemptEvidence(
+                run_id=run_id,
+                status=SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE,
+                diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_SOURCE_UNAVAILABLE",
+            )
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_VALID_MODERN,
+            submission=root_submission,
+            provenance="IMMUTABLE_SUBMISSION",
+        )
+    try:
+        connection = _evidence_connection(root, central_database)
+        try:
+            row = connection.execute(
+                "SELECT accepted.submission_id,accepted.producer_id,accepted.producer_type,"
+                "accepted.producer_version,accepted.correlation_id,accepted.mission_id,"
+                "accepted.engineering_action_id,accepted.constraints,attempt.canonical_submission_id "
+                "FROM execution_submission_attempt_links AS link "
+                "JOIN execution_submission_attempts AS attempt "
+                "ON attempt.submission_id=link.submission_id "
+                "JOIN ep_submissions AS accepted "
+                "ON accepted.submission_id=link.submission_id "
+                "WHERE link.run_id=?",
+                (run_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except (EngineeringStorageError, sqlite3.DatabaseError, OSError):
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_STORAGE_UNAVAILABLE,
+            diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_READ_FAILED",
+        )
     if row is None:
-        return root_submission
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_MISSING_MODERN_BINDING,
+            diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_BINDING_MISSING",
+        )
     if (
-        row[8] != root_submission["submission_id"]
+        row[0] != attempt_id
+        or row[8] != canonical_id
         or row[1] != root_submission["producer_id"]
         or row[2] != root_submission["producer_type"]
     ):
-        raise EngineeringStorageError(
-            "Persisted submission attempt conflicts with canonical Producer provenance."
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_IDENTITY_CONFLICT,
+            diagnostic_code="SUBMISSION_EVIDENCE_IDENTITY_CONFLICT",
         )
     try:
         constraints = json.loads(row[7])
-    except (TypeError, json.JSONDecodeError) as error:
-        raise EngineeringStorageError(
-            "Persisted submission attempt constraints are corrupt."
-        ) from error
-    if not isinstance(constraints, dict):
-        raise EngineeringStorageError(
-            "Persisted submission attempt constraints are invalid."
+    except (TypeError, json.JSONDecodeError):
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_CORRUPT,
+            diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_CONSTRAINTS_CORRUPT",
         )
-    return {
-        **root_submission,
-        "canonical_submission_id": root_submission["submission_id"],
-        "submission_id": row[0],
-        "producer_version": row[3],
-        "correlation_id": row[4],
-        "mission_id": row[5],
-        "engineering_action_id": row[6],
-        "constraints": constraints,
-    }
+    if not isinstance(constraints, dict):
+        return SubmissionAttemptEvidence(
+            run_id=run_id,
+            status=SUBMISSION_EVIDENCE_CORRUPT,
+            diagnostic_code="SUBMISSION_EVIDENCE_ATTEMPT_CONSTRAINTS_INVALID",
+        )
+    return SubmissionAttemptEvidence(
+        run_id=run_id,
+        status=SUBMISSION_EVIDENCE_VALID_MODERN,
+        submission={
+            **root_submission,
+            "canonical_submission_id": canonical_id,
+            "submission_id": row[0],
+            "producer_version": row[3],
+            "correlation_id": row[4],
+            "mission_id": row[5],
+            "engineering_action_id": row[6],
+            "constraints": constraints,
+        },
+        provenance="IMMUTABLE_RUN_BOUND_ATTEMPT",
+    )
+
+
+def load_submission_attempt_for_run(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> dict[str, object] | None:
+    """Load valid attempt evidence while preserving legacy compatibility.
+
+    Invalid or unavailable modern evidence is never represented as absence.
+    Callers that need the full state matrix use
+    :func:`resolve_submission_attempt_evidence`.
+    """
+    result = resolve_submission_attempt_evidence(
+        root, run_id, central_database=central_database,
+    )
+    if result.status == SUBMISSION_EVIDENCE_VALID_MODERN:
+        return result.submission
+    if result.status == SUBMISSION_EVIDENCE_LEGACY_ABSENT:
+        return None
+    raise EngineeringStorageError(
+        f"{result.diagnostic_code or 'SUBMISSION_EVIDENCE_UNAVAILABLE'}: run_id={run_id}"
+    )
 
 
 def load_run_lineage(root: Path, run_id: str) -> dict[str, object] | None:

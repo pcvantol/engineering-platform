@@ -5646,14 +5646,19 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "## Engineering Evidence Summary",
         ):
             self.assertIn(section, body)
-        self.assertIn("YES / PASS / GO", body)
+        self.assertIn("- Technical Delivery: `COMPLETE`", body)
+        self.assertIn("- EP Run Qualification: `NOT_QUALIFIED`", body)
+        self.assertIn("- Mission / Autonomy Acceptance: `NOT_ESTABLISHED_BY_EP`", body)
+        self.assertNotIn("Final Deliverable Answer: YES / PASS / GO", body)
         self.assertIn("Requirement: Produce a self-validating report.", body)
         self.assertIn("Runtime evidence: run `evidence-2`; execution mode `MANAGED`.", body)
         self.assertIn("Execution Status: `COMPLETE`", body)
         self.assertIn("Receipt ID: `evidence-2`", body)
         self.assertIn("### Mission Statistics", body)
         self.assertIn("Executed Validation Command: `Documentation validation`", body)
-        self.assertIn('"deliverable_answer": "YES / PASS / GO', body)
+        self.assertIn('"technical_delivery": "COMPLETE"', body)
+        self.assertIn('"ep_run_qualification": "NOT_QUALIFIED"', body)
+        self.assertIn('"mission_autonomy_acceptance": "NOT_ESTABLISHED_BY_EP"', body)
 
     def test_component_inventory_is_derived_from_implementation_evidence(self) -> None:
         subprocess.run(("git", "init", "-b", "main", str(self.root)), check=True, capture_output=True)
@@ -5705,7 +5710,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("missing required section: ## Deliverable Projection", errors)
         self.assertIn("missing required section: ## Qualification Projection", errors)
         self.assertIn("missing required section: ## Statistics Projection", errors)
-        self.assertIn("explicit deliverable answer is missing", errors)
+        self.assertTrue(any(error.startswith("outcome projection is missing:") for error in errors))
 
     def test_report_consistency_rejects_contradictory_fresh_submission(self) -> None:
         state = TransactionState("lineage-conflict", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
