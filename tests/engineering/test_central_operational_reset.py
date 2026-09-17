@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import namedtuple
-from contextlib import redirect_stdout
+from contextlib import closing, contextmanager, redirect_stdout
+import gc
 import hashlib
 import io
 import json
@@ -10,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+import warnings
 from unittest.mock import patch
 
 from engineering_platform import central_operational_reset as reset
@@ -93,9 +95,10 @@ class CentralOperationalResetTests(unittest.TestCase):
             self.assertEqual(reset._tables(connection), set(reset.MAPPED_TABLES))
 
     def test_preview_of_older_schema_blocks_without_migrating(self) -> None:
-        with sqlite3.connect(self.root / "epdata.sqlite") as connection:
+        with closing(sqlite3.connect(self.root / "epdata.sqlite")) as connection:
             connection.execute("DELETE FROM engineering_schema_migrations WHERE version=68")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(67)")
+            connection.commit()
         before = hashlib.sha256((self.root / "epdata.sqlite").read_bytes()).hexdigest()
         plan = reset.preview(self.root)
         self.assertEqual(hashlib.sha256((self.root / "epdata.sqlite").read_bytes()).hexdigest(), before)
@@ -233,6 +236,12 @@ class CentralOperationalResetTests(unittest.TestCase):
     def test_partial_artifact_move_reconciles_forward(self) -> None:
         self._populate()
         operation_id, digest = self._prepared(operation_id="reset-artifact-0001")
+        with reset._central_connection(self.root / "epdata.sqlite") as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            reset._transition(
+                connection, operation_id, "AUTHORIZED", "ARTIFACTS_ARCHIVING",
+            )
+            connection.execute("COMMIT")
         archive = self.root / "operational-reset-archive" / operation_id
         archive.mkdir(parents=True)
         (self.root / "artifacts").replace(archive / "artifacts")
@@ -377,7 +386,7 @@ class CentralOperationalResetTests(unittest.TestCase):
                          plan_digest=str(archive_plan["plan_digest"]))
 
     def test_chat_parent_migration_preserves_rows_and_enforces_canonical_run(self) -> None:
-        with sqlite3.connect(self.root / "epdata.sqlite") as connection:
+        with closing(sqlite3.connect(self.root / "epdata.sqlite")) as connection:
             connection.execute("PRAGMA foreign_keys=OFF")
             connection.execute("DROP TRIGGER execution_chat_messages_immutable_update")
             connection.execute("DROP INDEX execution_chat_messages_run_created")
@@ -409,6 +418,7 @@ class CentralOperationalResetTests(unittest.TestCase):
                 "INSERT INTO ep_installations SELECT instance_id,created_at,67 FROM installation_schema68"
             )
             connection.execute("DROP TABLE installation_schema68")
+            connection.commit()
         server.initialize(self.root)
         with sqlite_connection(self.root / "epdata.sqlite") as connection:
             connection.execute("PRAGMA foreign_keys=ON")
@@ -421,6 +431,267 @@ class CentralOperationalResetTests(unittest.TestCase):
                     "INSERT INTO execution_chat_messages(run_id,role,content,created_at) "
                     "VALUES('missing','user','blocked','now')"
                 )
+
+    def test_apply_refuses_terminal_states_and_aborted_is_not_an_active_submission_fence(self) -> None:
+        request = self._populate()
+        operation_id, digest = self._prepared(operation_id="reset-aborted-0001")
+        reset.abort(self.root, operation_id=operation_id, plan_digest=digest)
+        self.assertFalse(reset.maintenance_active(self.root))
+        with self.assertRaisesRegex(reset.OperationalResetError,
+                                    "OPERATION_STATE_INVALID_FOR_APPLY"):
+            reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            fresh = submission_service.SubmissionRequest(
+                **{**request.__dict__, "idempotency_key": None, "prompt": "after abort"}
+            )
+            self.assertTrue(submission_service.submit(connection, fresh).submission_id)
+
+        completed = Path(self.temporary.name) / "completed"
+        completed_backup = Path(self.temporary.name) / "completed-backup"
+        server.initialize(completed)
+        plan = reset.preview(completed)
+        reset.prepare(
+            completed, operation_id="reset-completed-0001",
+            plan_digest=str(plan["plan_digest"]), backup_root=completed_backup,
+        )
+        reset.apply(completed, operation_id="reset-completed-0001",
+                    plan_digest=str(plan["plan_digest"]))
+        reset.verify(completed, operation_id="reset-completed-0001",
+                     plan_digest=str(plan["plan_digest"]))
+        reset.finish(completed, operation_id="reset-completed-0001",
+                     plan_digest=str(plan["plan_digest"]))
+        with self.assertRaisesRegex(reset.OperationalResetError,
+                                    "OPERATION_STATE_INVALID_FOR_APPLY"):
+            reset.apply(completed, operation_id="reset-completed-0001",
+                        plan_digest=str(plan["plan_digest"]))
+
+    def test_backup_copy_rejects_existing_content_and_nested_symlinks_and_resumes_after_copy_crash(self) -> None:
+        plan = reset.preview(self.root)
+        operation_id = "reset-existing-backup-0001"
+        occupied = self.backups / operation_id
+        occupied.mkdir(parents=True)
+        self.backups.chmod(0o700)
+        occupied.chmod(0o700)
+        marker = occupied / "foreign.txt"
+        marker.write_text("do not overwrite", encoding="utf-8")
+        with self.assertRaisesRegex(reset.OperationalResetError, "BACKUP_INVALID"):
+            reset.prepare(
+                self.root, operation_id=operation_id,
+                plan_digest=str(plan["plan_digest"]), backup_root=self.backups,
+            )
+        self.assertEqual(marker.read_text(encoding="utf-8"), "do not overwrite")
+        reset.abort(self.root, operation_id=operation_id, plan_digest=str(plan["plan_digest"]))
+
+        crash_root = Path(self.temporary.name) / "copy-crash"
+        crash_backup = Path(self.temporary.name) / "copy-crash-backup"
+        server.initialize(crash_root)
+        crash_plan = reset.preview(crash_root)
+        with patch.object(reset, "_copy_external", side_effect=RuntimeError("synthetic crash")):
+            with self.assertRaisesRegex(RuntimeError, "synthetic crash"):
+                reset.prepare(
+                    crash_root, operation_id="reset-copy-crash-0001",
+                    plan_digest=str(crash_plan["plan_digest"]), backup_root=crash_backup,
+                )
+        self.assertEqual(
+            reset.status(crash_root, operation_id="reset-copy-crash-0001")["operation"]["state"],
+            "PREPARING",
+        )
+        resumed = reset.resume(
+            crash_root, operation_id="reset-copy-crash-0001",
+            plan_digest=str(crash_plan["plan_digest"]), backup_root=crash_backup,
+        )
+        self.assertEqual(resumed["operation"]["state"], "VERIFIED")
+        self.assertTrue((crash_backup / "reset-copy-crash-0001" / "manifest.json").is_file())
+        self.assertTrue(any(path.name.endswith(".partial") for path in crash_backup.iterdir()))
+
+        source_root = Path(self.temporary.name) / "copy-source"
+        outside = Path(self.temporary.name) / "copy-outside"
+        destination = Path(self.temporary.name) / "copy-destination"
+        (source_root / "artifacts").mkdir(parents=True)
+        outside.mkdir()
+        (outside / "secret").write_text("secret", encoding="utf-8")
+        (source_root / "artifacts" / "nested").symlink_to(outside, target_is_directory=True)
+        destination.mkdir()
+        entry = [{
+            "root": "artifacts", "path": "nested/secret", "sha256": reset._file_digest(outside / "secret"),
+        }]
+        with self.assertRaisesRegex(reset.OperationalResetError, "BACKUP_SOURCE_CHANGED"):
+            reset._copy_external(source_root, destination, entry)
+        (source_root / "artifacts" / "nested").unlink()
+        (source_root / "artifacts" / "nested").mkdir()
+        (source_root / "artifacts" / "nested" / "secret").write_text("secret", encoding="utf-8")
+        (destination / "files").mkdir()
+        (destination / "files" / "artifacts").symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(reset.OperationalResetError, "BACKUP_PATH_UNSAFE"):
+            reset._copy_external(source_root, destination, entry)
+        self.assertFalse((outside / "nested").exists())
+
+    def test_stored_manifest_digest_is_mandatory_for_apply_and_verify(self) -> None:
+        operation_id, digest = self._prepared(operation_id="reset-manifest-binding-0001")
+        manifest = self.backups / operation_id / "manifest.json"
+        original = manifest.read_bytes()
+        unexpected = self.backups / operation_id / "unexpected.bin"
+        unexpected.write_bytes(b"foreign")
+        with self.assertRaisesRegex(reset.OperationalResetError, "BACKUP_FILE_SET_INVALID"):
+            reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        unexpected.unlink()
+        manifest.write_bytes(original.rstrip() + b"  \n")
+        with self.assertRaisesRegex(reset.OperationalResetError,
+                                    "BACKUP_MANIFEST_DIGEST_MISMATCH"):
+            reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        manifest.write_bytes(original)
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        manifest.write_bytes(original.rstrip() + b" \n")
+        with self.assertRaisesRegex(reset.OperationalResetError,
+                                    "BACKUP_MANIFEST_DIGEST_MISMATCH"):
+            reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        manifest.unlink()
+        with self.assertRaisesRegex(reset.OperationalResetError, "BACKUP_INVALID"):
+            reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+
+    def test_maintenance_tables_are_owner_guarded_and_preview_requires_every_fence(self) -> None:
+        operation_id, digest = self._prepared(operation_id="reset-guard-0001")
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    "UPDATE ep_operational_reset_operations SET updated_at='forged' WHERE operation_id=?",
+                    (operation_id,),
+                )
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    "INSERT INTO ep_operational_identity_tombstones VALUES(?,?,?,?,?)",
+                    ("run_id", "forged", None, operation_id, "now"),
+                )
+        self.assertEqual(
+            reset.abort(self.root, operation_id=operation_id, plan_digest=digest)["state"],
+            "ABORTED",
+        )
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            connection.execute("DROP TRIGGER ep_operational_reset_block_ep_submissions_insert")
+        plan = reset.preview(self.root)
+        self.assertIn("WRITER_FENCE_INCOMPLETE", plan["blocking_codes"])
+        self.assertIn("ep_operational_reset_block_ep_submissions_insert",
+                      plan["missing_writer_fences"])
+
+    def test_finish_reproves_backup_database_bindings_and_all_active_ingest_routes(self) -> None:
+        self._populate()
+        operation_id, digest = self._prepared(operation_id="reset-finish-fence-0001")
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        delayed = self.root / "file-inbox" / "delayed.json"
+        delayed.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(reset.OperationalResetError,
+                                    "ARCHIVE_RECONCILIATION_AMBIGUOUS"):
+            reset.finish(self.root, operation_id=operation_id, plan_digest=digest)
+        self.assertEqual(reset.status(self.root, operation_id=operation_id)["operation"]["state"],
+                         "VERIFIED")
+        delayed.unlink()
+        pending = self.root / "runtime" / "pending-central-data-import.json"
+        pending.parent.mkdir(exist_ok=True)
+        pending.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(reset.OperationalResetError,
+                                    "POST_RESET_VERIFICATION_FAILED"):
+            reset.finish(self.root, operation_id=operation_id, plan_digest=digest)
+        pending.unlink()
+        self.assertEqual(
+            reset.finish(self.root, operation_id=operation_id, plan_digest=digest)["state"],
+            "COMPLETED",
+        )
+
+    def test_nested_preserved_external_inventory_is_explicit_and_unknown_appdata_blocks(self) -> None:
+        operations = self.root / "operations" / "update-known-0001"
+        operations.mkdir(parents=True)
+        (operations / "operation.json").write_text("{}", encoding="utf-8")
+        plan = reset.preview(self.root)
+        self.assertNotIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", plan["blocking_codes"])
+        classified = {str(item["path"]): item["classification"] for item in plan["preserved_external"]}
+        self.assertEqual(classified["operations/update-known-0001/operation.json"],
+                         "INSTALLATION_OPERATION_AUDIT")
+        operation_unknown = operations / "user-payload.bin"
+        operation_unknown.write_bytes(b"keep")
+        self.assertIn("operations/update-known-0001/user-payload.bin",
+                      reset.preview(self.root)["unknown_external_paths"])
+        operation_unknown.unlink()
+        runtime = self.root / "runtime"
+        runtime.mkdir(exist_ok=True)
+        unknown = runtime / "user-payload.bin"
+        unknown.write_bytes(b"keep")
+        blocked = reset.preview(self.root)
+        self.assertIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", blocked["blocking_codes"])
+        self.assertIn("runtime/user-payload.bin", blocked["unknown_external_paths"])
+        self.assertEqual(unknown.read_bytes(), b"keep")
+
+    def test_cli_argument_and_internal_errors_are_stable_secret_free_contracts(self) -> None:
+        def invoke(arguments: list[str]) -> tuple[int, dict[str, object]]:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = reset.main(arguments)
+            return code, json.loads(output.getvalue())
+
+        code, receipt = invoke([])
+        self.assertEqual((code, receipt["error_code"]), (2, "CLI_ARGUMENT_INVALID"))
+        required = {
+            "contract_version", "product", "command", "operation_id", "state", "allowed",
+            "target", "profile", "dataset_generation", "plan_digest",
+            "relevant_revision_digest", "backup", "counts", "blockers", "integrity",
+            "preserved_bindings_digest", "error_code",
+        }
+        self.assertTrue(required.issubset(receipt))
+        with patch.object(reset, "preview", side_effect=ValueError("secret=do-not-print")):
+            code, receipt = invoke(["preview", "--data-root", str(self.root)])
+        self.assertEqual((code, receipt["error_code"]), (2, "MAINTENANCE_COMMAND_FAILED"))
+        self.assertNotIn("do-not-print", json.dumps(receipt))
+        self.assertIsNone(receipt["target"]["database_path"])
+
+    def test_central_chat_writer_enables_foreign_keys_on_the_used_connection(self) -> None:
+        self._populate()
+        statements: list[str] = []
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            submission_id = str(connection.execute(
+                "SELECT submission_id FROM ep_submissions ORDER BY created_at LIMIT 1"
+            ).fetchone()[0])
+            connection.execute(
+                "INSERT INTO ep_execution_runs VALUES(?,?,?,?,?,?)",
+                ("run-chat-fk", "project-a", "BLOCKED", "now", "now", None),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches("
+                "submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (submission_id, "project-a", "repo-a", "run-chat-fk", "BLOCKED",
+                 "CENTRAL:prompt", "now", "now"),
+            )
+
+        real_connection = sqlite_connection
+
+        @contextmanager
+        def observed_connection(*args: object, **kwargs: object):
+            with real_connection(*args, **kwargs) as connection:
+                connection.set_trace_callback(statements.append)
+                yield connection
+
+        with patch.object(server.storage, "sqlite_connection", observed_connection):
+            server._central_console_append_chat_message(
+                self.root, "project-a", "run-chat-fk", "user", "safe",
+            )
+        self.assertTrue(any(statement.casefold() == "pragma foreign_keys=on"
+                            for statement in statements))
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            self.assertEqual(connection.execute(
+                "SELECT content FROM execution_chat_messages WHERE run_id='run-chat-fk'"
+            ).fetchone(), ("safe",))
+
+    def test_reset_exception_paths_release_sqlite_connections_without_resource_warnings(self) -> None:
+        self._populate()
+        operation_id, digest = self._prepared(operation_id="reset-resource-0001")
+        with warnings.catch_warnings(record=True) as observed:
+            warnings.simplefilter("always", ResourceWarning)
+            with patch.object(reset, "_delete_operational", side_effect=RuntimeError("crash")):
+                with self.assertRaises(RuntimeError):
+                    reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+            gc.collect()
+        self.assertFalse([item for item in observed if item.category is ResourceWarning])
 
     def test_shared_json_contract_contains_no_verifier(self) -> None:
         self._populate()

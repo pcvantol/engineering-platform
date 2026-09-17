@@ -4712,6 +4712,10 @@ def _central_console_append_chat_message(
         raise CodexChatError("Het chatbericht bevat geen bewaarbare tekst.", code="CHAT_REQUEST_INVALID")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=CHAT_RETENTION_DAYS)).isoformat()
     with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        if connection.execute("PRAGMA foreign_keys").fetchone() != (1,):
+            raise ValueError("CHAT_FOREIGN_KEY_ENFORCEMENT_UNAVAILABLE")
+        connection.execute("BEGIN IMMEDIATE")
         belongs = connection.execute(
             "SELECT 1 FROM ep_parity_lifecycle_dispatches AS dispatch "
             "JOIN ep_execution_runs AS run ON run.run_id=dispatch.run_id "

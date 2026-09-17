@@ -547,7 +547,8 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
         )
     }
     if "ep_operational_reset_operations" in tables and connection.execute(
-        "SELECT 1 FROM ep_operational_reset_operations WHERE state!='COMPLETED' LIMIT 1"
+        "SELECT 1 FROM ep_operational_reset_operations "
+        "WHERE state NOT IN ('COMPLETED','ABORTED') LIMIT 1"
     ).fetchone() is not None:
         raise SubmissionError("PLATFORM_MAINTENANCE_ACTIVE", 503)
     _transport(request.transport)

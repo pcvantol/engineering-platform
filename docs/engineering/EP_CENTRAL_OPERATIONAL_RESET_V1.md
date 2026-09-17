@@ -47,6 +47,16 @@ approved only by repeating every exact `fk:<child>:<rowid>:<parent>:<index>`
 identity emitted by that plan. Findings touching preserved or unknown state
 remain blockers.
 
+`apply` accepts only `AUTHORIZED`, `ARTIFACTS_ARCHIVING` or
+`ARTIFACTS_ARCHIVED`; its safe idempotent readback states are `DB_APPLIED` and
+`VERIFIED`. It rejects `ABORTED`, `COMPLETED`, `FAILED` and every unknown state.
+Every transition is compare-and-set and is independently enforced by a
+maintenance-owner state trigger. Reset-operation bindings and tombstones are
+immutable to ordinary CENTRAL connections; a connection-local owning
+capability is present only on the maintenance service's connections. Preview
+requires the complete schema-derived normal-writer trigger set plus every
+maintenance-table guard before it can be allowed.
+
 Before the first external effect, `abort` may move `PREPARING` or `AUTHORIZED`
 to terminal `ABORTED` and release the fence. It is rejected after artifact
 archiving or database apply starts. A failed-backup resume accepts only the
@@ -57,6 +67,9 @@ The CLI emits `operational-reset-v1` JSON with stable top-level product,
 command, operation, state, allowed, target, profile, generation, plan/revision,
 backup, counts, blockers, integrity and preserved-binding fields. Protected
 credential verifiers and row contents never appear in that receipt.
+Argument, storage and unexpected command failures use the same top-level
+shape and a stable `error_code`; exception text, raw verifier material and
+operator-selected paths are not copied into error receipts.
 
 ## Schema-owned classification
 
@@ -124,8 +137,9 @@ namespaces. External textual identities are random/immutable and tombstoned.
 
 ## External storage
 
-The active `artifacts/` and `file-inbox/` trees are hashed into the plan and
-protected backup, moved beneath
+The active `artifacts/`, `file-inbox/` and
+`runtime/central-data-imports/` trees are hashed into the plan and protected
+backup, moved beneath
 `operational-reset-archive/<operation-id>/`, and recreated empty. This prevents
 an Inbox watcher or artifact lookup from immediately re-projecting the old
 dataset. A symlink or non-regular entry fails closed.
@@ -140,6 +154,14 @@ lock are `SYSTEM_RUNTIME_CONTROL`. `server.json`, `runtime-identity.json`,
 `UNKNOWN_OR_UNSUPPORTED` and blocks prepare. Source repositories, canonical
 documents, Git worktrees, user workspaces and other installations are never
 targets.
+
+Known preserved directories are also inventoried recursively. Only exact
+product-owned runtime records, installer journal/staging shapes, migration
+receipts, legacy backups and reset-archive layouts receive a preserve
+classification. An arbitrary file hidden inside `runtime/`, `operations/`,
+`recovery/`, `migration/`, `backups/` or a reset archive is unsupported and
+blocks prepare without being moved or deleted. A pending CENTRAL import is an
+explicit active-ingest blocker.
 
 ## Protected backup and recovery
 
@@ -157,6 +179,16 @@ Verification reopens the backup in an isolated read-only connection, runs
 file. Known purge-local FK defects may remain faithfully present in the backup;
 that is recorded, not called semantically clean.
 
+Backup publication is staged in a new private sibling and atomically renamed
+to the operation-ID destination only after full restore verification. Nested
+source or destination symlinks and pre-existing destination bytes are never
+followed or overwritten. A complete destination left by a crash is reusable
+only when its operation, plan, database and every file verify exactly; partial
+staging remains preserved for diagnosis while `resume` creates a fresh staging
+snapshot for the same durable operation. The stored manifest-file digest is
+rechecked by `apply`, `verify`, readback and finalization, not merely recomputed
+from whichever manifest happens to be present.
+
 After an interruption, use `status` and `resume` with the same operation ID
 and plan digest. A partial external move is reconciled by exact planned hashes.
 The database purge and generation change are one `BEGIN IMMEDIATE` transaction;
@@ -165,6 +197,13 @@ inside that uncommitted transaction, so another connection never observes an
 unfenced write window. A pre-commit crash leaves no partial DB purge. A
 post-commit crash resumes at verification. Forward reconciliation is the
 default.
+
+`finish` does not trust an earlier `VERIFIED` receipt by itself. While the
+installation lock and durable writer fence are still active it re-verifies the
+protected backup, quick/FK checks, operational emptiness, dataset generation,
+preserved bindings and all external ingest routes. A delayed Inbox/import file
+therefore leaves the operation in maintenance instead of being admitted after
+the fence is released.
 
 Do not automatically copy the backup over live CENTRAL: an old database could
 undo later revocations, consumed authority or external effects. An exceptional
@@ -186,7 +225,9 @@ state occurred. That owning defect shape is reproducible and could create the
 observed shape.
 
 Schema 68 changes the declared chat parent to canonical `ep_execution_runs`
-and makes the owning Console writer verify the canonical run before insert.
+and makes the owning Console writer enable and read back `foreign_keys=ON` on
+the exact write connection, lock the write transaction, and verify the
+canonical run before insert.
 Reset-owned connections enforce foreign keys throughout maintenance. Migration
 copies chat rows unchanged and refuses any row without that canonical run; it
 creates no fictitious prompt parent and deletes no chat row. Correct chat

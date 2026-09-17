@@ -20,6 +20,7 @@ import pwd
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 from typing import Iterator
 
@@ -39,6 +40,10 @@ _ACTIVE_STATES = frozenset({
     "PREPARING", "AUTHORIZED", "ARTIFACTS_ARCHIVING", "ARTIFACTS_ARCHIVED",
     "DB_APPLIED", "VERIFIED", "FAILED",
 })
+_APPLY_ENTRY_STATES = frozenset({
+    "AUTHORIZED", "ARTIFACTS_ARCHIVING", "ARTIFACTS_ARCHIVED",
+})
+_APPLY_IDEMPOTENT_STATES = frozenset({"DB_APPLIED", "VERIFIED"})
 _RESET_TABLES = frozenset({
     "ep_operational_reset_operations", "ep_operational_dataset_state",
     "ep_operational_identity_tombstones",
@@ -130,7 +135,7 @@ _OPERATIONAL_METADATA_KEYS = frozenset({
     central_database.MAINTENANCE_LAST_ATTEMPT_KEY,
     central_database.PROVIDER_CAPACITY_HISTORY_KEY,
 })
-_EFFECT_DIRECTORIES = ("artifacts", "file-inbox")
+_EFFECT_DIRECTORIES = ("artifacts", "file-inbox", "runtime/central-data-imports")
 _KNOWN_TOP_LEVEL = frozenset({
     central_database.DATABASE_FILENAME, f"{central_database.DATABASE_FILENAME}-journal",
     f"{central_database.DATABASE_FILENAME}-shm", f"{central_database.DATABASE_FILENAME}-wal",
@@ -144,6 +149,17 @@ _KNOWN_TOP_LEVEL = frozenset({
 _VERSIONED_RECOVERY_BACKUP = re.compile(
     r"epdata\.sqlite\.pre-(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.backup"
 )
+_MAINTENANCE_GUARD_TRIGGERS = frozenset({
+    "ep_operational_reset_operations_insert_owner",
+    "ep_operational_reset_operations_update_owner",
+    "ep_operational_reset_operations_delete_immutable",
+    "ep_operational_dataset_state_insert_owner",
+    "ep_operational_dataset_state_update_owner",
+    "ep_operational_dataset_state_delete_immutable",
+    "ep_operational_identity_tombstones_insert_owner",
+    "ep_operational_identity_tombstones_update_immutable",
+    "ep_operational_identity_tombstones_delete_immutable",
+})
 
 
 class OperationalResetError(RuntimeError):
@@ -158,6 +174,9 @@ class OperationalResetError(RuntimeError):
 def _central_connection(*arguments: object, **keywords: object) -> Iterator[sqlite3.Connection]:
     """Open owning CENTRAL with enforced referential integrity for maintenance."""
     with sqlite_connection(*arguments, **keywords) as connection:
+        # Persistent maintenance triggers call this connection-local function.
+        # Normal product connections cannot forge owning reset/audit writes.
+        connection.create_function("ep_reset_maintenance_owner", 0, lambda: 1)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")
         yield connection
@@ -249,6 +268,95 @@ def _install_writer_blocks(connection: sqlite3.Connection) -> None:
             )
 
 
+def _expected_writer_fences(tables: set[str]) -> set[str]:
+    return {
+        f"ep_operational_reset_block_{table}_{operation.casefold()}"
+        for table in tables - _RESET_TABLES
+        for operation in ("INSERT", "UPDATE", "DELETE")
+    } | set(_MAINTENANCE_GUARD_TRIGGERS)
+
+
+def _install_maintenance_guards(connection: sqlite3.Connection) -> None:
+    """Make reset state, audit bindings and tombstones owner-only/immutable."""
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS ep_operational_reset_operations_insert_owner "
+        "BEFORE INSERT ON ep_operational_reset_operations "
+        "WHEN ep_reset_maintenance_owner()!=1 BEGIN "
+        "SELECT RAISE(ABORT,'EP_RESET_MAINTENANCE_OWNER_REQUIRED'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS ep_operational_reset_operations_update_owner "
+        "BEFORE UPDATE ON ep_operational_reset_operations BEGIN "
+        "SELECT CASE WHEN ep_reset_maintenance_owner()!=1 THEN "
+        "RAISE(ABORT,'EP_RESET_MAINTENANCE_OWNER_REQUIRED') END; "
+        "SELECT CASE WHEN NEW.operation_id!=OLD.operation_id OR NEW.actor!=OLD.actor "
+        "OR NEW.plan_digest!=OLD.plan_digest OR NEW.target_digest!=OLD.target_digest "
+        "OR NEW.source_revision!=OLD.source_revision OR NEW.request_digest!=OLD.request_digest "
+        "OR NEW.plan_json!=OLD.plan_json OR NEW.allowed_fk_json!=OLD.allowed_fk_json "
+        "OR NEW.backup_root!=OLD.backup_root OR NEW.generation_before!=OLD.generation_before "
+        "OR NEW.created_at!=OLD.created_at THEN "
+        "RAISE(ABORT,'EP_RESET_AUDIT_BINDING_IMMUTABLE') END; "
+        "SELECT CASE WHEN ((NEW.backup_path IS NOT OLD.backup_path "
+        "OR NEW.backup_sha256 IS NOT OLD.backup_sha256 "
+        "OR NEW.backup_manifest_digest IS NOT OLD.backup_manifest_digest) "
+        "AND NOT (OLD.state='PREPARING' AND NEW.state='AUTHORIZED')) "
+        "OR (OLD.state='PREPARING' AND NEW.state='AUTHORIZED' AND "
+        "(NEW.backup_path IS NULL OR NEW.backup_sha256 IS NULL "
+        "OR NEW.backup_manifest_digest IS NULL)) "
+        "OR (NEW.generation_after IS NOT OLD.generation_after AND NOT "
+        "(OLD.state='ARTIFACTS_ARCHIVED' AND NEW.state='DB_APPLIED')) "
+        "OR (NEW.verification_json IS NOT OLD.verification_json AND NOT "
+        "((OLD.state='DB_APPLIED' AND NEW.state='VERIFIED') OR "
+        "(OLD.state='VERIFIED' AND NEW.state='COMPLETED'))) THEN "
+        "RAISE(ABORT,'EP_RESET_AUDIT_EFFECT_IMMUTABLE') END; "
+        "SELECT CASE WHEN NEW.state!=OLD.state AND NOT ("
+        "(OLD.state='PREPARING' AND NEW.state IN ('AUTHORIZED','ABORTED','FAILED')) OR "
+        "(OLD.state='AUTHORIZED' AND NEW.state IN ('ARTIFACTS_ARCHIVING','ABORTED','FAILED')) OR "
+        "(OLD.state='ARTIFACTS_ARCHIVING' AND NEW.state IN ('ARTIFACTS_ARCHIVED','FAILED')) OR "
+        "(OLD.state='ARTIFACTS_ARCHIVED' AND NEW.state IN ('DB_APPLIED','FAILED')) OR "
+        "(OLD.state='DB_APPLIED' AND NEW.state IN ('VERIFIED','FAILED')) OR "
+        "(OLD.state='VERIFIED' AND NEW.state IN ('COMPLETED','FAILED'))) THEN "
+        "RAISE(ABORT,'EP_RESET_STATE_TRANSITION_INVALID') END; END"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS ep_operational_reset_operations_delete_immutable "
+        "BEFORE DELETE ON ep_operational_reset_operations BEGIN "
+        "SELECT RAISE(ABORT,'EP_RESET_AUDIT_IMMUTABLE'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS ep_operational_dataset_state_insert_owner "
+        "BEFORE INSERT ON ep_operational_dataset_state "
+        "WHEN ep_reset_maintenance_owner()!=1 BEGIN "
+        "SELECT RAISE(ABORT,'EP_RESET_MAINTENANCE_OWNER_REQUIRED'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS ep_operational_dataset_state_update_owner "
+        "BEFORE UPDATE ON ep_operational_dataset_state BEGIN "
+        "SELECT CASE WHEN ep_reset_maintenance_owner()!=1 THEN "
+        "RAISE(ABORT,'EP_RESET_MAINTENANCE_OWNER_REQUIRED') END; "
+        "SELECT CASE WHEN NEW.singleton!=OLD.singleton OR NEW.generation NOT IN "
+        "(OLD.generation,OLD.generation+1) THEN "
+        "RAISE(ABORT,'EP_RESET_DATASET_GENERATION_INVALID') END; END"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS ep_operational_dataset_state_delete_immutable "
+        "BEFORE DELETE ON ep_operational_dataset_state BEGIN "
+        "SELECT RAISE(ABORT,'EP_RESET_DATASET_STATE_IMMUTABLE'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS ep_operational_identity_tombstones_insert_owner "
+        "BEFORE INSERT ON ep_operational_identity_tombstones "
+        "WHEN ep_reset_maintenance_owner()!=1 BEGIN "
+        "SELECT RAISE(ABORT,'EP_RESET_MAINTENANCE_OWNER_REQUIRED'); END"
+    )
+    for operation in ("UPDATE", "DELETE"):
+        connection.execute(
+            f"CREATE TRIGGER IF NOT EXISTS ep_operational_identity_tombstones_{operation.casefold()}_immutable "
+            f"BEFORE {operation} ON ep_operational_identity_tombstones BEGIN "
+            "SELECT RAISE(ABORT,'EP_RESET_TOMBSTONE_IMMUTABLE'); END"
+        )
+
+
 def install_schema(connection: sqlite3.Connection) -> None:
     """Install schema-68 maintenance state and the canonical chat relation."""
     tables = _tables(connection)
@@ -295,10 +403,13 @@ def install_schema(connection: sqlite3.Connection) -> None:
         "singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL CHECK(generation>=0),"
         "updated_at TEXT NOT NULL)"
     )
-    connection.execute(
-        "INSERT OR IGNORE INTO ep_operational_dataset_state(singleton,generation,updated_at) "
-        "VALUES(1,0,CURRENT_TIMESTAMP)"
-    )
+    if connection.execute(
+        "SELECT 1 FROM ep_operational_dataset_state WHERE singleton=1"
+    ).fetchone() is None:
+        connection.execute(
+            "INSERT INTO ep_operational_dataset_state(singleton,generation,updated_at) "
+            "VALUES(1,0,CURRENT_TIMESTAMP)"
+        )
     connection.execute(
         "CREATE TABLE IF NOT EXISTS ep_operational_reset_operations ("
         "operation_id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ("
@@ -320,6 +431,7 @@ def install_schema(connection: sqlite3.Connection) -> None:
         "operation_id TEXT NOT NULL REFERENCES ep_operational_reset_operations(operation_id),"
         "recorded_at TEXT NOT NULL,PRIMARY KEY(identity_kind,identity_digest))"
     )
+    _install_maintenance_guards(connection)
     _install_writer_blocks(connection)
 
 
@@ -407,23 +519,43 @@ def _logical_digest(
     return "sha256:" + digest.hexdigest()
 
 
-def _safe_files(directory: Path, logical_root: str) -> list[dict[str, object]]:
+def _walk_regular_files(directory: Path, *, code: str) -> list[Path]:
+    """Walk without following any symlink or special-file boundary."""
     if not directory.exists():
         return []
     if directory.is_symlink() or not directory.is_dir():
-        raise OperationalResetError("EXTERNAL_PATH_UNSAFE", logical_root)
+        raise OperationalResetError(code)
+    files: list[Path] = []
+    pending = [directory]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = sorted(os.scandir(current), key=lambda entry: entry.name)
+        except OSError as error:
+            raise OperationalResetError(code) from error
+        for entry in entries:
+            try:
+                if entry.is_symlink():
+                    raise OperationalResetError(code)
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    files.append(Path(entry.path))
+                else:
+                    raise OperationalResetError(code)
+            except OSError as error:
+                raise OperationalResetError(code) from error
+    return sorted(files)
+
+
+def _safe_files(directory: Path, logical_root: str) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for path in sorted(directory.rglob("*")):
-        if path.is_symlink():
-            raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE", str(path))
-        if path.is_file():
-            relative = path.relative_to(directory).as_posix()
-            rows.append({
-                "root": logical_root, "path": relative, "size_bytes": path.stat().st_size,
-                "sha256": _file_digest(path), "effect": "ARCHIVE_OUTSIDE_ACTIVE_ROUTE",
-            })
-        elif not path.is_dir():
-            raise OperationalResetError("EXTERNAL_PATH_UNSAFE", str(path))
+    for path in _walk_regular_files(directory, code="EXTERNAL_SYMLINK_UNSAFE"):
+        relative = path.relative_to(directory).as_posix()
+        rows.append({
+            "root": logical_root, "path": relative, "size_bytes": path.stat().st_size,
+            "sha256": _file_digest(path), "effect": "ARCHIVE_OUTSIDE_ACTIVE_ROUTE",
+        })
     return rows
 
 
@@ -431,16 +563,71 @@ def _known_top_level(name: str) -> bool:
     return name in _KNOWN_TOP_LEVEL or _VERSIONED_RECOVERY_BACKUP.fullmatch(name) is not None
 
 
+def _nested_preserved_classification(root_name: str, relative: str, path: Path) -> str | None:
+    """Classify only product-owned shapes inside preserved top-level roots."""
+    parts = Path(relative).parts
+    if root_name == "runtime":
+        if relative in {
+            "store-authority.json", "engineering-dashboard-relay",
+            "server-launchagent.out.log", "server-launchagent.err.log",
+        }:
+            return "INSTALLATION_RUNTIME"
+        if relative == "pending-central-data-import.json":
+            return "ACTIVE_INGEST_CONTROL"
+        return None
+    if root_name == "operations":
+        if len(parts) == 1 and path.is_file() and parts[0].endswith(".json"):
+            return "INSTALLATION_OPERATION_AUDIT"
+        if parts and _OPERATION.fullmatch(parts[0]) is not None:
+            operation_root = path.parents[len(parts) - 2]
+            if (operation_root / "operation.json").is_file() and len(parts) >= 2:
+                if parts[1] in {"operation.json", "candidate-runtime.json"} and len(parts) == 2:
+                    return "INSTALLATION_OPERATION_AUDIT"
+                if parts[1:] == ("backup", "central.sqlite"):
+                    return "FORENSIC_OR_RECOVERY"
+                if parts[1] in {"build", "download", "pip-cache", "candidate-venv"}:
+                    return "INSTALLATION_RUNTIME_STAGING"
+        return None
+    if root_name == "migration":
+        if (len(parts) == 1 and parts[0].endswith(".json")) or (
+            len(parts) == 2 and parts[0] == "contamination-attestations"
+            and parts[1].endswith(".json")
+        ):
+            return "MIGRATION_AUDIT"
+        return None
+    if root_name == "backups":
+        if len(parts) == 1 and re.fullmatch(r"legacy-schema40-[A-Za-z0-9._-]+\.db", parts[0]):
+            return "FORENSIC_OR_RECOVERY"
+        return None
+    if root_name == "recovery":
+        # The topology reserves this root, but no current product writer owns
+        # an arbitrary nested payload shape. Fail closed until one is defined.
+        return None
+    if root_name == "operational-reset-archive":
+        if (
+            len(parts) >= 3 and _OPERATION.fullmatch(parts[0]) is not None
+            and (parts[1] in {"artifacts", "file-inbox"}
+                 or parts[1:3] == ("runtime", "central-data-imports"))
+        ):
+            return "MAINTENANCE_AUDIT_OR_RECOVERY"
+        return None
+    return None
+
+
 def _external_inventory(
     data_root: Path,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str]]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str], list[str]]:
     unknown = sorted(path.name for path in data_root.iterdir() if not _known_top_level(path.name))
     rows: list[dict[str, object]] = []
     for name in _EFFECT_DIRECTORIES:
-        rows.extend(_safe_files(data_root / name, name))
+        rows.extend(_safe_files(data_root / Path(name), name))
     preserved: list[dict[str, object]] = []
+    active_ingest_controls: list[str] = []
     for path in sorted(data_root.iterdir(), key=lambda item: item.name):
-        if path.name in _EFFECT_DIRECTORIES or not _known_top_level(path.name):
+        if path.name in {Path(name).parts[0] for name in _EFFECT_DIRECTORIES} or not _known_top_level(path.name):
+            if path.name != "runtime":
+                continue
+        if path.name in {"artifacts", "file-inbox"}:
             continue
         if path.name == central_database.DATABASE_FILENAME:
             classification = "INSTALLATION_AND_CONFIGURATION"
@@ -465,7 +652,26 @@ def _external_inventory(
         if path.is_file() and not path.is_symlink() and path.name != central_database.DATABASE_FILENAME:
             entry.update({"size_bytes": path.stat().st_size, "sha256": _file_digest(path)})
         preserved.append(entry)
-    return rows, preserved, unknown
+        if path.is_dir() and not path.is_symlink() and path.name in {
+            "runtime", "operations", "recovery", "migration", "backups",
+            "operational-reset-archive",
+        }:
+            for nested in _walk_regular_files(path, code="EXTERNAL_SYMLINK_UNSAFE"):
+                relative = nested.relative_to(path).as_posix()
+                if path.name == "runtime" and relative.startswith("central-data-imports/"):
+                    continue
+                classification = _nested_preserved_classification(path.name, relative, nested)
+                if classification is None:
+                    unknown.append(f"{path.name}/{relative}")
+                    continue
+                preserved.append({
+                    "path": f"{path.name}/{relative}", "classification": classification,
+                    "effect": "PRESERVE", "kind": "file", "size_bytes": nested.stat().st_size,
+                    "sha256": _file_digest(nested),
+                })
+                if classification == "ACTIVE_INGEST_CONTROL":
+                    active_ingest_controls.append(f"{path.name}/{relative}")
+    return rows, preserved, sorted(set(unknown)), active_ingest_controls
 
 
 def _runtime_activity(data_root: Path) -> dict[str, object]:
@@ -552,13 +758,21 @@ def preview(data_root: Path) -> dict[str, object]:
                 "SELECT generation FROM ep_operational_dataset_state WHERE singleton=1"
             ).fetchone()[0]) if "ep_operational_dataset_state" in tables else -1
             schema_objects = _schema_objects(connection)
+            installed_triggers = {
+                str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger'"
+                )
+            }
+            missing_writer_fences = sorted(
+                _expected_writer_fences(tables) - installed_triggers
+            )
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError) as error:
         raise OperationalResetError("CENTRAL_INSPECTION_FAILED") from error
     external_error: str | None = None
     try:
-        external, preserved_external, unknown_paths = _external_inventory(root)
+        external, preserved_external, unknown_paths, active_ingest_controls = _external_inventory(root)
     except OperationalResetError as error:
-        external, preserved_external, unknown_paths = [], [], []
+        external, preserved_external, unknown_paths, active_ingest_controls = [], [], [], []
         external_error = error.code
     unsafe_preserved_paths = [
         str(item["path"]) for item in preserved_external if item["kind"] == "symlink"
@@ -573,6 +787,10 @@ def preview(data_root: Path) -> dict[str, object]:
         blockers.append("TABLE_CLASSIFICATION_INCOMPLETE")
     if unknown_paths:
         blockers.append("EXTERNAL_CLASSIFICATION_INCOMPLETE")
+    if active_ingest_controls:
+        blockers.append("ACTIVE_INGEST_PENDING")
+    if missing_writer_fences:
+        blockers.append("WRITER_FENCE_INCOMPLETE")
     if unsafe_preserved_paths:
         blockers.append("EXTERNAL_SYMLINK_UNSAFE")
     if external_error is not None:
@@ -607,7 +825,9 @@ def preview(data_root: Path) -> dict[str, object]:
         ],
         "unsafe_preserved_paths": unsafe_preserved_paths,
         "schema_objects": schema_objects,
+        "missing_writer_fences": missing_writer_fences,
         "external_inventory_error": external_error,
+        "active_ingest_controls": active_ingest_controls,
         "unknown_tables": unknown_tables,
         "missing_tables": missing_tables, "unknown_external_paths": unknown_paths,
         "effect_set": effect_set,
@@ -647,7 +867,7 @@ def _operation_lock(data_root: Path, operation_id: str) -> Iterator[None]:
             pass
 
 
-def _backup_destination(backup_root: Path, operation_id: str) -> Path:
+def _backup_destination(backup_root: Path, operation_id: str) -> tuple[Path, Path | None]:
     expanded = backup_root.expanduser().absolute()
     if expanded.is_symlink():
         raise OperationalResetError("BACKUP_PATH_UNSAFE")
@@ -664,35 +884,132 @@ def _backup_destination(backup_root: Path, operation_id: str) -> Path:
     destination = root / operation_id
     if destination.is_symlink():
         raise OperationalResetError("BACKUP_PATH_UNSAFE")
-    destination.mkdir(mode=0o700, exist_ok=True)
-    destination.chmod(0o700)
-    return destination
+    if destination.exists():
+        if not destination.is_dir():
+            raise OperationalResetError("BACKUP_PATH_UNSAFE")
+        try:
+            if next(destination.iterdir(), None) is not None:
+                # A crash may have atomically published the exact same complete
+                # backup before its DB binding was stored. The caller may only
+                # reuse it after full operation/plan verification.
+                return destination, None
+        except OSError as error:
+            raise OperationalResetError("BACKUP_PATH_UNSAFE") from error
+        raise OperationalResetError("BACKUP_DESTINATION_PREEXISTS")
+    staging = Path(tempfile.mkdtemp(prefix=f".{operation_id}.", suffix=".partial", dir=root))
+    staging.chmod(0o700)
+    return staging, destination
+
+
+def _bound_regular_file(root: Path, relative: str, *, code: str) -> Path:
+    logical = Path(relative)
+    if logical.is_absolute() or not logical.parts or any(part in {"", ".", ".."} for part in logical.parts):
+        raise OperationalResetError(code)
+    parent = _trusted_directory(root / logical.parent, code=code)
+    try:
+        parent.relative_to(root)
+    except ValueError as error:
+        raise OperationalResetError(code) from error
+    candidate = parent / logical.name
+    try:
+        metadata = candidate.lstat()
+    except OSError as error:
+        raise OperationalResetError(code) from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise OperationalResetError(code)
+    return candidate
+
+
+def _secure_mkdirs(root: Path, relative: Path, *, code: str) -> Path:
+    """Create a relative directory tree only after checking every component."""
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise OperationalResetError(code)
+    current = root
+    for part in relative.parts:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            try:
+                current.mkdir(mode=0o700)
+                metadata = current.lstat()
+            except OSError as error:
+                raise OperationalResetError(code) from error
+        except OSError as error:
+            raise OperationalResetError(code) from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise OperationalResetError(code)
+    return current
+
+
+def _exclusive_copy(source: Path, target: Path) -> None:
+    """Copy one regular file without following source or destination symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    source_fd = os.open(source, flags)
+    try:
+        metadata = os.fstat(source_fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OperationalResetError("BACKUP_SOURCE_CHANGED")
+        target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(source_fd, "rb", closefd=False) as source_handle, os.fdopen(
+                target_fd, "wb", closefd=False,
+            ) as target_handle:
+                shutil.copyfileobj(source_handle, target_handle, length=1024 * 1024)
+        finally:
+            os.close(target_fd)
+    except FileExistsError as error:
+        raise OperationalResetError("BACKUP_DESTINATION_CONFLICT") from error
+    finally:
+        os.close(source_fd)
 
 
 def _copy_external(data_root: Path, destination: Path, entries: list[dict[str, object]]) -> None:
     for entry in entries:
-        source = data_root / str(entry["root"]) / str(entry["path"])
-        target = destination / "files" / str(entry["root"]) / str(entry["path"])
-        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if source.is_symlink() or not source.is_file() or _file_digest(source) != entry["sha256"]:
+        source_root = _trusted_directory(
+            data_root / Path(str(entry["root"])), code="BACKUP_SOURCE_CHANGED",
+        )
+        source = _bound_regular_file(
+            source_root, str(entry["path"]), code="BACKUP_SOURCE_CHANGED",
+        )
+        relative_target = Path("files") / Path(str(entry["root"])) / Path(str(entry["path"]))
+        if relative_target.is_absolute() or ".." in relative_target.parts:
+            raise OperationalResetError("BACKUP_DESTINATION_CONFLICT")
+        target = destination / relative_target
+        _secure_mkdirs(
+            destination, relative_target.parent, code="BACKUP_PATH_UNSAFE",
+        )
+        if _file_digest(source) != entry["sha256"]:
             raise OperationalResetError("BACKUP_SOURCE_CHANGED")
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
+        _exclusive_copy(source, target)
+        if _file_digest(source) != entry["sha256"] or _file_digest(target) != entry["sha256"]:
+            raise OperationalResetError("BACKUP_SOURCE_CHANGED")
 
 
 def _backup(
     data_root: Path, operation_id: str, backup_root: Path, plan: dict[str, object],
 ) -> dict[str, object]:
-    destination = _backup_destination(backup_root, operation_id)
+    destination, publish_destination = _backup_destination(backup_root, operation_id)
+    selected_destination = publish_destination or destination
     try:
-        destination.relative_to(data_root)
+        selected_destination.relative_to(data_root)
     except ValueError:
         pass
     else:
         raise OperationalResetError("BACKUP_PATH_INSIDE_ACTIVE_DATA_ROOT")
+    if publish_destination is None:
+        verified = verify_backup(
+            destination, operation_id=operation_id, plan_digest=str(plan["plan_digest"]),
+        )
+        return {
+            "backup_path": str(destination),
+            "backup_sha256": _file_digest(destination / "central.sqlite"),
+            "backup_manifest_digest": verified["manifest_digest"],
+        }
     database_backup = destination / "central.sqlite"
     temporary = destination / ".central.sqlite.partial"
-    temporary.unlink(missing_ok=True)
+    if temporary.exists() or temporary.is_symlink() or database_backup.exists() or database_backup.is_symlink():
+        raise OperationalResetError("BACKUP_DESTINATION_CONFLICT")
     required = (data_root / central_database.DATABASE_FILENAME).stat().st_size + sum(
         int(item["size_bytes"]) for item in plan["external_files"]  # type: ignore[index]
     )
@@ -735,11 +1052,14 @@ def _backup(
         manifest_path = destination / "manifest.json"
         manifest_path.write_bytes(_canonical(manifest) + b"\n")
         manifest_path.chmod(0o600)
+        manifest_digest = _file_digest(manifest_path)
         # Re-read every protected byte; a manifest hash alone is not restore proof.
         verify_backup(destination, operation_id=operation_id, plan_digest=str(plan["plan_digest"]))
+        os.replace(destination, publish_destination)
+        destination = publish_destination
         return {
             "backup_path": str(destination), "backup_sha256": manifest["database"]["sha256"],
-            "backup_manifest_digest": _file_digest(manifest_path),
+            "backup_manifest_digest": manifest_digest,
         }
     except OperationalResetError:
         raise
@@ -749,23 +1069,42 @@ def _backup(
         temporary.unlink(missing_ok=True)
 
 
-def verify_backup(path: Path, *, operation_id: str, plan_digest: str) -> dict[str, object]:
+def verify_backup(
+    path: Path, *, operation_id: str, plan_digest: str,
+    expected_manifest_digest: str | None = None,
+) -> dict[str, object]:
     root = _trusted_directory(path, code="BACKUP_PATH_UNSAFE")
     try:
         if root.is_symlink() or root.stat().st_mode & 0o077:
             raise OperationalResetError("BACKUP_PERMISSIONS_UNSAFE")
-        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-        database = root / "central.sqlite"
+        manifest_path = _bound_regular_file(root, "manifest.json", code="BACKUP_INVALID")
+        manifest_digest = _file_digest(manifest_path)
+        if expected_manifest_digest is not None and manifest_digest != expected_manifest_digest:
+            raise OperationalResetError("BACKUP_MANIFEST_DIGEST_MISMATCH")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        database = _bound_regular_file(root, "central.sqlite", code="BACKUP_INVALID")
         if (
             manifest.get("operation_id") != operation_id or manifest.get("plan_digest") != plan_digest
             or manifest.get("database", {}).get("sha256") != _file_digest(database)
         ):
             raise OperationalResetError("BACKUP_BINDING_INVALID")
-        for entry in manifest.get("included_files", []):
-            candidate = (root / str(entry["path"])).resolve(strict=True)
-            candidate.relative_to(root)
-            if candidate.is_symlink() or _file_digest(candidate) != entry["sha256"]:
+        included_files = manifest.get("included_files", [])
+        if not isinstance(included_files, list):
+            raise OperationalResetError("BACKUP_INVALID")
+        expected_files = {"manifest.json", "central.sqlite"}
+        for entry in included_files:
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                raise OperationalResetError("BACKUP_INVALID")
+            candidate = _bound_regular_file(root, str(entry["path"]), code="BACKUP_FILE_INVALID")
+            if _file_digest(candidate) != entry["sha256"]:
                 raise OperationalResetError("BACKUP_FILE_INVALID")
+            expected_files.add(str(entry["path"]))
+        actual_files = {
+            candidate.relative_to(root).as_posix()
+            for candidate in _walk_regular_files(root, code="BACKUP_FILE_INVALID")
+        }
+        if actual_files != expected_files:
+            raise OperationalResetError("BACKUP_FILE_SET_INVALID")
         with _central_connection(f"file:{database}?mode=ro", uri=True) as connection:
             connection.execute("PRAGMA query_only=ON")
             integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
@@ -773,7 +1112,7 @@ def verify_backup(path: Path, *, operation_id: str, plan_digest: str) -> dict[st
         if integrity != ["ok"] or counts != manifest["database"]["row_counts"]:
             raise OperationalResetError("BACKUP_RESTORE_INTEGRITY_FAILED")
         return {"state": "VERIFIED", "operation_id": operation_id,
-                "manifest_digest": _file_digest(root / "manifest.json")}
+                "manifest_digest": manifest_digest}
     except OperationalResetError:
         raise
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, sqlite3.DatabaseError) as error:
@@ -786,6 +1125,22 @@ def _operation(connection: sqlite3.Connection, operation_id: str) -> dict[str, o
         "SELECT * FROM ep_operational_reset_operations WHERE operation_id=?", (operation_id,)
     ).fetchone()
     return dict(row) if row is not None else None
+
+
+def _transition(
+    connection: sqlite3.Connection, operation_id: str, before: str, after: str,
+    assignments: str = "", parameters: tuple[object, ...] = (),
+) -> None:
+    prefix = f"state='{after}',updated_at=?"
+    if assignments:
+        prefix += "," + assignments
+    cursor = connection.execute(
+        f"UPDATE ep_operational_reset_operations SET {prefix} "
+        "WHERE operation_id=? AND state=?",
+        (_utcnow(), *parameters, operation_id, before),
+    )
+    if cursor.rowcount != 1:
+        raise OperationalResetError("OPERATION_STATE_TRANSITION_CONFLICT")
 
 
 def prepare(
@@ -837,12 +1192,11 @@ def prepare(
             backup = _backup(root, operation_id, backup_root, plan)
             with _central_connection(database) as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    "UPDATE ep_operational_reset_operations SET state='AUTHORIZED',backup_path=?,"
-                    "backup_sha256=?,backup_manifest_digest=?,updated_at=? "
-                    "WHERE operation_id=? AND state='PREPARING'",
+                _transition(
+                    connection, operation_id, "PREPARING", "AUTHORIZED",
+                    "backup_path=?,backup_sha256=?,backup_manifest_digest=?",
                     (backup["backup_path"], backup["backup_sha256"],
-                     backup["backup_manifest_digest"], _utcnow(), operation_id),
+                     backup["backup_manifest_digest"]),
                 )
                 connection.execute("COMMIT")
                 return _public_status(_operation(connection, operation_id) or {})
@@ -902,13 +1256,15 @@ def maintenance_active(data_root: Path) -> bool:
 
 
 def _archive_effects(data_root: Path, operation_id: str, plan: dict[str, object]) -> None:
-    archive = data_root / "operational-reset-archive" / operation_id
-    if archive.is_symlink():
-        raise OperationalResetError("ARCHIVE_PATH_UNSAFE")
-    archive.mkdir(mode=0o700, parents=True, exist_ok=True)
+    archive = _secure_mkdirs(
+        data_root, Path("operational-reset-archive") / operation_id,
+        code="ARCHIVE_PATH_UNSAFE",
+    )
     expected = list(plan["external_files"])  # type: ignore[arg-type]
     for name in _EFFECT_DIRECTORIES:
-        source, target = data_root / name, archive / name
+        relative = Path(name)
+        source, target = data_root / relative, archive / relative
+        _secure_mkdirs(archive, relative.parent, code="ARCHIVE_PATH_UNSAFE")
         if target.exists():
             if target.is_symlink() or not target.is_dir():
                 raise OperationalResetError("ARCHIVE_PATH_UNSAFE")
@@ -918,7 +1274,7 @@ def _archive_effects(data_root: Path, operation_id: str, plan: dict[str, object]
             if source.is_symlink() or not source.is_dir():
                 raise OperationalResetError("EXTERNAL_PATH_UNSAFE", name)
             os.replace(source, target)
-        source.mkdir(mode=0o700, exist_ok=True)
+        source.mkdir(mode=0o700, parents=True, exist_ok=True)
     observed: list[dict[str, object]] = []
     for name in _EFFECT_DIRECTORIES:
         observed.extend(_safe_files(archive / name, name))
@@ -990,128 +1346,161 @@ def apply(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, 
         if row is None or row["plan_digest"] != plan_digest:
             raise OperationalResetError("AUTHORIZED_OPERATION_NOT_FOUND")
         state = str(row["state"])
-        if state in {"DB_APPLIED", "VERIFIED", "COMPLETED"}:
-            return _public_status(row)
         if state == "PREPARING":
             raise OperationalResetError("BACKUP_NOT_AUTHORIZED")
+        if state not in _APPLY_ENTRY_STATES | _APPLY_IDEMPOTENT_STATES:
+            raise OperationalResetError("OPERATION_STATE_INVALID_FOR_APPLY")
+        if not isinstance(row.get("backup_path"), str) or not isinstance(
+            row.get("backup_manifest_digest"), str
+        ):
+            raise OperationalResetError("BACKUP_BINDING_INVALID")
+        verify_backup(
+            Path(str(row["backup_path"])), operation_id=operation_id,
+            plan_digest=plan_digest,
+            expected_manifest_digest=str(row["backup_manifest_digest"]),
+        )
+        if state in _APPLY_IDEMPOTENT_STATES:
+            return _public_status(row)
         plan = json.loads(str(row["plan_json"]))
-        archive = root / "operational-reset-archive" / operation_id
-        if state == "AUTHORIZED" and not archive.exists():
+        if state == "AUTHORIZED":
             current = preview(root)
             if current["source_revision"] != row["source_revision"] or current["plan_digest"] != plan_digest:
                 raise OperationalResetError("SOURCE_REVISION_CHANGED")
-            verify_backup(Path(str(row["backup_path"])), operation_id=operation_id, plan_digest=plan_digest)
-        with _central_connection(database) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                "UPDATE ep_operational_reset_operations SET state='ARTIFACTS_ARCHIVING',updated_at=? "
-                "WHERE operation_id=? AND state IN ('AUTHORIZED','ARTIFACTS_ARCHIVING')",
-                (_utcnow(), operation_id),
-            )
-            connection.execute("COMMIT")
+            with _central_connection(database) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                _transition(connection, operation_id, "AUTHORIZED", "ARTIFACTS_ARCHIVING")
+                connection.execute("COMMIT")
+            state = "ARTIFACTS_ARCHIVING"
+        if state != "ARTIFACTS_ARCHIVING" and state != "ARTIFACTS_ARCHIVED":
+            raise OperationalResetError("OPERATION_STATE_INVALID_FOR_APPLY")
         _archive_effects(root, operation_id, plan)
+        if state == "ARTIFACTS_ARCHIVING":
+            with _central_connection(database) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                _transition(connection, operation_id, "ARTIFACTS_ARCHIVING", "ARTIFACTS_ARCHIVED")
+                connection.execute("COMMIT")
+        verify_backup(
+            Path(str(row["backup_path"])), operation_id=operation_id,
+            plan_digest=plan_digest,
+            expected_manifest_digest=str(row["backup_manifest_digest"]),
+        )
         with _central_connection(database) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                "UPDATE ep_operational_reset_operations SET state='ARTIFACTS_ARCHIVED',updated_at=? "
-                "WHERE operation_id=? AND state='ARTIFACTS_ARCHIVING'", (_utcnow(), operation_id),
-            )
-            connection.execute("COMMIT")
+            try:
+                current = _operation(connection, operation_id)
+                if current is None or current["state"] != "ARTIFACTS_ARCHIVED":
+                    raise OperationalResetError("OPERATION_STATE_TRANSITION_CONFLICT")
+                # Immutable-evidence and maintenance-block triggers are removed and
+                # recreated inside this one uncommitted transaction. Other writers
+                # cannot observe an unfenced schema window.
+                triggers = [
+                    (str(name), str(sql)) for name, sql in connection.execute(
+                        "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name IN ("
+                        + ",".join("?" for _ in (OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION)) + ")",
+                        tuple(sorted(OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION)),
+                    ).fetchall() if sql is not None
+                ]
+                for name, _sql in triggers:
+                    connection.execute(f"DROP TRIGGER {_quote(name)}")
+                _record_tombstones(connection, operation_id)
+                _delete_operational(connection)
+                generation = int(row["generation_before"]) + 1
+                cursor = connection.execute(
+                    "UPDATE ep_operational_dataset_state SET generation=?,updated_at=? "
+                    "WHERE singleton=1 AND generation=?",
+                    (generation, _utcnow(), row["generation_before"]),
+                )
+                if cursor.rowcount != 1:
+                    raise OperationalResetError("DATASET_GENERATION_CONFLICT")
+                for _name, sql in triggers:
+                    connection.execute(sql)
+                if list(connection.execute("PRAGMA foreign_key_check")):
+                    raise OperationalResetError("POST_RESET_FOREIGN_KEY_FAILED")
+                _transition(
+                    connection, operation_id, "ARTIFACTS_ARCHIVED", "DB_APPLIED",
+                    "generation_after=?", (generation,),
+                )
+                connection.execute("COMMIT")
+                return _public_status(_operation(connection, operation_id) or {})
+            except Exception:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+
+
+def _verify_under_lock(
+    root: Path, *, operation_id: str, plan_digest: str, promote: bool,
+) -> dict[str, object]:
+    database = root / central_database.DATABASE_FILENAME
+    with _central_connection(database) as connection:
+        row = _operation(connection, operation_id)
+        if (
+            row is None or row["plan_digest"] != plan_digest
+            or row["state"] not in {"DB_APPLIED", "VERIFIED", "COMPLETED"}
+        ):
+            raise OperationalResetError("RESET_NOT_APPLIED")
+        plan = json.loads(str(row["plan_json"]))
+        quick = [str(item[0]) for item in connection.execute("PRAGMA quick_check")]
+        foreign_keys = list(connection.execute("PRAGMA foreign_key_check"))
+        remaining = {
+            table: _row_count(connection, table)
+            for table in sorted(OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION)
+        }
+        remaining["engineering_metadata[operational_keys]"] = _row_count(
+            connection, "engineering_metadata"
+        )
+        preserved_digest = _logical_digest(connection, _tables(connection), preserved_only=True)
+        generation = int(connection.execute(
+            "SELECT generation FROM ep_operational_dataset_state WHERE singleton=1"
+        ).fetchone()[0])
+        credentials = int(connection.execute("SELECT COUNT(*) FROM ep_consumer_credentials").fetchone()[0])
+        projects = int(connection.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0])
+        repositories = int(connection.execute("SELECT COUNT(*) FROM ep_repository_registrations").fetchone()[0])
+    archive = root / "operational-reset-archive" / operation_id
+    _archive_effects(root, operation_id, plan)
+    external, _preserved, unknown, active_controls = _external_inventory(root)
+    backup = verify_backup(
+        Path(str(row["backup_path"])), operation_id=operation_id, plan_digest=plan_digest,
+        expected_manifest_digest=str(row["backup_manifest_digest"]),
+    )
+    failures = {table: count for table, count in remaining.items() if count}
+    result = {
+        "quick_check": quick, "foreign_key_errors": len(foreign_keys),
+        "operational_rows_remaining": failures,
+        "preserved_bindings_digest": preserved_digest,
+        "expected_preserved_bindings_digest": plan["preserved_bindings_digest"],
+        "dataset_generation": generation, "expected_generation": row["generation_after"],
+        "project_registrations": projects, "repository_registrations": repositories,
+        "consumer_credentials": credentials, "backup": backup,
+        "active_artifact_roots_empty": not external,
+        "active_ingest_controls": active_controls,
+        "unknown_external_paths": unknown,
+        "archive_path": str(archive),
+    }
+    if (
+        quick != ["ok"] or foreign_keys or failures
+        or preserved_digest != plan["preserved_bindings_digest"]
+        or generation != row["generation_after"] or external or active_controls or unknown
+    ):
+        raise OperationalResetError("POST_RESET_VERIFICATION_FAILED")
+    if promote and row["state"] == "DB_APPLIED":
         with _central_connection(database) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            # Immutable-evidence and maintenance-block triggers are removed and
-            # recreated inside this one uncommitted transaction. Other writers
-            # cannot observe an unfenced schema window.
-            triggers = [
-                (str(name), str(sql)) for name, sql in connection.execute(
-                    "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name IN ("
-                    + ",".join("?" for _ in (OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION)) + ")",
-                    tuple(sorted(OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION)),
-                ) if sql is not None
-            ]
-            for name, _sql in triggers:
-                connection.execute(f"DROP TRIGGER {_quote(name)}")
-            _record_tombstones(connection, operation_id)
-            _delete_operational(connection)
-            generation = int(row["generation_before"]) + 1
-            connection.execute(
-                "UPDATE ep_operational_dataset_state SET generation=?,updated_at=? WHERE singleton=1",
-                (generation, _utcnow()),
-            )
-            for _name, sql in triggers:
-                connection.execute(sql)
-            fk = list(connection.execute("PRAGMA foreign_key_check"))
-            if fk:
-                connection.execute("ROLLBACK")
-                raise OperationalResetError("POST_RESET_FOREIGN_KEY_FAILED")
-            connection.execute(
-                "UPDATE ep_operational_reset_operations SET state='DB_APPLIED',generation_after=?,updated_at=? "
-                "WHERE operation_id=? AND state='ARTIFACTS_ARCHIVED'",
-                (generation, _utcnow(), operation_id),
+            _transition(
+                connection, operation_id, "DB_APPLIED", "VERIFIED",
+                "verification_json=?", (json.dumps(result, sort_keys=True),),
             )
             connection.execute("COMMIT")
-            return _public_status(_operation(connection, operation_id) or {})
+    return result
 
 
 def verify(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, object]:
     root = _trusted_directory(data_root, code="DATA_ROOT_UNSAFE")
     with _operation_lock(root, operation_id):
         _actor(root)
-        database = root / central_database.DATABASE_FILENAME
-        with _central_connection(database) as connection:
-            row = _operation(connection, operation_id)
-            if row is None or row["plan_digest"] != plan_digest or row["state"] not in {"DB_APPLIED", "VERIFIED", "COMPLETED"}:
-                raise OperationalResetError("RESET_NOT_APPLIED")
-            plan = json.loads(str(row["plan_json"]))
-            quick = [str(item[0]) for item in connection.execute("PRAGMA quick_check")]
-            foreign_keys = list(connection.execute("PRAGMA foreign_key_check"))
-            remaining = {
-                table: _row_count(connection, table)
-                for table in sorted(OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION)
-            }
-            remaining["engineering_metadata[operational_keys]"] = _row_count(
-                connection, "engineering_metadata"
-            )
-            preserved_digest = _logical_digest(connection, _tables(connection), preserved_only=True)
-            generation = int(connection.execute(
-                "SELECT generation FROM ep_operational_dataset_state WHERE singleton=1"
-            ).fetchone()[0])
-            credentials = int(connection.execute("SELECT COUNT(*) FROM ep_consumer_credentials").fetchone()[0])
-            projects = int(connection.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0])
-            repositories = int(connection.execute("SELECT COUNT(*) FROM ep_repository_registrations").fetchone()[0])
-        archive = root / "operational-reset-archive" / operation_id
-        _archive_effects(root, operation_id, plan)
-        backup = verify_backup(Path(str(row["backup_path"])), operation_id=operation_id, plan_digest=plan_digest)
-        failures = {
-            table: count for table, count in remaining.items()
-            if count and not (table == "execution_projections" and count == 0)
-        }
-        result = {
-            "quick_check": quick, "foreign_key_errors": len(foreign_keys),
-            "operational_rows_remaining": failures,
-            "preserved_bindings_digest": preserved_digest,
-            "expected_preserved_bindings_digest": plan["preserved_bindings_digest"],
-            "dataset_generation": generation, "expected_generation": row["generation_after"],
-            "project_registrations": projects, "repository_registrations": repositories,
-            "consumer_credentials": credentials, "backup": backup,
-            "active_artifact_roots_empty": all(not any((root / name).iterdir()) for name in _EFFECT_DIRECTORIES),
-            "archive_path": str(archive),
-        }
-        if (
-            quick != ["ok"] or foreign_keys or failures
-            or preserved_digest != plan["preserved_bindings_digest"]
-            or generation != row["generation_after"]
-            or not result["active_artifact_roots_empty"]
-        ):
-            raise OperationalResetError("POST_RESET_VERIFICATION_FAILED")
-        if row["state"] == "DB_APPLIED":
-            with _central_connection(database) as connection:
-                connection.execute(
-                    "UPDATE ep_operational_reset_operations SET state='VERIFIED',verification_json=?,updated_at=? "
-                    "WHERE operation_id=? AND state='DB_APPLIED'",
-                    (json.dumps(result, sort_keys=True), _utcnow(), operation_id),
-                )
-        return result
+        return _verify_under_lock(
+            root, operation_id=operation_id, plan_digest=plan_digest, promote=True,
+        )
 
 
 def finish(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, object]:
@@ -1127,10 +1516,14 @@ def finish(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str,
                 return _public_status(row)
             if row["state"] != "VERIFIED":
                 raise OperationalResetError("VERIFICATION_REQUIRED_BEFORE_FINISH")
+        verification = _verify_under_lock(
+            root, operation_id=operation_id, plan_digest=plan_digest, promote=False,
+        )
+        with _central_connection(database) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                "UPDATE ep_operational_reset_operations SET state='COMPLETED',updated_at=? "
-                "WHERE operation_id=? AND state='VERIFIED'", (_utcnow(), operation_id),
+            _transition(
+                connection, operation_id, "VERIFIED", "COMPLETED",
+                "verification_json=?", (json.dumps(verification, sort_keys=True),),
             )
             connection.execute("COMMIT")
             return _public_status(_operation(connection, operation_id) or {})
@@ -1173,27 +1566,34 @@ def resume(data_root: Path, *, operation_id: str, plan_digest: str,
         if backup_root is None:
             raise OperationalResetError("BACKUP_ROOT_REQUIRED_FOR_RESUME")
         root = _trusted_directory(data_root, code="DATA_ROOT_UNSAFE")
-        with _central_connection(root / central_database.DATABASE_FILENAME) as connection:
-            row = _operation(connection, operation_id) or {}
-            plan = json.loads(str(row["plan_json"]))
-        requested_backup_root = str(backup_root.expanduser().resolve(strict=False))
-        if requested_backup_root != row.get("backup_root"):
-            raise OperationalResetError("BACKUP_ROOT_BINDING_MISMATCH")
-        backup = _backup(root, operation_id, backup_root, plan)
-        with _central_connection(root / central_database.DATABASE_FILENAME) as connection:
-            connection.execute(
-                "UPDATE ep_operational_reset_operations SET state='AUTHORIZED',backup_path=?,"
-                "backup_sha256=?,backup_manifest_digest=?,updated_at=? "
-                "WHERE operation_id=? AND state='PREPARING'",
-                (backup["backup_path"], backup["backup_sha256"], backup["backup_manifest_digest"],
-                 _utcnow(), operation_id),
-            )
+        with _operation_lock(root, operation_id):
+            _actor(root)
+            with _central_connection(root / central_database.DATABASE_FILENAME) as connection:
+                row = _operation(connection, operation_id) or {}
+                if row.get("state") != "PREPARING" or row.get("plan_digest") != plan_digest:
+                    raise OperationalResetError("OPERATION_STATE_INVALID_FOR_RESUME")
+                plan = json.loads(str(row["plan_json"]))
+            requested_backup_root = str(backup_root.expanduser().resolve(strict=False))
+            if requested_backup_root != row.get("backup_root"):
+                raise OperationalResetError("BACKUP_ROOT_BINDING_MISMATCH")
+            backup = _backup(root, operation_id, backup_root, plan)
+            with _central_connection(root / central_database.DATABASE_FILENAME) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                _transition(
+                    connection, operation_id, "PREPARING", "AUTHORIZED",
+                    "backup_path=?,backup_sha256=?,backup_manifest_digest=?",
+                    (backup["backup_path"], backup["backup_sha256"],
+                     backup["backup_manifest_digest"]),
+                )
+                connection.execute("COMMIT")
         state = "AUTHORIZED"
     if state in {"AUTHORIZED", "ARTIFACTS_ARCHIVING", "ARTIFACTS_ARCHIVED"}:
         apply(data_root, operation_id=operation_id, plan_digest=plan_digest)
         state = "DB_APPLIED"
     if state == "DB_APPLIED":
         verify(data_root, operation_id=operation_id, plan_digest=plan_digest)
+    elif state not in {"VERIFIED", "COMPLETED"}:
+        raise OperationalResetError("OPERATION_STATE_INVALID_FOR_RESUME")
     return status(data_root, operation_id=operation_id)
 
 
@@ -1221,6 +1621,10 @@ def contract_readback(
             verify_backup(
                 Path(str(operation["backup_path"])), operation_id=str(selected_operation),
                 plan_digest=str(operation.get("plan_digest")),
+                expected_manifest_digest=(
+                    str(operation["backup_manifest_digest"])
+                    if isinstance(operation.get("backup_manifest_digest"), str) else None
+                ),
             )
             verified = True
         except OperationalResetError:
@@ -1256,8 +1660,30 @@ def contract_readback(
     }
 
 
+class _ReceiptArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise OperationalResetError("CLI_ARGUMENT_INVALID")
+
+
+def _error_receipt(command: str, operation_id: str | None, code: str) -> dict[str, object]:
+    """Return the shared contract shape without paths, exception text or secrets."""
+    return {
+        "contract_version": "operational-reset-v1", "product": "engineering-platform",
+        "command": command, "operation_id": operation_id, "state": "ERROR", "allowed": False,
+        "target": {
+            "instance_id": None, "database_path": None, "database_identity": None,
+            "schema_version": None,
+        },
+        "profile": PROFILE, "dataset_generation": None, "plan_digest": None,
+        "relevant_revision_digest": None, "backup": None, "counts": {},
+        "blockers": [code], "integrity": {"quick_check": [], "foreign_key_findings": []},
+        "preserved_bindings_digest": None, "error": code, "error_code": code,
+        "details": {"credentials_included_in_receipt": False},
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="engineering-platform-maintenance")
+    parser = _ReceiptArgumentParser(prog="engineering-platform-maintenance")
     parser.add_argument(
         "command",
         choices=("preview", "prepare", "apply", "status", "resume", "verify", "finish", "abort"),
@@ -1267,8 +1693,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-digest")
     parser.add_argument("--backup-root", type=Path)
     parser.add_argument("--allow-operational-fk", action="append", default=[])
-    args = parser.parse_args(argv)
+    raw = list(argv) if argv is not None else []
+    command = raw[0] if raw and not raw[0].startswith("-") else "unknown"
+    operation_id: str | None = None
     try:
+        args = parser.parse_args(argv)
+        command = args.command
+        operation_id = args.operation_id
         if args.command == "preview":
             result = preview(args.data_root)
         elif args.command == "status":
@@ -1298,7 +1729,17 @@ def main(argv: list[str] | None = None) -> int:
         ), sort_keys=True))
         return 0
     except OperationalResetError as error:
-        print(json.dumps({"error": error.code, "message": str(error)}, sort_keys=True))
+        print(json.dumps(_error_receipt(command, operation_id, error.code), sort_keys=True))
+        return 2
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
+        print(json.dumps(
+            _error_receipt(command, operation_id, "MAINTENANCE_COMMAND_FAILED"), sort_keys=True,
+        ))
+        return 2
+    except Exception:
+        print(json.dumps(
+            _error_receipt(command, operation_id, "INTERNAL_MAINTENANCE_ERROR"), sort_keys=True,
+        ))
         return 2
 
 
