@@ -6,7 +6,8 @@
     "full_population": 1,
     "metrics_may_be_partial": true
   },
-  "contract_version": "telemetry-contract@2.1",
+  "contract_version": "telemetry-contract@2.2",
+  "downloaded_at": "2026-09-17T10:00:05+00:00",
   "data": {
     "attempt": {
       "run_id": "synthetic-run-1",
@@ -71,12 +72,12 @@
             }
           }
         },
-        "contract_version": "telemetry-contract@2.1",
+        "contract_version": "telemetry-contract@2.2",
         "source_snapshot_reference": "synthetic-run-1"
       }
     }
   },
-  "export_schema_version": "telemetry-export@1.0",
+  "export_schema_version": "telemetry-export@1.1",
   "locale": "nl",
   "selection": {
     "date": "2026-09-17",
@@ -86,6 +87,12 @@
     "scope": "EP_RUN_ATTEMPT",
     "timezone": "UTC"
   },
+  "source": {
+    "as_of": "2026-09-17T10:00:00+00:00",
+    "kind": "CENTRAL_READ_TRANSACTION",
+    "reference": "central-schema:45:data-version:4"
+  },
+  "source_as_of": "2026-09-17T10:00:00+00:00",
   "snapshot_id": "sha256:synthetic-detail-example",
   "source_snapshot_references": ["synthetic-run-1"]
 }

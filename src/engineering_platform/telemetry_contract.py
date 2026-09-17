@@ -18,6 +18,7 @@ from .provider_usage import (
     provider_usage_summary,
 )
 from .telemetry_metrics import aggregate_coverage, aggregate_numeric_metric, metric_coverage
+from .telemetry_metrics import VALID_SUBTOTAL
 from .storage import open_storage
 
 
@@ -66,9 +67,11 @@ def _run_records(connection: sqlite3.Connection) -> dict[str, sqlite3.Row]:
 
 def load_lineage_graph(
     root: Path, *, central_database: Path | None = None,
+    _read_connection: sqlite3.Connection | None = None,
 ) -> tuple[list[sqlite3.Row], dict[str, sqlite3.Row], dict[str, dict[str, object]]]:
     """Load the bounded explicit identity graph once for a telemetry request."""
-    connection = _connection(root, central_database)
+    owns_connection = _read_connection is None
+    connection = _read_connection if _read_connection is not None else _connection(root, central_database)
     try:
         contexts = connection.execute(
             """SELECT run_id,submission_id,fresh_submission,retry_parent_run_id,
@@ -91,7 +94,8 @@ def load_lineage_graph(
             ):
                 identities[str(row["run_id"])] = dict(row)
     finally:
-        connection.close()
+        if owns_connection:
+            connection.close()
     return contexts, runs, identities
 
 
@@ -119,6 +123,9 @@ def execution_chain_summary(
         }
 
     # Walk to the one explicit root. Missing and cyclic parents stay visible.
+    # A proven different Forge Action is a hard lineage boundary: neither its
+    # own observations nor descendants behind it belong to this chain scope.
+    selected_action = identities.get(run_id, {}).get("engineering_action_id")
     cursor = run_id
     seen: set[str] = set()
     while cursor in by_run:
@@ -132,6 +139,14 @@ def execution_chain_summary(
             break
         if str(parent) not in runs:
             issues.append(f"missing-parent:{parent}")
+            break
+        parent_action = identities.get(str(parent), {}).get("engineering_action_id")
+        if (
+            isinstance(selected_action, str) and selected_action
+            and isinstance(parent_action, str) and parent_action
+            and parent_action != selected_action
+        ):
+            issues.append(f"conflicting-action-identity:{parent}")
             break
         cursor = str(parent)
     root_run = cursor
@@ -163,7 +178,16 @@ def execution_chain_summary(
             continue
         visited.add(current)
         component.append(current)
-        pending.extend(sorted(children.get(current, ())))
+        for child in sorted(children.get(current, ())):
+            child_action = identities.get(child, {}).get("engineering_action_id")
+            if (
+                isinstance(selected_action, str) and selected_action
+                and isinstance(child_action, str) and child_action
+                and child_action != selected_action
+            ):
+                issues.append(f"conflicting-action-identity:{child}")
+                continue
+            pending.append(child)
     if pending:
         issues.append(f"chain-limit:{MAX_CHAIN_RUNS}")
 
@@ -175,6 +199,7 @@ def execution_chain_summary(
     cache_ratio_sources: list[Mapping[str, object]] = []
     cache_ratio_input = 0
     cache_ratio_cached = 0
+    cache_population_observed = False
     intervals: list[tuple[datetime, datetime]] = []
     processing_ms = 0
     mission_values: set[str] = set()
@@ -226,11 +251,18 @@ def execution_chain_summary(
             population = usage.get("cache_ratio_population")
             if isinstance(population, Mapping):
                 cache_ratio_sources.append(population)
-                if population.get("coverage") != CONFLICT:
+                if (
+                    population.get("coverage") != CONFLICT
+                    or population.get("value_semantics") == VALID_SUBTOTAL
+                ):
+                    source_observed = False
                     if isinstance(population.get("input_tokens"), int):
                         cache_ratio_input += int(population["input_tokens"])
+                        source_observed = True
                     if isinstance(population.get("cached_input_tokens"), int):
                         cache_ratio_cached += int(population["cached_input_tokens"])
+                        source_observed = True
+                    cache_population_observed = cache_population_observed or source_observed
             else:
                 cache_ratio_sources.append(metric_coverage(
                     expected=None, present=0, valid=0,
@@ -291,7 +323,7 @@ def execution_chain_summary(
     cache_ratio_coverage = aggregate_coverage(cache_ratio_sources)
     cache_ratio = (
         round(cache_ratio_cached * 100 / cache_ratio_input, 3)
-        if cache_ratio_input and cache_ratio_coverage["coverage"] != CONFLICT else None
+        if cache_ratio_input and cache_population_observed else None
     )
     return {
         "contract_version": TELEMETRY_CALCULATION_VERSION,
@@ -314,8 +346,9 @@ def execution_chain_summary(
         "cache_ratio_percent": cache_ratio,
         "cache_ratio_population": {
             **cache_ratio_coverage,
-            "input_tokens": cache_ratio_input or None,
-            "cached_input_tokens": cache_ratio_cached or None,
+            "value_semantics": VALID_SUBTOTAL if cache_population_observed else None,
+            "input_tokens": cache_ratio_input if cache_population_observed else None,
+            "cached_input_tokens": cache_ratio_cached if cache_population_observed else None,
         },
         "outside_selected_window_count": outside_window,
         "runs": sorted(chain_rows, key=lambda row: str(row.get("started_at") or "")),

@@ -16,7 +16,8 @@ PARTIAL = "PARTIAL"
 UNAVAILABLE = "UNAVAILABLE"
 CONFLICT = "CONFLICT"
 COVERAGE_STATES = frozenset({COMPLETE, PARTIAL, UNAVAILABLE, CONFLICT})
-TELEMETRY_CALCULATION_VERSION = "telemetry-contract@2.1"
+TELEMETRY_CALCULATION_VERSION = "telemetry-contract@2.2"
+VALID_SUBTOTAL = "VALID_OBSERVATIONS_SUBTOTAL"
 
 
 def metric_coverage(
@@ -121,7 +122,10 @@ def aggregate_numeric_metric(
     coverage = aggregate_coverage(rows)
     values = [
         row.get("value") for row in rows
-        if row.get("coverage") != CONFLICT
+        if (
+            row.get("coverage") != CONFLICT
+            or row.get("value_semantics") == VALID_SUBTOTAL
+        )
         and isinstance(row.get("value"), (int, float))
         and not isinstance(row.get("value"), bool)
     ]
@@ -141,6 +145,11 @@ def aggregate_numeric_metric(
         "aggregation": aggregation,
         "aggregation_level": aggregation_level,
         "provenance": provenance or _merged_provenance(rows),
+        # The value is the subtotal over observations that remain valid for
+        # this metric. Coverage remains independent and can still be PARTIAL
+        # or CONFLICT. Higher-level reducers may retain only values carrying
+        # this marker when a source population is conflicted.
+        "value_semantics": VALID_SUBTOTAL if value is not None else None,
         **coverage,
         "calculation_version": TELEMETRY_CALCULATION_VERSION,
         "source_snapshot_references": sorted({
