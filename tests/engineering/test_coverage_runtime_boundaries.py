@@ -2308,6 +2308,52 @@ class InstallationBoundaryTests(unittest.TestCase):
             [{"kind": "VALIDATION", "result": "PASSED: repository validation"}],
         )
 
+        commit_evidence = (
+            {
+                "phase": "EXECUTE_AGENT", "observed_at": "2026-09-12T12:10:00+00:00",
+                "commit_sha": "a" * 40, "description": "implementation_agent_commit_verified",
+            },
+            {
+                "phase": "WAIT_FOR_OPERATOR_MERGE", "observed_at": "2026-09-12T12:20:00+00:00",
+                "commit_sha": "c" * 40, "description": "implementation_merge_verified",
+            },
+            {
+                "phase": "REPAIR_AGENT", "observed_at": "2026-09-12T12:25:00+00:00",
+                "commit_sha": "d" * 40, "description": "pull_request_repair_commit_verified",
+            },
+            {
+                "phase": "FINALIZE_AGENT", "observed_at": "2026-09-12T12:30:00+00:00",
+                "commit_sha": "e" * 40, "description": "finalization_commit_verified",
+            },
+            {
+                "phase": "WAIT_FOR_OPERATOR_MERGE", "observed_at": "2026-09-12T12:35:00+00:00",
+                "commit_sha": "b" * 40, "description": "finalization_merge_verified",
+            },
+            {
+                "phase": "RECONCILE_AGENT", "observed_at": "2026-09-12T12:39:00+00:00",
+                "commit_sha": "f" * 40, "description": "end_reconciliation_commit_verified",
+            },
+            {
+                "phase": "WAIT_FOR_OPERATOR_MERGE", "observed_at": "2026-09-12T12:40:00+00:00",
+                "commit_sha": "0" * 40, "description": "reconciliation_merge_verified",
+            },
+        )
+        checkpoint = TransactionState(
+            run_id, "owner/repository", "CENTRAL:prompt", "COMPLETE",
+            terminal=True, commit_evidence=commit_evidence,
+        )
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
+                (run_id, json.dumps(checkpoint.to_dict()), "COMPLETE", "2026-09-12T12:40:55+00:00"),
+            )
+
+        timeline = server._central_console_terminal_revision_timeline(self.root, project_id, run_id)
+        self.assertEqual(timeline, list(commit_evidence))
+        self.assertNotIn("terminal_repository_revision_verified", {
+            item["description"] for item in timeline
+        })
+
         artifact.write_text("tampered", encoding="utf-8")
         self.assertEqual(server._central_console_terminal_revision_timeline(self.root, project_id, run_id), [])
         record_terminal_evidence({})
