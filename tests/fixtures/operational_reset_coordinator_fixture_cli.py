@@ -55,7 +55,9 @@ def main() -> int:
         state["state"] = "APPLIED" if product == "forge" else "DB_APPLIED"
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     elif action in {"verify", "resume"}:
-        state["state"] = "VERIFIED"
+        # A readiness readback must never regress an already-finished owner.
+        if state["state"] != "COMPLETED":
+            state["state"] = "VERIFIED"
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     elif action == "finish":
         state["state"] = "COMPLETED"

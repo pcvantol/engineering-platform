@@ -153,6 +153,7 @@ class OperationalResetCoordinatorTests(unittest.TestCase):
         with self.assertRaises(SimulatedCoordinatorCrash):
             crashing.apply("forge")
         self.assertEqual("PLANS_REVALIDATED", self.store.load()["state"])
+        self.assertTrue(self.store.load()["milestones"]["forge_apply_started"])
         self.assertEqual("APPLIED", self.owning_state(self.forge_root)["state"])
 
         restarted = coordinator_module.OperationalResetCoordinator(
@@ -160,6 +161,43 @@ class OperationalResetCoordinatorTests(unittest.TestCase):
         )
         self.assertEqual("FORGE_APPLIED", restarted.reconcile()["state"])
         self.assertEqual("BOTH_APPLIED", restarted.apply("engineering-platform")["state"])
+
+    def test_resume_is_forbidden_before_revalidation_and_before_product_apply_admission(self) -> None:
+        self.assertEqual("BOTH_PREVIEWED", self.coordinator.preview(self.config)["state"])
+        with self.assertRaisesRegex(coordinator_module.CoordinatorError, "plan revalidation"):
+            self.coordinator.resume("forge")
+        self.assertEqual(["preview"], [item["action"] for item in self.command_log(self.forge_root)])
+
+        self.assertEqual("BACKUPS_VERIFIED", self.coordinator.prepare()["state"])
+        with self.assertRaisesRegex(coordinator_module.CoordinatorError, "plan revalidation"):
+            self.coordinator.resume("engineering-platform")
+        self.assertNotIn("resume", {item["action"] for item in self.command_log(self.ep_root)})
+
+        self.assertEqual("PLANS_REVALIDATED", self.coordinator.revalidate()["state"])
+        with self.assertRaisesRegex(coordinator_module.CoordinatorError, "apply admission"):
+            self.coordinator.resume("engineering-platform")
+        self.assertNotIn("resume", {item["action"] for item in self.command_log(self.ep_root)})
+
+    def test_resume_reconciles_only_the_durably_admitted_crashed_apply(self) -> None:
+        self.prepare_both()
+
+        def crash(boundary: str) -> None:
+            if boundary == "after-forge-apply":
+                raise SimulatedCoordinatorCrash()
+
+        crashing = coordinator_module.OperationalResetCoordinator(
+            self.store, command_timeout_seconds=10, fault_hook=crash,
+        )
+        with self.assertRaises(SimulatedCoordinatorCrash):
+            crashing.apply("forge")
+
+        restarted = coordinator_module.OperationalResetCoordinator(
+            self.store, command_timeout_seconds=10,
+        )
+        self.assertEqual("FORGE_APPLIED", restarted.resume("forge")["state"])
+        self.assertIn("resume", {item["action"] for item in self.command_log(self.forge_root)})
+        with self.assertRaisesRegex(coordinator_module.CoordinatorError, "apply admission"):
+            restarted.resume("engineering-platform")
 
     def test_product_process_restart_and_status_readback_use_durable_state(self) -> None:
         self.prepare_both()
@@ -244,6 +282,40 @@ class OperationalResetCoordinatorTests(unittest.TestCase):
         self.coordinator.verify()
         with self.assertRaisesRegex(coordinator_module.CoordinatorError, "forbidden"):
             self.coordinator.finish("forge")
+
+    def test_finish_reproves_both_product_readiness_before_first_finish(self) -> None:
+        self.prepare_both()
+        self.apply_both()
+        self.coordinator.verify()
+        self.coordinator.authorize_resume()
+        (self.ep_root / "fail-verify").touch()
+
+        with self.assertRaises(coordinator_module.ProductCommandError):
+            self.coordinator.finish("forge")
+
+        self.assertEqual("RECONCILIATION_REQUIRED", self.store.load()["state"])
+        self.assertNotIn("finish", {item["action"] for item in self.command_log(self.forge_root)})
+        self.assertEqual("VERIFIED", self.owning_state(self.forge_root)["state"])
+        self.assertEqual("VERIFIED", self.owning_state(self.ep_root)["state"])
+
+    def test_sequential_finish_failure_preserves_partial_state_for_explicit_reconcile(self) -> None:
+        self.prepare_both()
+        self.apply_both()
+        self.coordinator.verify()
+        self.coordinator.authorize_resume()
+        self.assertEqual("RESUME_AUTHORIZED", self.coordinator.finish("forge")["state"])
+        (self.ep_root / "fail-finish").touch()
+
+        with self.assertRaises(coordinator_module.ProductCommandError):
+            self.coordinator.finish("engineering-platform")
+
+        self.assertEqual("COMPLETED", self.owning_state(self.forge_root)["state"])
+        self.assertEqual("VERIFIED", self.owning_state(self.ep_root)["state"])
+        self.assertEqual("RESUME_AUTHORIZED", self.coordinator.reconcile()["state"])
+        (self.ep_root / "fail-finish").unlink()
+        self.assertEqual("COMPLETE", self.coordinator.finish("engineering-platform")["state"])
+        forge_actions = [item["action"] for item in self.command_log(self.forge_root)]
+        self.assertGreaterEqual(forge_actions.count("verify"), 4)
 
     def test_receipt_symlink_and_concurrent_lock_fail_closed(self) -> None:
         unsafe_root = self.root / "unsafe-receipts"

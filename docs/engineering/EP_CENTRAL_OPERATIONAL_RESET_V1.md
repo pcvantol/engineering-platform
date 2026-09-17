@@ -201,9 +201,22 @@ default.
 `finish` does not trust an earlier `VERIFIED` receipt by itself. While the
 installation lock and durable writer fence are still active it re-verifies the
 protected backup, quick/FK checks, operational emptiness, dataset generation,
-preserved bindings and all external ingest routes. A delayed Inbox/import file
-therefore leaves the operation in maintenance instead of being admitted after
-the fence is released.
+preserved bindings and all external ingest routes. It then durably binds an
+operation- and generation-specific finish boundary and atomically renames the
+complete active `artifacts/`, `file-inbox/` and
+`runtime/central-data-imports/` roots into that protected boundary before it
+creates empty roots for the new generation. A file that arrives after the last
+empty scan through the old path is therefore preserved behind the boundary;
+a writer holding an old directory descriptor also remains isolated in the
+renamed inode. Unknown files are never deleted. The boundary manifest, file
+hashes and digest are verified before `COMPLETED` and on later verification.
+
+The boundary-path binding is persisted while the state remains `VERIFIED`
+before the first filesystem rename. A crash during the three renames therefore
+keeps the durable writer fence active. Re-running `finish` for the same
+operation recognizes already-rotated roots, rotates only the remaining roots,
+recovers its exact marker staging file and completes forward. A pre-existing
+unbound boundary or a changed marker fails closed.
 
 Do not automatically copy the backup over live CENTRAL: an old database could
 undo later revocations, consumed authority or external effects. An exceptional
@@ -393,6 +406,16 @@ in this delivery; do not run them against CENTRAL as part of installation. The
 joint receipt reaches `COMPLETE` only after both owning verifications, explicit
 resume authorization and both owning finishes.
 
+Immediately before every individual `finish`, the harness calls both owning
+`verify` commands again and requires each product to report `VERIFIED` or
+`COMPLETED`. This is a two-phase pre-finish readiness check, not a distributed
+transaction: the owning finishes remain sequential. If the first product has
+already reached `COMPLETED` and the second finish fails, the receipt records
+`RECONCILIATION_REQUIRED`; reconciliation truthfully returns the pair
+`COMPLETED`/`VERIFIED`, keeps the unfinished product fenced, and requires an
+explicit retry of that same second finish. It never rolls the first product
+back or automatically resumes the second.
+
 After any interruption or owning failure, inspect without creating a new
 operation and reconcile the same product operation IDs:
 
@@ -402,7 +425,8 @@ python3 tools/qualification/operational_reset_coordinator.py \
 python3 tools/qualification/operational_reset_coordinator.py \
   --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" reconcile
 
-# Use only when an owning status proves that product needs forward recovery.
+# Use only when the receipt proves PLANS_REVALIDATED and durably records that
+# this exact product's apply was admitted before the process was interrupted.
 python3 tools/qualification/operational_reset_coordinator.py \
   --receipt-root "$COORDINATOR_RECEIPTS" --coordinator-id "$COORDINATOR_ID" \
   resume --product engineering-platform
@@ -413,6 +437,10 @@ Once an owning apply may have started, every command failure is
 automatic finish and no automatic destructive rollback. The harness never
 calls a peer CLI from product code, imports Forge or EP, creates a Mission,
 provider invocation or submission, or treats delayed callbacks as new work.
+`resume` is fail-closed from `BOTH_PREVIEWED`, `BACKUPS_VERIFIED`, and from
+`PLANS_REVALIDATED` until the selected product has its durable apply-admission
+milestone. A subprocess crash after apply can be reconciled because that
+milestone was fsynced before the owning command ran.
 
 The repository document `missions/MISSION-0003.md`, a future test label and an
 operational Forge Mission are distinct namespaces. EP reset readback names its

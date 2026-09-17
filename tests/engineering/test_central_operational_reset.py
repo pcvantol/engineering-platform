@@ -599,6 +599,71 @@ class CentralOperationalResetTests(unittest.TestCase):
             "COMPLETED",
         )
 
+    def test_finish_atomically_isolates_file_arriving_after_last_empty_scan(self) -> None:
+        self._populate()
+        operation_id, digest = self._prepared(operation_id="reset-finish-race-0001")
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        original_verify = reset._verify_under_lock
+        injected = False
+
+        def inject_after_empty_scan(*args: object, **kwargs: object) -> dict[str, object]:
+            nonlocal injected
+            result = original_verify(*args, **kwargs)
+            if not injected:
+                injected = True
+                delayed = self.root / "file-inbox" / "delayed-old-event.json"
+                delayed.write_text('{"event":"old"}', encoding="utf-8")
+            return result
+
+        with patch.object(reset, "_verify_under_lock", side_effect=inject_after_empty_scan):
+            completed = reset.finish(
+                self.root, operation_id=operation_id, plan_digest=digest,
+            )
+
+        self.assertEqual("COMPLETED", completed["state"])
+        self.assertFalse(reset.maintenance_active(self.root))
+        self.assertFalse((self.root / "file-inbox" / "delayed-old-event.json").exists())
+        boundary = Path(str(completed["finish_boundary_path"]))
+        isolated = boundary / "file-inbox" / "delayed-old-event.json"
+        self.assertEqual('{"event":"old"}', isolated.read_text(encoding="utf-8"))
+        self.assertRegex(str(completed["finish_boundary_digest"]), r"^sha256:[0-9a-f]{64}$")
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+
+    def test_finish_boundary_rotation_resumes_same_operation_after_partial_crash(self) -> None:
+        operation_id, digest = self._prepared(operation_id="reset-finish-crash-0001")
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        real_rename = os.rename
+        rotated = 0
+
+        def crash_during_second_route(source: object, target: object, *args: object,
+                                      **kwargs: object) -> object:
+            nonlocal rotated
+            source_path, target_path = Path(source), Path(target)
+            if "finish-boundary" in target_path.parts and source_path.is_dir():
+                rotated += 1
+                if rotated == 2:
+                    raise OSError("synthetic process loss during route rotation")
+            return real_rename(source, target, *args, **kwargs)
+
+        with patch.object(reset.os, "rename", side_effect=crash_during_second_route):
+            with self.assertRaisesRegex(
+                reset.OperationalResetError, "FINISH_BOUNDARY_ROTATION_FAILED",
+            ):
+                reset.finish(self.root, operation_id=operation_id, plan_digest=digest)
+
+        interrupted = reset.status(self.root, operation_id=operation_id)["operation"]
+        self.assertEqual("VERIFIED", interrupted["state"])
+        self.assertIsNotNone(interrupted["finish_boundary_path"])
+        self.assertTrue(reset.maintenance_active(self.root))
+        completed = reset.finish(
+            self.root, operation_id=operation_id, plan_digest=digest,
+        )
+        self.assertEqual("COMPLETED", completed["state"])
+        self.assertFalse(reset.maintenance_active(self.root))
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+
     def test_nested_preserved_external_inventory_is_explicit_and_unknown_appdata_blocks(self) -> None:
         operations = self.root / "operations" / "update-known-0001"
         operations.mkdir(parents=True)

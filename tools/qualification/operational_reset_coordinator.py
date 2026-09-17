@@ -36,6 +36,12 @@ STATES = frozenset({
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_OUTPUT = 2 * 1024 * 1024
+_MILESTONE_KEYS = frozenset({
+    "previewed", "maintenance", "backups_verified", "plans_revalidated",
+    "forge_apply_started", "ep_apply_started", "forge_applied", "ep_applied",
+    "forge_verified", "ep_verified", "resume_authorized", "forge_finished",
+    "ep_finished",
+})
 
 
 class CoordinatorError(ValueError):
@@ -301,9 +307,25 @@ def _validate_receipt(value: object, coordinator_id: str) -> None:
         raise CoordinatorError("coordinator product receipt is invalid")
     if not isinstance(value.get("milestones"), Mapping) or not isinstance(value.get("events"), list):
         raise CoordinatorError("coordinator progress receipt is invalid")
+    milestones = value["milestones"]
+    if set(milestones) != _MILESTONE_KEYS or not all(
+        isinstance(item, bool) for item in milestones.values()
+    ):
+        raise CoordinatorError("coordinator milestone receipt is invalid")
     for index, event in enumerate(value["events"], start=1):
         if not isinstance(event, Mapping) or event.get("index") != index:
             raise CoordinatorError("coordinator event sequence is invalid")
+    has_revalidation = any(
+        event.get("state") == "PLANS_REVALIDATED" for event in value["events"]
+        if isinstance(event, Mapping)
+    )
+    if milestones["plans_revalidated"] != has_revalidation:
+        raise CoordinatorError("coordinator plan revalidation evidence is invalid")
+    for product in ("forge", "ep"):
+        if milestones[f"{product}_apply_started"] and not milestones["plans_revalidated"]:
+            raise CoordinatorError("coordinator apply admission precedes plan revalidation")
+        if milestones[f"{product}_applied"] and not milestones[f"{product}_apply_started"]:
+            raise CoordinatorError("coordinator apply result lacks durable admission evidence")
 
 
 def _empty_product(product: str, operation_id: str) -> dict[str, object]:
@@ -333,7 +355,8 @@ def _new_receipt(config: CoordinationConfig) -> dict[str, object]:
         },
         "milestones": {
             "previewed": False, "maintenance": False, "backups_verified": False,
-            "plans_revalidated": False, "forge_applied": False, "ep_applied": False,
+            "plans_revalidated": False, "forge_apply_started": False,
+            "ep_apply_started": False, "forge_applied": False, "ep_applied": False,
             "forge_verified": False, "ep_verified": False, "resume_authorized": False,
             "forge_finished": False, "ep_finished": False,
         },
@@ -738,8 +761,22 @@ class OperationalResetCoordinator:
             config = self._config(receipt)
             other = "engineering-platform" if product == "forge" else "forge"
             current_stage = self._product_stage(product, receipt["products"][product]["state"])
+            started_milestone = (
+                "forge_apply_started" if product == "forge" else "ep_apply_started"
+            )
             try:
                 if current_stage not in {"applied", "verified", "finished"}:
+                    if not receipt["milestones"][started_milestone]:
+                        receipt["milestones"][started_milestone] = True
+                        _event(
+                            receipt, str(receipt["state"]),
+                            f"{product} owning apply durably admitted",
+                            product=product,
+                            evidence={"joint_gate": "PLANS_REVALIDATED"},
+                        )
+                        # Persist the recovery authority before a subprocess can
+                        # commit an owning effect.
+                        self.store.save(receipt)
                     envelope = self._invoke(config, receipt, product, "apply")
                     self.fault_hook(f"after-{product}-apply")
                     self._save_observation(receipt, product, "apply", envelope)
@@ -803,6 +840,20 @@ class OperationalResetCoordinator:
                 raise CoordinatorError("finish is forbidden until both reset results are verified")
             config = self._config(receipt)
             try:
+                # Re-prove both owning results immediately before each
+                # sequential finish.  This is the two-phase readiness boundary;
+                # a failed peer check cannot be followed by the requested finish.
+                for candidate in PRODUCTS:
+                    readiness = self._invoke(config, receipt, candidate, "verify")
+                    if self._product_stage(candidate, readiness["state"]) not in {
+                        "verified", "finished",
+                    }:
+                        raise ProductCommandError(
+                            candidate, "verify", "FINISH_READINESS_REQUIRED",
+                        )
+                    self._save_observation(
+                        receipt, candidate, "pre-finish readiness", readiness,
+                    )
                 if not receipt["products"][product]["finished"]:
                     envelope = self._invoke(config, receipt, product, "finish")
                     self.fault_hook(f"after-{product}-finish")
@@ -827,6 +878,23 @@ class OperationalResetCoordinator:
             raise CoordinatorError("owning product is invalid")
         with self.store.locked():
             receipt = self._required_receipt()
+            milestone_prefix = "forge" if product == "forge" else "ep"
+            milestones = receipt["milestones"]
+            has_revalidation = any(
+                event.get("state") == "PLANS_REVALIDATED"
+                for event in receipt["events"] if isinstance(event, Mapping)
+            )
+            if not milestones["plans_revalidated"] or not has_revalidation:
+                raise CoordinatorError(
+                    "owning resume is forbidden before joint plan revalidation",
+                )
+            if not (
+                milestones[f"{milestone_prefix}_apply_started"]
+                or milestones[f"{milestone_prefix}_applied"]
+            ):
+                raise CoordinatorError(
+                    "owning resume is forbidden before durable product apply admission",
+                )
             config = self._config(receipt)
             try:
                 envelope = self._invoke(config, receipt, product, "resume")

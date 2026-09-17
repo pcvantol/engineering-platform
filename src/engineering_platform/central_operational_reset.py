@@ -284,6 +284,9 @@ def _install_maintenance_guards(connection: sqlite3.Connection) -> None:
         "WHEN ep_reset_maintenance_owner()!=1 BEGIN "
         "SELECT RAISE(ABORT,'EP_RESET_MAINTENANCE_OWNER_REQUIRED'); END"
     )
+    # Recreate this schema-owned trigger when the maintenance audit gains a
+    # new immutable effect field within the same unreleased schema revision.
+    connection.execute("DROP TRIGGER IF EXISTS ep_operational_reset_operations_update_owner")
     connection.execute(
         "CREATE TRIGGER IF NOT EXISTS ep_operational_reset_operations_update_owner "
         "BEFORE UPDATE ON ep_operational_reset_operations BEGIN "
@@ -305,6 +308,15 @@ def _install_maintenance_guards(connection: sqlite3.Connection) -> None:
         "OR NEW.backup_manifest_digest IS NULL)) "
         "OR (NEW.generation_after IS NOT OLD.generation_after AND NOT "
         "(OLD.state='ARTIFACTS_ARCHIVED' AND NEW.state='DB_APPLIED')) "
+        "OR (NEW.finish_boundary_path IS NOT OLD.finish_boundary_path AND NOT "
+        "(OLD.state='VERIFIED' AND NEW.state='VERIFIED' "
+        "AND OLD.finish_boundary_path IS NULL AND NEW.finish_boundary_path IS NOT NULL "
+        "AND NEW.finish_boundary_digest IS OLD.finish_boundary_digest)) "
+        "OR (NEW.finish_boundary_digest IS NOT OLD.finish_boundary_digest AND NOT "
+        "(OLD.state='VERIFIED' AND NEW.state='COMPLETED' "
+        "AND OLD.finish_boundary_digest IS NULL AND NEW.finish_boundary_digest IS NOT NULL)) "
+        "OR (OLD.state='VERIFIED' AND NEW.state='COMPLETED' AND "
+        "(NEW.finish_boundary_path IS NULL OR NEW.finish_boundary_digest IS NULL)) "
         "OR (NEW.verification_json IS NOT OLD.verification_json AND NOT "
         "((OLD.state='DB_APPLIED' AND NEW.state='VERIFIED') OR "
         "(OLD.state='VERIFIED' AND NEW.state='COMPLETED'))) THEN "
@@ -419,8 +431,19 @@ def install_schema(connection: sqlite3.Connection) -> None:
         "source_revision TEXT NOT NULL,request_digest TEXT NOT NULL,plan_json TEXT NOT NULL,"
         "allowed_fk_json TEXT NOT NULL,backup_root TEXT NOT NULL,backup_path TEXT,backup_sha256 TEXT,"
         "backup_manifest_digest TEXT,generation_before INTEGER NOT NULL,generation_after INTEGER,"
+        "finish_boundary_path TEXT,finish_boundary_digest TEXT,"
         "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,verification_json TEXT)"
     )
+    operation_columns = {
+        str(row[1]) for row in connection.execute(
+            "PRAGMA table_info(ep_operational_reset_operations)"
+        )
+    }
+    for column in ("finish_boundary_path", "finish_boundary_digest"):
+        if column not in operation_columns:
+            connection.execute(
+                f"ALTER TABLE ep_operational_reset_operations ADD COLUMN {column} TEXT"
+            )
     connection.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ep_operational_reset_one_active "
         "ON ep_operational_reset_operations((1)) WHERE state NOT IN ('COMPLETED','ABORTED')"
@@ -608,6 +631,18 @@ def _nested_preserved_classification(root_name: str, relative: str, path: Path) 
             len(parts) >= 3 and _OPERATION.fullmatch(parts[0]) is not None
             and (parts[1] in {"artifacts", "file-inbox"}
                  or parts[1:3] == ("runtime", "central-data-imports"))
+        ):
+            return "MAINTENANCE_AUDIT_OR_RECOVERY"
+        if (
+            len(parts) >= 4 and _OPERATION.fullmatch(parts[0]) is not None
+            and parts[1] == "finish-boundary"
+            and re.fullmatch(r"generation-(?:0|[1-9][0-9]*)", parts[2]) is not None
+            and (
+                parts[3] in {
+                    "artifacts", "file-inbox", "manifest.json", "manifest.json.partial",
+                }
+                or parts[3:5] == ("runtime", "central-data-imports")
+            )
         ):
             return "MAINTENANCE_AUDIT_OR_RECOVERY"
         return None
@@ -1210,7 +1245,8 @@ def _public_status(row: dict[str, object]) -> dict[str, object]:
     allowed = {
         "operation_id", "state", "actor", "plan_digest", "target_digest", "source_revision",
         "backup_root", "backup_path", "backup_sha256", "backup_manifest_digest", "generation_before",
-        "generation_after", "created_at", "updated_at", "verification_json",
+        "generation_after", "finish_boundary_path", "finish_boundary_digest",
+        "created_at", "updated_at", "verification_json",
     }
     result = {key: value for key, value in row.items() if key in allowed}
     if isinstance(result.get("verification_json"), str):
@@ -1281,6 +1317,145 @@ def _archive_effects(data_root: Path, operation_id: str, plan: dict[str, object]
     comparable = lambda rows: sorted((row["root"], row["path"], row["size_bytes"], row["sha256"]) for row in rows)
     if comparable(observed) != comparable(expected):
         raise OperationalResetError("ARCHIVE_RECONCILIATION_FAILED")
+
+
+def _finish_boundary_relative(operation_id: str, generation: int) -> Path:
+    return (
+        Path("operational-reset-archive") / operation_id / "finish-boundary"
+        / f"generation-{generation}"
+    )
+
+
+def _finish_boundary_path(data_root: Path, operation_id: str, generation: int) -> Path:
+    return data_root / _finish_boundary_relative(operation_id, generation)
+
+
+def _finish_boundary_files(boundary: Path) -> list[dict[str, object]]:
+    files: list[dict[str, object]] = []
+    for name in _EFFECT_DIRECTORIES:
+        files.extend(_safe_files(boundary / Path(name), name))
+    return files
+
+
+def _verify_finish_boundary(
+    boundary: Path, *, operation_id: str, generation: int,
+    expected_digest: str | None = None,
+) -> dict[str, object]:
+    if boundary.is_symlink() or not boundary.is_dir():
+        raise OperationalResetError("FINISH_BOUNDARY_UNSAFE")
+    marker = _bound_regular_file(
+        boundary, "manifest.json", code="FINISH_BOUNDARY_INVALID",
+    )
+    digest = _file_digest(marker)
+    if expected_digest is not None and digest != expected_digest:
+        raise OperationalResetError("FINISH_BOUNDARY_DIGEST_MISMATCH")
+    try:
+        manifest = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise OperationalResetError("FINISH_BOUNDARY_INVALID") from error
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("manifest_version") != 1
+        or manifest.get("kind") != "EP_OPERATIONAL_RESET_FINISH_BOUNDARY"
+        or manifest.get("operation_id") != operation_id
+        or manifest.get("dataset_generation") != generation
+        or manifest.get("active_roots") != list(_EFFECT_DIRECTORIES)
+    ):
+        raise OperationalResetError("FINISH_BOUNDARY_INVALID")
+    observed = _finish_boundary_files(boundary)
+    comparable = lambda rows: sorted(
+        (item["root"], item["path"], item["size_bytes"], item["sha256"])
+        for item in rows
+    )
+    expected = manifest.get("preserved_files")
+    if not isinstance(expected, list) or comparable(observed) != comparable(expected):
+        raise OperationalResetError("FINISH_BOUNDARY_CHANGED")
+    return {
+        "path": str(boundary), "digest": digest,
+        "preserved_file_count": len(observed), "verified": True,
+    }
+
+
+def _rotate_finish_boundary(
+    data_root: Path, *, operation_id: str, generation: int, boundary: Path,
+) -> dict[str, object]:
+    expected = _finish_boundary_path(data_root, operation_id, generation)
+    if boundary != expected:
+        raise OperationalResetError("FINISH_BOUNDARY_BINDING_MISMATCH")
+    _secure_mkdirs(
+        data_root, _finish_boundary_relative(operation_id, generation),
+        code="FINISH_BOUNDARY_UNSAFE",
+    )
+    marker = boundary / "manifest.json"
+    if marker.exists() or marker.is_symlink():
+        return _verify_finish_boundary(
+            boundary, operation_id=operation_id, generation=generation,
+        )
+    for name in _EFFECT_DIRECTORIES:
+        relative = Path(name)
+        source = data_root / relative
+        target = boundary / relative
+        _secure_mkdirs(data_root, relative.parent, code="FINISH_BOUNDARY_UNSAFE")
+        _secure_mkdirs(boundary, relative.parent, code="FINISH_BOUNDARY_UNSAFE")
+        if target.exists() or target.is_symlink():
+            if target.is_symlink() or not target.is_dir():
+                raise OperationalResetError("FINISH_BOUNDARY_UNSAFE")
+        else:
+            if source.exists() or source.is_symlink():
+                if source.is_symlink() or not source.is_dir():
+                    raise OperationalResetError("EXTERNAL_PATH_UNSAFE", name)
+            else:
+                _secure_mkdirs(data_root, relative, code="FINISH_BOUNDARY_UNSAFE")
+            try:
+                os.rename(source, target)
+            except OSError as error:
+                raise OperationalResetError("FINISH_BOUNDARY_ROTATION_FAILED", name) from error
+        # A path lookup after the atomic rename belongs to the new generation;
+        # writers with an already-open directory descriptor remain isolated in
+        # the archived inode.
+        _secure_mkdirs(data_root, relative, code="FINISH_BOUNDARY_UNSAFE")
+    manifest = {
+        "manifest_version": 1, "kind": "EP_OPERATIONAL_RESET_FINISH_BOUNDARY",
+        "operation_id": operation_id, "dataset_generation": generation,
+        "active_roots": list(_EFFECT_DIRECTORIES),
+        "preserved_files": _finish_boundary_files(boundary),
+    }
+    manifest_bytes = _canonical(manifest) + b"\n"
+    temporary = boundary / "manifest.json.partial"
+    if temporary.exists() or temporary.is_symlink():
+        if temporary.is_symlink() or not temporary.is_file():
+            raise OperationalResetError("FINISH_BOUNDARY_DESTINATION_CONFLICT")
+        # This exact operation-owned staging name cannot predate the durable
+        # boundary intent.  Recover both a fully written pre-rename marker and
+        # an interrupted partial write without touching any archived payload.
+        if temporary.read_bytes() == manifest_bytes:
+            os.rename(temporary, marker)
+            return _verify_finish_boundary(
+                boundary, operation_id=operation_id, generation=generation,
+            )
+        temporary.unlink()
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as error:
+        raise OperationalResetError("FINISH_BOUNDARY_DESTINATION_CONFLICT") from error
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(manifest_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if marker.exists() or marker.is_symlink():
+            raise OperationalResetError("FINISH_BOUNDARY_DESTINATION_CONFLICT")
+        os.rename(temporary, marker)
+        directory_descriptor = os.open(boundary, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return _verify_finish_boundary(
+        boundary, operation_id=operation_id, generation=generation,
+    )
 
 
 def _tombstone(connection: sqlite3.Connection, kind: str, identity: str,
@@ -1457,7 +1632,25 @@ def _verify_under_lock(
         projects = int(connection.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0])
         repositories = int(connection.execute("SELECT COUNT(*) FROM ep_repository_registrations").fetchone()[0])
     archive = root / "operational-reset-archive" / operation_id
-    _archive_effects(root, operation_id, plan)
+    boundary: dict[str, object] | None = None
+    boundary_path_value = row.get("finish_boundary_path")
+    if boundary_path_value is None:
+        _archive_effects(root, operation_id, plan)
+    else:
+        expected_boundary = _finish_boundary_path(root, operation_id, generation)
+        if str(expected_boundary) != boundary_path_value:
+            raise OperationalResetError("FINISH_BOUNDARY_BINDING_MISMATCH")
+        marker = expected_boundary / "manifest.json"
+        if marker.exists() or marker.is_symlink():
+            boundary = _verify_finish_boundary(
+                expected_boundary, operation_id=operation_id, generation=generation,
+                expected_digest=(
+                    str(row["finish_boundary_digest"])
+                    if row.get("finish_boundary_digest") is not None else None
+                ),
+            )
+        elif row["state"] == "COMPLETED":
+            raise OperationalResetError("FINISH_BOUNDARY_INVALID")
     external, _preserved, unknown, active_controls = _external_inventory(root)
     backup = verify_backup(
         Path(str(row["backup_path"])), operation_id=operation_id, plan_digest=plan_digest,
@@ -1476,11 +1669,14 @@ def _verify_under_lock(
         "active_ingest_controls": active_controls,
         "unknown_external_paths": unknown,
         "archive_path": str(archive),
+        "finish_boundary": boundary,
+        "post_generation_active_files": len(external) if boundary_path_value is not None else 0,
     }
     if (
         quick != ["ok"] or foreign_keys or failures
         or preserved_digest != plan["preserved_bindings_digest"]
-        or generation != row["generation_after"] or external or active_controls or unknown
+        or generation != row["generation_after"]
+        or (external and boundary_path_value is None) or active_controls or unknown
     ):
         raise OperationalResetError("POST_RESET_VERIFICATION_FAILED")
     if promote and row["state"] == "DB_APPLIED":
@@ -1513,17 +1709,49 @@ def finish(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str,
             if row is None or row["plan_digest"] != plan_digest:
                 raise OperationalResetError("AUTHORIZED_OPERATION_NOT_FOUND")
             if row["state"] == "COMPLETED":
+                _verify_under_lock(
+                    root, operation_id=operation_id, plan_digest=plan_digest,
+                    promote=False,
+                )
                 return _public_status(row)
             if row["state"] != "VERIFIED":
                 raise OperationalResetError("VERIFICATION_REQUIRED_BEFORE_FINISH")
+        # First re-prove the exact database, backup, bindings and active routes.
+        # If a prior crash already persisted the boundary intent this is a
+        # recovery verification and the still-fenced active paths may contain
+        # post-boundary arrivals.
+        _verify_under_lock(
+            root, operation_id=operation_id, plan_digest=plan_digest, promote=False,
+        )
+        generation = int(row["generation_after"])
+        boundary = _finish_boundary_path(root, operation_id, generation)
+        if row.get("finish_boundary_path") is None:
+            if boundary.exists() or boundary.is_symlink():
+                raise OperationalResetError("FINISH_BOUNDARY_DESTINATION_CONFLICT")
+            with _central_connection(database) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                _transition(
+                    connection, operation_id, "VERIFIED", "VERIFIED",
+                    "finish_boundary_path=?", (str(boundary),),
+                )
+                connection.execute("COMMIT")
+            row["finish_boundary_path"] = str(boundary)
+        elif row["finish_boundary_path"] != str(boundary):
+            raise OperationalResetError("FINISH_BOUNDARY_BINDING_MISMATCH")
+        boundary_proof = _rotate_finish_boundary(
+            root, operation_id=operation_id, generation=generation, boundary=boundary,
+        )
         verification = _verify_under_lock(
             root, operation_id=operation_id, plan_digest=plan_digest, promote=False,
         )
+        if verification.get("finish_boundary") != boundary_proof:
+            raise OperationalResetError("FINISH_BOUNDARY_CHANGED")
         with _central_connection(database) as connection:
             connection.execute("BEGIN IMMEDIATE")
             _transition(
                 connection, operation_id, "VERIFIED", "COMPLETED",
-                "verification_json=?", (json.dumps(verification, sort_keys=True),),
+                "finish_boundary_digest=?,verification_json=?",
+                (boundary_proof["digest"], json.dumps(verification, sort_keys=True)),
             )
             connection.execute("COMMIT")
             return _public_status(_operation(connection, operation_id) or {})
