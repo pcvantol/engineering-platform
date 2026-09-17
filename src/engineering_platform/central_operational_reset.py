@@ -136,6 +136,8 @@ _OPERATIONAL_METADATA_KEYS = frozenset({
     central_database.PROVIDER_CAPACITY_HISTORY_KEY,
 })
 _EFFECT_DIRECTORIES = ("artifacts", "file-inbox", "runtime/central-data-imports")
+_ACTIVE_ROOT_MODE = 0o700
+_FROZEN_ROOT_MODE = 0o500
 _KNOWN_TOP_LEVEL = frozenset({
     central_database.DATABASE_FILENAME, f"{central_database.DATABASE_FILENAME}-journal",
     f"{central_database.DATABASE_FILENAME}-shm", f"{central_database.DATABASE_FILENAME}-wal",
@@ -1337,6 +1339,93 @@ def _finish_boundary_files(boundary: Path) -> list[dict[str, object]]:
     return files
 
 
+def _active_root_mode(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise OperationalResetError("ACTIVE_ROOT_UNSAFE") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise OperationalResetError("ACTIVE_ROOT_UNSAFE")
+        return stat.S_IMODE(metadata.st_mode)
+    finally:
+        os.close(descriptor)
+
+
+def _set_active_root_mode(path: Path, mode: int) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise OperationalResetError("ACTIVE_ROOT_UNSAFE") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise OperationalResetError("ACTIVE_ROOT_UNSAFE")
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+    except OSError as error:
+        raise OperationalResetError("ACTIVE_ROOT_MODE_CHANGE_FAILED") from error
+    finally:
+        os.close(descriptor)
+
+
+def _active_roots_state(data_root: Path) -> dict[str, int]:
+    return {
+        name: _active_root_mode(data_root / Path(name))
+        for name in _EFFECT_DIRECTORIES
+    }
+
+
+def _freeze_empty_active_roots(data_root: Path) -> dict[str, int]:
+    for name in _EFFECT_DIRECTORIES:
+        path = data_root / Path(name)
+        if path.is_symlink() or not path.is_dir():
+            raise OperationalResetError("ACTIVE_ROOT_UNSAFE", name)
+        try:
+            if next(path.iterdir(), None) is not None:
+                raise OperationalResetError("FINISH_ACTIVE_ROOT_NOT_EMPTY", name)
+        except OSError as error:
+            raise OperationalResetError("ACTIVE_ROOT_UNSAFE", name) from error
+        _set_active_root_mode(path, _FROZEN_ROOT_MODE)
+    modes = _active_roots_state(data_root)
+    if any(mode != _FROZEN_ROOT_MODE for mode in modes.values()):
+        raise OperationalResetError("ACTIVE_ROOT_FREEZE_FAILED")
+    return modes
+
+
+def _verify_frozen_empty_active_roots(data_root: Path) -> dict[str, int]:
+    modes = _active_roots_state(data_root)
+    if any(mode != _FROZEN_ROOT_MODE for mode in modes.values()):
+        raise OperationalResetError("ACTIVE_ROOT_NOT_FROZEN")
+    for name in _EFFECT_DIRECTORIES:
+        path = data_root / Path(name)
+        try:
+            if next(path.iterdir(), None) is not None:
+                raise OperationalResetError("FINISH_ACTIVE_ROOT_NOT_EMPTY", name)
+        except OSError as error:
+            raise OperationalResetError("ACTIVE_ROOT_UNSAFE", name) from error
+    return modes
+
+
+def _thaw_active_roots(data_root: Path) -> dict[str, int]:
+    # COMPLETED may have been committed just before process loss. Accept an
+    # idempotent mix of already-thawed and still-frozen roots, but no other
+    # mode or path type.
+    modes = _active_roots_state(data_root)
+    if any(mode not in {_FROZEN_ROOT_MODE, _ACTIVE_ROOT_MODE} for mode in modes.values()):
+        raise OperationalResetError("ACTIVE_ROOT_MODE_INVALID")
+    for name, mode in modes.items():
+        if mode == _FROZEN_ROOT_MODE:
+            _set_active_root_mode(data_root / Path(name), _ACTIVE_ROOT_MODE)
+    thawed = _active_roots_state(data_root)
+    if any(mode != _ACTIVE_ROOT_MODE for mode in thawed.values()):
+        raise OperationalResetError("ACTIVE_ROOT_THAW_FAILED")
+    return thawed
+
+
 def _verify_finish_boundary(
     boundary: Path, *, operation_id: str, generation: int,
     expected_digest: str | None = None,
@@ -1388,6 +1477,7 @@ def _rotate_finish_boundary(
     )
     marker = boundary / "manifest.json"
     if marker.exists() or marker.is_symlink():
+        _freeze_empty_active_roots(data_root)
         return _verify_finish_boundary(
             boundary, operation_id=operation_id, generation=generation,
         )
@@ -1412,8 +1502,11 @@ def _rotate_finish_boundary(
                 raise OperationalResetError("FINISH_BOUNDARY_ROTATION_FAILED", name) from error
         # A path lookup after the atomic rename belongs to the new generation;
         # writers with an already-open directory descriptor remain isolated in
-        # the archived inode.
+        # the archived inode. The replacement stays frozen through the DB
+        # COMPLETED commit, closing the post-rename/pre-commit race.
         _secure_mkdirs(data_root, relative, code="FINISH_BOUNDARY_UNSAFE")
+        _set_active_root_mode(source, _FROZEN_ROOT_MODE)
+    _verify_frozen_empty_active_roots(data_root)
     manifest = {
         "manifest_version": 1, "kind": "EP_OPERATIONAL_RESET_FINISH_BOUNDARY",
         "operation_id": operation_id, "dataset_generation": generation,
@@ -1605,6 +1698,7 @@ def apply(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, 
 
 def _verify_under_lock(
     root: Path, *, operation_id: str, plan_digest: str, promote: bool,
+    allow_boundary_recovery: bool = False,
 ) -> dict[str, object]:
     database = root / central_database.DATABASE_FILENAME
     with _central_connection(database) as connection:
@@ -1634,7 +1728,10 @@ def _verify_under_lock(
     archive = root / "operational-reset-archive" / operation_id
     boundary: dict[str, object] | None = None
     boundary_path_value = row.get("finish_boundary_path")
+    frozen_modes: dict[str, int] | None = None
     if boundary_path_value is None:
+        if allow_boundary_recovery:
+            raise OperationalResetError("FINISH_BOUNDARY_RECOVERY_INVALID")
         _archive_effects(root, operation_id, plan)
     else:
         expected_boundary = _finish_boundary_path(root, operation_id, generation)
@@ -1651,6 +1748,8 @@ def _verify_under_lock(
             )
         elif row["state"] == "COMPLETED":
             raise OperationalResetError("FINISH_BOUNDARY_INVALID")
+        if not allow_boundary_recovery:
+            frozen_modes = _verify_frozen_empty_active_roots(root)
     external, _preserved, unknown, active_controls = _external_inventory(root)
     backup = verify_backup(
         Path(str(row["backup_path"])), operation_id=operation_id, plan_digest=plan_digest,
@@ -1670,13 +1769,13 @@ def _verify_under_lock(
         "unknown_external_paths": unknown,
         "archive_path": str(archive),
         "finish_boundary": boundary,
-        "post_generation_active_files": len(external) if boundary_path_value is not None else 0,
+        "active_root_modes": frozen_modes,
     }
     if (
         quick != ["ok"] or foreign_keys or failures
         or preserved_digest != plan["preserved_bindings_digest"]
         or generation != row["generation_after"]
-        or (external and boundary_path_value is None) or active_controls or unknown
+        or (external and not allow_boundary_recovery) or active_controls or unknown
     ):
         raise OperationalResetError("POST_RESET_VERIFICATION_FAILED")
     if promote and row["state"] == "DB_APPLIED":
@@ -1690,10 +1789,65 @@ def _verify_under_lock(
     return result
 
 
+def _verify_completed_finish_binding(
+    root: Path, *, operation_id: str, plan_digest: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Verify immutable finish proof without reasserting old-generation emptiness."""
+    database = root / central_database.DATABASE_FILENAME
+    with _central_connection(database) as connection:
+        row = _operation(connection, operation_id)
+        if (
+            row is None or row["state"] != "COMPLETED"
+            or row["plan_digest"] != plan_digest
+        ):
+            raise OperationalResetError("COMPLETED_OPERATION_BINDING_INVALID")
+        try:
+            plan = json.loads(str(row["plan_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise OperationalResetError("COMPLETED_OPERATION_BINDING_INVALID") from error
+        generation = int(connection.execute(
+            "SELECT generation FROM ep_operational_dataset_state WHERE singleton=1"
+        ).fetchone()[0])
+        identity = _identity(root, connection)
+        quick = [str(item[0]) for item in connection.execute("PRAGMA quick_check")]
+        foreign_keys = list(connection.execute("PRAGMA foreign_key_check"))
+    expected_boundary = _finish_boundary_path(root, operation_id, generation)
+    digest = row.get("finish_boundary_digest")
+    if (
+        generation != row.get("generation_after")
+        or plan.get("target_digest") != row.get("target_digest")
+        or _digest(identity) != row.get("target_digest")
+        or row.get("finish_boundary_path") != str(expected_boundary)
+        or not isinstance(digest, str)
+        or quick != ["ok"] or foreign_keys
+    ):
+        raise OperationalResetError("COMPLETED_OPERATION_BINDING_INVALID")
+    boundary = _verify_finish_boundary(
+        expected_boundary, operation_id=operation_id, generation=generation,
+        expected_digest=digest,
+    )
+    modes = _active_roots_state(root)
+    if any(mode not in {_FROZEN_ROOT_MODE, _ACTIVE_ROOT_MODE} for mode in modes.values()):
+        raise OperationalResetError("ACTIVE_ROOT_MODE_INVALID")
+    return row, {
+        "state": "COMPLETED", "operation_id": operation_id,
+        "dataset_generation": generation, "target_digest": row["target_digest"],
+        "finish_boundary": boundary, "active_root_modes": modes,
+        "quick_check": quick, "foreign_key_errors": 0,
+    }
+
+
 def verify(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, object]:
     root = _trusted_directory(data_root, code="DATA_ROOT_UNSAFE")
     with _operation_lock(root, operation_id):
         _actor(root)
+        with _central_connection(root / central_database.DATABASE_FILENAME) as connection:
+            row = _operation(connection, operation_id)
+        if row is not None and row.get("state") == "COMPLETED":
+            _row, proof = _verify_completed_finish_binding(
+                root, operation_id=operation_id, plan_digest=plan_digest,
+            )
+            return proof
         return _verify_under_lock(
             root, operation_id=operation_id, plan_digest=plan_digest, promote=True,
         )
@@ -1709,11 +1863,11 @@ def finish(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str,
             if row is None or row["plan_digest"] != plan_digest:
                 raise OperationalResetError("AUTHORIZED_OPERATION_NOT_FOUND")
             if row["state"] == "COMPLETED":
-                _verify_under_lock(
+                completed, _proof = _verify_completed_finish_binding(
                     root, operation_id=operation_id, plan_digest=plan_digest,
-                    promote=False,
                 )
-                return _public_status(row)
+                _thaw_active_roots(root)
+                return _public_status(completed)
             if row["state"] != "VERIFIED":
                 raise OperationalResetError("VERIFICATION_REQUIRED_BEFORE_FINISH")
         # First re-prove the exact database, backup, bindings and active routes.
@@ -1722,6 +1876,7 @@ def finish(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str,
         # post-boundary arrivals.
         _verify_under_lock(
             root, operation_id=operation_id, plan_digest=plan_digest, promote=False,
+            allow_boundary_recovery=row.get("finish_boundary_path") is not None,
         )
         generation = int(row["generation_after"])
         boundary = _finish_boundary_path(root, operation_id, generation)
@@ -1754,7 +1909,9 @@ def finish(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str,
                 (boundary_proof["digest"], json.dumps(verification, sort_keys=True)),
             )
             connection.execute("COMMIT")
-            return _public_status(_operation(connection, operation_id) or {})
+            completed = _operation(connection, operation_id) or {}
+        _thaw_active_roots(root)
+        return _public_status(completed)
 
 
 def abort(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, object]:
@@ -1820,6 +1977,11 @@ def resume(data_root: Path, *, operation_id: str, plan_digest: str,
         state = "DB_APPLIED"
     if state == "DB_APPLIED":
         verify(data_root, operation_id=operation_id, plan_digest=plan_digest)
+    elif state == "COMPLETED":
+        # A process may have died after the durable completion commit but
+        # before thawing the new-generation ingest roots. The same operation
+        # verifies its immutable boundary and idempotently finishes the thaw.
+        finish(data_root, operation_id=operation_id, plan_digest=plan_digest)
     elif state not in {"VERIFIED", "COMPLETED"}:
         raise OperationalResetError("OPERATION_STATE_INVALID_FOR_RESUME")
     return status(data_root, operation_id=operation_id)

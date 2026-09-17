@@ -205,8 +205,12 @@ preserved bindings and all external ingest routes. It then durably binds an
 operation- and generation-specific finish boundary and atomically renames the
 complete active `artifacts/`, `file-inbox/` and
 `runtime/central-data-imports/` roots into that protected boundary before it
-creates empty roots for the new generation. A file that arrives after the last
-empty scan through the old path is therefore preserved behind the boundary;
+creates empty roots for the new generation. Every replacement root is opened
+without following symlinks and immediately frozen at mode `0500`. The final
+`VERIFIED` proof requires all three roots to remain exactly `0500` and empty;
+only after the durable `COMPLETED` commit are they idempotently thawed to
+`0700`. A file that arrives after the last empty scan through the old path is
+therefore preserved behind the boundary;
 a writer holding an old directory descriptor also remains isolated in the
 renamed inode. Unknown files are never deleted. The boundary manifest, file
 hashes and digest are verified before `COMPLETED` and on later verification.
@@ -217,6 +221,15 @@ keeps the durable writer fence active. Re-running `finish` for the same
 operation recognizes already-rotated roots, rotates only the remaining roots,
 recovers its exact marker staging file and completes forward. A pre-existing
 unbound boundary or a changed marker fails closed.
+
+A crash after the `COMPLETED` commit but before every thaw leaves the new roots
+non-writable. Re-running `finish`, or `resume` for that same completed
+operation, verifies the exact operation/plan/target identity, database inode,
+dataset generation and boundary digest before thawing the safe mix of `0500`
+and already-thawed `0700` roots. This completed-operation proof deliberately
+does not demand that current operational tables or active roots still be
+empty: legitimate new-generation work may exist after a successful thaw.
+Symlinks, unexpected modes and changed boundary content always fail closed.
 
 Do not automatically copy the backup over live CENTRAL: an old database could
 undo later revocations, consumed authority or external effects. An exceptional

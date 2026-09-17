@@ -20,6 +20,10 @@ from engineering_platform.operational_installation_lock import OperationalInstal
 from engineering_platform.storage import sqlite_connection
 
 
+class SimulatedPostCommitFinishCrash(BaseException):
+    """Model process death after durable COMPLETED and before active-root thaw."""
+
+
 class CentralOperationalResetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(
@@ -663,6 +667,122 @@ class CentralOperationalResetTests(unittest.TestCase):
         self.assertEqual("COMPLETED", completed["state"])
         self.assertFalse(reset.maintenance_active(self.root))
         reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+
+    def test_finish_freezes_new_roots_and_rejects_post_rotation_active_file(self) -> None:
+        operation_id, digest = self._prepared(operation_id="reset-finish-frozen-0001")
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        real_rotate = reset._rotate_finish_boundary
+
+        def inject_after_real_rotation(*args: object, **kwargs: object) -> dict[str, object]:
+            proof = real_rotate(*args, **kwargs)
+            inbox = self.root / "file-inbox"
+            self.assertEqual(0o500, inbox.stat().st_mode & 0o777)
+            # Simulate an installation-owner writer bypassing the ordinary
+            # permission failure. The post-rotation proof must still prevent
+            # COMPLETED rather than accepting this active old event.
+            inbox.chmod(0o700)
+            (inbox / "late-after-rotation.json").write_text("{}", encoding="utf-8")
+            return proof
+
+        with patch.object(
+            reset, "_rotate_finish_boundary", side_effect=inject_after_real_rotation,
+        ):
+            with self.assertRaisesRegex(
+                reset.OperationalResetError, "ACTIVE_ROOT_NOT_FROZEN",
+            ):
+                reset.finish(self.root, operation_id=operation_id, plan_digest=digest)
+
+        operation = reset.status(self.root, operation_id=operation_id)["operation"]
+        self.assertEqual("VERIFIED", operation["state"])
+        self.assertTrue(reset.maintenance_active(self.root))
+        self.assertTrue((self.root / "file-inbox" / "late-after-rotation.json").is_file())
+
+    def test_finish_roots_are_frozen_until_commit_then_thawed_for_new_generation(self) -> None:
+        operation_id, digest = self._prepared(operation_id="reset-finish-modes-0001")
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        observed_during_commit: dict[str, int] = {}
+        real_transition = reset._transition
+
+        def inspect_completed_transition(
+            connection: sqlite3.Connection, selected: str, before: str, after: str,
+            assignments: str = "", parameters: tuple[object, ...] = (),
+        ) -> None:
+            if before == "VERIFIED" and after == "COMPLETED":
+                observed_during_commit.update(reset._active_roots_state(self.root))
+            real_transition(
+                connection, selected, before, after, assignments, parameters,
+            )
+
+        with patch.object(reset, "_transition", side_effect=inspect_completed_transition):
+            completed = reset.finish(
+                self.root, operation_id=operation_id, plan_digest=digest,
+            )
+
+        self.assertEqual("COMPLETED", completed["state"])
+        self.assertEqual({name: 0o500 for name in reset._EFFECT_DIRECTORIES},
+                         observed_during_commit)
+        self.assertEqual({name: 0o700 for name in reset._EFFECT_DIRECTORIES},
+                         reset._active_roots_state(self.root))
+        late = self.root / "file-inbox" / "new-generation.json"
+        late.write_text("{}", encoding="utf-8")
+        self.assertEqual(
+            "COMPLETED",
+            reset.finish(self.root, operation_id=operation_id, plan_digest=digest)["state"],
+        )
+        self.assertTrue(late.is_file())
+        self.assertEqual(
+            "COMPLETED",
+            reset.verify(self.root, operation_id=operation_id, plan_digest=digest)["state"],
+        )
+
+    def test_post_commit_pre_thaw_crash_resumes_same_completed_operation(self) -> None:
+        operation_id, digest = self._prepared(operation_id="reset-finish-thaw-crash-0001")
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+
+        with patch.object(
+            reset, "_thaw_active_roots", side_effect=SimulatedPostCommitFinishCrash(),
+        ):
+            with self.assertRaises(SimulatedPostCommitFinishCrash):
+                reset.finish(self.root, operation_id=operation_id, plan_digest=digest)
+
+        operation = reset.status(self.root, operation_id=operation_id)["operation"]
+        self.assertEqual("COMPLETED", operation["state"])
+        self.assertFalse(reset.maintenance_active(self.root))
+        self.assertEqual({name: 0o500 for name in reset._EFFECT_DIRECTORIES},
+                         reset._active_roots_state(self.root))
+        with self.assertRaises(PermissionError):
+            (self.root / "file-inbox" / "blocked.json").write_text("{}", encoding="utf-8")
+
+        resumed = reset.resume(
+            self.root, operation_id=operation_id, plan_digest=digest,
+        )
+        self.assertEqual("COMPLETED", resumed["operation"]["state"])
+        self.assertEqual({name: 0o700 for name in reset._EFFECT_DIRECTORIES},
+                         reset._active_roots_state(self.root))
+
+    def test_completed_finish_refuses_active_root_symlink_without_touching_target(self) -> None:
+        operation_id, digest = self._prepared(operation_id="reset-finish-symlink-0001")
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        with patch.object(
+            reset, "_thaw_active_roots", side_effect=SimulatedPostCommitFinishCrash(),
+        ):
+            with self.assertRaises(SimulatedPostCommitFinishCrash):
+                reset.finish(self.root, operation_id=operation_id, plan_digest=digest)
+
+        inbox = self.root / "file-inbox"
+        inbox.rmdir()
+        outside = Path(self.temporary.name) / "outside-inbox"
+        outside.mkdir()
+        sentinel = outside / "keep.txt"
+        sentinel.write_text("preserve", encoding="utf-8")
+        inbox.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(reset.OperationalResetError, "ACTIVE_ROOT_UNSAFE"):
+            reset.finish(self.root, operation_id=operation_id, plan_digest=digest)
+        self.assertEqual("preserve", sentinel.read_text(encoding="utf-8"))
 
     def test_nested_preserved_external_inventory_is_explicit_and_unknown_appdata_blocks(self) -> None:
         operations = self.root / "operations" / "update-known-0001"
