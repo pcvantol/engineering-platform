@@ -1,0 +1,20 @@
+{
+  "schema_version":"1.0",
+  "increment":"PROJECT_BOOTSTRAP_AND_ARTIFACT_MANIFEST_V1",
+  "owner":"engineering-platform",
+  "authority":"DOCUMENTARY_DERIVED",
+  "executable":false,
+  "version_decision":"NO_BUMP",
+  "parent_lanes":["B8R","GENESIS_MANAGED_EXECUTION","P-TRANSPORT","L0"],
+  "architecture":"docs/engineering/PROJECT_BOOTSTRAP_EXECUTION_V1.md",
+  "current_mission_3_dependency":false,
+  "nodes":[
+    {"id":"PB-E0","status":"PLANNED","depends_on":[],"deliverable":"Typed operation, authority, B8R identity and receipt contracts"},
+    {"id":"PB-E1","status":"PLANNED","depends_on":["PB-E0"],"deliverable":"Inventory, existing lease/ledger admission and HTTP readback"},
+    {"id":"PB-E2","status":"PLANNED","depends_on":["PB-E1"],"deliverable":"Local Genesis bootstrap and attachment evidence"},
+    {"id":"PB-E3","status":"PLANNED","depends_on":["PB-E1"],"deliverable":"Managed birth/adoption and host governance readback"},
+    {"id":"PB-E4","status":"PLANNED","depends_on":["PB-E2","PB-E3"],"deliverable":"History-preserving explicit Managed promotion"},
+    {"id":"PB-E5","status":"PLANNED","depends_on":["PB-E1"],"deliverable":"Operation-scoped reporting, telemetry and safe recovery"},
+    {"id":"PB-EQ","status":"PLANNED","depends_on":["PB-E2","PB-E3","PB-E4","PB-E5"],"external_evidence":["forge:PB-F0"],"deliverable":"Installed Genesis, Managed, promotion and negative-boundary qualification"}
+  ]
+}

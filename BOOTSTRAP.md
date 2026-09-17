@@ -2,6 +2,18 @@
 
 **Status:** Canonical standalone repository onboarding
 
+## Project bootstrap — Genesis, Managed and promotion
+
+The [project bootstrap execution design](docs/engineering/PROJECT_BOOTSTRAP_EXECUTION_V1.md),
+[scoped owning roadmap](docs/development/PROJECT_BOOTSTRAP_V1_ROADMAP.md) and
+[documentary DAG](docs/development/PROJECT_BOOTSTRAP_V1_DAG.json) specify the
+future manifest-driven creation/adoption and Genesis-to-Managed promotion.
+Reuse B8R identity/attachment and existing Genesis/Managed primitives; the added
+PB-E operation/qualification nodes remain PLANNED. This is NO_BUMP design work,
+not an active provisioning request, runtime change or Mission-3 prerequisite.
+Forge owns product/manifest semantics; EP owns actual repository effects and
+readback; Workspace owns the human experience. Peer communication stays HTTP.
+
 ## Current pickup checkpoint — consolidation and parking, 10 September 2026
 
 Read the [owning consolidation roadmap](docs/development/CONSOLIDATION_PARKING_2026_09_10.md)
