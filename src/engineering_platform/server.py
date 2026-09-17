@@ -87,7 +87,11 @@ from .component_logging import (
     component_logger,
     log_event,
 )
-from .agent_state import redact_diagnostic
+from .agent_state import (
+    MAX_COMMIT_EVIDENCE_RECORDS,
+    is_valid_commit_evidence_record,
+    redact_diagnostic,
+)
 from .codex_chat import (
     CHAT_RETENTION_DAYS,
     MAX_HISTORY_ITEMS,
@@ -3429,15 +3433,58 @@ def _central_console_validation_evidence(
     return projected
 
 
+def _central_console_checkpoint_commit_timeline(
+    data_root: Path, project_id: str, submission_id: str, run_id: str, outcome: str,
+) -> list[dict[str, str]]:
+    """Project strict phase commits from one exactly bound terminal checkpoint."""
+    try:
+        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+            row = connection.execute(
+                """SELECT t.payload,t.phase,d.state
+                     FROM engineering_transactions AS t
+                     JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=t.run_id
+                    WHERE d.project_id=? AND d.submission_id=? AND d.run_id=?""",
+                (project_id, submission_id, run_id),
+            ).fetchone()
+    except sqlite3.Error:
+        return []
+    if row is None or row[1] != outcome or row[2] != outcome:
+        return []
+    try:
+        checkpoint = json.loads(str(row[0]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if (
+        not isinstance(checkpoint, Mapping)
+        or checkpoint.get("run_id") != run_id
+        or checkpoint.get("phase") != outcome
+        or checkpoint.get("terminal") is not True
+    ):
+        return []
+    raw = checkpoint.get("commit_evidence")
+    if (
+        not isinstance(raw, list)
+        or len(raw) > MAX_COMMIT_EVIDENCE_RECORDS
+        or any(not is_valid_commit_evidence_record(item) for item in raw)
+    ):
+        return []
+    events = [dict(item) for item in raw]
+    identities = {(item["phase"], item["commit_sha"]) for item in events}
+    if len(identities) != len(events):
+        return []
+    return sorted(events, key=lambda item: item["observed_at"])
+
+
 def _central_console_terminal_revision_timeline(
     data_root: Path, project_id: str, run_id: str,
 ) -> list[dict[str, str]]:
-    """Project an exact terminal artifact's verified repository revision.
+    """Project verified phase commits plus an exact terminal revision fallback.
 
-    A successful no-change run has no phase commit to display, but its
-    integrity-verified terminal artifact can still attest the final repository
-    revision.  This stays distinct from a phase commit: malformed or tampered
-    payloads never become Console evidence.
+    The immutable terminal artifact first proves the project/submission/run
+    binding.  The terminal CENTRAL checkpoint then supplies the append-only
+    phase commit records that the execution host actually verified.  A
+    successful no-change run has no phase commit, so its artifact revision is
+    retained as a distinct fallback rather than being called a phase commit.
     """
     try:
         with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
@@ -3449,6 +3496,7 @@ def _central_console_terminal_revision_timeline(
                     WHERE d.project_id=? AND d.run_id=?
                       AND a.artifact_type='EP_TERMINAL_EVIDENCE'
                       AND a.integrity_status='VERIFIED'
+                      AND a.projection_status='AVAILABLE'
                     ORDER BY a.created_at DESC,a.artifact_id DESC LIMIT 1""",
                 (project_id, run_id),
             ).fetchone()
@@ -3472,25 +3520,31 @@ def _central_console_terminal_revision_timeline(
     repository = evidence.get("repository")
     if not all(isinstance(value, Mapping) for value in (submission, terminal_run, repository)):
         return []
+    submission_id = submission.get("id")
     revision = repository.get("revision")
     outcome = terminal_run.get("outcome")
     if (
         submission.get("project_id") != project_id
+        or not isinstance(submission_id, str)
         or terminal_run.get("id") != run_id
         or outcome not in {"COMPLETE", "BLOCKED", "FAILED"}
-        or not isinstance(revision, str)
-        or re.fullmatch(r"[0-9a-f]{40}", revision) is None
     ):
         return []
     observed_at = row[1]
     if not isinstance(observed_at, str) or not observed_at.strip():
         return []
-    return [{
-        "phase": "TERMINAL",
-        "observed_at": observed_at,
-        "commit_sha": revision,
-        "description": "terminal_repository_revision_verified",
-    }]
+    events = _central_console_checkpoint_commit_timeline(
+        data_root, project_id, submission_id, run_id, str(outcome),
+    )
+    if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision):
+        if not any(item["commit_sha"] == revision for item in events):
+            events.append({
+                "phase": "TERMINAL",
+                "observed_at": observed_at,
+                "commit_sha": revision,
+                "description": "terminal_repository_revision_verified",
+            })
+    return sorted(events, key=lambda item: item["observed_at"])
 
 
 def _central_console_current_execution_diagnostic(data_root: Path, project_id: str) -> str | None:
