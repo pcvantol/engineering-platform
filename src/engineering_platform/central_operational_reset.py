@@ -21,11 +21,13 @@ import re
 import shutil
 import sqlite3
 import stat
+import subprocess
 import tempfile
-from typing import Iterator
+from typing import Iterator, Mapping
 
 from . import central_database
 from .platform_admin import require_installation_owner
+from .platform_version import CURRENT_PLATFORM_VERSION
 from .operational_installation_lock import (
     OperationalInstallationLock, OperationalInstallationLockError,
 )
@@ -33,7 +35,7 @@ from .storage import sqlite_connection
 
 
 PROFILE = "EP_CENTRAL_OPERATIONAL_HISTORY_V1"
-PLAN_VERSION = 1
+PLAN_VERSION = 2
 SCHEMA_VERSION = 68
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}")
 _INSTANCE_ID = re.compile(
@@ -210,6 +212,36 @@ def _file_digest(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _implementation_digest() -> str:
+    return _digest({
+        "module_digest": _file_digest(Path(__file__)),
+        "product_version": CURRENT_PLATFORM_VERSION,
+    })
+
+
+def _implementation_source_revision() -> str:
+    try:
+        module = Path(__file__).resolve()
+        root = Path(subprocess.check_output(
+            ("git", "-C", str(module.parent), "rev-parse", "--show-toplevel"),
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()).resolve()
+        relative = module.relative_to(root).as_posix()
+        subprocess.run(
+            ("git", "-C", str(root), "ls-files", "--error-unmatch", relative),
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        revision = subprocess.check_output(
+            ("git", "-C", str(root), "rev-parse", "HEAD"),
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        if re.fullmatch(r"[0-9a-f]{40}", revision):
+            return revision
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        pass
+    return "UNAVAILABLE_IN_INSTALLED_PACKAGE"
 
 
 def _quote(identifier: str) -> str:
@@ -1276,6 +1308,13 @@ def preview(data_root: Path) -> dict[str, object]:
             missing_writer_fences = sorted(
                 _expected_writer_fences(tables) - installed_triggers
             )
+            active_rows = [
+                {"operation_id": str(row[0]), "state": str(row[1])}
+                for row in connection.execute(
+                    "SELECT operation_id,state FROM ep_operational_reset_operations "
+                    "WHERE state NOT IN ('COMPLETED','ABORTED') ORDER BY operation_id"
+                )
+            ] if "ep_operational_reset_operations" in tables else []
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError) as error:
         raise OperationalResetError("CENTRAL_INSPECTION_FAILED") from error
     external_error: str | None = None
@@ -1315,6 +1354,8 @@ def preview(data_root: Path) -> dict[str, object]:
         blockers.append("PRESERVATION_INTEGRITY_FAILED")
     if activity["active"]:
         blockers.append("TARGET_WRITER_ACTIVE")
+    if active_rows:
+        blockers.append("MAINTENANCE_ALREADY_ACTIVE")
     review = [str(item["id"]) for item in foreign_keys if item["classification"] == "OPERATIONAL_PURGE_SET"]
     target_digest = _digest(identity)
     effect_set = {
@@ -1326,8 +1367,12 @@ def preview(data_root: Path) -> dict[str, object]:
         "external_roots": list(_EFFECT_DIRECTORIES),
     }
     plan_basis = {
-        "plan_version": PLAN_VERSION, "profile": PROFILE, "target": identity,
+        "plan_version": PLAN_VERSION, "operator_contract": "operational-reset-v1",
+        "profile": PROFILE, "product_version": CURRENT_PLATFORM_VERSION,
+        "implementation_source_revision": _implementation_source_revision(),
+        "implementation_digest": _implementation_digest(), "target": identity,
         "target_digest": target_digest, "source_revision": source_revision,
+        "meaningful_source_revision": source_revision,
         "preserved_bindings_digest": preserved_digest, "dataset_generation": generation,
         "classification_counts": counts, "foreign_key_findings": foreign_keys,
         "external_files": external,
@@ -1347,6 +1392,7 @@ def preview(data_root: Path) -> dict[str, object]:
     return {
         **plan_basis, "plan_digest": _digest(plan_basis), "quick_check": quick,
         "runtime_activity": activity, "blocking_codes": sorted(set(blockers)),
+        "active_maintenance": active_rows,
         "review_required": review,
         "runtime_control_external": [
             item for item in preserved_external
@@ -1665,7 +1711,10 @@ def prepare(
         plan = preview(root)
         if plan["plan_digest"] != plan_digest:
             raise OperationalResetError("PLAN_DIGEST_MISMATCH")
-        if plan["blocking_codes"]:
+        non_maintenance_blockers = [
+            code for code in plan["blocking_codes"] if code != "MAINTENANCE_ALREADY_ACTIVE"
+        ]
+        if non_maintenance_blockers:
             raise OperationalResetError("PLAN_BLOCKED", ",".join(plan["blocking_codes"]))
         expected_findings = tuple(sorted(str(item) for item in plan["review_required"]))
         allowed = tuple(sorted(set(allowed_fk_findings)))
@@ -1685,6 +1734,8 @@ def prepare(
                 if existing["request_digest"] != request_digest:
                     raise OperationalResetError("OPERATION_REQUEST_CONFLICT")
                 return _public_status(existing)
+            if plan["blocking_codes"]:
+                raise OperationalResetError("PLAN_BLOCKED", ",".join(plan["blocking_codes"]))
             generation = int(connection.execute(
                 "SELECT generation FROM ep_operational_dataset_state WHERE singleton=1"
             ).fetchone()[0])
@@ -1766,6 +1817,68 @@ def maintenance_active(data_root: Path) -> bool:
             ).fetchone() is not None
     except sqlite3.DatabaseError as error:
         raise OperationalResetError("MAINTENANCE_STATE_UNAVAILABLE") from error
+
+
+def revalidate(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, object]:
+    """Read-only proof for one already prepared owning operation."""
+    root = _trusted_directory(data_root, code="DATA_ROOT_UNSAFE")
+    actor = _actor(root)
+    database = root / central_database.DATABASE_FILENAME
+    with _central_connection(f"file:{database}?mode=ro", uri=True) as connection:
+        connection.execute("PRAGMA query_only=ON")
+        row = _operation(connection, operation_id)
+    if row is None or row["plan_digest"] != plan_digest:
+        raise OperationalResetError("AUTHORIZED_OPERATION_NOT_FOUND")
+    if row["state"] != "AUTHORIZED":
+        raise OperationalResetError("OPERATION_STATE_INVALID_FOR_REVALIDATION")
+    if row["actor"] != actor:
+        raise OperationalResetError("OPERATOR_AUTHORITY_CHANGED")
+    plan = json.loads(str(row["plan_json"]))
+    if int(plan.get("plan_version", -1)) != PLAN_VERSION:
+        raise OperationalResetError("PLAN_VERSION_UNSUPPORTED")
+    observed = preview(root)
+    if observed["active_maintenance"] != [{
+        "operation_id": operation_id, "state": "AUTHORIZED",
+    }]:
+        raise OperationalResetError("WRITER_FENCE_OWNER_CHANGED")
+    if observed["blocking_codes"] != ["MAINTENANCE_ALREADY_ACTIVE"]:
+        raise OperationalResetError("REVALIDATION_BLOCKED")
+    for key in (
+        "plan_digest", "target_digest", "source_revision", "preserved_bindings_digest",
+        "dataset_generation", "effect_set", "schema_objects", "foreign_key_findings",
+        "external_files", "preserved_external",
+    ):
+        expected = row["plan_digest"] if key == "plan_digest" else plan[key]
+        if observed[key] != expected:
+            raise OperationalResetError("REVALIDATION_CHANGED", key)
+    if int(observed["dataset_generation"]) != int(row["generation_before"]):
+        raise OperationalResetError("DATASET_GENERATION_CONFLICT")
+    backup_path = row.get("backup_path")
+    backup_digest = row.get("backup_manifest_digest")
+    if not isinstance(backup_path, str) or not isinstance(backup_digest, str):
+        raise OperationalResetError("BACKUP_BINDING_INVALID")
+    verify_backup(
+        Path(backup_path), operation_id=operation_id, plan_digest=plan_digest,
+        expected_manifest_digest=backup_digest,
+    )
+    evidence = {
+        "operation_id": operation_id, "state": str(row["state"]),
+        "writer_fence_owner": operation_id, "actor": actor,
+        "target_digest": str(row["target_digest"]),
+        "plan_digest": str(row["plan_digest"]),
+        "request_digest": str(row["request_digest"]),
+        "source_revision": str(row["source_revision"]),
+        "implementation_source_revision": str(plan["implementation_source_revision"]),
+        "implementation_digest": str(plan["implementation_digest"]),
+        "product_version": str(plan["product_version"]),
+        "preserved_bindings_digest": str(plan["preserved_bindings_digest"]),
+        "backup_manifest_digest": backup_digest,
+        "dataset_generation": int(row["generation_before"]),
+    }
+    evidence["revalidation_digest"] = _digest(evidence)
+    result = _public_status(row)
+    result["revalidation"] = evidence
+    return result
 
 
 def _archive_effects(data_root: Path, operation_id: str, plan: dict[str, object]) -> None:
@@ -2082,12 +2195,14 @@ def _delete_operational(connection: sqlite3.Connection) -> None:
 def apply(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, object]:
     root = _trusted_directory(data_root, code="DATA_ROOT_UNSAFE")
     with _operation_lock(root, operation_id):
-        _actor(root)
+        actor = _actor(root)
         database = root / central_database.DATABASE_FILENAME
         with _central_connection(database) as connection:
             row = _operation(connection, operation_id)
         if row is None or row["plan_digest"] != plan_digest:
             raise OperationalResetError("AUTHORIZED_OPERATION_NOT_FOUND")
+        if row["actor"] != actor:
+            raise OperationalResetError("OPERATOR_AUTHORITY_CHANGED")
         state = str(row["state"])
         if state == "PREPARING":
             raise OperationalResetError("BACKUP_NOT_AUTHORIZED")
@@ -2106,9 +2221,7 @@ def apply(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, 
             return _public_status(row)
         plan = json.loads(str(row["plan_json"]))
         if state == "AUTHORIZED":
-            current = preview(root)
-            if current["source_revision"] != row["source_revision"] or current["plan_digest"] != plan_digest:
-                raise OperationalResetError("SOURCE_REVISION_CHANGED")
+            revalidate(root, operation_id=operation_id, plan_digest=plan_digest)
             with _central_connection(database) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 _transition(connection, operation_id, "AUTHORIZED", "ARTIFACTS_ARCHIVING")
@@ -2133,6 +2246,39 @@ def apply(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, 
                 current = _operation(connection, operation_id)
                 if current is None or current["state"] != "ARTIFACTS_ARCHIVED":
                     raise OperationalResetError("OPERATION_STATE_TRANSITION_CONFLICT")
+                if _actor(root) != row["actor"]:
+                    raise OperationalResetError("OPERATOR_AUTHORITY_CHANGED")
+                tables = _tables(connection)
+                if tables != MAPPED_TABLES:
+                    raise OperationalResetError("TABLE_CLASSIFICATION_INCOMPLETE")
+                active = [
+                    (str(item[0]), str(item[1])) for item in connection.execute(
+                        "SELECT operation_id,state FROM ep_operational_reset_operations "
+                        "WHERE state NOT IN ('COMPLETED','ABORTED') ORDER BY operation_id"
+                    )
+                ]
+                if active != [(operation_id, "ARTIFACTS_ARCHIVED")]:
+                    raise OperationalResetError("WRITER_FENCE_OWNER_CHANGED")
+                identity = _identity(root, connection)
+                if identity != plan["target"]:
+                    raise OperationalResetError("TARGET_IDENTITY_CONFLICT")
+                if _logical_digest(connection, tables) != row["source_revision"]:
+                    raise OperationalResetError("SOURCE_REVISION_CHANGED")
+                if _logical_digest(connection, tables, preserved_only=True) != plan["preserved_bindings_digest"]:
+                    raise OperationalResetError("PRESERVED_BINDINGS_CHANGED")
+                if _schema_objects(connection) != plan["schema_objects"]:
+                    raise OperationalResetError("SCHEMA_OBJECTS_CHANGED")
+                if (
+                    plan.get("product_version") != CURRENT_PLATFORM_VERSION
+                    or plan.get("implementation_source_revision") != _implementation_source_revision()
+                    or plan.get("implementation_digest") != _implementation_digest()
+                ):
+                    raise OperationalResetError("IMPLEMENTATION_PROVENANCE_CHANGED")
+                generation_before = int(connection.execute(
+                    "SELECT generation FROM ep_operational_dataset_state WHERE singleton=1"
+                ).fetchone()[0])
+                if generation_before != int(row["generation_before"]):
+                    raise OperationalResetError("DATASET_GENERATION_CONFLICT")
                 # Immutable-evidence and maintenance-block triggers are removed and
                 # recreated inside this one uncommitted transaction. Other writers
                 # cannot observe an unfenced schema window.
@@ -2467,6 +2613,7 @@ def resume(data_root: Path, *, operation_id: str, plan_digest: str,
 
 def contract_readback(
     data_root: Path, *, command: str, operation_id: str | None,
+    revalidation_result: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Project the shared operator contract from persisted, public state only.
 
@@ -2505,6 +2652,21 @@ def contract_readback(
         }
     target = observed["target"]
     blockers = list(observed["blocking_codes"])
+    revalidation_evidence: dict[str, object] | None = None
+    if command == "revalidate":
+        candidate = None if revalidation_result is None else revalidation_result.get("revalidation")
+        if not isinstance(candidate, Mapping):
+            raise OperationalResetError("REVALIDATION_EVIDENCE_INVALID")
+        allowed_keys = {
+            "operation_id", "state", "writer_fence_owner", "actor", "target_digest",
+            "plan_digest", "request_digest", "source_revision", "preserved_bindings_digest",
+            "backup_manifest_digest", "dataset_generation", "implementation_source_revision",
+            "implementation_digest", "product_version", "revalidation_digest",
+        }
+        if set(candidate) != allowed_keys:
+            raise OperationalResetError("REVALIDATION_EVIDENCE_INVALID")
+        revalidation_evidence = dict(candidate)
+        blockers = []
     if operation.get("state") == "FAILED":
         blockers.append("OPERATION_FAILED_RECONCILIATION_REQUIRED")
     return {
@@ -2529,6 +2691,7 @@ def contract_readback(
         "details": {
             "credentials_included_in_receipt": False,
             "projection": "PERSISTED_PUBLIC_MAINTENANCE_STATE",
+            **({"revalidation": revalidation_evidence} if revalidation_evidence is not None else {}),
         },
     }
 
@@ -2559,7 +2722,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _ReceiptArgumentParser(prog="engineering-platform-maintenance")
     parser.add_argument(
         "command",
-        choices=("preview", "prepare", "apply", "status", "resume", "verify", "finish", "abort"),
+        choices=("preview", "prepare", "revalidate", "apply", "status", "resume", "verify", "finish", "abort"),
     )
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--operation-id")
@@ -2588,6 +2751,10 @@ def main(argv: list[str] | None = None) -> int:
                                  allowed_fk_findings=tuple(args.allow_operational_fk))
             elif args.command == "apply":
                 result = apply(args.data_root, operation_id=args.operation_id, plan_digest=args.plan_digest)
+            elif args.command == "revalidate":
+                result = revalidate(
+                    args.data_root, operation_id=args.operation_id, plan_digest=args.plan_digest,
+                )
             elif args.command == "resume":
                 result = resume(args.data_root, operation_id=args.operation_id,
                                  plan_digest=args.plan_digest, backup_root=args.backup_root)
@@ -2601,6 +2768,7 @@ def main(argv: list[str] | None = None) -> int:
         # from the schema-owned public projection after the command completes.
         print(json.dumps(contract_readback(
             args.data_root, command=args.command, operation_id=args.operation_id,
+            revalidation_result=result if args.command == "revalidate" else None,
         ), sort_keys=True))
         return 0
     except OperationalResetError as error:

@@ -25,7 +25,7 @@ import tempfile
 from typing import Callable, Iterator, Mapping, Sequence
 
 
-CONTRACT_VERSION = "cross-product-operational-reset-coordinator-v1"
+CONTRACT_VERSION = "cross-product-operational-reset-coordinator-v2"
 PRODUCT_CONTRACT = "operational-reset-v1"
 PRODUCTS = ("forge", "engineering-platform")
 STATES = frozenset({
@@ -499,7 +499,7 @@ class OperationalResetCoordinator:
                 command.extend((flag, finding))
             if product == "engineering-platform":
                 command.extend(("--backup-root", str(config.ep_backup_root)))
-        elif product == "forge" and action in {"apply", "verify", "resume"}:
+        elif product == "forge" and action in {"revalidate", "apply", "verify", "resume"}:
             request_digest = current.get("request_digest")
             if not isinstance(request_digest, str):
                 raise CoordinatorError("Forge request digest is unavailable")
@@ -729,15 +729,17 @@ class OperationalResetCoordinator:
             config = self._config(receipt)
             try:
                 for product in PRODUCTS:
-                    envelope = self._invoke(config, receipt, product, "preview")
+                    envelope = self._invoke(config, receipt, product, "revalidate")
                     current = receipt["products"][product]
                     if (
-                        _digest(envelope["target"]) != current["target_digest"]
+                        envelope.get("allowed") is not True
+                        or envelope.get("blockers") != []
+                        or _digest(envelope["target"]) != current["target_digest"]
                         or envelope["plan_digest"] != current["plan_digest"]
                         or envelope.get("relevant_revision_digest") != current["relevant_revision_digest"]
                         or envelope.get("preserved_bindings_digest") != current["preserved_bindings_digest"]
                     ):
-                        raise ProductCommandError(product, "preview", "REVALIDATION_CHANGED")
+                        raise ProductCommandError(product, "revalidate", "REVALIDATION_CHANGED")
                     _event(
                         receipt, str(receipt["state"]), f"{product} plan revalidated",
                         product=product, evidence=envelope,
@@ -844,7 +846,14 @@ class OperationalResetCoordinator:
                 # sequential finish.  This is the two-phase readiness boundary;
                 # a failed peer check cannot be followed by the requested finish.
                 for candidate in PRODUCTS:
-                    readiness = self._invoke(config, receipt, candidate, "verify")
+                    candidate_stage = self._product_stage(
+                        candidate, receipt["products"][candidate]["state"],
+                    )
+                    # A terminal owning operation cannot be verified again.
+                    # Its read-only status is the authoritative readiness
+                    # proof while the still-active peer is re-verified.
+                    readiness_action = "status" if candidate_stage == "finished" else "verify"
+                    readiness = self._invoke(config, receipt, candidate, readiness_action)
                     if self._product_stage(candidate, readiness["state"]) not in {
                         "verified", "finished",
                     }:

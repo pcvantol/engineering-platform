@@ -2,7 +2,7 @@
 
 **Owning product:** Engineering Platform.  **Profile:**
 `EP_CENTRAL_OPERATIONAL_HISTORY_V1`.  **Server schema:** 68.  **Candidate
-release:** 2.3.82.
+release:** 2.3.83.
 
 This is a bounded local maintenance route for removing EP operational history
 while retaining installation identity, project and repository attachment,
@@ -33,6 +33,17 @@ the installation lock, derives the real local actor as `uid:<uid>:<account>`,
 persists `PREPARING`, and thereby activates database triggers that reject
 normal INSERT/UPDATE/DELETE entry points after any process restart.
 
+Plan version 2 separates that approved meaning from current availability.
+General `preview` remains read-only and reports `MAINTENANCE_ALREADY_ACTIVE`
+while any operation owns the writer fence; it cannot join that operation.
+Only `revalidate` accepts an already prepared operation ID and original plan
+digest. It read-only re-proves the real actor, exact active fence owner and
+phase, target/database/schema, source-row contents, preserved project/
+consumer/security/configuration bindings, generation, verified backup and
+product/implementation provenance, and returns a separate revalidation digest.
+It creates no operation, authority, backup or domain write. Version-1 prepared
+plans are rejected rather than reinterpreted under version 2.
+
 The durable states are:
 
 ```text
@@ -56,6 +67,12 @@ immutable to ordinary CENTRAL connections; a connection-local owning
 capability is present only on the maintenance service's connections. Preview
 requires the complete schema-derived normal-writer trigger set plus every
 maintenance-table guard before it can be allowed.
+
+`apply` calls the same owning revalidation and then repeats actor, target,
+schema/table set, active-operation ownership, meaningful source, preserved
+bindings, schema objects, implementation provenance and generation checks
+inside its actual database mutation transaction. A successful earlier
+revalidation therefore cannot survive later fence loss or drift.
 
 Before the first external effect, `abort` may move `PREPARING` or `AUTHORIZED`
 to terminal `ABORTED` and release the fence. It is rejected after artifact
@@ -336,19 +353,26 @@ engineering-platform-maintenance prepare \
   --backup-root "/exact/protected/recovery/root" \
   --allow-operational-fk "fk:<child>:<rowid>:<parent>:<index>"
 
-# 2. DESTRUCTIVE: archive active artifacts/Inbox and purge the approved DB set.
+# 2. READ-ONLY: re-prove this exact prepared operation. A general preview still
+#    blocks new operations during maintenance and is not this gate.
+engineering-platform-maintenance revalidate \
+  --data-root "/exact/Engineering Platform Server/data" \
+  --operation-id "central-clean-<coordinator-reference>" \
+  --plan-digest "$PREVIEW_PLAN_DIGEST"
+
+# 3. DESTRUCTIVE: archive active artifacts/Inbox and purge the approved DB set.
 engineering-platform-maintenance apply \
   --data-root "/exact/Engineering Platform Server/data" \
   --operation-id "central-clean-<coordinator-reference>" \
   --plan-digest "$PREVIEW_PLAN_DIGEST"
 
-# 3. Prove physical/referential integrity, operational emptiness, backup and bindings.
+# 4. Prove physical/referential integrity, operational emptiness, backup and bindings.
 engineering-platform-maintenance verify \
   --data-root "/exact/Engineering Platform Server/data" \
   --operation-id "central-clean-<coordinator-reference>" \
   --plan-digest "$PREVIEW_PLAN_DIGEST"
 
-# 4. Only after the coordinated Forge+EP verification authorizes normal writers.
+# 5. Only after the coordinated Forge+EP verification authorizes normal writers.
 engineering-platform-maintenance finish \
   --data-root "/exact/Engineering Platform Server/data" \
   --operation-id "central-clean-<coordinator-reference>" \
@@ -387,6 +411,11 @@ secret-free joint progress receipt and invokes the two installed, owning CLIs
 as subprocesses. Its receipt directory is mode `0700`, its receipt and lock are
 mode `0600`, updates are atomic and fsynced, and symlinks or a concurrent
 coordinator process are rejected.
+
+Coordinator contract v2 invokes each owning product's operation-bound
+`revalidate` command; it no longer substitutes a second general preview or
+normalizes product output. Existing v1 coordinator receipts are deliberately
+refused and must not be reused as fresh reset authority.
 
 Choose a new joint reference and two distinct product operation IDs. Bind the
 exact installed CLI files, target roots and protected EP backup root during the
@@ -458,11 +487,12 @@ in this delivery; do not run them against CENTRAL as part of installation. The
 joint receipt reaches `COMPLETE` only after both owning verifications, explicit
 resume authorization and both owning finishes.
 
-Immediately before every individual `finish`, the harness calls both owning
-`verify` commands again and requires each product to report `VERIFIED` or
-`COMPLETED`. This is a two-phase pre-finish readiness check, not a distributed
-transaction: the owning finishes remain sequential. If the first product has
-already reached `COMPLETED` and the second finish fails, the receipt records
+Immediately before every individual `finish`, the harness calls owning
+`verify` for an active verified operation and read-only owning `status` for a
+peer that is already terminal. It requires each product to report `VERIFIED`
+or `COMPLETED`. This is a two-phase pre-finish readiness check, not a
+distributed transaction: the owning finishes remain sequential. If the first
+product has already reached `COMPLETED` and the second finish fails, the receipt records
 `RECONCILIATION_REQUIRED`; reconciliation truthfully returns the pair
 `COMPLETED`/`VERIFIED`, keeps the unfinished product fenced, and requires an
 explicit retry of that same second finish. It never rolls the first product
@@ -501,11 +531,11 @@ decision.
 
 ## Delivery status
 
-The installed 2.3.81 read-only preview proved schema 68, `quick_check`, foreign
-keys and counts, but exposed a false `EXTERNAL_SYMLINK_UNSAFE` blocker by
-descending into a preserved updater `candidate-venv`. Release 2.3.82 contains
-the targeted opaque-boundary correction and synthetic positive/negative
-qualification. Protected PR review, hosted full gates, release publication,
-artifact-byte qualification and a new installed live preview remain separate
-evidence. Installation may activate schema 68 and the chat relationship repair
-but must not automatically prepare/apply a reset or delete historical rows.
+Release 2.3.82 remains the completed opaque-updater-boundary correction.
+Candidate 2.3.83 adds only the operation-bound revalidation contract and the
+coordinator-v2 consumer required by this remediation. Candidate qualification
+uses non-editable wheels, separate CLI processes, real SQLite backups and
+owning mutations on synthetic roots. Protected review, hosted full gates,
+release publication, artifact-byte qualification and installed repetition
+remain separate evidence until completed. An installation must not automatically prepare/apply
+a reset or delete historical rows.

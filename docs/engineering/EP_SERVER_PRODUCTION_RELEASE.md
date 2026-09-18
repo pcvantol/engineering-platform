@@ -35,6 +35,14 @@ canonical staged wheel filename and digest are verified, with an explicit
 incomplete-state readback. It never turns an arbitrary operation sibling,
 malformed marker or linked boundary into known product data.
 
+The 2.3.83 corrective patch keeps schema 68. It adds a read-only,
+operation-bound revalidation command for an already `AUTHORIZED` reset and
+makes the external coordinator use that owning command instead of a second
+general preview. General preview still blocks new work during maintenance;
+apply repeats the source, authority, fence, backup, target and implementation
+checks at its mutation boundary. Publication and installation do not authorize
+a production reset.
+
 ## Release-operation lifecycle V1
 
 After both the production-wheel and dashboard qualifications succeed, the
