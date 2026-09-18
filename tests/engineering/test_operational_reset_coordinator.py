@@ -109,6 +109,8 @@ class OperationalResetCoordinatorTests(unittest.TestCase):
                 self.assertRegex(observed[field], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(0o700, stat.S_IMODE(self.store.directory.stat().st_mode))
         self.assertEqual(0o600, stat.S_IMODE(self.store.receipt_path.stat().st_mode))
+        forge_actions = [item["action"] for item in self.command_log(self.forge_root)]
+        self.assertEqual(forge_actions[-2:], ["finish", "status"])
 
     def test_forge_succeeds_ep_fails_and_neither_product_is_finished(self) -> None:
         self.prepare_both()
@@ -258,7 +260,7 @@ class OperationalResetCoordinatorTests(unittest.TestCase):
 
     def test_no_hidden_mission_provider_or_submission_command_is_invoked(self) -> None:
         self.complete_both(first="engineering-platform")
-        allowed = {"preview", "prepare", "apply", "verify", "finish", "status"}
+        allowed = {"preview", "prepare", "revalidate", "apply", "verify", "finish", "status"}
         for root in (self.forge_root, self.ep_root):
             log = self.command_log(root)
             self.assertTrue({item["action"] for item in log} <= allowed)
@@ -315,7 +317,8 @@ class OperationalResetCoordinatorTests(unittest.TestCase):
         (self.ep_root / "fail-finish").unlink()
         self.assertEqual("COMPLETE", self.coordinator.finish("engineering-platform")["state"])
         forge_actions = [item["action"] for item in self.command_log(self.forge_root)]
-        self.assertGreaterEqual(forge_actions.count("verify"), 4)
+        self.assertEqual(forge_actions.count("verify"), 2)
+        self.assertGreaterEqual(forge_actions.count("status"), 3)
 
     def test_receipt_symlink_and_concurrent_lock_fail_closed(self) -> None:
         unsafe_root = self.root / "unsafe-receipts"

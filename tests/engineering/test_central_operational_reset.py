@@ -256,6 +256,102 @@ class CentralOperationalResetTests(unittest.TestCase):
             reset.prepare(other, operation_id="reset-other-0001",
                           plan_digest=str(plan["plan_digest"]), backup_root=self.backups)
 
+    def test_prepared_operation_has_explicit_read_only_revalidation(self) -> None:
+        self._populate()
+        initial = reset.preview(self.root)
+        operation_id, digest = self._prepared(operation_id="reset-revalidate-0001")
+        before = reset.status(self.root, operation_id=operation_id)
+
+        generic = reset.preview(self.root)
+        self.assertEqual(generic["plan_digest"], initial["plan_digest"])
+        self.assertEqual(generic["blocking_codes"], ["MAINTENANCE_ALREADY_ACTIVE"])
+        self.assertEqual(
+            generic["active_maintenance"],
+            [{"operation_id": operation_id, "state": "AUTHORIZED"}],
+        )
+        with self.assertRaisesRegex(reset.OperationalResetError, "PLAN_BLOCKED"):
+            reset.prepare(
+                self.root, operation_id="reset-revalidate-foreign-0001",
+                plan_digest=digest, backup_root=self.backups,
+            )
+
+        revalidated = reset.revalidate(
+            self.root, operation_id=operation_id, plan_digest=digest,
+        )
+
+        self.assertEqual(revalidated["plan_digest"], digest)
+        self.assertEqual(revalidated["revalidation"]["writer_fence_owner"], operation_id)
+        self.assertRegex(
+            str(revalidated["revalidation"]["revalidation_digest"]),
+            r"^sha256:[0-9a-f]{64}$",
+        )
+        self.assertEqual(before, reset.status(self.root, operation_id=operation_id))
+
+    def test_revalidation_rejects_same_count_security_drift_and_backup_tampering(self) -> None:
+        self._populate()
+        operation_id, digest = self._prepared(operation_id="reset-revalidate-drift-0001")
+        database = self.root / "epdata.sqlite"
+        with reset._central_connection(database) as connection:
+            triggers = [
+                (str(name), str(sql)) for name, sql in connection.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+                    "AND tbl_name='ep_consumer_registrations'"
+                ) if sql is not None
+            ]
+            for name, _sql in triggers:
+                connection.execute(f'DROP TRIGGER "{name}"')
+            connection.execute(
+                "UPDATE ep_consumer_registrations SET status='REVOKED' WHERE consumer_id='consumer-a'"
+            )
+            for _name, sql in triggers:
+                connection.execute(sql)
+        with self.assertRaisesRegex(reset.OperationalResetError, "REVALIDATION_CHANGED"):
+            reset.revalidate(self.root, operation_id=operation_id, plan_digest=digest)
+
+        backup_root = Path(self.temporary.name) / "backup-tamper-data"
+        backup_destination = Path(self.temporary.name) / "backup-tamper-recovery"
+        server.initialize(backup_root)
+        plan = reset.preview(backup_root)
+        reset.prepare(
+            backup_root, operation_id="reset-revalidate-backup-0001",
+            plan_digest=str(plan["plan_digest"]), backup_root=backup_destination,
+        )
+        status = reset.status(
+            backup_root, operation_id="reset-revalidate-backup-0001",
+        )["operation"]
+        manifest = Path(str(status["backup_path"])) / "manifest.json"
+        manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        manifest_payload["profile"] = "tampered"
+        manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+        with self.assertRaisesRegex(reset.OperationalResetError, "BACKUP_MANIFEST_DIGEST_MISMATCH"):
+            reset.revalidate(
+                backup_root, operation_id="reset-revalidate-backup-0001",
+                plan_digest=str(plan["plan_digest"]),
+            )
+
+    def test_apply_rechecks_source_at_the_database_mutation_boundary(self) -> None:
+        self._populate()
+        operation_id, digest = self._prepared(operation_id="reset-apply-recheck-0001")
+        reset.revalidate(self.root, operation_id=operation_id, plan_digest=digest)
+        database = self.root / "epdata.sqlite"
+        with reset._central_connection(database) as connection:
+            triggers = [
+                (str(name), str(sql)) for name, sql in connection.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+                    "AND tbl_name='ep_project_registrations'"
+                ) if sql is not None
+            ]
+            for name, _sql in triggers:
+                connection.execute(f'DROP TRIGGER "{name}"')
+            connection.execute(
+                "UPDATE ep_project_registrations SET attachment_contract='{\"changed\":true}' "
+                "WHERE project_id='project-a'"
+            )
+            for _name, sql in triggers:
+                connection.execute(sql)
+        with self.assertRaisesRegex(reset.OperationalResetError, "REVALIDATION_CHANGED"):
+            reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+
     def test_existing_installation_lock_blocks_prepare(self) -> None:
         plan = reset.preview(self.root)
         lock = OperationalInstallationLock(self.root)
@@ -1355,6 +1451,9 @@ class CentralOperationalResetTests(unittest.TestCase):
         )
         self.assertEqual((code, prepared["state"]), (0, "AUTHORIZED"))
         self.assertTrue(prepared["backup"]["verified"])
+        code, revalidated = invoke("revalidate", *common, *mutation)
+        self.assertEqual((code, revalidated["state"], revalidated["allowed"]), (0, "AUTHORIZED", True))
+        self.assertEqual(revalidated["details"]["revalidation"]["writer_fence_owner"], operation_id)
         code, status = invoke("status", *common, "--operation-id", operation_id)
         self.assertEqual((code, status["state"]), (0, "AUTHORIZED"))
         self.assertEqual(invoke("apply", *common, *mutation)[1]["state"], "DB_APPLIED")
