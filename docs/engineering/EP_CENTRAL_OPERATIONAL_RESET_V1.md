@@ -537,5 +537,5 @@ coordinator-v2 consumer required by this remediation. Candidate qualification
 uses non-editable wheels, separate CLI processes, real SQLite backups and
 owning mutations on synthetic roots. Protected review, hosted full gates,
 release publication, artifact-byte qualification and installed repetition
-remain separate evidence until completed. Installation must not automatically
-prepare/apply a reset or delete historical rows.
+remain separate evidence until completed. An installation must not automatically prepare/apply
+a reset or delete historical rows.
