@@ -2400,6 +2400,8 @@ test.describe("Engineering Status browser smoke", () => {
         pull_requests: [
           { role: "implementation", number: 948, url: "https://github.com/pcvantol/djconnect/pull/948", commit_count: 2, check_count: 1, changed_file_count: 5 },
           { role: "finalization", number: 949, url: "https://github.com/pcvantol/djconnect/pull/949", commit_count: 1, check_count: 3, changed_file_count: 2 },
+          { role: "reconciliation", number: 950, url: "https://github.com/pcvantol/djconnect/pull/950" },
+          { role: "bound", number: 951, url: "https://github.com/pcvantol/djconnect/pull/951" },
         ],
         commit_timeline: [{
           phase: "FINALIZE_AGENT",
@@ -2435,6 +2437,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent"))
       .not.toContainText("2026-08-27T14:08:24.218289+00:00");
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests")).toContainText("Commits: 2");
+    await expect(page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests a")).toHaveCount(4);
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests")).toContainText("GitHub-controles: 1");
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests")).toContainText("Gewijzigde bestanden: 5");
     const markdown = page.locator("#promptHistoryDetailDownloadMarkdown");
@@ -2459,6 +2462,8 @@ test.describe("Engineering Status browser smoke", () => {
     expect(markdownContent).toContain("## Pull requests");
     expect(markdownContent).toContain("[#948](https://github.com/pcvantol/djconnect/pull/948)");
     expect(markdownContent).toContain("[#949](https://github.com/pcvantol/djconnect/pull/949)");
+    expect(markdownContent).toContain("Reconciliatie-pullrequest: [#950](https://github.com/pcvantol/djconnect/pull/950)");
+    expect(markdownContent).toContain("Gebonden pull request: [#951](https://github.com/pcvantol/djconnect/pull/951)");
     expect(markdownContent).toContain("## Geverifieerde commit-tijdlijn");
     expect(markdownContent).toContain("`" + "a".repeat(40) + "`");
     expect(markdownContent).toContain("Finalisatiecommit geverifieerd");
@@ -2472,6 +2477,8 @@ test.describe("Engineering Status browser smoke", () => {
     expect(jsonContent.pull_requests).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "implementation", number: 948 }),
       expect.objectContaining({ role: "finalization", number: 949 }),
+      expect.objectContaining({ role: "reconciliation", number: 950 }),
+      expect.objectContaining({ role: "bound", number: 951 }),
     ]));
     expect(jsonContent.commit_timeline).toEqual(expect.arrayContaining([
       expect.objectContaining({ phase: "FINALIZE_AGENT", commit_sha: "a".repeat(40) }),
@@ -3906,6 +3913,25 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(pullRequests.locator("a")).toHaveCount(1);
     await expect(pullRequests.locator("a")).toHaveAttribute("href", "https://github.com/pcvantol/forge/pull/118");
     await expect(pullRequests).not.toContainText("Implementatie-pullrequest");
+  });
+
+  test("labels a newly linked phase PR once beside earlier run PRs", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-finalization-pr",
+      execution_mode: "MANAGED", github_repository: "pcvantol/djconnect",
+      implementation_pr: 25, finalization_pr: 26, pull_request: 26,
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    const card = page.locator("#activeRunPullRequests");
+    await expect(card.locator("a")).toHaveCount(2);
+    await expect(card).toContainText("Finalisatie-pullrequest");
+    await expect(card).not.toContainText("Gebonden pull request");
+    await expect(card.locator("a").nth(1)).toHaveAttribute(
+      "href", "https://github.com/pcvantol/djconnect/pull/26",
+    );
   });
 
   test("renders only the merge boundaries recorded for the lifecycle", async ({ page }) => {

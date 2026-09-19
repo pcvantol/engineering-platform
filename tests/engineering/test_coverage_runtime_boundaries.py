@@ -1948,15 +1948,18 @@ class InstallationBoundaryTests(unittest.TestCase):
             connection.execute(
                 "INSERT INTO execution_lifecycle_events(run_id,phase,checkpoint,recorded_at) VALUES(?,?,?,?)",
                 ("run-forge", "WAIT_FOR_FINALIZATION_MERGE", json.dumps({
+                    "execution_mode": "MANAGED",
                     "repository": "pcvantol/forge-mission-qualification",
                     "implementation_pull_request": 18,
-                    "finalization_pull_request": 19,
+                    "transaction_kind": "FINALIZATION",
+                    "pull_request": 19,
                     "reconciliation_pull_request": None,
                 }), "later"),
             )
         snapshot = server._central_console_project_snapshot(self.root, "project-a")
         self.assertEqual(snapshot["status"]["implementation_pr"], 18)
         self.assertEqual(snapshot["status"]["finalization_pr"], 19)
+        self.assertEqual(snapshot["status"]["pull_request"], 19)
         self.assertEqual(snapshot["status"]["github_repository"], "pcvantol/forge-mission-qualification")
         detail = server._central_console_run_detail(self.root, "project-a", "run-forge")
         assert detail is not None
@@ -1966,6 +1969,24 @@ class InstallationBoundaryTests(unittest.TestCase):
             {"role": "finalization", "number": 19,
              "url": "https://github.com/pcvantol/forge-mission-qualification/pull/19"},
         ])
+
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("UPDATE ep_execution_runs SET state='BLOCKED' WHERE run_id='run-forge'")
+            connection.execute("UPDATE ep_parity_lifecycle_dispatches SET state='BLOCKED' WHERE run_id='run-forge'")
+            connection.execute(
+                "INSERT INTO execution_lifecycle_events(run_id,phase,checkpoint,recorded_at) VALUES(?,?,?,?)",
+                ("run-forge", "BLOCKED", json.dumps({
+                    "execution_mode": "MANAGED",
+                    "repository": "pcvantol/forge-mission-qualification",
+                    "implementation_pull_request": 18,
+                    "transaction_kind": "FINALIZATION",
+                    "pull_request": 19,
+                }), "terminal"),
+            )
+        self.assertEqual(server._central_console_project_snapshot(self.root, "project-a")["status"].get("active_run"), None)
+        detail = server._central_console_run_detail(self.root, "project-a", "run-forge")
+        assert detail is not None
+        self.assertEqual([item["number"] for item in detail["pull_requests"]], [18, 19])
 
     def test_central_detail_uses_persisted_usage_and_activity_not_host_reconstruction(self) -> None:
         """Role-aware activity and usage survive CENTRAL's detail projection."""
