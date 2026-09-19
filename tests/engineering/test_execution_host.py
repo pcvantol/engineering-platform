@@ -513,7 +513,12 @@ class ClientContractTest(unittest.TestCase):
 
             with patch(
                 "engineering_platform.execution_host.provider_readiness_failures", return_value=()
-            ), patch.object(first_host, "_poll", side_effect=HostDisappeared):
+            ), patch.object(first_host, "_poll", side_effect=HostDisappeared), patch(
+                "engineering_platform.execution_host.observed_delivery_scope",
+                return_value={"out_of_scope_paths": (), "premature_completion_paths": (), "changed_paths": (),
+                              "role": "IMPLEMENTATION", "base_branch": "main", "base_sha": "a" * 40,
+                              "candidate_sha": commit},
+            ):
                 with self.assertRaises(HostDisappeared):
                     first_host.run(prompt, run_id="implementation-pr-restart", owner_authorized=True)
 
@@ -2428,6 +2433,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         post_review = inspected.__class__(**{**inspected.__dict__, "phase": "WAIT_FOR_TERMINAL_EVIDENCE"})
         review_result = AgentResult("COMPLETE", branch=inspected.branch, pull_request=17)
         with patch.object(runner, "_run_local_repository_validation", side_effect=lambda state, _: (state, review_result)), \
+             patch.object(runner, "_host_validated_local_result", return_value=True), \
              patch.object(runner, "_run_quality_assurance", return_value=(post_review, review_result)), \
              patch.object(runner.repository, "inspect", side_effect=RunnerError("unavailable")):
             unavailable = runner._advance_after_repair_agent_result(inspected, review_result)
@@ -2447,6 +2453,29 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(runner._append_verified_commit_evidence(TransactionState("commit-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT"), phase="EXECUTE_AGENT", commit_sha="not-a-sha", description="bad" ).commit_evidence, ())
         self.assertEqual(runner._validation_kind("python -m unittest discover"), "tests")
         self.assertEqual(runner._validation_kind("echo harmless"), None)
+
+    def test_local_validation_gate_uses_current_host_receipts_not_provider_summary(self) -> None:
+        run_id, sha = "host-authority", "a" * 40
+        self._record_strict_passing_profile(run_id, candidate_sha=sha)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]),
+                                   FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION",
+                                 implementation_head_sha=sha, local_validation_audit=({"outcome": "validated"},))
+        provider_failed = AgentResult("COMPLETE", validation_evidence=({"command": "exploratory test", "result": "FAILED"},))
+        self.assertTrue(runner._host_validated_local_result(state, provider_failed))
+        self.assertEqual(provider_failed.validation_evidence[0]["result"], "FAILED")
+        context = load_validation_context(self.root, run_id, currentness=0)
+        assert context is not None
+        failed_control = {**context, "controls": {**context["controls"], "repository_suite": {
+            **context["controls"]["repository_suite"], "result": "FAIL", "exit_code": 1,
+        }}}
+        with patch("engineering_platform.execution_host.load_validation_context", return_value=failed_control):
+            self.assertFalse(runner._host_validated_local_result(
+                state, AgentResult("COMPLETE", validation_evidence=({"result": "PASS"},)),
+            ))
+        self.assertFalse(runner._host_validated_local_result(
+            replace(state, local_validation_audit=()), AgentResult("COMPLETE"),
+        ))
 
     def test_validation_classification_and_verified_commit_records_are_bounded(self) -> None:
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
@@ -5645,7 +5674,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             connection.execute("INSERT INTO ep_local_repository_bindings VALUES(?,?,?,?)", ("project", "opaque", "BOUND", str(self.root)))
             digest = "sha256:" + "b" * 64
             profile = {"version": "validation-profile@1", "digest": digest,
-                       "candidate_sha": head, "criteria_digest": digest}
+                       "candidate_sha": head, "criteria_digest": digest, "base_sha": "f" * 40}
             def review(role: str, ordinal: int) -> dict[str, object]:
                 return {"reviewer": role, "status": "PASS", "candidate_sha": head,
                         "profile_digest": digest, "invocation_id": f"autonomous-run:{role}:{ordinal}",
@@ -5665,6 +5694,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 self.assertEqual(qualifications, ["qualification-autonomous-qs@1"])
                 self.assertEqual(attempts, [17])
                 self.assertEqual(result.delegated_merge_attempt, f"17:{head}")
+                drifted_base = replace(reviewed, assurance_profile={**profile, "base_sha": "e" * 40})
+                self.assertIsNone(runner._attempt_delegated_merge(drifted_base, pr))
+                self.assertEqual(attempts, [17])
                 github._autonomous_effective_policy = lambda: {"digest": "sha256:" + "e" * 64}  # type: ignore[attr-defined]
                 self.assertIsNone(runner._attempt_delegated_merge(reviewed, pr))
                 self.assertEqual(attempts, [17])
@@ -5676,6 +5708,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         repository = FakeRepository(branch="codex/implementation")
         github = FakeGitHub([])
         agent = FakeAgent(AgentResult("WAITING"))
+        objectives: list[str] = []
+        def review_objective(_root: Path, selection: object, objective: str, evidence: object = None) -> ReviewerResult:
+            objectives.append(objective)
+            return ReviewerResult(getattr(selection, "reviewer"), "No blocking finding.")
+        agent.review = review_objective  # type: ignore[method-assign]
         runner = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None)
         initial = TransactionState("three-role-assurance", "pcvantol/forge-mission-qualification",
                                    str(self.prompt), "EXECUTE_AGENT", branch="codex/implementation",
@@ -5722,6 +5759,48 @@ class LocalAgentRunnerTest(unittest.TestCase):
                     self.assertEqual({record["reviewer"] for record in current_records}, {"quality", "security"})
                     self.assertEqual(len({record["invocation_id"] for record in current_records}), 2)
         self.assertEqual(len(current.assurance_reviews), 6)
+        self.assertTrue(all("Delivery role: IMPLEMENTATION" in item for item in objectives[:2]))
+        self.assertTrue(all("Delivery role: FINALIZATION" in item for item in objectives[2:4]))
+        self.assertTrue(all("open head is not yet on protected main" in item for item in objectives[2:]))
+        self.assertTrue(all("does not require the Finalization diff to modify that code path" in item for item in objectives[2:4]))
+        self.assertTrue(all("Delivery role: RECONCILIATION" in item for item in objectives[4:]))
+
+    def test_independent_assurance_rejects_same_head_after_base_advances(self) -> None:
+        (self.root / ".git").mkdir()
+        head = "a" * 40
+        repository = FakeRepository(branch="codex/finalize")
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]),
+                                   FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("assurance-base-drift", "pcvantol/djconnect", str(self.prompt),
+                                 "FINALIZE_AGENT", branch="codex/finalize", transaction_kind="FINALIZATION")
+        initial = {"role": "FINALIZATION", "base_branch": "main", "base_sha": "b" * 40,
+                   "candidate_sha": head, "changed_paths": ("HANDOFF.md",),
+                   "out_of_scope_paths": (), "premature_completion_paths": ()}
+        with patch("engineering_platform.execution_host.observed_delivery_scope",
+                   side_effect=(initial, {**initial, "base_sha": "c" * 40})):
+            blocked, _ = runner._run_quality_assurance(state, AgentResult("COMPLETE", branch="codex/finalize", commit_sha=head))
+        self.assertEqual((blocked.phase, blocked.next_action), ("BLOCKED", "assurance_delivery_scope_changed"))
+        self.assertEqual(len(blocked.assurance_reviews), 2)
+        self.assertEqual(blocked.assurance_profile["base_sha"], "b" * 40)
+        self.assertEqual(self.store.load(state.run_id).assurance_profile["base_sha"], "b" * 40)
+
+    def test_assurance_profile_base_binding_reloads_without_invalidating_legacy_state(self) -> None:
+        state = TransactionState("assurance-profile-reload", "pcvantol/djconnect", str(self.prompt),
+                                 "QUALITY_CONTROL_AGENT", assurance_profile={
+                                     "version": "validation-profile@1.0", "digest": "sha256:" + "a" * 64,
+                                     "criteria_digest": "sha256:" + "b" * 64,
+                                     "candidate_sha": "c" * 40, "base_sha": "d" * 40,
+                                 })
+        self.store.save(state)
+        self.assertEqual(self.store.load(state.run_id).assurance_profile["base_sha"], "d" * 40)
+        legacy = replace(state, run_id="assurance-profile-legacy",
+                         assurance_profile={key: value for key, value in state.assurance_profile.items() if key != "base_sha"})
+        self.store.save(legacy)
+        self.assertNotIn("base_sha", self.store.load(legacy.run_id).assurance_profile)
+        self.store.save(replace(state, run_id="assurance-profile-invalid",
+                                assurance_profile={**state.assurance_profile, "base_sha": "invalid"}))
+        with self.assertRaises(StateError):
+            self.store.load("assurance-profile-invalid")
 
     def test_delivery_timeout_recovery_reviews_pinned_open_pr_for_both_later_roles(self) -> None:
         target, branch = "pcvantol/forge-mission-qualification", "codex/finalize-recovered"
@@ -5739,8 +5818,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         subprocess.run(("git", "-C", str(source), "remote", "add", "origin", str(remote)), check=True)
         subprocess.run(("git", "-C", str(source), "push", "-q", "-u", "origin", "main"), check=True)
         subprocess.run(("git", "-C", str(source), "checkout", "-qb", branch), check=True)
-        (source / "qualification.txt").write_text("review this candidate\n", encoding="utf-8")
-        subprocess.run(("git", "-C", str(source), "add", "qualification.txt"), check=True)
+        (source / "HANDOFF.md").write_text("# Review this candidate\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(source), "add", "HANDOFF.md"), check=True)
         subprocess.run(("git", "-C", str(source), "commit", "-qm", "Finalization candidate"), check=True)
         head = subprocess.run(("git", "-C", str(source), "rev-parse", "HEAD"),
                               check=True, capture_output=True, text=True).stdout.strip()
@@ -6217,6 +6296,24 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("## Execution Phase Timing", body)
         self.assertNotIn("- Provider execution:", body)
         self.assertNotIn("- Validation:", body)
+
+    def test_terminal_report_tables_are_separate_markdown_blocks(self) -> None:
+        state = TransactionState("table-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        telemetry = {"attempt": {"usage": {"invocations": []}, "timing": {
+            "phase_telemetry_available": True,
+            "inclusive_phase_rows": [{"phase": "VALIDATION", "duration_ms": 1000,
+                                      "share_percent": 25.0, "span_count": 1}],
+            "exclusive_distribution": [{"category": "VALIDATION", "duration_ms": 1000,
+                                        "share_percent": 25.0}],
+            "longest_individual_spans": [], "exclusive_distribution_closes": True,
+        }}, "chain": {}}
+        with patch("engineering_platform.execution_reporting.run_telemetry_snapshot", return_value=telemetry):
+            body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("### Invocation Detail\n\n| Phase | Role | Provider", body)
+        self.assertIn("### Inclusive Phase Workload\n- These measured category totals may overlap; their shares are not additive.\n\n| Phase | Duration | Share | Spans |", body)
+        self.assertIn("| VALIDATION | 1.000 s | 25.000% | 1 |\n\n### Exclusive Elapsed-Time Distribution", body)
+        self.assertIn("- Deterministic non-overlapping interval partition; independent concurrency is PARALLEL_OVERLAP.\n\n| Category | Duration | Share |", body)
+        self.assertIn("| VALIDATION | 1.000 s | 25.000% |\n\n- Exact closure:", body)
         self.assertNotIn("- External wait:", body)
         self.assertNotIn("- Queue wait:", body)
 
@@ -7108,6 +7205,23 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         self.assertIsNone(result.exit_code)
         self.assertEqual(result.infrastructure_diagnostic, "VALIDATION_SCRATCH_LOST")
         self.assertFalse(process.called)
+
+    def test_required_unittest_control_imports_target_under_inherited_python_safe_path(self) -> None:
+        package = self.root / "src" / "target_acceptance"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "test_behavior.py").write_text(
+            "import unittest\nclass Behavior(unittest.TestCase):\n"
+            "    def test_record(self): self.assertEqual(1 + 1, 2)\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"PYTHONSAFEPATH": "1"}):
+            result = DeterministicValidationExecutor().run(
+                self.root, (sys.executable, "-m", "unittest", "target_acceptance.test_behavior", "-q"),
+                scratch_parent=self.root / "artifacts", run_id=self.run_id,
+            )
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertIn("Ran 1 test", result.stderr or "")
 
     def test_executor_reports_scratch_lost_when_child_removes_it_before_success(self) -> None:
         class Process:

@@ -307,41 +307,6 @@ function finalStatus(phase) {
   if (phase === "FAILED") return ["red", t("status.failed")];
   return ["grey", t("status.unknown")];
 }
-function executionRange(x) {
-  const characters = Number(x.prompt_characters) || 0;
-  if (characters <= 2e3) return [6, 10];
-  if (characters <= 6e3) return [10, 18];
-  if (characters <= 12e3) return [16, 26];
-  return [24, 38];
-}
-function pluralMinutes(value) {
-  return locale.plural(value, "unit.minute", "unit.minutes");
-}
-function historicalRange(estimate, fallback) {
-  const samples = Number(estimate?.sample_count) || 0,
-    lower = Number(estimate?.lower_seconds),
-    upper = Number(estimate?.upper_seconds);
-  if (samples < 2 || !Number.isFinite(lower) || !Number.isFinite(upper)) return fallback;
-  const learnedMinimum = Math.max(1, Math.round(lower / 60)),
-    learnedMaximum = Math.max(learnedMinimum, Math.ceil(upper / 60));
-  // The exact runtime profile's size-adjusted history is more informative
-  // than the coarse static table. Keep a small safety contribution from the
-  // latter, with confidence increasing as more comparable runs exist.
-  const historyWeight = samples >= 8 ? 0.9 : samples >= 4 ? 0.85 : 0.8;
-  return [
-    Math.max(1, Math.round(fallback[0] * (1 - historyWeight) + learnedMinimum * historyWeight)),
-    Math.max(1, Math.round(fallback[1] * (1 - historyWeight) + learnedMaximum * historyWeight)),
-  ];
-}
-function historicalContext(estimate, fallback) {
-  const samples = Number(estimate?.sample_count) || 0;
-  return samples >= 2
-    ? t("estimate.historical_context", { count: samples })
-    : fallback;
-}
-function hasHistoricalEstimate(estimate) {
-  return (Number(estimate?.sample_count) || 0) >= 2;
-}
 function phaseAwareRange(estimate) {
   const samples = Number(estimate?.phase_sample_count) || 0,
     lower = Number(estimate?.remaining_lower_seconds),
@@ -349,72 +314,27 @@ function phaseAwareRange(estimate) {
   if (estimate?.phase_aware !== true || samples < 2 || !Number.isFinite(lower) || !Number.isFinite(upper)) return null;
   return [Math.max(1, Math.round(lower / 60)), Math.max(1, Math.ceil(upper / 60))];
 }
-function exceededEstimateContext(durationEstimate, elapsedContext = "") {
-  const values = [elapsedContext, t("estimate.exceeded_context")];
-  if (hasHistoricalEstimate(durationEstimate)) values.push(historicalContext(durationEstimate, ""));
-  return values.filter(Boolean).join("\n");
-}
 function estimate(x, durationEstimate = {}) {
   const phase = x.current_phase || "";
   const phaseRange = phaseAwareRange(durationEstimate);
+  const activePhases = ["INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"];
+  const phaseContext = t("estimate.current_phase", { phase: t("state." + phase, {}, phase) });
   if (["INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT", "FINALIZE_AGENT", "REPOSITORY_CLEANUP"].includes(phase) && phaseRange) {
     const remainingUpperSeconds = Number(durationEstimate?.remaining_upper_seconds);
     if (Number.isFinite(remainingUpperSeconds) && remainingUpperSeconds <= 0) {
       return {
-        summary: t("estimate.exceeded"),
-        context: exceededEstimateContext(durationEstimate),
+        summary: t("estimate.remaining_unknown"),
+        context: `${phaseContext}\n${t("estimate.internal_exceeded")}\n${t("estimate.internal_context")}`,
       };
     }
     const [minimum, maximum] = phaseRange;
     return {
-      summary: t("estimate.remaining", { minimum, maximum }),
-      context: historicalContext(durationEstimate, t("estimate.total_context")),
+      summary: t("estimate.remaining_unknown"),
+      context: `${phaseContext}\n${t("estimate.internal_remaining", { minimum, maximum })}\n${t("estimate.internal_context")}`,
     };
   }
-  if (phase === "INITIALIZE")
-    return { summary: t("estimate.initializing"), context: "" };
-  if (["EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT"].includes(phase)) {
-    const [minimum, maximum] = historicalRange(durationEstimate, executionRange(x));
-    if (!promptStartedAt)
-      return {
-        summary: t("estimate.total", { minimum, maximum }),
-        context: historicalContext(durationEstimate, t("estimate.total_context")),
-      };
-    const elapsed = Math.max(
-        0,
-        Math.floor((Date.now() - promptStartedAt) / 6e4),
-      ),
-      remainingMinimum = Math.max(1, minimum - elapsed),
-      remainingMaximum = Math.max(remainingMinimum, maximum - elapsed);
-    const elapsedContext = t("estimate.elapsed", { elapsed, minutes: pluralMinutes(elapsed) });
-    if (maximum - elapsed <= 0) {
-      return {
-        summary: t("estimate.exceeded"),
-        context: exceededEstimateContext(durationEstimate, elapsedContext),
-      };
-    }
-    return {
-      summary: t("estimate.remaining", { minimum: remainingMinimum, maximum: remainingMaximum }),
-      context: hasHistoricalEstimate(durationEstimate)
-        ? `${elapsedContext}\n${historicalContext(durationEstimate, "")}`
-        : elapsedContext,
-    };
-  }
-  if (phase === "FINALIZE_AGENT")
-    return {
-      summary: t("estimate.finalizing"),
-      context: t("estimate.finalizing_context"),
-    };
-  if (phase === "REPOSITORY_CLEANUP")
-    return {
-      summary: t("estimate.cleanup"),
-      context: t("estimate.cleanup_context"),
-    };
-  if (phase === "WAIT_FOR_TERMINAL_EVIDENCE")
-    return {
-      summary: t("estimate.waiting"),
-      context: t("estimate.waiting_context"),
-    };
+  if (activePhases.includes(phase))
+    return { summary: t("estimate.remaining_unknown"), context: `${phaseContext}\n${t("estimate.remaining_unknown_context")}` };
   if (phase === "COMPLETE") return { summary: t("status.complete"), context: "" };
   if (["BLOCKED", "FAILED"].includes(phase))
     return { summary: t("estimate.action_required"), context: "" };
@@ -3568,7 +3488,14 @@ function renderMarkdownAnswer(target, value) {
   let codeLines = null,
     list = null,
     listType = "";
-  for (const line of String(value).split(newline)) {
+  const lines = String(value).split(newline);
+  const tableCells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
+  const tableDivider = (line, count) => {
+    const cells = tableCells(line);
+    return cells.length === count && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (line.startsWith("```")) {
       if (codeLines === null) {
         codeLines = [];
@@ -3585,6 +3512,35 @@ function renderMarkdownAnswer(target, value) {
     }
     if (codeLines !== null) {
       codeLines.push(line);
+      continue;
+    }
+    if (line.trim().startsWith("|") && index + 1 < lines.length &&
+        lines[index + 1].trim().startsWith("|") && tableDivider(lines[index + 1], tableCells(line).length)) {
+      const headers = tableCells(line), table = document.createElement("table"),
+        thead = document.createElement("thead"), headingRow = document.createElement("tr"),
+        tbody = document.createElement("tbody");
+      for (const header of headers) {
+        const cell = document.createElement("th");
+        appendMarkdownInline(cell, header);
+        headingRow.append(cell);
+      }
+      thead.append(headingRow);
+      index += 1;
+      while (index + 1 < lines.length && lines[index + 1].trim().startsWith("|")) {
+        const cells = tableCells(lines[index + 1]);
+        if (cells.length !== headers.length) break;
+        const row = document.createElement("tr");
+        for (const value of cells) {
+          const cell = document.createElement("td");
+          appendMarkdownInline(cell, value);
+          row.append(cell);
+        }
+        tbody.append(row);
+        index += 1;
+      }
+      table.append(thead, tbody);
+      target.append(table);
+      list = null;
       continue;
     }
     const heading = /^(#{1,3})\s+(.+)$/.exec(line),

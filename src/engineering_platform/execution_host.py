@@ -82,6 +82,7 @@ from .validation_profile import (
     strict_required_controls_pass,
 )
 from .reviewer_evidence import ReviewerEvidence
+from .assurance_scope import observed_delivery_scope
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
 from .execution_errors import ProviderReadinessBlocked
@@ -1305,7 +1306,7 @@ class EngineeringRunner:
         validated, validation_result = self._run_local_repository_validation(repair, repaired_result)
         if validated.terminal:
             return validated
-        if validation_result.terminal_state != "COMPLETE" or self._has_failed_validation_evidence(validation_result):
+        if not self._host_validated_local_result(validated, validation_result):
             if validated.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
                 return self._save_terminal(validated, "BLOCKED", "repair_budget_exhausted", "Repaired candidate did not pass local validation before the run-wide repair budget was exhausted.")
             return self._repair(validated, "local validation failed. Repair the recorded validation findings for the current candidate.")
@@ -1447,6 +1448,27 @@ class EngineeringRunner:
             if re.search(r"\b(?:failed|failure|error|timeout|timed\s+out)\b", summary):
                 return True
         return False
+
+    def _host_validated_local_result(self, state: TransactionState, result: AgentResult) -> bool:
+        """Prefer exact host terminals over earlier provider test summaries.
+
+        Provider summaries remain in the immutable run audit. They can trigger
+        entry to this gate, but cannot pass it or negate a subsequently
+        executed, candidate-bound host control. Unknown receipts fail closed.
+        """
+        if (result.terminal_state != "COMPLETE" or not state.local_validation_audit
+                or state.local_validation_audit[-1].get("outcome") != "validated"):
+            return False
+        try:
+            context = load_validation_context(
+                self.root, state.run_id, currentness=state.repair_iterations,
+                central_database=self.store.central_database,
+            )
+        except EngineeringStorageError:
+            return False
+        return _required_validation_controls_pass(
+            state, context, expected_candidate_sha=state.implementation_head_sha,
+        )
 
     @staticmethod
     def _is_external_agent_block(result: AgentResult) -> bool:
@@ -2338,7 +2360,61 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         if not candidate.clean or not re.fullmatch(r"[0-9a-f]{40}", candidate.head_sha):
             return self._save_terminal(quality, "BLOCKED", "assurance_candidate_invalid", "Quality assurance requires one clean, pinned candidate."), implementation
         profile_version = f"validation-profile@{VALIDATION_PROFILE_VERSION}"
-        criteria = Path(quality.prompt_path).read_text(encoding="utf-8")
+        objective = Path(quality.prompt_path).read_text(encoding="utf-8")
+        role = state.transaction_kind
+        delivery_scope: dict[str, object] | None = None
+        if (state.execution_mode == "MANAGED" and isinstance(self.repository, SubprocessRepositoryClient)
+                and not (candidate_root / ".git").exists()):
+            return self._save_terminal(
+                quality, "BLOCKED", "assurance_delivery_scope_unavailable",
+                "The Managed delivery checkout has no Git metadata for exact PR diff assurance.",
+            ), implementation
+        if state.execution_mode == "MANAGED" and (candidate_root / ".git").exists():
+            try:
+                delivery_scope = observed_delivery_scope(
+                    candidate_root, role=role, candidate_sha=candidate.head_sha,
+                )
+            except (OSError, RuntimeError, ValueError):
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_delivery_scope_unavailable",
+                    "The exact delivery PR diff could not be verified before independent assurance.",
+                ), implementation
+            if delivery_scope["out_of_scope_paths"]:
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_delivery_scope_conflict",
+                    "The governance-only delivery PR changes paths outside its host-owned role scope.",
+                ), implementation
+            if delivery_scope["premature_completion_paths"]:
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_premature_completion_claim",
+                    "Finalization repository records claim a merged or completed state before protected merge evidence exists.",
+                ), implementation
+        role_instruction = {
+            "IMPLEMENTATION": (
+                "Assess the implementation candidate against the approved Action and its actual PR diff. "
+                "An open PR head is not yet on protected main; delivered-main acceptance controls are "
+                "checked by the Execution Host after merge, not a pre-merge finding."
+            ),
+            "FINALIZATION": (
+                "Assess only this governance-only Finalization PR diff and the accuracy of its records. "
+                "The implementation was delivered by an earlier PR; this PR must not change implementation code. "
+                "Its open head is not yet on protected main. The original Action's code-path scope "
+                "does not require the Finalization diff to modify that code path. "
+                "The repository handoff is prepared for review, not a claim of merged delivery; "
+                "terminal completion is recorded only after the host reads back the merge."
+            ),
+            "RECONCILIATION": (
+                "Assess only this post-Finalization reconciliation PR diff against the four rolling "
+                "governance records. It must not change implementation code or other files. "
+                "Its open head is not yet on protected main."
+            ),
+        }.get(role, "Assess the candidate against the approved objective and actual repository diff.")
+        criteria = (
+            f"Delivery role: {role}. {role_instruction}\n"
+            f"Host-observed exact candidate diff: {json.dumps(delivery_scope, sort_keys=True) if delivery_scope else 'UNAVAILABLE'}\n"
+            "Original approved Action objective (context for the delivery chain):\n"
+            + objective
+        )
         criteria_digest = "sha256:" + hashlib.sha256(criteria.encode("utf-8")).hexdigest()
         try:
             validation_context = load_validation_context(
@@ -2361,6 +2437,8 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             "version": profile_version, "digest": profile_digest, "candidate_sha": candidate.head_sha,
             "criteria_digest": criteria_digest,
         }
+        if delivery_scope is not None:
+            assurance_profile["base_sha"] = delivery_scope["base_sha"]
         # Genesis deliberately has no host-owned local validation profile.
         if validation_profile_digest is not None:
             assurance_profile["validation_profile_digest"] = validation_profile_digest
@@ -2378,8 +2456,8 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         for selection in selections:
             assurance_objective = (
                 f"Mandatory {selection.reviewer} assurance. Profile {profile_version} ({profile_digest}); "
-                f"candidate {candidate.head_sha}. Report only concrete, bounded findings against the action acceptance criteria. "
-                + Path(quality.prompt_path).read_text(encoding="utf-8")
+                f"candidate {candidate.head_sha}. Report only concrete, bounded findings against this delivery role's applicable criteria and exact PR diff. "
+                + criteria
             )
             started_at = datetime.now(timezone.utc).isoformat()
             result = run_reviews(assurance_root or self.root, (selection,), assurance_objective, self.agent if hasattr(self.agent, "review") else None, evidence=evidence)[0]
@@ -2411,6 +2489,19 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 "started_at": started_at, "completed_at": completed_at,
             })
         quality = replace(quality, assurance_reviews=quality.assurance_reviews + tuple(records))
+        if delivery_scope is not None:
+            try:
+                scope_after_reviews = observed_delivery_scope(
+                    candidate_root, role=role, candidate_sha=candidate.head_sha,
+                )
+            except (OSError, RuntimeError, ValueError):
+                scope_after_reviews = None
+            if scope_after_reviews != delivery_scope:
+                self.store.save(quality)
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_delivery_scope_changed",
+                    "The PR base or exact candidate diff changed during independent assurance.",
+                ), implementation
         # A later PASS does not erase an earlier blocker.  Only a completed
         # reserved repair followed by this exact re-review can append the
         # linked resolution evidence; the original finding remains immutable.
@@ -2734,7 +2825,7 @@ First implementation pull-request publication gate:
                 state, result = self._run_local_repository_validation(state, result)
                 if state.terminal:
                     return state
-                if result.terminal_state != "COMPLETE" or self._has_failed_validation_evidence(result):
+                if not self._host_validated_local_result(state, result):
                     if state.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
                         return self._save_terminal(state, "BLOCKED", "repair_budget_exhausted", "Local validation requires a repair after the run-wide repair budget was exhausted.")
                     return self._repair(state, "local validation failed. Repair the recorded validation findings for the current candidate.")
@@ -3832,6 +3923,10 @@ First implementation pull-request publication gate:
             with tempfile.TemporaryDirectory(prefix="ep-assurance-", dir=scratch_parent) as temporary:
                 checkout = Path(temporary) / "candidate"
                 git.clone_branch(self.root, origin, branch, checkout)
+                # Single-branch clones omit main. Fetch the protected base
+                # explicitly so the independent review can inspect its exact
+                # PR diff rather than treating the whole branch as a change.
+                git.command(checkout, "git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main")
                 pinned = self.repository.inspect(checkout)
                 if (pinned.repository != state.repository or pinned.branch != branch
                         or pinned.head_sha != head or not pinned.clean):
@@ -3988,6 +4083,7 @@ First implementation pull-request publication gate:
             qualified_base = qualification.get("base_revision")
             if (not isinstance(qualified_base, str)
                     or re.fullmatch(r"[0-9a-f]{40}", qualified_base) is None
+                    or (autonomous_profile and (state.assurance_profile or {}).get("base_sha") != qualified_base)
                     or self.repository.protected_main_revision(self.root) != qualified_base):
                 return None
             with sqlite_connection(self.store.central_database) as connection:

@@ -113,6 +113,19 @@ the third repair, it records the failed check names and stops the execution as
 agent repair. A single provider invocation can still end earlier under its own
 runtime limits, and transient GitHub evidence reads remain separately bounded.
 
+Independent Quality and Security assurance is bound to the actual delivery
+role and exact pull-request head and base. Implementation review assesses the
+approved Action and its implementation diff. Finalization review assesses only
+the governance records proposed by its own PR; the original Action's code path
+need not appear in that later diff. Reconciliation review is confined to the
+four rolling records. The host inspects the full diff without hiding rename
+sources, rejects out-of-scope paths and anticipatory completion claims, and
+rechecks the same base and head after both reviews. The autonomous profile
+requires the qualified protected-main revision to match that reviewed base.
+An open Finalization PR's repository handoff records say
+`FINALIZATION_PR_OPEN` and `FINALIZATION_PENDING`; only the host's terminal
+merge and cleanup readback may assert completed delivery.
+
 Before an implementation pull request exists, local repository validation has
 its own independent, three-attempt repair budget. If the implementation agent
 returns `FAILED` only after the host has verified a clean transaction branch

@@ -433,14 +433,21 @@ class TransactionState:
         profile_fields = {"version", "digest", "candidate_sha"}
         current_profile_fields = profile_fields | {"criteria_digest"}
         validation_bound_profile_fields = current_profile_fields | {"validation_profile_digest"}
+        base_bound_profile_fields = current_profile_fields | {"base_sha"}
+        fully_bound_profile_fields = validation_bound_profile_fields | {"base_sha"}
         if state.assurance_profile is not None and (
             not isinstance(state.assurance_profile, dict)
             or set(state.assurance_profile) not in (
                 profile_fields, current_profile_fields, validation_bound_profile_fields,
+                base_bound_profile_fields, fully_bound_profile_fields,
             )
             or not all(isinstance(value, str) and value for value in state.assurance_profile.values())
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", state.assurance_profile["digest"])
             or not re.fullmatch(r"[0-9a-f]{40}", state.assurance_profile["candidate_sha"])
+            or (
+                "base_sha" in state.assurance_profile
+                and not re.fullmatch(r"[0-9a-f]{40}", state.assurance_profile["base_sha"])
+            )
             or (
                 "validation_profile_digest" in state.assurance_profile
                 and not re.fullmatch(
