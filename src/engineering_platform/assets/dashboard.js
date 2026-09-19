@@ -2132,7 +2132,7 @@ function lifecycleAssuranceEvidence(step) {
   const reviews = Array.isArray(step?.assurance_reviews) ? step.assurance_reviews : [];
   if (!reviews.length) return null;
   const section = document.createElement("section");
-  section.className = "lifecycle-detail-modal__quality-evidence";
+  section.className = "lifecycle-detail-modal__quality-evidence lifecycle-detail-modal__assurance-evidence";
   const rounds = step?.repair_rounds || {};
   section.append(Object.assign(document.createElement("h3"), { textContent: t("lifecycle.detail_assurance") }));
   if (Number.isFinite(Number(rounds.used))) section.append(Object.assign(document.createElement("p"), {
