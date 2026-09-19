@@ -231,6 +231,21 @@ class CentralOperationalResetTests(unittest.TestCase):
         self.assertIn("DEVELOPMENT_PROFILE_INVALID", reset.preview(development_root)["blocking_codes"])
         logs.unlink()
         logs.mkdir()
+        known_top_level = reset._known_top_level
+        swapped = False
+        def replace_pinned_cache(name: str, **kwargs: object) -> bool:
+            nonlocal swapped
+            if not swapped:
+                cache.rmdir()
+                cache.write_text("replaced after directory pin", encoding="utf-8")
+                swapped = True
+            return known_top_level(name, **kwargs)
+        with patch.object(reset, "_known_top_level", side_effect=replace_pinned_cache):
+            raced = reset.preview(development_root)
+        self.assertTrue(swapped)
+        self.assertIn("EXTERNAL_SYMLINK_UNSAFE", raced["blocking_codes"])
+        cache.unlink()
+        cache.mkdir()
         marker = development_root / development_profile.FILENAME
         payload = json.loads(marker.read_text(encoding="utf-8"))
         payload["cache_directory"] = str(development_root / "wrong-cache")

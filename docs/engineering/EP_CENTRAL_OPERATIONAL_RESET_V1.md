@@ -218,7 +218,9 @@ the root, interpreter, venv and exact `development-cache` and `development-logs`
 paths. Preview classifies only those two profile-owned directories as preserved
 runtime controls. They remain unknown on an unmarked root; a malformed profile
 blocks preview. A missing, linked or non-directory profile-owned path also
-blocks preview. Other sibling paths retain the unknown-path blocker.
+blocks preview. Preview pins each accepted directory and rechecks its identity
+before publishing the inventory, so a path replacement blocks. Other sibling
+paths retain the unknown-path blocker.
 
 Every accepted opaque directory is held through a non-following directory
 descriptor. Immediately before the inventory receipt returns, preview requires

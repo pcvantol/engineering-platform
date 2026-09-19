@@ -1128,12 +1128,19 @@ def _external_inventory_bound(
         if profile["kind"] == development_profile.PROFILE else frozenset()
     )
     for name in development_owned:
+        path = data_root / name
         try:
-            mode = (data_root / name).lstat().st_mode
+            metadata = path.lstat()
         except OSError as error:
             raise OperationalResetError("DEVELOPMENT_RUNTIME_PATH_INVALID") from error
-        if not stat.S_ISDIR(mode):
+        if not stat.S_ISDIR(metadata.st_mode):
             raise OperationalResetError("DEVELOPMENT_RUNTIME_PATH_INVALID")
+        descriptor = _open_opaque_directory(
+            path, device=metadata.st_dev, inode=metadata.st_ino,
+        )
+        opaque_bindings.append((
+            path, "SYSTEM_RUNTIME_CONTROL", metadata.st_dev, metadata.st_ino, descriptor,
+        ))
     unknown = sorted(path.name for path in data_root.iterdir()
                      if not _known_top_level(path.name, development_owned=development_owned))
     rows: list[dict[str, object]] = []
