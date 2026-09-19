@@ -195,6 +195,15 @@ class CentralOperationalResetTests(unittest.TestCase):
             retired_submission_id = str(connection.execute(
                 "SELECT submission_id FROM ep_submissions"
             ).fetchone()[0])
+            connection.execute(
+                "INSERT INTO ep_merge_delegations "
+                "(delegation_id,actor_reference,project_id,repository_id,github_repository,mission_id,"
+                "mission_revision,base_branch,roles,expires_at,created_at,activated_at,revoked_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("a" * 32, "local-uid:501", "djconnect", "djconnect", "pcvantol/djconnect",
+                 "mission-1", "1", "main", '["IMPLEMENTATION"]', "2099-01-01T00:00:00+00:00",
+                 "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00", None),
+            )
         operation_id, digest = self._prepared()
         with sqlite_connection(self.root / "epdata.sqlite") as connection:
             with self.assertRaisesRegex(submission_service.SubmissionError, "PLATFORM_MAINTENANCE_ACTIVE"):
@@ -213,6 +222,7 @@ class CentralOperationalResetTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM execution_projections WHERE classification='CONFIGURATION'"
             ).fetchone(), (1,))
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone(), (0,))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_merge_delegations").fetchone(), (1,))
             with self.assertRaisesRegex(submission_service.SubmissionError, "IDEMPOTENCY_RETIRED"):
                 submission_service.submit(connection, request)
             changed = submission_service.SubmissionRequest(

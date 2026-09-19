@@ -22,7 +22,8 @@ from typing import Any, Mapping
 from . import central_database, execution_host_evidence, merge_delegation
 from .platform_version import CURRENT_PLATFORM_VERSION
 from .revision_binding import parse_repository_revision_binding
-from .storage import sqlite_connection
+from .storage import load_submission_for_run, sqlite_connection
+from .validation_profile import ValidationProfileResolutionError, delivery_unittest_binding, delivery_unittest_selectors
 
 
 MAX_PROMPT_BYTES = 65536
@@ -390,6 +391,10 @@ def _forge_provenance(request: SubmissionRequest) -> None:
                 or any(not isinstance(item, str) or not item or len(item) > MAX_FIELD_LENGTH for item in constraints)
                 or len(set(constraints)) != len(constraints)):
             raise SubmissionError("INVALID_FORGE_PROVENANCE")
+        try:
+            delivery_unittest_selectors(constraints)
+        except ValidationProfileResolutionError:
+            raise SubmissionError("INVALID_DELIVERY_OBSERVATION_CONTROLS") from None
     prompt = raw.get("runtime_prompt")
     if not isinstance(prompt, Mapping) or set(prompt) != {"id", "content_digest"}:
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
@@ -685,6 +690,23 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
     return {"credential_id": credential_id, "consumer_id": consumer_id, "project_id": project_id, "credential": token}
 
 
+def issue_development_consumer_credential(
+    connection: sqlite3.Connection, *, consumer_id: str, project_id: str,
+) -> dict[str, str]:
+    """Issue one project-scoped token into an already isolated development store."""
+    register_consumer(connection, consumer_id=consumer_id, project_id=project_id)
+    from .ep_consumer_credentials import fingerprint, verifier
+    token = secrets.token_urlsafe(32)
+    credential_id = "development-" + secrets.token_hex(16)
+    connection.execute(
+        "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (credential_id, consumer_id, project_id, verifier(token), fingerprint(token), _now()),
+    )
+    return {"credential_id": credential_id, "consumer_id": consumer_id,
+            "project_id": project_id, "credential": token}
+
+
 PRODUCER_READBACK_CONTRACT_VERSION = "1.2"
 TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.4"
 _TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
@@ -782,6 +804,16 @@ def _terminal_validation_controls(
         return {"contract_version": "1.0", "status": "UNAVAILABLE"}
     if not isinstance(context, dict):
         return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    try:
+        accepted = load_submission_for_run(
+            repository_root, run_id, central_database=central_database.path(data_root),
+        )
+        constraints = accepted.get("constraints") if isinstance(accepted, dict) else None
+        provenance = constraints.get("forge_execution") if isinstance(constraints, dict) else None
+        approved = provenance.get("execution_constraints", []) if isinstance(provenance, dict) else []
+        selectors = delivery_unittest_selectors(approved)
+    except (EngineeringStorageError, ValidationProfileResolutionError, sqlite3.Error):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
     controls = context.get("controls")
     if not isinstance(controls, dict):
         return {"contract_version": "1.0", "status": "UNAVAILABLE"}
@@ -796,6 +828,7 @@ def _terminal_validation_controls(
     if not isinstance(required_ids, tuple) or tuple(binding_by_id) != required_ids:
         return {"contract_version": "1.0", "status": "UNAVAILABLE"}
     projected: dict[str, object] = {}
+    observations: list[dict[str, object]] = []
     with sqlite_connection(central_database.path(data_root)) as connection:
         for validation_id in required_ids:
             raw_control = controls.get(validation_id)
@@ -816,8 +849,32 @@ def _terminal_validation_controls(
                 ) if isinstance(command_id, str) else {"status": "UNAVAILABLE"}
             )
             projected[validation_id] = control
-    return {
-        "contract_version": "1.0",
+        for selector in selectors:
+            binding = delivery_unittest_binding(selector)
+            validation_id = str(binding["validation_id"])
+            raw_control = controls.get(validation_id)
+            control = dict(raw_control) if isinstance(raw_control, dict) else {}
+            if (control.get("required_for_profile") is not False
+                    or control.get("category") != binding["category"]
+                    or control.get("control_identity") != binding["control_identity"]
+                    or control.get("currentness") != context.get("currentness")):
+                control = {"validation_id": validation_id, "result": "UNAVAILABLE",
+                           "execution_status": "NOT_EXECUTED", "required_for_profile": False}
+            control["control_definition_digest"] = _control_definition_digest(
+                profile_version=context.get("validation_profile_version"),
+                profile_reference=context.get("profile_reference"), binding=binding,
+            )
+            command_id = control.get("command_id")
+            control["result_detail"] = (
+                _validation_result_detail(
+                    connection, data_root=data_root, run_id=run_id,
+                    validation_id=validation_id, command_id=command_id,
+                    exit_code=control.get("exit_code"),
+                ) if isinstance(command_id, str) else {"status": "UNAVAILABLE"}
+            )
+            observations.append(control)
+    result = {
+        "contract_version": "1.1" if selectors else "1.0",
         "status": "AVAILABLE",
         "selected_validation_tier": context.get("selected_validation_tier"),
         "validation_profile_version": context.get("validation_profile_version"),
@@ -830,6 +887,9 @@ def _terminal_validation_controls(
         "required_validation_controls": list(required_ids),
         "controls": projected,
     }
+    if selectors:
+        result["observation_validation_controls"] = observations
+    return result
 
 
 def _accepted_request_digest(*, repository_id: str, producer_id: str,

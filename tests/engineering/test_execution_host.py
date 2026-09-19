@@ -1392,6 +1392,7 @@ class ClientContractTest(unittest.TestCase):
         class Provider:
             def __init__(self) -> None:
                 self.review_commit = head
+                self.required_strict = True
                 self.calls: list[tuple[str, ...]] = []
             def github(self, *args: str) -> str:
                 self.calls.append(args)
@@ -1403,7 +1404,7 @@ class ClientContractTest(unittest.TestCase):
                         ],
                     })
                 if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_status_checks"):
-                    return json.dumps({"contexts": ["unit"], "checks": []})
+                    return json.dumps({"contexts": ["unit"], "checks": [], "strict": self.required_strict})
                 if args[:2] == ("api", "repos/pcvantol/forge/pulls/17"):
                     return json.dumps({"number": 17, "state": "open", "draft": False,
                                        "head": {"sha": head}, "base": {"ref": "main"},
@@ -1419,6 +1420,10 @@ class ClientContractTest(unittest.TestCase):
         provider = Provider()
         client = GhCliClient(provider, "pcvantol/forge")
         self.assertEqual(client.delegated_merge_qualification(17, head)["reviewers"], ["reviewer"])
+        provider.required_strict = False
+        with self.assertRaisesRegex(RunnerError, "strict protected"):
+            client.delegated_merge_qualification(17, head)
+        provider.required_strict = True
         provider.review_commit = "a" * 40
         with self.assertRaisesRegex(RunnerError, "exact head"):
             client.delegated_merge_qualification(17, head)
@@ -5368,6 +5373,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         github.delegated_merge_qualification = lambda _number, _head: {  # type: ignore[attr-defined]
             "conclusion": "PASS", "exact_qualified_sha": head,
             "pull_request_id": 17, "reviewers": ["independent"], "base_revision": "f" * 40,
+            "strict_checks": True,
         }
         repository.protected_main_revision = lambda _root: "f" * 40  # type: ignore[attr-defined]
         attempted_calls: list[tuple[int, str]] = []
@@ -5451,6 +5457,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
                     patch.object(runner, "_execute_required_validation_controls", return_value=state),
                     patch("engineering_platform.execution_host.load_validation_context", return_value={}),
                     patch("engineering_platform.execution_host.strict_required_controls_pass", return_value=True),
+                    patch("engineering_platform.execution_host.load_submission_for_run", return_value={
+                        "constraints": {"forge_execution": {"execution_constraints": [
+                            "ep-delivery-control-validation:1",
+                        ]}},
+                    }),
                     patch("engineering_platform.submission_service._terminal_validation_controls", return_value={
                         "status": "AVAILABLE", "controls": {"repository_suite": {
                             "result_detail": {"status": "AVAILABLE", "test_count": count},
@@ -5466,6 +5477,34 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 else:
                     self.assertTrue(result.terminal)
                     self.assertEqual(result.next_action, expected)
+
+    def test_delivery_observation_controls_execute_independently_without_blocking_full_profile(self) -> None:
+        state = TransactionState(
+            "optional-delivery-controls", "pcvantol/djconnect", str(self.prompt),
+            "LOCAL_REPOSITORY_VALIDATION", delivery_control_validation_required=True,
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+        outcome = SimpleNamespace(exit_code=1, stdout="", stderr="Ran 1 test in 0.01s\nFAILED (failures=1)\n",
+                                  diagnostic_capture_available=True, infrastructure_diagnostic=None)
+        with (patch.object(runner, "_run_required_validation_command", return_value=outcome) as execute,
+              patch("engineering_platform.execution_host.record_validation_command_invocation") as invocation,
+              patch("engineering_platform.execution_host.record_validation_command_terminal") as terminal,
+              patch("engineering_platform.execution_host.record_validation_control_result") as control,
+              patch("engineering_platform.execution_host.persist_validation_result_detail") as detail):
+            observed = runner._execute_delivery_observation_controls(
+                state, ("tests.test_cli.InvalidCase.test_invalid",), currentness=4,
+            )
+        self.assertIs(observed, state)
+        self.assertEqual(execute.call_args.args[0][1:3], ("-m", "unittest"))
+        self.assertEqual(execute.call_args.args[0][3], "tests.test_cli.InvalidCase.test_invalid")
+        self.assertFalse(invocation.call_args.kwargs["required_for_profile"])
+        self.assertEqual(terminal.call_args.kwargs["exit_code"], 1)
+        self.assertFalse(control.call_args.kwargs["required_for_profile"])
+        self.assertEqual(control.call_args.kwargs["result"], "FAIL")
+        self.assertEqual(detail.call_args.kwargs["stderr"], outcome.stderr)
 
     def test_transient_polling_failure_preserves_non_terminal_state(self) -> None:
         state = TransactionState("retry-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=13)

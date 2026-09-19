@@ -223,8 +223,14 @@ interpreter, the operational default port, inherited operational credential or
 data environment, and the Server/relay production service-label commands. An
 unrelated inherited `EP_SERVER_DATA_ROOT` cannot select a development process:
 the explicit `--data-root` is used and is propagated to its child. It also
-rejects consumer-credential issuance and Agent credential reset/pairing from a
-development runtime. The Server child and restart command carry the same
+rejects operational consumer-credential issuance and Agent credential
+reset/pairing from a development runtime. A separate
+`issue-development-consumer-credential` owner command may issue a token only
+inside the marked development data root, scoped to one active local project
+and consumer. Its credential ID has a `development-` prefix, its verifier
+remains in that development database, and the token is shown only in the
+one issuance response. It grants no authority to a production installation.
+The Server child and restart command carry the same
 explicit profile arguments, so a process restart cannot silently revert to the
 operational mode.
 

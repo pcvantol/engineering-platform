@@ -76,6 +76,7 @@ from .execution_models import AgentResult, PullRequestEvidence, RepositoryEviden
 from .validation_profile import (
     VALIDATION_PROFILE_VERSION, ValidationControlLauncher, ValidationProfile,
     ValidationProfileResolutionError, changed_paths, classify,
+    delivery_unittest_binding, delivery_unittest_selectors,
     matching_control_binding, profile_control_bindings, resolve_producer_profile,
     strict_required_controls_pass,
 )
@@ -3815,6 +3816,7 @@ First implementation pull-request publication gate:
             if (not isinstance(qualification, dict) or qualification.get("conclusion") != "PASS"
                     or qualification.get("exact_qualified_sha") != expected_head
                     or qualification.get("pull_request_id") != fresh.number
+                    or qualification.get("strict_checks") is not True
                     or not qualification.get("reviewers")):
                 return None
             qualified_base = qualification.get("base_revision")
@@ -4348,6 +4350,73 @@ First implementation pull-request publication gate:
             return None
         return tokens[0].split(":", 1)[1]
 
+    def _execute_delivery_observation_controls(
+        self, state: TransactionState, selectors: tuple[str, ...], *, currentness: int,
+    ) -> TransactionState:
+        """Run approved optional unittest selectors on the final delivery revision."""
+        for selector in selectors:
+            binding = delivery_unittest_binding(selector)
+            validation_id = str(binding["validation_id"])
+            command = tuple(binding["command"])
+            observed_at = datetime.now(timezone.utc).isoformat()
+            command_id = f"observation-control-{uuid.uuid4().hex[:16]}"
+            try:
+                record_validation_command_invocation(
+                    self.root, run_id=state.run_id, validation_id=validation_id,
+                    command_id=command_id, category="repository",
+                    control_identity=str(binding["control_identity"]),
+                    required_for_profile=False, started_at=observed_at,
+                    currentness=currentness, central_database=self.store.central_database,
+                )
+                previous_run_id = os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID")
+                os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = state.run_id
+                try:
+                    outcome = self._run_required_validation_command(command)
+                finally:
+                    if previous_run_id is None:
+                        os.environ.pop("ENGINEERING_PLATFORM_VALIDATION_RUN_ID", None)
+                    else:
+                        os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = previous_run_id
+                if isinstance(outcome, int) or outcome is None:
+                    exit_code = outcome
+                    stdout = stderr = None
+                    captured = False
+                    infrastructure_diagnostic = None
+                else:
+                    exit_code = outcome.exit_code
+                    stdout, stderr = outcome.stdout, outcome.stderr
+                    captured = outcome.diagnostic_capture_available
+                    infrastructure_diagnostic = getattr(outcome, "infrastructure_diagnostic", None)
+                completed_at = datetime.now(timezone.utc).isoformat()
+                record_validation_command_terminal(
+                    self.root, run_id=state.run_id, command_id=command_id,
+                    completed_at=completed_at, exit_code=exit_code,
+                    central_database=self.store.central_database,
+                )
+                record_validation_control_result(
+                    self.root, run_id=state.run_id, validation_id=validation_id,
+                    category="repository", control_identity=str(binding["control_identity"]),
+                    required_for_profile=False,
+                    execution_status="NOT_EXECUTED" if infrastructure_diagnostic else "EXECUTED",
+                    result="PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE",
+                    evidence_ref=(f"validation_environment:{infrastructure_diagnostic}"
+                                  if infrastructure_diagnostic else "command_terminal"),
+                    observed_at=completed_at, currentness=currentness,
+                    central_database=self.store.central_database,
+                )
+                persist_validation_result_detail(
+                    self.root, run_id=state.run_id, command_id=command_id,
+                    validation_id=validation_id, exit_code=exit_code,
+                    stdout=stdout, stderr=stderr, capture_available=captured,
+                    captured_at=completed_at, central_database=self.store.central_database,
+                    artifact_root=(self.store.central_database.parent / "artifacts")
+                    if self.store.central_database else None,
+                )
+            except (EngineeringStorageError, RunnerError, OSError):
+                return self._save_terminal(state, "BLOCKED", "delivery_observation_evidence_unavailable",
+                                           "Approved observation control evidence could not be recorded.")
+        return state
+
     def _validate_delivery_revision(self, state: TransactionState) -> TransactionState:
         """Observe required controls on synchronized protected main before terminal publication."""
         if state.reconciliation_pull_request is not None and state.reconciliation_merge_commit is None:
@@ -4385,6 +4454,20 @@ First implementation pull-request publication gate:
             return self._save_terminal(state, "BLOCKED", "delivery_validation_profile_unavailable",
                                        "Final revision validation profile could not be recorded.")
         checked = self._execute_required_validation_controls(state, currentness=currentness)
+        if checked.terminal:
+            return checked
+        try:
+            accepted = load_submission_for_run(
+                self.root, state.run_id, central_database=self.store.central_database,
+            )
+            constraints = accepted.get("constraints") if isinstance(accepted, dict) else None
+            provenance = constraints.get("forge_execution") if isinstance(constraints, dict) else None
+            approved = provenance.get("execution_constraints", []) if isinstance(provenance, dict) else []
+            selectors = delivery_unittest_selectors(approved)
+        except (EngineeringStorageError, ValidationProfileResolutionError, sqlite3.Error):
+            return self._save_terminal(checked, "BLOCKED", "delivery_observation_authority_unavailable",
+                                       "Approved delivery observation controls are unavailable.")
+        checked = self._execute_delivery_observation_controls(checked, selectors, currentness=currentness)
         if checked.terminal:
             return checked
         try:

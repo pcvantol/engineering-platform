@@ -6949,7 +6949,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     declaration["contract_version"] = "1.1"
                     declaration["contracts"] = {
                         **declaration["contracts"],
-                        "validation_controls": ["1.0"],
+                        "validation_controls": ["1.0", "1.1"],
                         "delivery_revision_validation": ["1.0"],
                         "bounded_merge_delegation": ["1.0"],
                     }
@@ -7383,7 +7383,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -8199,6 +8199,21 @@ def main(argv: list[str] | None = None) -> int:
             from .submission_service import issue_consumer_credential
             with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = issue_consumer_credential(connection, consumer_id=args.consumer_id, project_id=args.project_id)
+        elif args.command == "issue-development-consumer-credential":
+            if development is None:
+                raise ServerConfigurationError("DEVELOPMENT_PROFILE_REQUIRED")
+            if not args.project_id or not args.consumer_id:
+                raise ServerConfigurationError("--project-id and --consumer-id are required for development credential issuance.")
+            from .platform_admin import require_installation_owner
+            try:
+                require_installation_owner(args.data_root)
+            except PermissionError as error:
+                raise ServerConfigurationError("PLATFORM_ADMIN_FORBIDDEN") from error
+            from .submission_service import issue_development_consumer_credential
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = issue_development_consumer_credential(
+                    connection, consumer_id=args.consumer_id, project_id=args.project_id,
+                )
         elif args.command in {"grant-operator-capability", "revoke-operator-capability"}:
             if not args.project_id or not args.consumer_id or not args.capability:
                 raise ServerConfigurationError("--project-id, --consumer-id and --capability are required for queue operator capability management.")

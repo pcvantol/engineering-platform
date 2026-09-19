@@ -37,7 +37,7 @@ new submission. Missing or invalid credentials return `401`; project or
 repository scope mismatch returns `403`. The public request without either
 scope header remains the side-effect-free `v1.0` declaration.
 The authenticated `v1.1` declaration also lists
-`contracts.validation_controls: ["1.0"]` and
+`contracts.validation_controls: ["1.0", "1.1"]` and
 `contracts.delivery_revision_validation: ["1.0"]`, plus
 `contracts.bounded_merge_delegation: ["1.0"]`. These declare that this
 installed host can publish canonical control receipts and run required controls
@@ -127,6 +127,21 @@ changed checkout or advanced protected main blocks completion. No further Git
 change follows this validation. Earlier candidate profiles and receipts remain
 in the run's history. For reconciliation, the recorded reconciliation merge
 commit takes precedence as `repository.revision`.
+An approved Mission can additionally request up to eight distinct optional
+unittest observations with immutable `ep-delivery-unittest:<selector>`
+execution constraints. Selectors contain only dotted Python identifiers,
+are at most 100 characters, and require the final-revision validation
+constraint. EP runs each as a separate `python -m unittest <selector>` command
+on that same final revision. Its terminal `validation_controls` document is
+version `1.1` and adds `observation_validation_controls`, a list of canonical
+receipts ordered by selector. Each receipt has `required_for_profile: false`,
+the same terminal command/test-count/output-digest evidence as required
+controls, and a stable definition digest covering the normalized argv. The
+ID is `unittest_selector_` plus the first 16 lowercase hex digits of the
+selector's SHA-256. These optional outcomes do not alter the FULL required
+profile gate; a failed or zero-test observation cannot prove its Forge
+criterion. An unapproved provider-reported command is never published as an
+observation control. Older requests retain the v1.0 document shape.
 For unittest controls, `result_detail.test_count` comes from the captured
 `Ran N tests` terminal summary and can be zero or unavailable. The complete
 field and trust semantics are in
@@ -299,6 +314,14 @@ python3 -m engineering_platform.server reserve-merge-delegation --data-root <EP_
 python3 -m engineering_platform.server activate-merge-delegation --data-root <EP_DATA_ROOT> --delegation-id <ID> --mission-id <MISSION_ID> --mission-revision <REVISION>
 python3 -m engineering_platform.server revoke-merge-delegation --data-root <EP_DATA_ROOT> --delegation-id <ID>
 ```
+
+In an explicitly marked development runtime, after registering the local
+project and repository, the root owner can mint a separate project-scoped
+consumer token with
+`issue-development-consumer-credential --runtime-profile development`
+and the same profile arguments used at `init`. This command rejects an
+operational runtime and does not copy or authorize a production credential.
+The token appears once in the command response; only its verifier is stored.
 
 Forge can inspect the grant without modifying it:
 

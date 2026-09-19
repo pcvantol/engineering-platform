@@ -401,6 +401,17 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         provenance["execution_constraints"] = ["ep-delivery-control-validation:1"]  # type: ignore[index]
         request = submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
         self.assertEqual(request.constraints["forge_execution"]["execution_constraints"], ["ep-delivery-control-validation:1"])
+        provenance["execution_constraints"] = ["ep-delivery-control-validation:1",  # type: ignore[index]
+                                               "ep-delivery-unittest:tests.test_cli.ValidCase.test_valid"]
+        request = submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        self.assertEqual(len(request.constraints["forge_execution"]["execution_constraints"]), 2)
+        provenance["execution_constraints"] = ["ep-delivery-control-validation:1",  # type: ignore[index]
+                                               "ep-delivery-unittest:tests.test_cli;rm"]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_DELIVERY_OBSERVATION_CONTROLS"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        provenance["execution_constraints"] = ["ep-delivery-unittest:tests.test_cli.ValidCase.test_valid"]  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_DELIVERY_OBSERVATION_CONTROLS"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
         provenance["execution_constraints"] = ["ep-delivery-control-validation:1", "ep-delivery-control-validation:1"]  # type: ignore[index]
         with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PROVENANCE"):
             submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
@@ -754,7 +765,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with urlopen(scoped) as response:  # nosec B310
             authenticated = json.loads(response.read())
         self.assertEqual(authenticated["contract_version"], "1.1")
-        self.assertEqual(authenticated["contracts"]["validation_controls"], ["1.0"])
+        self.assertEqual(authenticated["contracts"]["validation_controls"], ["1.0", "1.1"])
         self.assertEqual(authenticated["contracts"]["delivery_revision_validation"], ["1.0"])
         self.assertEqual(authenticated["authentication"], {
             "consumer_id": "cli", "consumer_status": "ACTIVE",

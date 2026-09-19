@@ -8,14 +8,90 @@ import json
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from engineering_platform import merge_delegation, server
+from engineering_platform import merge_delegation, server, submission_service
 from engineering_platform.storage import sqlite_connection
+from engineering_platform.validation_profile import (
+    ValidationProfileResolutionError, delivery_unittest_binding, delivery_unittest_selectors,
+)
 
 
 class MergeDelegationTest(unittest.TestCase):
+    def test_delivery_observation_selectors_are_bounded_and_immutable_commands(self) -> None:
+        accepted = ["ep-delivery-control-validation:1",
+                    "ep-delivery-unittest:tests.test_cli.ValidCase.test_valid",
+                    "ep-delivery-unittest:tests.test_cli.InvalidCase.test_invalid"]
+        selectors = delivery_unittest_selectors(accepted)
+        self.assertEqual(selectors, ("tests.test_cli.InvalidCase.test_invalid",
+                                     "tests.test_cli.ValidCase.test_valid"))
+        binding = delivery_unittest_binding(selectors[0])
+        self.assertFalse(binding["required"])
+        self.assertEqual(binding["command"][1:], ["-m", "unittest", selectors[0]])
+        self.assertEqual(binding["control_identity"], "python3 -m unittest " + selectors[0])
+        for malformed in (
+            ["ep-delivery-unittest:tests.test_cli.ValidCase.test_valid"],
+            ["ep-delivery-control-validation:1", "ep-delivery-unittest:tests.test_cli;rm"],
+            ["ep-delivery-control-validation:1", "ep-delivery-unittest:tests.test_cli.ValidCase.test_valid"] * 2,
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(ValidationProfileResolutionError):
+                delivery_unittest_selectors(malformed)
+
+    def test_terminal_v11_publishes_only_approved_optional_receipt(self) -> None:
+        selector = "tests.test_cli.ValidCase.test_valid"
+        binding = delivery_unittest_binding(selector)
+        required = {"validation_id": "repository_suite", "required": True,
+                    "category": "repository", "control_identity": "python3 -m unittest discover -s tests",
+                    "command": [sys.executable, "-m", "unittest", "discover", "-s", "tests"]}
+        def receipt(selected: dict[str, object], command_id: str, required_for_profile: bool) -> dict[str, object]:
+            return {"validation_id": selected["validation_id"], "category": selected["category"],
+                    "control_identity": selected["control_identity"],
+                    "required_for_profile": required_for_profile, "execution_status": "EXECUTED",
+                    "result": "PASS", "evidence_authority": "command_terminal",
+                    "command_id": command_id, "currentness": 3, "exit_code": 0}
+        context = {
+            "selected_validation_tier": "FULL", "validation_profile_version": "1.0",
+            "profile_reference": "validation-profile-registry:FULL@1.0",
+            "profile_selection_source": "delivery_revision", "profile_digest": "sha256:" + "a" * 64,
+            "candidate_sha": "c" * 40, "currentness": 3,
+            "profile_currentness_conflict": False,
+            "required_validation_controls": ("repository_suite",),
+            "control_bindings": (required,),
+            "controls": {"repository_suite": receipt(required, "required-command", True),
+                         str(binding["validation_id"]): receipt(binding, "optional-command", False),
+                         "provider_observed_unapproved": {"result": "PASS"}},
+        }
+        accepted = {"constraints": {"forge_execution": {"execution_constraints": [
+            "ep-delivery-control-validation:1", "ep-delivery-unittest:" + selector,
+        ]}}}
+        connection = sqlite3.connect(":memory:")
+        try:
+            with (patch("engineering_platform.storage.load_validation_context", return_value=context),
+                  patch("engineering_platform.submission_service.load_submission_for_run", return_value=accepted),
+                  patch("engineering_platform.submission_service.sqlite_connection", return_value=connection),
+                  patch("engineering_platform.submission_service._validation_result_detail",
+                        return_value={"status": "AVAILABLE", "test_count": 1,
+                                      "output_digest": "sha256:" + "b" * 64})):
+                published = submission_service._terminal_validation_controls(
+                    Path("/tmp/ep-observation-test"), repository_root=Path("/tmp/ep-observation-test"),
+                    run_id="run-observation",
+                )
+        finally:
+            connection.close()
+        self.assertEqual(published["contract_version"], "1.1")
+        self.assertEqual(published["candidate_sha"], "c" * 40)
+        self.assertEqual(len(published["observation_validation_controls"]), 1)
+        optional = published["observation_validation_controls"][0]
+        self.assertEqual(optional["validation_id"], binding["validation_id"])
+        self.assertEqual(optional["command_id"], "optional-command")
+        self.assertEqual(optional["currentness"], 3)
+        self.assertEqual(optional["result_detail"]["test_count"], 1)
+        self.assertTrue(optional["control_definition_digest"].startswith("sha256:"))
+        self.assertNotIn("provider_observed_unapproved", str(published))
+
     def test_local_owner_cli_reserves_activates_and_revokes_bound_origin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

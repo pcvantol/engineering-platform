@@ -12,6 +12,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from engineering_platform import development_profile, server
+from engineering_platform.storage import sqlite_connection
 
 
 class DevelopmentProfileTests(unittest.TestCase):
@@ -123,6 +124,44 @@ class DevelopmentProfileTests(unittest.TestCase):
         ))
         self.assertEqual(result, 2)
         self.assertIn("cannot issue", str(payload["error"]))
+
+    def test_owner_can_issue_only_development_scoped_consumer_credential(self) -> None:
+        self._initialize_profile()
+        result, registered = self._main(self._arguments("bootstrap-topology") + (
+            "--project-id", "qualification", "--repository-id", "qualification-repo",
+        ))
+        self.assertEqual(result, 0, registered)
+        command = self._arguments("issue-development-consumer-credential") + (
+            "--project-id", "qualification", "--consumer-id", "forge-qualification",
+        )
+        result, issued = self._main(command)
+        self.assertEqual(result, 0)
+        self.assertTrue(str(issued["credential_id"]).startswith("development-"))
+        self.assertEqual(issued["project_id"], "qualification")
+        self.assertEqual(issued["consumer_id"], "forge-qualification")
+        token = str(issued["credential"])
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            row = connection.execute(
+                "SELECT credential_id,verifier FROM ep_consumer_credentials WHERE consumer_id=?",
+                ("forge-qualification",),
+            ).fetchone()
+        self.assertEqual(row[0], issued["credential_id"])
+        self.assertNotEqual(row[1], token)
+        self.assertNotIn(token, (self.root / development_profile.FILENAME).read_text(encoding="utf-8"))
+        with patch("engineering_platform.platform_admin.os.geteuid", return_value=os.geteuid() + 1):
+            rejected, payload = self._main(command)
+        self.assertEqual(rejected, 2)
+        self.assertEqual(payload["error"], "PLATFORM_ADMIN_FORBIDDEN")
+        self.assertNotIn("credential", payload)
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            operational_rejection = server.main((
+                "issue-development-consumer-credential", "--data-root", str(self.base / "operational"),
+                "--project-id", "qualification", "--consumer-id", "forge-qualification",
+            ))
+        self.assertEqual(operational_rejection, 2)
+        self.assertEqual(json.loads(output.getvalue())["error"], "DEVELOPMENT_PROFILE_REQUIRED")
 
     def test_development_runtime_rejects_a_known_operational_interpreter(self) -> None:
         operational = self.base / "operational root"

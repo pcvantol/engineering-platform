@@ -334,7 +334,7 @@ class GhCliClient:
         missing = sorted(names - observed)
         if missing:
             raise RunnerError("Version preparation qualification is missing required checks: " + ", ".join(missing))
-        return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "required_checks": sorted(names), "checks": checks, "conclusion": "PASS"}
+        return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "required_checks": sorted(names), "strict_checks": required.get("strict") is True, "checks": checks, "conclusion": "PASS"}
     def ready(self, number: int) -> None:
         try: self._github("pr", "ready", str(number))
         except RuntimeError as error:
@@ -360,6 +360,8 @@ class GhCliClient:
     def delegated_merge_qualification(self, number: int, head_sha: str) -> dict[str, object]:
         """Fresh protected checks and independent head-bound GitHub reviews."""
         checks = self.qualification_for_exact_head(number, head_sha)
+        if checks.get("strict_checks") is not True:
+            raise RunnerError("Delegated merge requires strict protected status checks against the current base.")
         if not self.repository:
             raise RunnerError("Delegated merge requires an exact GitHub repository.")
         try:
