@@ -83,6 +83,7 @@ from .validation_profile import (
 )
 from .reviewer_evidence import ReviewerEvidence
 from .assurance_scope import observed_delivery_scope
+from .reconciliation_adoption import ROLLING_RECORDS
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
 from .execution_errors import ProviderReadinessBlocked
@@ -4411,8 +4412,13 @@ First implementation pull-request publication gate:
                     Path(reconciliation.prompt_path), reconciliation,
                     managed_target=self.root if reconciliation.execution_mode == "MANAGED" else None,
                 )
-                + "\n\nReconcile only the four canonical rolling current-state records after the verified Finalization merge. "
-                f"Preserve immutable Prompt History and create one draft pull request on exactly `{expected_branch}`.",
+                + "\n\nAfter the verified Finalization merge, edit only the canonical rolling "
+                "current-state records: "
+                + ", ".join(f"`{path}`" for path in sorted(ROLLING_RECORDS))
+                + ". Do not edit `docs/engineering/runs/index.json`, "
+                "`docs/engineering/runs/latest.md`, dated run records, Prompt History, "
+                "or implementation files. The Finalization PR owns those run records. "
+                f"Create one draft pull request on exactly `{expected_branch}`.",
             )
             reconciliation = self._record_agent_execution_time(reconciliation)
             reconciliation = self._record_validation_evidence(reconciliation, result)

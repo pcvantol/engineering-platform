@@ -5171,6 +5171,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("engineering_platform.repository_handoff", agent.prompts[0])
         self.assertIn("handoff records to that same Finalization branch", agent.prompts[0])
         self.assertIn("create one draft pull request", agent.prompts[1])
+        for path in ("ARCHITECT_SESSION.md", "BOOTSTRAP.md", "HANDOFF.md", "README.md"):
+            self.assertIn(f"`{path}`", agent.prompts[1])
+        self.assertIn("Do not edit `docs/engineering/runs/index.json`", agent.prompts[1])
+        self.assertIn("`docs/engineering/runs/latest.md`", agent.prompts[1])
         self.assertIn("merge the pull request or push directly to `main`", agent.prompts[1])
 
     def test_owner_authorized_merged_lifecycle_reconciles_and_cleans_up(self) -> None:
