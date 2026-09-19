@@ -24,7 +24,7 @@ from unittest.mock import call, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import file_inbox, local_repository_binding, project_topology, providers, server, submission_service
+from engineering_platform import central_operational_reset, file_inbox, local_repository_binding, project_topology, providers, server, submission_service
 from engineering_platform.execution_timing import complete_phase, start_phase
 from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
 from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
@@ -1286,6 +1286,42 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             [target_schema for target_schema, _upgrade in server._SERVER_SCHEMA_UPGRADE_STEPS],
             list(range(42, server.SERVER_STORE_SCHEMA_VERSION + 1)),
         )
+
+    def test_schema_70_upgrade_restores_installation_reset_writer_fences(self) -> None:
+        """A migrated installation with the 2.3.87 fence gap becomes reset-safe."""
+        identity = server.initialize(self.root)
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        fence_prefix = "ep_operational_reset_block_ep_installations_"
+        with sqlite_connection(database) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("PRAGMA legacy_alter_table=ON")
+            for operation in ("insert", "update", "delete"):
+                connection.execute(f"DROP TRIGGER {fence_prefix}{operation}")
+            connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema71")
+            connection.execute(
+                "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+                "schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 70))"
+            )
+            connection.execute(
+                "INSERT INTO ep_installations SELECT instance_id,created_at,70 FROM ep_installations_schema71"
+            )
+            connection.execute("DROP TABLE ep_installations_schema71")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version=71")
+            connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(70)")
+            connection.execute("UPDATE engineering_metadata SET value='70' WHERE key='installation.schema_version'")
+
+        self.assertEqual(server.initialize(self.root), identity)
+        with sqlite_connection(database) as connection:
+            triggers = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'"
+            )}
+            self.assertTrue({f"{fence_prefix}{operation}" for operation in (
+                "insert", "update", "delete"
+            )} <= triggers)
+            self.assertEqual(connection.execute(
+                "SELECT schema_version FROM ep_installations"
+            ).fetchone(), (71,))
+        self.assertNotIn("WRITER_FENCE_INCOMPLETE", central_operational_reset.preview(self.root)["blocking_codes"])
 
     def test_schema_41_installation_upgrades_through_the_ordered_current_path(self) -> None:
         """Retained first-generation CENTRAL stores remain forward-compatible."""

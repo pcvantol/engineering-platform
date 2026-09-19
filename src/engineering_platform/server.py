@@ -141,7 +141,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 70
+SERVER_STORE_SCHEMA_VERSION = 71
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -2075,6 +2075,21 @@ def _migrate_schema_70(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=70")
 
 
+def _migrate_schema_71(connection: sqlite3.Connection) -> None:
+    """Restore reset writer fences lost when schema 70 rebuilt installations."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema70")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 71))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,71 FROM ep_installations_schema70")
+    connection.execute("DROP TABLE ep_installations_schema70")
+    central_operational_reset.install_writer_fences(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(71)")
+    connection.execute("UPDATE engineering_metadata SET value='71' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=71")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2105,6 +2120,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (68, _migrate_schema_68),
     (69, _migrate_schema_69),
     (70, _migrate_schema_70),
+    (71, _migrate_schema_71),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
