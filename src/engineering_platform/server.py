@@ -3833,27 +3833,7 @@ def _central_console_pull_request_context(data_root: Path, run_id: str) -> dict[
             (run_id,),
         ).fetchone()
     checkpoint = _central_json_object(row[0]) if row else {}
-    repository = checkpoint.get("repository")
-    if not isinstance(repository, str) or re.fullmatch(
-        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository,
-    ) is None:
-        repository = None
-    context: dict[str, object] = {"github_repository": repository, "pull_requests": []}
-    for role, field, projection in (
-        ("implementation", "implementation_pull_request", "implementation_pr"),
-        ("finalization", "finalization_pull_request", "finalization_pr"),
-        ("reconciliation", "reconciliation_pull_request", "reconciliation_pr"),
-    ):
-        number = checkpoint.get(field)
-        if isinstance(number, int) and not isinstance(number, bool) and number > 0:
-            context[projection] = number
-            if repository is not None:
-                context["pull_requests"].append({
-                    "role": role,
-                    "number": number,
-                    "url": f"https://github.com/{repository}/pull/{number}",
-                })
-    return context
+    return server_console_services._checkpoint_pull_request_context(checkpoint)
 
 
 def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:

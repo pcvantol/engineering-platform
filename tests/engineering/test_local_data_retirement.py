@@ -12,8 +12,9 @@ class LocalDataRetirementTest(unittest.TestCase):
         self.assertNotIn("historical_dashboard_configuration", source)
         self.assertIn("_central_console_project_snapshot(self.server.data_root, project_id)", source)
         references = [line.strip() for line in source.splitlines() if "server_console_services." in line]
-        self.assertEqual(len(references), 2)
-        self.assertTrue(all("render_console_document" in line for line in references))
+        self.assertEqual(len(references), 3)
+        self.assertEqual(sum("render_console_document" in line for line in references), 2)
+        self.assertEqual(sum("_checkpoint_pull_request_context(checkpoint)" in line for line in references), 1)
 
     def test_supported_console_cannot_import_historical_dashboard_configuration(self) -> None:
         source = (Path(__file__).parents[2] / "src" / "engineering_platform" / "server_console_services.py").read_text(encoding="utf-8")

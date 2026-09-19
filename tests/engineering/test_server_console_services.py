@@ -1734,6 +1734,36 @@ class DashboardStatusTest(unittest.TestCase):
             ])
             self.assertEqual(_prompt_history_detail(root, "../../other"), b"")
 
+    def test_blocked_managed_history_keeps_the_newly_bound_finalization_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root, run_id="inbox-bound-finalization", terminal_state="BLOCKED",
+                prompt_title="Finalization repair", executed_at="2026-08-03T12:00:00Z",
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(TransactionState(
+                "inbox-bound-finalization", "pcvantol/djconnect", "prompt.md", "BLOCKED",
+                terminal=True, transaction_kind="FINALIZATION", pull_request=950,
+                implementation_pull_request=949,
+            ))
+            self.assertEqual(json.loads(_prompt_history_detail(root, "inbox-bound-finalization"))["pull_requests"], [
+                {"role": "implementation", "number": 949, "url": "https://github.com/pcvantol/djconnect/pull/949"},
+                {"role": "finalization", "number": 950, "url": "https://github.com/pcvantol/djconnect/pull/950"},
+            ])
+
+    def test_checkpoint_pr_projection_keeps_unknown_phase_bound_link_without_guessing_role(self) -> None:
+        context = dashboard._checkpoint_pull_request_context({
+            "execution_mode": "MANAGED", "repository": "pcvantol/djconnect",
+            "implementation_pull_request": 949, "pull_request": 950,
+        })
+        self.assertEqual(context["pull_requests"], [
+            {"role": "implementation", "number": 949, "url": "https://github.com/pcvantol/djconnect/pull/949"},
+            {"role": "bound", "number": 950, "url": "https://github.com/pcvantol/djconnect/pull/950"},
+        ])
+        self.assertEqual(dashboard._checkpoint_pull_request_context({
+            "execution_mode": "GENESIS", "repository": "pcvantol/djconnect", "pull_request": 950,
+        })["pull_requests"], [])
+
     @patch("engineering_platform.server_console_services.GitHubProvider")
     @patch("engineering_platform.server_console_services.GitProvider")
     def test_managed_pull_request_evidence_includes_verified_github_counts(

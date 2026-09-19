@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from html import escape
 import json
@@ -351,30 +351,63 @@ def _project_prompt_history_detail(
     ).encode()
 
 
+def _checkpoint_pull_request_context(checkpoint: Mapping[str, object]) -> dict[str, object]:
+    """Project recorded PR roles, including a newly bound PR in its active phase."""
+    repository = checkpoint.get("repository")
+    if not isinstance(repository, str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository,
+    ):
+        repository = None
+    context: dict[str, object] = {"github_repository": repository, "pull_requests": []}
+    if checkpoint.get("execution_mode") not in (None, "MANAGED"):
+        return context
+    roles = (
+        ("implementation", "implementation_pull_request", "implementation_pr"),
+        ("finalization", "finalization_pull_request", "finalization_pr"),
+        ("reconciliation", "reconciliation_pull_request", "reconciliation_pr"),
+    )
+    active_role = str(checkpoint.get("transaction_kind") or "").lower()
+    bound = checkpoint.get("pull_request")
+    def valid_number(value: object) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    if valid_number(bound):
+        context["pull_request"] = bound
+    links: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for role, field, projection in roles:
+        number = checkpoint.get(field)
+        if not valid_number(number) and active_role == role:
+            number = bound
+        if not valid_number(number):
+            continue
+        context[projection] = number
+        if repository is not None and number not in seen:
+            links.append({
+                "role": role, "number": number,
+                "url": f"https://github.com/{repository}/pull/{number}",
+            })
+            seen.add(number)
+    if repository is not None and valid_number(bound) and bound not in seen:
+        links.append({
+            "role": "bound", "number": bound,
+            "url": f"https://github.com/{repository}/pull/{bound}",
+        })
+    context["pull_requests"] = links
+    return context
+
+
 def _pull_requests_for_run(root: Path, run_id: str | None) -> list[dict[str, object]]:
     """Project only checkpoint-owned Managed pull-request evidence as links."""
     checkpoint = _canonical_checkpoint(root, run_id)
-    repository = checkpoint.get("repository")
-    if (
-        checkpoint.get("execution_mode") != "MANAGED"
-        or not isinstance(repository, str)
-        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
-    ):
+    if checkpoint.get("execution_mode") != "MANAGED":
         return []
-    links: list[dict[str, object]] = []
-    for role, field in (
-        ("implementation", "implementation_pull_request"),
-        ("finalization", "finalization_pull_request"),
-    ):
-        number = checkpoint.get(field)
-        if isinstance(number, int) and not isinstance(number, bool) and number > 0:
-            link: dict[str, object] = {
-                "role": role,
-                "number": number,
-                "url": f"https://github.com/{repository}/pull/{number}",
-            }
-            link.update(_pull_request_github_metrics(root, repository, number))
-            links.append(link)
+    context = _checkpoint_pull_request_context(checkpoint)
+    repository = context["github_repository"]
+    if not isinstance(repository, str):
+        return []
+    links = context["pull_requests"]
+    for link in links:
+        link.update(_pull_request_github_metrics(root, repository, link["number"]))
     return links
 
 
