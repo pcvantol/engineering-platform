@@ -1387,6 +1387,45 @@ class ClientContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RunnerError, "missing required checks: integration"):
             GhCliClient(Provider({"contexts": ["unit", "integration"], "checks": []}), "pcvantol/forge").qualification_for_exact_head(1, head)
 
+    def test_delegated_merge_requires_independent_current_head_review_and_uses_head_cas(self) -> None:
+        head = "e" * 40
+        class Provider:
+            def __init__(self) -> None:
+                self.review_commit = head
+                self.calls: list[tuple[str, ...]] = []
+            def github(self, *args: str) -> str:
+                self.calls.append(args)
+                if args[:2] == ("pr", "view"):
+                    return json.dumps({
+                        "headRefOid": head, "baseRefOid": "f" * 40,
+                        "baseRefName": "main", "statusCheckRollup": [
+                            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                        ],
+                    })
+                if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_status_checks"):
+                    return json.dumps({"contexts": ["unit"], "checks": []})
+                if args[:2] == ("api", "repos/pcvantol/forge/pulls/17"):
+                    return json.dumps({"number": 17, "state": "open", "draft": False,
+                                       "head": {"sha": head}, "base": {"ref": "main"},
+                                       "user": {"login": "author"}})
+                if args[:2] == ("api", "repos/pcvantol/forge/pulls/17/reviews?per_page=100"):
+                    return json.dumps([{"state": "APPROVED", "commit_id": self.review_commit,
+                                        "user": {"login": "reviewer"}}])
+                if args[:2] == ("api", "repos/pcvantol/forge/branches/main/protection/required_pull_request_reviews"):
+                    return json.dumps({"required_approving_review_count": 1})
+                if args[:3] == ("api", "--method", "PUT"):
+                    return json.dumps({"merged": True})
+                raise AssertionError(args)
+        provider = Provider()
+        client = GhCliClient(provider, "pcvantol/forge")
+        self.assertEqual(client.delegated_merge_qualification(17, head)["reviewers"], ["reviewer"])
+        provider.review_commit = "a" * 40
+        with self.assertRaisesRegex(RunnerError, "exact head"):
+            client.delegated_merge_qualification(17, head)
+        client.merge(17, expected_head_sha=head)
+        self.assertIn(("api", "--method", "PUT", "repos/pcvantol/forge/pulls/17/merge",
+                       "-f", "merge_method=squash", "-f", f"sha={head}", "--repo", "pcvantol/forge"), provider.calls)
+
     @patch("engineering_platform.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:
         review_message = json.dumps(
@@ -3271,6 +3310,63 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertTrue(blocked.terminal)
         self.assertEqual(blocked.next_action, "merged_pull_request_candidate_mismatch")
 
+    def test_reconciliation_merged_head_must_match_recovered_pr_head(self) -> None:
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE")), lambda _: None,
+        )
+        state = TransactionState(
+            "reconciled-head-mismatch", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", transaction_kind="RECONCILIATION",
+            branch="codex/reconcile", reconciliation_head_sha="a" * 40,
+        )
+        blocked = runner._record_merged_evidence(
+            state,
+            PullRequestEvidence(123, "MERGED", True, True, merge_commit="c" * 40,
+                                head_branch="codex/reconcile", base_branch="main",
+                                head_sha="b" * 40),
+            RepositoryEvidence("pcvantol/djconnect", "main", "c" * 40, True, True),
+        )
+        self.assertEqual(blocked.next_action, "merged_pull_request_candidate_mismatch")
+
+    def test_uncertain_delegated_attempt_does_not_attribute_later_merge_to_owner(self) -> None:
+        head = "a" * 40
+        merged = PullRequestEvidence(124, "MERGED", True, True, merge_commit="c" * 40,
+                                     head_branch="codex/feature", base_branch="main", head_sha=head)
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([merged]),
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+        state = TransactionState(
+            "uncertain-merge-actor", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", transaction_kind="IMPLEMENTATION",
+            branch="codex/feature", pull_request=124, implementation_head_sha=head,
+            delegated_merge_attempt=f"124:{head}", merge_delegation_id="c" * 32,
+        )
+        with (patch.object(runner, "_provider_readiness_gate", side_effect=lambda current, **_kwargs: current),
+              patch.object(runner, "_managed_pr_check"),
+              patch.object(runner, "_managed_gate") as gate,
+              patch.object(runner, "_managed_action") as action,
+              patch.object(runner, "_record_merged_evidence", side_effect=lambda current, *_args: current),
+              patch.object(runner, "_cleanup", side_effect=lambda current: current)):
+            runner._poll(state)
+        self.assertEqual(gate.call_args.kwargs["resolution_actor"], "unknown")
+        self.assertEqual(action.call_args.args[2], "UNKNOWN_AUTHORITY")
+        self.assertEqual(action.call_args.kwargs["actor"], "unknown")
+
+        runner.github = FakeGitHub([merged])
+        confirmed = replace(state, delegated_merge_actor_reference="local-uid:501")
+        with (patch.object(runner, "_provider_readiness_gate", side_effect=lambda current, **_kwargs: current),
+              patch.object(runner, "_managed_pr_check"),
+              patch.object(runner, "_managed_gate") as gate,
+              patch.object(runner, "_managed_action") as action,
+              patch.object(runner, "_record_merged_evidence", side_effect=lambda current, *_args: current),
+              patch.object(runner, "_cleanup", side_effect=lambda current: current)):
+            runner._poll(confirmed)
+        self.assertEqual(gate.call_args.kwargs["resolution_actor"], "execution_host")
+        self.assertEqual(action.call_args.args[2], "AUTONOMOUS_EP_ACTION")
+        self.assertEqual(action.call_args.kwargs["actor"], "execution_host")
+
     def test_validation_profile_failure_keeps_verified_repair_pr_and_candidate(self) -> None:
         branch, sha, pull_number = "codex/validation-failure-keeps-pr", "a" * 40, 118
         runner = EngineeringRunner(
@@ -4910,7 +5006,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_reconciliation_recovery_adopts_only_the_checkpointed_existing_pr(self) -> None:
         branch = "codex/reconcile-recover-existing"
         pull_request = PullRequestEvidence(
-            24, "OPEN", True, True, head_branch=branch, base_branch="main",
+            24, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha="d" * 40,
         )
         github = FakeGitHub([pull_request], branch_response=pull_request)
         agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
@@ -4928,8 +5024,32 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(recovered.phase, "WAIT_FOR_OPERATOR_MERGE")
         self.assertEqual(recovered.reconciliation_pull_request, 24)
+        self.assertEqual(recovered.reconciliation_head_sha, "d" * 40)
         self.assertEqual(github.branch_calls, [branch])
         self.assertEqual(agent.prompts, [])
+
+    def test_reconciliation_handoff_timeout_recovers_exact_pr_head_from_main(self) -> None:
+        branch = "codex/reconcile-handoff-timeout"
+        head = "d" * 40
+        candidate = PullRequestEvidence(
+            26, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=head,
+        )
+        github = FakeGitHub([candidate], branch_response=candidate)
+        state = TransactionState(
+            "handoff-timeout", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", branch="main", owner_authorized=True,
+            transaction_kind="FINALIZATION", finalization_merge_commit="c" * 40,
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(contains=True), github,
+            DeadlineFakeAgent(), lambda _: None,
+        )
+        with (patch.object(runner, "_start_phase", return_value=None),
+              patch.object(runner, "_invoke_agent_with_timing", side_effect=CodexHandoffTimeout("timeout"))):
+            recovered = runner._start_automatic_reconciliation(state)
+        self.assertEqual(recovered.reconciliation_pull_request, 26)
+        self.assertEqual(recovered.reconciliation_head_sha, head)
+        self.assertEqual(recovered.phase, "WAIT_FOR_OPERATOR_MERGE")
 
     def test_reconciliation_recovery_rejects_a_pr_for_another_branch(self) -> None:
         branch = "codex/reconcile-recover-wrong"
@@ -5198,6 +5318,154 @@ class LocalAgentRunnerTest(unittest.TestCase):
         result = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)._cleanup(state)
         self.assertEqual(result.phase, "BLOCKED")
         self.assertIn("unmerged commits", result.diagnostic or "")
+
+    def test_delivery_controls_run_after_cleanup_before_terminal_completion(self) -> None:
+        repository = FakeRepository(branch="codex/delivery")
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]),
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+        observed: list[tuple[str, bool]] = []
+        def validate(reconciled: TransactionState) -> TransactionState:
+            observed.append((repository.evidence.branch, reconciled.terminal))
+            self.assertEqual(reconciled.phase, "REPOSITORY_CLEANUP")
+            return reconciled
+        with patch.object(runner, "_validate_delivery_revision", side_effect=validate):
+            result = runner._cleanup(TransactionState(
+                "delivery-cleanup", "pcvantol/djconnect", str(self.prompt),
+                "REPOSITORY_CLEANUP", delivery_control_validation_required=True,
+                finalization_merge_commit="a" * 40,
+            ))
+        self.assertEqual(observed, [("main", False)])
+        self.assertEqual(result.phase, "COMPLETE")
+
+    def test_failed_delivery_controls_prevent_complete_terminal(self) -> None:
+        repository = FakeRepository(branch="codex/delivery")
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]),
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+        def fail(reconciled: TransactionState) -> TransactionState:
+            return runner._save_terminal(reconciled, "BLOCKED", "delivery_validation_failed")
+        with patch.object(runner, "_validate_delivery_revision", side_effect=fail):
+            result = runner._cleanup(TransactionState(
+                "delivery-failed", "pcvantol/djconnect", str(self.prompt),
+                "REPOSITORY_CLEANUP", delivery_control_validation_required=True,
+                finalization_merge_commit="a" * 40,
+            ))
+        self.assertEqual(result.phase, "BLOCKED")
+        self.assertEqual(result.next_action, "delivery_validation_failed")
+
+    def test_delegated_merge_is_scoped_and_attempt_is_durable_before_external_call(self) -> None:
+        head = "a" * 40
+        delegation_id = "c" * 32
+        repository = FakeRepository(branch="codex/feature")
+        github = FakeGitHub([])
+        github.repository = "pcvantol/djconnect"  # type: ignore[attr-defined]
+        pr = PullRequestEvidence(17, "OPEN", True, True, head_branch="codex/feature",
+                                 base_branch="main", merge_state_status="CLEAN", head_sha=head)
+        github.pull_request = lambda _number: pr  # type: ignore[method-assign]
+        github.delegated_merge_qualification = lambda _number, _head: {  # type: ignore[attr-defined]
+            "conclusion": "PASS", "exact_qualified_sha": head,
+            "pull_request_id": 17, "reviewers": ["independent"], "base_revision": "f" * 40,
+        }
+        repository.protected_main_revision = lambda _root: "f" * 40  # type: ignore[attr-defined]
+        attempted_calls: list[tuple[int, str]] = []
+        def uncertain_merge(number: int, *, expected_head_sha: str) -> None:
+            attempted_calls.append((number, expected_head_sha))
+            raise RunnerError("network acknowledgement uncertain")
+        github.merge = uncertain_merge  # type: ignore[method-assign]
+        runner = EngineeringRunner(self.root, self.store, repository, github,
+                                   FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.store.central_database = self.root / "epdata.sqlite"
+        state = TransactionState("delegated-merge", "pcvantol/djconnect", str(self.prompt),
+                                 "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/feature",
+                                 pull_request=17, implementation_head_sha=head,
+                                 owner_authorized=True, merge_delegation_id=delegation_id)
+        accepted = {"producer_type": "FORGE", "mission_id": "mission-1", "constraints": {
+            "forge_execution": {"mission_revision": "1", "execution_constraints": [
+                f"ep-merge-delegation:{delegation_id}",
+            ]},
+        }}
+        grant = execution_host.merge_delegation.MergeDelegation(
+            delegation_id, "local-uid:501", "project", "opaque", "pcvantol/djconnect",
+            "mission-1", "1", "main", ("IMPLEMENTATION",),
+            "2099-01-01T00:00:00+00:00", "2026-09-19T00:00:00+00:00", None,
+        )
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE ep_parity_lifecycle_dispatches(run_id TEXT,project_id TEXT,repository_id TEXT)")
+        connection.execute("CREATE TABLE ep_project_registrations(project_id TEXT,status TEXT)")
+        connection.execute("CREATE TABLE ep_repository_registrations(repository_id TEXT,project_id TEXT,role TEXT)")
+        connection.execute("CREATE TABLE ep_local_repository_bindings(project_id TEXT,repository_id TEXT,state TEXT,local_root TEXT)")
+        connection.execute("INSERT INTO ep_parity_lifecycle_dispatches VALUES('delegated-merge','project','opaque')")
+        connection.execute("INSERT INTO ep_project_registrations VALUES('project','ACTIVE')")
+        connection.execute("INSERT INTO ep_repository_registrations VALUES('opaque','project','authority')")
+        connection.execute("INSERT INTO ep_local_repository_bindings VALUES(?,?,?,?)",
+                           ("project", "opaque", "BOUND", str(self.root)))
+        with (patch("engineering_platform.execution_host.load_submission_for_run", return_value=accepted),
+              patch("engineering_platform.execution_host.sqlite_connection", return_value=connection),
+              patch("engineering_platform.execution_host.merge_delegation.load", return_value=grant),
+              patch.object(self.store, "save") as saved,
+              patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting: waiting)):
+            result = runner._attempt_delegated_merge(state, pr)
+            self.assertEqual(attempted_calls, [(17, head)])
+            self.assertEqual(saved.call_args.args[0].delegated_merge_attempt, f"17:{head}")
+            self.assertIsNone(saved.call_args.args[0].delegated_merge_actor_reference)
+            self.assertEqual(result.delegated_merge_attempt, f"17:{head}")
+            self.assertIsNone(result.delegated_merge_actor_reference)
+            self.assertIsNone(runner._attempt_delegated_merge(result, pr))
+            repository.protected_main_revision = lambda _root: "e" * 40  # type: ignore[attr-defined]
+            self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            self.assertEqual(attempted_calls, [(17, head)])
+            revoked = replace(grant, revoked_at="2026-09-19T01:00:00+00:00")
+            with patch("engineering_platform.execution_host.merge_delegation.load", return_value=revoked):
+                self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+        connection.close()
+
+    def test_final_revision_validation_rejects_zero_tests_and_post_validation_mutation(self) -> None:
+        revision = "a" * 40
+        state = TransactionState(
+            "delivery-revision-check", "pcvantol/djconnect", str(self.prompt),
+            "REPOSITORY_CLEANUP", finalization_merge_commit=revision,
+            delivery_control_validation_required=True,
+        )
+        for count, final_head, expected in (
+            (0, revision, "delivery_test_discovery_unproven"),
+            (2, "b" * 40, "delivery_revision_changed"),
+            (2, revision, None),
+        ):
+            with self.subTest(count=count, final_head=final_head):
+                repository = FakeRepository()
+                repository.inspect = lambda _root, heads=iter((revision, final_head)): RepositoryEvidence(  # type: ignore[method-assign]
+                    "pcvantol/djconnect", "main", next(heads), True, True,
+                )
+                repository.protected_main_revision = lambda _root: revision  # type: ignore[attr-defined]
+                runner = EngineeringRunner(
+                    self.root, self.store, repository, FakeGitHub([]),
+                    FakeAgent(AgentResult("WAITING")), lambda _: None,
+                )
+                self.store.central_database = self.root / "epdata.sqlite"
+                with (
+                    patch("engineering_platform.execution_host.record_validation_profile"),
+                    patch("engineering_platform.execution_host.profile_control_bindings", return_value=()),
+                    patch.object(runner, "_execute_required_validation_controls", return_value=state),
+                    patch("engineering_platform.execution_host.load_validation_context", return_value={}),
+                    patch("engineering_platform.execution_host.strict_required_controls_pass", return_value=True),
+                    patch("engineering_platform.submission_service._terminal_validation_controls", return_value={
+                        "status": "AVAILABLE", "controls": {"repository_suite": {
+                            "result_detail": {"status": "AVAILABLE", "test_count": count},
+                        }},
+                    }),
+                    patch.object(runner, "_save_terminal", side_effect=lambda current, phase, action, *_: replace(
+                        current, phase=phase, next_action=action, terminal=True,
+                    )),
+                ):
+                    result = runner._validate_delivery_revision(state)
+                if expected is None:
+                    self.assertFalse(result.terminal)
+                else:
+                    self.assertTrue(result.terminal)
+                    self.assertEqual(result.next_action, expected)
 
     def test_transient_polling_failure_preserves_non_terminal_state(self) -> None:
         state = TransactionState("retry-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=13)

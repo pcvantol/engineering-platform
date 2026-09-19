@@ -140,6 +140,12 @@ class TransactionState:
     finalization_head_sha: str | None = None
     finalization_merge_commit: str | None = None
     reconciliation_pull_request: int | None = None
+    reconciliation_head_sha: str | None = None
+    reconciliation_merge_commit: str | None = None
+    delivery_control_validation_required: bool = False
+    merge_delegation_id: str | None = None
+    delegated_merge_attempt: str | None = None
+    delegated_merge_actor_reference: str | None = None
     latest_repository_evidence: str | None = None
     latest_github_evidence: str | None = None
     agent_execution_seconds: float | None = None
@@ -186,6 +192,12 @@ class TransactionState:
             "finalization_branch": None, "finalization_pull_request": None,
             "finalization_head_sha": None, "finalization_merge_commit": None,
             "reconciliation_pull_request": None,
+            "reconciliation_head_sha": None,
+            "reconciliation_merge_commit": None,
+            "delivery_control_validation_required": False,
+            "merge_delegation_id": None,
+            "delegated_merge_attempt": None,
+            "delegated_merge_actor_reference": None,
             "latest_repository_evidence": None, "latest_github_evidence": None,
             "agent_execution_seconds": None,
             "validation_evidence": (),
@@ -257,6 +269,16 @@ class TransactionState:
             raise StateError("checkpoint diagnostic is invalid or unsafe")
         if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"} or state.execution_mode not in {"MANAGED", "GENESIS"} or state.action_intent not in {"MUTATING_DELIVERY", "VALIDATION_ONLY"}:
             raise StateError("checkpoint authorization or transaction kind is invalid")
+        if not isinstance(state.delivery_control_validation_required, bool):
+            raise StateError("checkpoint delivery control validation flag is invalid")
+        if state.merge_delegation_id is not None and re.fullmatch(r"[0-9a-f]{32}", state.merge_delegation_id) is None:
+            raise StateError("checkpoint merge delegation identifier is invalid")
+        if state.delegated_merge_attempt is not None and re.fullmatch(r"[1-9][0-9]*:[0-9a-f]{40}", state.delegated_merge_attempt) is None:
+            raise StateError("checkpoint delegated merge attempt is invalid")
+        if state.delegated_merge_actor_reference is not None and re.fullmatch(r"local-uid:[0-9]+", state.delegated_merge_actor_reference) is None:
+            raise StateError("checkpoint delegated merge actor is invalid")
+        if state.reconciliation_head_sha is not None and re.fullmatch(r"[0-9a-f]{40}", state.reconciliation_head_sha) is None:
+            raise StateError("checkpoint reconciliation head is invalid")
         if state.admission_decision not in {"NOT_STARTED", "PASS", "FAIL", "BLOCKED", "UNAVAILABLE"}:
             raise StateError("checkpoint admission decision is invalid")
         if state.admission_decision == "PASS" and not isinstance(state.admission_completed_at, str):
@@ -283,7 +305,7 @@ class TransactionState:
             raise StateError("genesis repository path is invalid")
         if state.genesis_commit_sha is not None and (not isinstance(state.genesis_commit_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", state.genesis_commit_sha)):
             raise StateError("genesis commit SHA is invalid")
-        optional_sha_fields = (state.implementation_head_sha, state.implementation_merge_commit, state.finalization_head_sha, state.finalization_merge_commit)
+        optional_sha_fields = (state.implementation_head_sha, state.implementation_merge_commit, state.finalization_head_sha, state.finalization_merge_commit, state.reconciliation_merge_commit)
         if any(value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value)) for value in optional_sha_fields):
             raise StateError("checkpoint lifecycle SHA is invalid")
         optional_pr_fields = (state.implementation_pull_request, state.finalization_pull_request, state.reconciliation_pull_request)

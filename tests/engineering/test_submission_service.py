@@ -10,9 +10,11 @@ from engineering_platform.execution_executor import persist_validation_result_de
 
 import json
 import hashlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,7 +22,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from engineering_platform import server, submission_service
+from engineering_platform import server, submission_service, merge_delegation
 from engineering_platform.agent_state import TransactionState
 from engineering_platform.platform_version import CURRENT_PLATFORM_VERSION
 
@@ -393,6 +395,119 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         payload["constraints"]["forge_execution"]["forge_application_version"] = "2.7.1"  # type: ignore[index]
         with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PROVENANCE"):
             submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+    def test_delivery_validation_constraint_is_bound_to_accepted_v13_envelope(self) -> None:
+        payload = self.forge_planning_context_payload("delivery-controls")
+        provenance = payload["constraints"]["forge_execution"]  # type: ignore[index]
+        provenance["execution_constraints"] = ["ep-delivery-control-validation:1"]  # type: ignore[index]
+        request = submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        self.assertEqual(request.constraints["forge_execution"]["execution_constraints"], ["ep-delivery-control-validation:1"])
+        provenance["execution_constraints"] = ["ep-delivery-control-validation:1", "ep-delivery-control-validation:1"]  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PROVENANCE"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        provenance["execution_constraints"] = "ep-delivery-control-validation:1"  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PROVENANCE"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+
+    def test_merge_reservation_requires_activation_and_revocation_stops_new_submissions(self) -> None:
+        delegation_id = "a" * 32
+        expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        workspace = self.root / "workspace"
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin",
+                        "https://github.com/pcvantol/djconnect.git"], check=True)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            reserved = merge_delegation.reserve(
+                connection, delegation_id=delegation_id, actor_reference="local-uid:501",
+                project_id="djconnect", repository_id="djconnect",
+                github_repository="pcvantol/djconnect", base_branch="main",
+                roles=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"), expires_at=expires,
+            )
+            self.assertFalse(reserved.permits(
+                project_id="djconnect", repository_id="djconnect",
+                mission_id="mission-merge-reservation", mission_revision="1",
+                role="IMPLEMENTATION", base_branch="main",
+            ))
+            payload = self.forge_planning_context_payload("merge-reservation")
+            payload["constraints"]["forge_execution"]["execution_constraints"] = [  # type: ignore[index]
+                f"ep-merge-delegation:{delegation_id}",
+            ]
+            request = submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+            with self.assertRaisesRegex(submission_service.SubmissionError, "MERGE_DELEGATION_UNAVAILABLE"):
+                submission_service.submit(connection, request)
+            active = merge_delegation.activate(
+                connection, delegation_id=delegation_id,
+                mission_id="mission-merge-reservation", mission_revision="1",
+                actor_reference="local-uid:501", github_repository="pcvantol/djconnect",
+            )
+            self.assertTrue(active.permits(
+                project_id="djconnect", repository_id="djconnect",
+                mission_id="mission-merge-reservation", mission_revision="1",
+                role="IMPLEMENTATION", base_branch="main",
+            ))
+            submission_service.submit(connection, request)
+            self.assertTrue(merge_delegation.revoke(connection, delegation_id, actor_reference="local-uid:501"))
+            self.assertFalse(merge_delegation.load(connection, delegation_id).permits(
+                project_id="djconnect", repository_id="djconnect",
+                mission_id="mission-merge-reservation", mission_revision="1",
+                role="IMPLEMENTATION", base_branch="main",
+            ))
+            payload = self.forge_planning_context_payload("merge-after-revoke")
+            payload["constraints"]["forge_execution"]["execution_constraints"] = [  # type: ignore[index]
+                f"ep-merge-delegation:{delegation_id}",
+            ]
+            with self.assertRaisesRegex(submission_service.SubmissionError, "MERGE_DELEGATION_UNAVAILABLE"):
+                submission_service.submit(
+                    connection, submission_service.request_from_mapping("djconnect", payload, transport="HTTP"),
+                )
+
+    def test_authenticated_merge_grant_readback_reports_scope_and_lifecycle(self) -> None:
+        delegation_id = "b" * 32
+        expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        workspace = self.root / "workspace"
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin",
+                        "https://github.com/pcvantol/djconnect.git"], check=True)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            merge_delegation.reserve(
+                connection, delegation_id=delegation_id, actor_reference="local-uid:501",
+                project_id="djconnect", repository_id="djconnect",
+                github_repository="pcvantol/djconnect", base_branch="main",
+                roles=("IMPLEMENTATION",), expires_at=expires,
+            )
+        server.start(self.root)
+        endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/merge-delegations/{delegation_id}"
+        def readback() -> dict[str, object]:
+            with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+                return json.loads(response.read())
+        with self.assertRaises(HTTPError) as unauthorized:
+            urlopen(endpoint)  # nosec B310
+        self.assertEqual(unauthorized.exception.code, 401)
+        reserved = readback()
+        self.assertEqual(reserved["contract_version"], "1.0")
+        self.assertEqual(reserved["status"], "RESERVED")
+        self.assertEqual(reserved["github_repository"], "pcvantol/djconnect")
+        self.assertEqual(reserved["mission_id"], "")
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            merge_delegation.activate(
+                connection, delegation_id=delegation_id,
+                mission_id="mission-readback", mission_revision="7",
+                actor_reference="local-uid:501", github_repository="pcvantol/djconnect",
+            )
+        active = readback()
+        self.assertEqual(active["status"], "ACTIVE")
+        self.assertEqual((active["mission_id"], active["mission_revision"]), ("mission-readback", "7"))
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            merge_delegation.revoke(connection, delegation_id, actor_reference="local-uid:501")
+        self.assertEqual(readback()["status"], "REVOKED")
+
+    def test_final_reconciliation_merge_is_the_delivery_revision(self) -> None:
+        final = "d" * 40
+        state = TransactionState(
+            "reconciled-delivery", "pcvantol/djconnect", "prompt.md", "COMPLETE",
+            finalization_merge_commit="c" * 40, reconciliation_merge_commit=final,
+            commit_evidence=({"commit_sha": final},), terminal=True,
+        )
+        self.assertEqual(submission_service._repository_revision(state, "COMPLETE"), (final, True))
 
     def test_service_preserves_cross_transport_idempotency_and_history(self) -> None:
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
@@ -639,6 +754,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with urlopen(scoped) as response:  # nosec B310
             authenticated = json.loads(response.read())
         self.assertEqual(authenticated["contract_version"], "1.1")
+        self.assertEqual(authenticated["contracts"]["validation_controls"], ["1.0"])
+        self.assertEqual(authenticated["contracts"]["delivery_revision_validation"], ["1.0"])
         self.assertEqual(authenticated["authentication"], {
             "consumer_id": "cli", "consumer_status": "ACTIVE",
             "project_id": "djconnect", "project_status": "ACTIVE",

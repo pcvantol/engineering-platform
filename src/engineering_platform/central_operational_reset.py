@@ -36,7 +36,7 @@ from .storage import sqlite_connection
 
 PROFILE = "EP_CENTRAL_OPERATIONAL_HISTORY_V1"
 PLAN_VERSION = 2
-SCHEMA_VERSION = 68
+SCHEMA_VERSION = 69
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}")
 _INSTANCE_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -73,6 +73,7 @@ SECURITY_AND_AUTHORITY_LEDGER = frozenset({
     "ep_consumer_credentials", "ep_consumer_registrations",
     "ep_control_provenance", "ep_external_producer_binding_audit",
     "ep_operator_capabilities",
+    "ep_merge_delegations",
 })
 DERIVED_CACHE_OR_PROJECTION = frozenset({
     "daily_execution_statistics", "engineering_component_logs", "engineering_status",
@@ -308,6 +309,11 @@ def _install_writer_blocks(connection: sqlite3.Connection) -> None:
                 "WHERE state NOT IN ('COMPLETED','ABORTED')) BEGIN "
                 "SELECT RAISE(ABORT,'EP_OPERATIONAL_MAINTENANCE_ACTIVE'); END"
             )
+
+
+def install_writer_fences(connection: sqlite3.Connection) -> None:
+    """Fence newly installed schema tables against an active reset."""
+    _install_writer_blocks(connection)
 
 
 def _expected_writer_fences(tables: set[str]) -> set[str]:

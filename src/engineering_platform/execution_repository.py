@@ -44,7 +44,8 @@ class GitHubClient(Protocol):
     def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None: ...
     def ready(self, number: int) -> None: ...
     def normalize_markdown_body(self, number: int) -> bool: ...
-    def merge(self, number: int) -> None: ...
+    def merge(self, number: int, *, expected_head_sha: str | None = None) -> None: ...
+    def delegated_merge_qualification(self, number: int, head_sha: str) -> dict[str, object]: ...
     def create_or_recover_pull_request(
         self, branch: str, base: str, title: str, body: str, *, draft: bool = False,
     ) -> PullRequestEvidence: ...
@@ -356,6 +357,53 @@ class GhCliClient:
         except RuntimeError as error:
             raise RunnerError("Pull request Markdown could not be normalized.") from error
         return True
-    def merge(self, number: int) -> None:
-        try: self._github("pr", "merge", str(number), "--squash", "--delete-branch")
-        except RuntimeError as error: raise RunnerError(str(error)) from error
+    def delegated_merge_qualification(self, number: int, head_sha: str) -> dict[str, object]:
+        """Fresh protected checks and independent head-bound GitHub reviews."""
+        checks = self.qualification_for_exact_head(number, head_sha)
+        if not self.repository:
+            raise RunnerError("Delegated merge requires an exact GitHub repository.")
+        try:
+            pull = json.loads(self._github("api", f"repos/{self.repository}/pulls/{number}"))
+            reviews = json.loads(self._github("api", f"repos/{self.repository}/pulls/{number}/reviews?per_page=100"))
+            protection = json.loads(self._github(
+                "api", f"repos/{self.repository}/branches/main/protection/required_pull_request_reviews",
+            ))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Delegated merge review policy could not be verified.") from error
+        if (not isinstance(pull, dict) or pull.get("number") != number
+                or pull.get("state") != "open" or pull.get("draft") is True
+                or (pull.get("head") or {}).get("sha") != head_sha
+                or (pull.get("base") or {}).get("ref") != "main"
+                or not isinstance(reviews, list) or len(reviews) >= 100
+                or not isinstance(protection, dict)):
+            raise RunnerError("Delegated merge PR identity changed during review qualification.")
+        author = (pull.get("user") or {}).get("login")
+        required = protection.get("required_approving_review_count")
+        if isinstance(required, bool) or not isinstance(required, int) or required < 1:
+            raise RunnerError("Delegated merge requires protected independent review policy.")
+        latest: dict[str, tuple[str, str]] = {}
+        for review in reviews:
+            if not isinstance(review, dict):
+                continue
+            reviewer = (review.get("user") or {}).get("login")
+            if isinstance(reviewer, str) and reviewer:
+                latest[reviewer] = (str(review.get("state")), str(review.get("commit_id")))
+        approvals = sorted(
+            reviewer for reviewer, (decision, commit) in latest.items()
+            if reviewer != author and decision == "APPROVED" and commit == head_sha
+        )
+        if len(approvals) < required:
+            raise RunnerError("Delegated merge lacks required independent approvals for this exact head.")
+        return {**checks, "reviewers": approvals, "required_approvals": required}
+
+    def merge(self, number: int, *, expected_head_sha: str | None = None) -> None:
+        try:
+            if expected_head_sha is None:
+                self._github("pr", "merge", str(number), "--squash", "--delete-branch")
+            elif self.repository and re.fullmatch(r"[0-9a-f]{40}", expected_head_sha):
+                self._github("api", "--method", "PUT", f"repos/{self.repository}/pulls/{number}/merge",
+                             "-f", "merge_method=squash", "-f", f"sha={expected_head_sha}")
+            else:
+                raise RunnerError("Delegated merge requires an exact repository and head SHA.")
+        except RuntimeError as error:
+            raise RunnerError(str(error)) from error

@@ -167,7 +167,7 @@ class CentralOperationalResetTests(unittest.TestCase):
 
     def test_preview_of_older_schema_blocks_without_migrating(self) -> None:
         with closing(sqlite3.connect(self.root / "epdata.sqlite")) as connection:
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version=68")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=68")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(67)")
             connection.commit()
         before = hashlib.sha256((self.root / "epdata.sqlite").read_bytes()).hexdigest()
@@ -573,7 +573,7 @@ class CentralOperationalResetTests(unittest.TestCase):
             connection.execute(
                 "INSERT INTO execution_chat_messages VALUES(1,'run-chat','user','kept',NULL,'now')"
             )
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version=68")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=68")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(67)")
             connection.execute("UPDATE engineering_metadata SET value='67' WHERE key='installation.schema_version'")
             connection.execute("ALTER TABLE ep_installations RENAME TO installation_schema68")

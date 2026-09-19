@@ -25,6 +25,7 @@ class FinalizationCoordinator:
         repository: object,
         state: TransactionState,
         save_terminal: Callable[[TransactionState, str, str, str | None], TransactionState],
+        post_cleanup_validation: Callable[[TransactionState], TransactionState] | None = None,
     ) -> TransactionState:
         cleanup = replace(state, phase="REPOSITORY_CLEANUP", next_action="fetch_prune_and_remove_transaction_branches")
         store.save(cleanup)
@@ -39,8 +40,7 @@ class FinalizationCoordinator:
             result = operation(root, branches)
         except RunnerError as error:
             return save_terminal(cleanup, "BLOCKED", "repository_cleanup_required", str(error))
-        return save_terminal(
-            replace(
+        reconciled = replace(
                 cleanup,
                 latest_repository_evidence=redact_diagnostic(result),
                 terminal_condition=(
@@ -48,7 +48,13 @@ class FinalizationCoordinator:
                     if cleanup.execution_mode == "GENESIS"
                     else "repository_reconciled"
                 ),
-            ),
+            )
+        if post_cleanup_validation is not None:
+            reconciled = post_cleanup_validation(reconciled)
+            if reconciled.terminal:
+                return reconciled
+        return save_terminal(
+            reconciled,
             "COMPLETE",
             "repository_cleanup_reconciled",
             None,

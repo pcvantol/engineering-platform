@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import central_database, execution_host_evidence
+from . import central_database, execution_host_evidence, merge_delegation
 from .platform_version import CURRENT_PLATFORM_VERSION
 from .revision_binding import parse_repository_revision_binding
 from .storage import sqlite_connection
@@ -377,10 +377,19 @@ def _forge_provenance(request: SubmissionRequest) -> None:
             "producer_contract_version", "forge_application_version", "action_context_envelope",
             "planning_context_envelope",
         }
+        if "execution_constraints" in raw:
+            permitted.add("execution_constraints")
     else:
         permitted = set()
     if set(raw) != permitted:
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
+    if "execution_constraints" in raw:
+        constraints = raw["execution_constraints"]
+        if (contract_version != FORGE_PROVENANCE_CONTRACT_VERSION
+                or not isinstance(constraints, list) or len(constraints) > 64
+                or any(not isinstance(item, str) or not item or len(item) > MAX_FIELD_LENGTH for item in constraints)
+                or len(set(constraints)) != len(constraints)):
+            raise SubmissionError("INVALID_FORGE_PROVENANCE")
     prompt = raw.get("runtime_prompt")
     if not isinstance(prompt, Mapping) or set(prompt) != {"id", "content_digest"}:
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
@@ -564,11 +573,38 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
         raise SubmissionError("UNKNOWN_PROJECT", 404)
     if project[0] != "ACTIVE":
         raise SubmissionError("PROJECT_NOT_ACTIVE", 409)
-    repository = connection.execute("SELECT project_id FROM ep_repository_registrations WHERE repository_id=?", (request.repository_id,)).fetchone()
+    repository = connection.execute("SELECT project_id,role FROM ep_repository_registrations WHERE repository_id=?", (request.repository_id,)).fetchone()
     if repository is None:
         raise SubmissionError("UNKNOWN_REPOSITORY", 404)
     if repository[0] != request.project_id:
         raise SubmissionError("REPOSITORY_PROJECT_CONFLICT", 409)
+    if request.producer_type == "FORGE":
+        provenance = (request.constraints or {}).get("forge_execution")
+        approved = provenance.get("execution_constraints", []) if isinstance(provenance, dict) else []
+        tokens = [item for item in approved if item.startswith("ep-merge-delegation:")]
+        if tokens:
+            if repository[1] != "authority":
+                raise SubmissionError("MERGE_DELEGATION_REPOSITORY_SCOPE", 409)
+            if len(tokens) != 1 or re.fullmatch(r"ep-merge-delegation:[0-9a-f]{32}", tokens[0]) is None:
+                raise SubmissionError("INVALID_MERGE_DELEGATION", 409)
+            grant = merge_delegation.load(connection, tokens[0].split(":", 1)[1])
+            if (grant is None or not any(grant.permits(
+                    project_id=request.project_id, repository_id=request.repository_id,
+                    mission_id=str(request.mission_id), mission_revision=str(provenance.get("mission_revision")),
+                    role=role, base_branch="main",
+                ) for role in grant.roles)):
+                raise SubmissionError("MERGE_DELEGATION_UNAVAILABLE", 409)
+            bound = connection.execute(
+                "SELECT local_root FROM ep_local_repository_bindings WHERE project_id=? "
+                "AND repository_id=? AND state='BOUND'",
+                (request.project_id, request.repository_id),
+            ).fetchone()
+            try:
+                live_repository = merge_delegation.bound_github_repository(Path(str(bound[0]))) if bound else None
+            except ValueError:
+                live_repository = None
+            if live_repository != grant.github_repository:
+                raise SubmissionError("MERGE_DELEGATION_REPOSITORY_DRIFT", 409)
     if request.idempotency_key:
         identity = hashlib.sha256(
             f"{request.project_id}\0{request.idempotency_key}".encode("utf-8")
@@ -1102,7 +1138,12 @@ def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]
         return None, False
     if getattr(state, "action_intent", None) == "VALIDATION_ONLY":
         return None, False
-    revision = getattr(state, "finalization_merge_commit", None) or getattr(state, "implementation_merge_commit", None)
+    if (getattr(state, "reconciliation_pull_request", None) is not None
+            and getattr(state, "reconciliation_merge_commit", None) is None):
+        return None, False
+    revision = (getattr(state, "reconciliation_merge_commit", None)
+                or getattr(state, "finalization_merge_commit", None)
+                or getattr(state, "implementation_merge_commit", None))
     evidence = getattr(state, "commit_evidence", ())
     if isinstance(revision, str) and __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
         if any(isinstance(item, dict) and item.get("commit_sha") == revision for item in evidence):

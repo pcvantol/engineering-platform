@@ -36,6 +36,13 @@ consumer. Forge must compare it with its own durable expectation before every
 new submission. Missing or invalid credentials return `401`; project or
 repository scope mismatch returns `403`. The public request without either
 scope header remains the side-effect-free `v1.0` declaration.
+The authenticated `v1.1` declaration also lists
+`contracts.validation_controls: ["1.0"]` and
+`contracts.delivery_revision_validation: ["1.0"]`, plus
+`contracts.bounded_merge_delegation: ["1.0"]`. These declare that this
+installed host can publish canonical control receipts and run required controls
+on the final delivered revision. The public `v1.0` declaration keeps its
+historical exact shape.
 
 ```
 GET /v1/projects/{project_id}/submissions/{submission_id}
@@ -104,6 +111,22 @@ published criterion control evidence. A control's stable
 `control_definition_digest` covers its logical identity, profile version/reference
 and normalized command argument vector;
 the separate `profile_digest` covers the actual candidate and currentness.
+Forge provenance v1.3 may carry an optional `execution_constraints` array
+inside the immutable accepted `constraints.forge_execution` envelope. EP
+accepts only a bounded array of distinct strings, and the accepted request
+digest covers it. The exact constraint `ep-delivery-control-validation:1`
+requests final-revision validation; prompt text and provider output cannot
+enable it. After reconciliation merge and repository cleanup, EP verifies that
+the clean local `main` and freshly fetched protected `origin/main` equal the
+run-bound delivery revision. It then records a fresh FULL profile and executes
+its required host controls on that revision before marking the run complete.
+The latest `validation_controls.candidate_sha` in the terminal artifact is
+that final revision, while `repository.candidate` retains the earlier
+implementation candidate. A failed control, missing positive test count,
+changed checkout or advanced protected main blocks completion. No further Git
+change follows this validation. Earlier candidate profiles and receipts remain
+in the run's history. For reconciliation, the recorded reconciliation merge
+commit takes precedence as `repository.revision`.
 For unittest controls, `result_detail.test_count` comes from the captured
 `Ran N tests` terminal summary and can be zero or unavailable. The complete
 field and trust semantics are in
@@ -256,6 +279,54 @@ and resume. `QUEUE_DECLINE` permits terminal decline, including the direct
 `QUARANTINED -> DECLINED` path. The worker claim and this command arbitrate in
 one CENTRAL transaction, so a claimed submission returns `409` and is never
 cancelled by a queue action.
+
+## Bounded owner merge delegation
+
+The installed owner reserves a grant before Forge Mission intake allocates a
+Mission ID. The reservation is scoped to the active project, its authority
+repository, the actual bound GitHub.com origin, `main`, allowed delivery
+roles and an expiry within seven days. The actor is derived from the local
+effective UID; caller-supplied actor text is not accepted. The reservation
+ID is a lookup key, not a bearer permission. The approved Mission engineering
+constraints contain exactly `ep-merge-delegation:<32 lowercase hex>`. After
+Mission allocation, the same local owner activates the reservation once for
+the exact Mission ID and revision. No per-Action activation is required.
+
+For an isolated EP installation, the local owner commands are:
+
+```text
+python3 -m engineering_platform.server reserve-merge-delegation --data-root <EP_DATA_ROOT> --project-id <PROJECT_ID> --repository-id <REPOSITORY_ID> --merge-role IMPLEMENTATION --merge-role FINALIZATION --merge-role RECONCILIATION --expires-at <UTC_ISO_TIMESTAMP>
+python3 -m engineering_platform.server activate-merge-delegation --data-root <EP_DATA_ROOT> --delegation-id <ID> --mission-id <MISSION_ID> --mission-revision <REVISION>
+python3 -m engineering_platform.server revoke-merge-delegation --data-root <EP_DATA_ROOT> --delegation-id <ID>
+```
+
+Forge can inspect the grant without modifying it:
+
+```text
+GET /v1/projects/{project_id}/merge-delegations/{delegation_id}
+Authorization: Bearer <EP-issued scoped credential>
+```
+
+The version `1.0` response includes `contract_version`, `delegation_id`,
+`actor_reference`, project/repository IDs, `github_repository`, Mission ID
+and revision, `base_branch`, roles, expiry, activation/revocation timestamps
+and status. `RESERVED` has empty Mission fields and cannot merge. `ACTIVE`
+has the exact Mission binding. `EXPIRED`, `REVOKED` and `DRIFT` cannot
+authorize a new submission or merge. `DRIFT` reports a missing or changed
+live bound GitHub origin while retaining read-only access to earlier
+submission evidence. The response requires the same project-scoped EP
+credential as submission readback.
+
+Submission independently checks an active grant against the accepted Forge
+Mission/revision and current bound GitHub origin. Before each delegated
+merge, the EP runner rechecks scope and revocation, the transaction PR and
+exact head, `main` base, protected required checks, independent approvals
+for that head, and the bound origin. Its merge request includes the expected
+head SHA, so a changed PR cannot be merged by that request. The runner
+records an attempt before the external call, reads the real merge commit and
+protected-main ancestry afterwards, and never blindly retries the same
+PR/head after an uncertain acknowledgement. Any absent, expired, revoked or
+unmatched grant uses the existing operator wait.
 
 ## Forge consumer mapping fixture
 

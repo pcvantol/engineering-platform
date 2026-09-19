@@ -39,6 +39,7 @@ from uuid import uuid4
 
 from . import agent_trust
 from . import central_database
+from . import merge_delegation
 from . import central_data_transfer
 from . import central_operational_reset
 from . import console_route_ownership
@@ -140,7 +141,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 68
+SERVER_STORE_SCHEMA_VERSION = 69
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -602,6 +603,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_submission_prompt_history",
         "ep_queue_disposition_operations",
         "ep_operator_capabilities",
+        "ep_merge_delegations",
         "ep_parity_lifecycle_dispatches",
         "ep_receipt_run_provenance",
         "ep_external_producer_bindings",
@@ -844,6 +846,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     _install_technical_diagnostics_schema(connection)
     owner_credential_recovery.install_schema(connection)
     submission_service.install_terminal_evidence_reconciliation_schema(connection)
+    merge_delegation.install_schema(connection)
     central_operational_reset.install_schema(connection)
 
     connection.execute(
@@ -2034,6 +2037,22 @@ def _migrate_schema_68(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=68")
 
 
+def _migrate_schema_69(connection: sqlite3.Connection) -> None:
+    """Add owner-issued, scoped and revocable merge delegation records."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema68")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 69))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,69 FROM ep_installations_schema68")
+    connection.execute("DROP TABLE ep_installations_schema68")
+    merge_delegation.install_schema(connection)
+    central_operational_reset.install_writer_fences(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(69)")
+    connection.execute("UPDATE engineering_metadata SET value='69' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=69")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2062,6 +2081,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (66, _migrate_schema_66),
     (67, _migrate_schema_67),
     (68, _migrate_schema_68),
+    (69, _migrate_schema_69),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -6927,6 +6947,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         self._send(403, {"error": "REPOSITORY_SCOPE_NOT_AUTHORIZED"})
                         return
                     declaration["contract_version"] = "1.1"
+                    declaration["contracts"] = {
+                        **declaration["contracts"],
+                        "validation_controls": ["1.0"],
+                        "delivery_revision_validation": ["1.0"],
+                        "bounded_merge_delegation": ["1.0"],
+                    }
                     declaration["authentication"] = {
                         "consumer_id": consumer_id,
                         "consumer_status": "ACTIVE",
@@ -6953,6 +6979,53 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(200, operations_projection(self.server.data_root), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except ServerConfigurationError:
                 self._send(503, {"error": "operations projection unavailable"})
+            return
+        delegation_readback = re.fullmatch(r"/v1/projects/([^/]+)/merge-delegations/([0-9a-f]{32})", request.path)
+        if delegation_readback:
+            project_id, delegation_id = delegation_readback.groups()
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    if _authenticated_consumer(connection, token, project_id) is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    grant = merge_delegation.load(connection, delegation_id)
+                    bound = connection.execute(
+                        "SELECT b.local_root FROM ep_local_repository_bindings b "
+                        "JOIN ep_project_registrations p ON p.project_id=b.project_id AND p.status='ACTIVE' "
+                        "JOIN ep_repository_registrations r ON r.repository_id=b.repository_id "
+                        "AND r.project_id=b.project_id AND r.role='authority' "
+                        "WHERE b.project_id=? AND b.repository_id=? AND b.state='BOUND'",
+                        (grant.project_id, grant.repository_id),
+                    ).fetchone() if grant is not None else None
+                if grant is None or grant.project_id != project_id:
+                    self._send(404, {"error": "MERGE_DELEGATION_NOT_FOUND"})
+                    return
+                try:
+                    live_repository = merge_delegation.bound_github_repository(Path(str(bound[0]))) if bound else None
+                except ValueError:
+                    live_repository = None
+                status = ("DRIFT" if live_repository != grant.github_repository else
+                          "REVOKED" if grant.revoked_at is not None else
+                          "EXPIRED" if datetime.fromisoformat(grant.expires_at) <= datetime.now(timezone.utc) else
+                          "RESERVED" if grant.activated_at is None else
+                          "ACTIVE" if grant.permits(
+                              project_id=grant.project_id, repository_id=grant.repository_id,
+                              mission_id=grant.mission_id, mission_revision=grant.mission_revision,
+                              role=grant.roles[0], base_branch=grant.base_branch,
+                          ) else "EXPIRED")
+                self._send(200, {"contract_version": "1.0", "delegation_id": grant.delegation_id,
+                                 "actor_reference": grant.actor_reference, "project_id": grant.project_id,
+                                 "repository_id": grant.repository_id,
+                                 "github_repository": grant.github_repository,
+                                 "mission_id": grant.mission_id,
+                                 "mission_revision": grant.mission_revision, "base_branch": grant.base_branch,
+                                 "roles": list(grant.roles), "expires_at": grant.expires_at,
+                                 "activated_at": grant.activated_at, "revoked_at": grant.revoked_at,
+                                 "status": status}, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
         readback = re.fullmatch(r"/v1/projects/([^/]+)/submissions/([^/]+)", request.path)
         if readback:
@@ -7280,7 +7353,9 @@ def _health_response(bind: Mapping[str, object]) -> Mapping[str, object]:
     host, port = bind.get("host"), bind.get("port")
     if not isinstance(host, str) or not host or not isinstance(port, int) or not 1 <= port <= 65535:
         raise operational_installation.OperationalInstallationError("operational health endpoint is invalid")
-    with urlopen(f"http://{host}:{port}/health", timeout=1) as response:  # nosec B310
+    # The Server computes live component status for this endpoint. A one-second
+    # loopback deadline can expire while that healthy computation is finishing.
+    with urlopen(f"http://{host}:{port}/health", timeout=3) as response:  # nosec B310
         payload = json.loads(response.read())
     if not isinstance(payload, dict):
         raise operational_installation.OperationalInstallationError("operational health response is invalid")
@@ -7308,7 +7383,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -7329,6 +7404,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reason")
     parser.add_argument("--capability", choices=("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"))
     parser.add_argument("--operation-id")
+    parser.add_argument("--delegation-id")
+    parser.add_argument("--mission-id")
+    parser.add_argument("--mission-revision")
+    parser.add_argument("--merge-role", action="append", choices=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"))
+    parser.add_argument("--expires-at")
     parser.add_argument("--expected-instance-id")
     parser.add_argument("--peer-binding-id")
     parser.add_argument("--peer-runtime-id")
@@ -8133,6 +8213,71 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     changed = connection.execute("UPDATE ep_operator_capabilities SET revoked_at=? WHERE consumer_id=? AND project_id=? AND capability=? AND revoked_at IS NULL", (_utcnow(), args.consumer_id, args.project_id, args.capability)).rowcount
                     result = {"result": "REVOKED" if changed else "NOT_ACTIVE", "consumer_id": args.consumer_id, "project_id": args.project_id, "capability": args.capability}
+        elif args.command in {"reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation"}:
+            initialize(args.data_root)
+            try:
+                from .platform_admin import require_installation_owner
+                owner_uid = require_installation_owner(args.data_root)
+            except PermissionError as error:
+                raise ServerConfigurationError("PLATFORM_ADMIN_FORBIDDEN") from error
+            actor_reference = f"local-uid:{owner_uid}"
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                if args.command == "reserve-merge-delegation":
+                    if not all((args.project_id, args.repository_id, args.merge_role, args.expires_at)):
+                        raise ServerConfigurationError("Merge reservation requires project, repository, roles and expiry.")
+                    scope = connection.execute(
+                        "SELECT b.local_root FROM ep_project_registrations p JOIN ep_repository_registrations r "
+                        "ON r.project_id=p.project_id JOIN ep_local_repository_bindings b "
+                        "ON b.project_id=p.project_id AND b.repository_id=r.repository_id "
+                        "WHERE p.project_id=? AND p.status='ACTIVE' AND r.repository_id=? "
+                        "AND r.role='authority' AND b.state='BOUND'",
+                        (args.project_id, args.repository_id),
+                    ).fetchone()
+                    if scope is None:
+                        raise ServerConfigurationError("ACTIVE_AUTHORITY_REPOSITORY_REQUIRED")
+                    try:
+                        github_repository = merge_delegation.bound_github_repository(Path(str(scope[0])))
+                        grant = merge_delegation.reserve(
+                            connection, delegation_id=uuid4().hex,
+                            actor_reference=actor_reference,
+                            project_id=args.project_id, repository_id=args.repository_id,
+                            github_repository=github_repository,
+                            base_branch="main", roles=args.merge_role, expires_at=args.expires_at,
+                        )
+                    except ValueError as error:
+                        raise ServerConfigurationError(str(error)) from error
+                    result = {"result": "RESERVED", **asdict(grant)}
+                elif args.command == "activate-merge-delegation":
+                    if not all((args.delegation_id, args.mission_id, args.mission_revision)):
+                        raise ServerConfigurationError("Activation requires delegation ID, Mission ID and revision.")
+                    try:
+                        reserved = merge_delegation.load(connection, args.delegation_id)
+                        if reserved is None:
+                            raise ValueError("Merge reservation is unavailable")
+                        bound = connection.execute(
+                            "SELECT b.local_root FROM ep_local_repository_bindings b "
+                            "JOIN ep_project_registrations p ON p.project_id=b.project_id AND p.status='ACTIVE' "
+                            "JOIN ep_repository_registrations r ON r.repository_id=b.repository_id "
+                            "AND r.project_id=b.project_id AND r.role='authority' "
+                            "WHERE b.project_id=? AND b.repository_id=? AND b.state='BOUND'",
+                            (reserved.project_id, reserved.repository_id),
+                        ).fetchone()
+                        if bound is None:
+                            raise ValueError("Bound repository is unavailable")
+                        grant = merge_delegation.activate(
+                            connection, delegation_id=args.delegation_id,
+                            mission_id=args.mission_id, mission_revision=args.mission_revision,
+                            actor_reference=actor_reference,
+                            github_repository=merge_delegation.bound_github_repository(Path(str(bound[0]))),
+                        )
+                    except ValueError as error:
+                        raise ServerConfigurationError(str(error)) from error
+                    result = {"result": "ACTIVE", **asdict(grant)}
+                else:
+                    if not args.delegation_id:
+                        raise ServerConfigurationError("--delegation-id is required for revocation.")
+                    result = {"result": "REVOKED" if merge_delegation.revoke(connection, args.delegation_id, actor_reference=actor_reference) else "NOT_ACTIVE",
+                              "delegation_id": args.delegation_id}
         elif args.command == "register-producer-binding":
             if not all((args.producer_type, args.external_resource_type, args.external_resource_identity, args.project_id, args.repository_id, args.reason)):
                 raise ServerConfigurationError("--producer-type, --external-resource-type, --external-resource-identity, --project-id, --repository-id and --reason are required for producer binding registration.")

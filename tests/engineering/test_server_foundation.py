@@ -1125,14 +1125,14 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             health_alias = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
         # Both routes are independent live observations. Crossing a process
-        # uptime-second boundary between the two GETs does not make the
-        # compatibility alias semantically different.
+        # uptime-second or file-inbox heartbeat boundary between the two GETs
+        # does not make the compatibility alias semantically different.
         def without_uptime(value: object) -> object:
             if isinstance(value, dict):
                 return {
                     key: without_uptime(item)
                     for key, item in value.items()
-                    if key != "uptime_seconds"
+                    if key not in {"uptime_seconds", "heartbeat"}
                 }
             if isinstance(value, list):
                 return [without_uptime(item) for item in value]
