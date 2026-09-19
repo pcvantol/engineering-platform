@@ -1363,7 +1363,12 @@ class EngineeringRunner:
         self, state: TransactionState, candidate: RepositoryEvidence,
     ) -> tuple[PullRequestEvidence | None, str | None]:
         """Read the owning PR before assessment; never derive it from output."""
-        bindings = {value for value in (state.pull_request, state.implementation_pull_request) if value is not None}
+        owning_pr = {
+            "IMPLEMENTATION": state.implementation_pull_request,
+            "FINALIZATION": state.finalization_pull_request,
+            "RECONCILIATION": state.reconciliation_pull_request,
+        }.get(state.transaction_kind)
+        bindings = {value for value in (state.pull_request, owning_pr) if value is not None}
         if len(bindings) > 1:
             return None, "validation_pull_request_binding_conflict"
         if not bindings:
