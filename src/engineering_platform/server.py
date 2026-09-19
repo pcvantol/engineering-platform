@@ -2070,7 +2070,6 @@ def _migrate_schema_70(connection: sqlite3.Connection) -> None:
     if "assurance_policy_digest" not in columns:
         connection.execute("ALTER TABLE ep_merge_delegations ADD COLUMN assurance_policy_digest TEXT NOT NULL DEFAULT ''")
     merge_delegation.install_profile_guard(connection)
-    central_operational_reset.install_writer_fences(connection)
     connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(70)")
     connection.execute("UPDATE engineering_metadata SET value='70' WHERE key='installation.schema_version'")
     connection.execute("UPDATE ep_installations SET schema_version=70")
