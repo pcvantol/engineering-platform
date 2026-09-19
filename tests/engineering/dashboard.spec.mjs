@@ -3584,6 +3584,13 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
     await expect(modal.locator(".lifecycle-detail-modal__quality-evidence .lifecycle-detail-modal__phase-list span").first()).toHaveCSS("text-align", "start");
+    const securityReview = modal.locator(".lifecycle-detail-modal__assurance-evidence strong").filter({ hasText: "Beveiligingsreview" });
+    const reviewLines = await securityReview.evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return range.getClientRects().length;
+    });
+    expect(reviewLines).toBe(1);
   });
 
   test("localizes repair audit sentinel values", async ({ page }) => {
@@ -7053,7 +7060,7 @@ test.describe("Engineering Status browser smoke", () => {
 
     for (const [selector, maximumWidth] of [
       ["#confirmationModal", 480],
-      ["#lifecycleDetailModal", 680],
+      ["#lifecycleDetailModal", 920],
       ["#promptHistoryChatModal", 960],
       ["#promptHistoryReportModal", 1000],
       ["#promptHistoryDetailModal", 1100],
