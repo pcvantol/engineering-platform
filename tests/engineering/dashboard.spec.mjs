@@ -7970,6 +7970,30 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("shows an honest total and phase context during autonomous PR quality control", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "QUALITY_CONTROL_AGENT", run_id: "pr-quality-run",
+    }, { prompt_started: { started_at: new Date(Date.now() - 9 * 60 * 1000).toISOString() }, duration_estimate: {} }));
+    await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
+    await expect(page.locator("#executionEstimateMeta")).toContainText("Huidige fase: Autonome kwaliteitscontrole.");
+    await expect(page.locator("#executionEstimateMeta")).toContainText("schatting van de hele run");
+    await expect(page.locator("#executionEstimate")).not.toContainText("1–1");
+  });
+
+  test("unknown active phase retains total uncertainty without inventing a phase duration", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "", run_id: "transition-run" }, { duration_estimate: {} }));
+    await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
+    await expect(page.locator("#executionEstimateMeta")).toHaveText(
+      "Er zijn geen vergelijkbare voltooide uitvoeringen voor een schatting van de hele run.",
+    );
+  });
+
   test("renders all execution report tables as safe table cells", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
@@ -7992,6 +8016,44 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportContent table").nth(2).locator("td")).toHaveText(["VALIDATION", "1.000 s", "25.000%"]);
     await expect(page.locator("#promptHistoryReportContent img")).toHaveCount(0);
     await expect(page.locator("#promptHistoryReportContent")).toContainText("not a separator");
+  });
+
+  test("styles fenced Engineering Evidence Summary JSON without interpreting report text as HTML", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const rawJson = '{\n  "commit_strategy": "Managed Pull Request",\n  "outcomes": {"technical_delivery": "BLOCKED", "attempts": 2, "verified": false, "detail": "<img src=x onerror=alert(1)>"}\n}';
+    await page.evaluate((body) => {
+      const target = document.querySelector("#promptHistoryReportContent");
+      target.replaceChildren();
+      renderMarkdownAnswer(target, `## Engineering Evidence Summary\n\n\`\`\`json\n${body}\n\`\`\``);
+    }, rawJson);
+    const block = page.locator("#promptHistoryReportContent pre.markdown-code-block code.language-json");
+    await expect(block).toHaveText(rawJson);
+    await expect(block.locator(".markdown-json-key").first()).toHaveText('"commit_strategy"');
+    await expect(block.locator(".markdown-json-key").nth(1)).toHaveText('"outcomes"');
+    await expect(block.locator(".markdown-json-number")).toHaveText("2");
+    await expect(block.locator(".markdown-json-literal")).toHaveText("false");
+    await expect(block.locator(".markdown-json-string").last()).toContainText("<img src=x onerror=alert(1)>");
+    await expect(page.locator("#promptHistoryReportContent img")).toHaveCount(0);
+    const colors = await block.evaluate((code) => ({
+      code: getComputedStyle(code).color,
+      key: getComputedStyle(code.querySelector(".markdown-json-key")).color,
+    }));
+    expect(colors.key).not.toBe(colors.code);
+    await page.evaluate(() => {
+      const target = document.querySelector("#promptHistoryReportContent");
+      target.replaceChildren();
+      renderMarkdownAnswer(target, "```json\n{invalid}\n```");
+    });
+    await expect(page.locator("#promptHistoryReportContent pre code")).toHaveText("{invalid}");
+    await expect(page.locator("#promptHistoryReportContent .markdown-json-key")).toHaveCount(0);
+    const denseJson = `[${Array(4200).fill("0").join(",")}]`;
+    await page.evaluate((body) => {
+      const target = document.querySelector("#promptHistoryReportContent");
+      target.replaceChildren();
+      renderMarkdownAnswer(target, `\`\`\`json\n${body}\n\`\`\``);
+    }, denseJson);
+    await expect(page.locator("#promptHistoryReportContent pre code")).toHaveText(denseJson);
+    await expect(page.locator("#promptHistoryReportContent pre code span")).toHaveCount(0);
   });
 
   test("formats the CENTRAL start time and never renders a JSON diagnostic error", async ({ page }) => {

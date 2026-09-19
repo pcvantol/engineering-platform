@@ -45,6 +45,35 @@ class AssuranceScopeTest(unittest.TestCase):
             self.assertEqual(scope["premature_completion_paths"], ())
             self.assertNotIn("mission_parser/cli.py", scope["changed_paths"])
 
+    def test_finalization_qualification_proof_and_three_run_records_are_exactly_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.fixture(temporary)
+            self.commit(root, ".engineering-platform/managed-github-e2e-finalization-proof.json",
+                        '{"kind":"EP_MANAGED_GITHUB_E2E","stage":"FINALIZATION","version":1}\n')
+            self.commit(root, "docs/engineering/runs/2026/run.md", "# Prepared handoff\n")
+            self.commit(root, "docs/engineering/runs/index.json", '{"runs":[]}\n')
+            head = self.commit(root, "docs/engineering/runs/latest.md", "# Pending finalization\n")
+            scope = observed_delivery_scope(root, role="FINALIZATION", candidate_sha=head)
+            self.assertEqual(scope["changed_paths"], (
+                ".engineering-platform/managed-github-e2e-finalization-proof.json",
+                "docs/engineering/runs/2026/run.md",
+                "docs/engineering/runs/index.json",
+                "docs/engineering/runs/latest.md",
+            ))
+            self.assertEqual(scope["out_of_scope_paths"], ())
+            self.assertEqual(scope["premature_completion_paths"], ())
+
+    def test_finalization_rejects_unrelated_or_disguised_qualification_proofs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.fixture(temporary)
+            self.commit(root, ".engineering-platform/managed-github-e2e-proof.json", "{}\n")
+            head = self.commit(root, ".engineering-platform/other-finalization-proof.json", "{}\n")
+            scope = observed_delivery_scope(root, role="FINALIZATION", candidate_sha=head)
+            self.assertEqual(scope["out_of_scope_paths"], (
+                ".engineering-platform/managed-github-e2e-proof.json",
+                ".engineering-platform/other-finalization-proof.json",
+            ))
+
     def test_finalization_rejects_code_path_and_anticipatory_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = self.fixture(temporary)

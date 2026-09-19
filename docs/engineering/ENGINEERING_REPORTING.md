@@ -302,12 +302,17 @@ Execution Report tables use separate Markdown blocks after headings and lists;
 the modal renders their headers and cells as text-safe DOM elements, including
 Invocation Detail and both phase-timing tables. A malformed table remains
 visible as text.
+Well-formed, bounded fenced `json` evidence in the modal uses text-node syntax
+styling for keys and values; malformed JSON stays plain code. Neither rendering
+path interprets report content as HTML, and copy/download retain raw Markdown.
 
 The active-run estimate labels whole-run remaining time as unknown when no
 bounded whole-run evidence exists. Comparable phase telemetry may separately
 show a range for measured internal work, with explicit notice that PR, CI and
 merge waits are outside that range. Elapsed time in one phase is never
 subtracted from a static whole-run fallback to manufacture a remaining minute.
+An active quality-control or other unmeasured phase still shows the honest
+whole-run unknown label and the current phase rather than "not available".
 
 **Promptgeschiedenis** is a private SQLite-backed index of terminal runs.
 Selecting a row opens the run's near-fullscreen operational-detail dialog;
