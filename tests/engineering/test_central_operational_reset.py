@@ -219,6 +219,18 @@ class CentralOperationalResetTests(unittest.TestCase):
         (development_root / "unclassified.txt").write_text("must block", encoding="utf-8")
         self.assertIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", reset.preview(development_root)["blocking_codes"])
         (development_root / "unclassified.txt").unlink()
+        cache = development_root / development_profile.CACHE_DIRECTORY
+        cache.rmdir()
+        cache.write_text("not a directory", encoding="utf-8")
+        self.assertIn("DEVELOPMENT_RUNTIME_PATH_INVALID", reset.preview(development_root)["blocking_codes"])
+        cache.unlink()
+        cache.mkdir()
+        logs = development_root / development_profile.LOG_DIRECTORY
+        logs.rmdir()
+        logs.symlink_to(venv, target_is_directory=True)
+        self.assertIn("DEVELOPMENT_PROFILE_INVALID", reset.preview(development_root)["blocking_codes"])
+        logs.unlink()
+        logs.mkdir()
         marker = development_root / development_profile.FILENAME
         payload = json.loads(marker.read_text(encoding="utf-8"))
         payload["cache_directory"] = str(development_root / "wrong-cache")

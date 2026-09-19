@@ -1127,6 +1127,13 @@ def _external_inventory_bound(
         frozenset({development_profile.CACHE_DIRECTORY, development_profile.LOG_DIRECTORY})
         if profile["kind"] == development_profile.PROFILE else frozenset()
     )
+    for name in development_owned:
+        try:
+            mode = (data_root / name).lstat().st_mode
+        except OSError as error:
+            raise OperationalResetError("DEVELOPMENT_RUNTIME_PATH_INVALID") from error
+        if not stat.S_ISDIR(mode):
+            raise OperationalResetError("DEVELOPMENT_RUNTIME_PATH_INVALID")
     unknown = sorted(path.name for path in data_root.iterdir()
                      if not _known_top_level(path.name, development_owned=development_owned))
     rows: list[dict[str, object]] = []
