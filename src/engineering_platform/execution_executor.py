@@ -269,6 +269,7 @@ def persist_validation_result_detail(
     record_artifact(
         root, path, artifact_id=artifact_id, artifact_type="VALIDATION_RESULT_DETAIL",
         content_type="application/json", created_at=captured_at, run_id=run_id,
+        ep_run_id=run_id,
         execution_id=command_id,
         central_database=central_database, artifact_root=artifact_root,
     )

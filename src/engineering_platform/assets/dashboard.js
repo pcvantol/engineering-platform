@@ -8375,7 +8375,7 @@ function promptDetailEvidenceSection(evidence) {
   }).filter(Boolean);
   if (!fields.length) return null;
   void localizeDynamicEvidence(dynamicRows);
-  return promptDetailCard(t("detail.execution_evidence"), fields);
+  return promptDetailCard(t("detail.execution_evidence"), fields, false, "prompt-detail-card--evidence");
 }
 function promptDetailRecommendationHandoff(handoff) {
   if (!handoff || typeof handoff !== "object") return null;

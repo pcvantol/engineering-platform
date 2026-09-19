@@ -2755,7 +2755,12 @@ def record_artifact(
         if submission_id and not connection.execute("SELECT 1 FROM execution_submissions WHERE submission_id=?", (submission_id,)).fetchone():
             submission_id = None
         if ep_run_id:
-            ep_run = connection.execute("SELECT 1 FROM ep_execution_runs WHERE run_id=?", (ep_run_id,)).fetchone()
+            ep_run = (
+                connection.execute("SELECT 1 FROM ep_execution_runs WHERE run_id=?", (ep_run_id,)).fetchone()
+                if connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ep_execution_runs'"
+                ).fetchone() else None
+            )
             if ep_run is None:
                 ep_run_id = None
         if ep_submission_id:

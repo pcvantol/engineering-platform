@@ -733,8 +733,9 @@ def _validation_result_detail(
     artifact_id = f"validation-result-detail-{command_id}"
     row = connection.execute(
         "SELECT artifact_type,digest_algorithm,digest,storage_location,execution_id "
-        "FROM execution_artifact_records WHERE artifact_id=? AND run_id=?",
-        (artifact_id, run_id),
+        "FROM execution_artifact_records WHERE artifact_id=? "
+        "AND (run_id=? OR ep_run_id=?)",
+        (artifact_id, run_id, run_id),
     ).fetchone()
     if row is None or row[0] != "VALIDATION_RESULT_DETAIL" or row[1] != "sha256" or row[4] != command_id:
         return unavailable
