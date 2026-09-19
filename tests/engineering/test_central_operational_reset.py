@@ -15,7 +15,7 @@ import warnings
 from unittest.mock import patch
 
 from engineering_platform import central_operational_reset as reset
-from engineering_platform import server, submission_service
+from engineering_platform import development_profile, server, submission_service
 from engineering_platform.operational_installation_lock import OperationalInstallationLock
 from engineering_platform.storage import sqlite_connection
 
@@ -188,6 +188,42 @@ class CentralOperationalResetTests(unittest.TestCase):
         with sqlite_connection(self.root / "epdata.sqlite") as connection:
             connection.execute("CREATE TABLE plugin_unknown(id INTEGER PRIMARY KEY)")
         self.assertIn("TABLE_CLASSIFICATION_INCOMPLETE", reset.preview(self.root)["blocking_codes"])
+
+    def test_development_directories_require_valid_profile_and_unknown_paths_still_block(self) -> None:
+        for name in (development_profile.CACHE_DIRECTORY, development_profile.LOG_DIRECTORY):
+            (self.root / name).mkdir()
+        self.assertEqual(
+            set(reset.preview(self.root)["unknown_external_paths"]),
+            {development_profile.CACHE_DIRECTORY, development_profile.LOG_DIRECTORY},
+        )
+
+        development_root = Path(self.temporary.name) / "isolated-development"
+        venv = Path(self.temporary.name) / "fixture-venv"
+        interpreter = venv / "bin" / "python3.14"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text("fixture interpreter identity\n", encoding="utf-8")
+        (venv / "pyvenv.cfg").write_text("fixture venv identity\n", encoding="utf-8")
+        development_profile.establish(
+            data_root=development_root, bind_port=18877, development_venv=venv,
+            credential_reference="development:reset-fixture", interpreter=interpreter,
+            operational_data_roots=(), environment={},
+        )
+        server.initialize(development_root)
+        plan = reset.preview(development_root)
+        self.assertNotIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", plan["blocking_codes"])
+        self.assertEqual(plan["unknown_external_paths"], [])
+        preserved = {item["path"]: item for item in plan["runtime_control_external"]}
+        for name in (development_profile.CACHE_DIRECTORY, development_profile.LOG_DIRECTORY):
+            self.assertEqual(preserved[name]["effect"], "PRESERVE")
+            self.assertEqual(preserved[name]["classification"], "SYSTEM_RUNTIME_CONTROL")
+        (development_root / "unclassified.txt").write_text("must block", encoding="utf-8")
+        self.assertIn("EXTERNAL_CLASSIFICATION_INCOMPLETE", reset.preview(development_root)["blocking_codes"])
+        (development_root / "unclassified.txt").unlink()
+        marker = development_root / development_profile.FILENAME
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        payload["cache_directory"] = str(development_root / "wrong-cache")
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertIn("DEVELOPMENT_PROFILE_INVALID", reset.preview(development_root)["blocking_codes"])
 
     def test_complete_reset_preserves_bindings_credentials_and_configuration(self) -> None:
         request = self._populate()

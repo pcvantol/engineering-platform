@@ -5426,6 +5426,60 @@ class LocalAgentRunnerTest(unittest.TestCase):
             revoked = replace(grant, revoked_at="2026-09-19T01:00:00+00:00")
             with patch("engineering_platform.execution_host.merge_delegation.load", return_value=revoked):
                 self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            self.assertIsNone(runner._attempt_delegated_merge(replace(state, owner_authorized=False), pr))
+            with patch("engineering_platform.execution_host.load_submission_for_run",
+                       return_value={**accepted, "constraints": {"forge_execution": {
+                           "mission_revision": "1", "execution_constraints": [],
+                       }}}):
+                self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            with patch("engineering_platform.execution_host.merge_delegation.load", return_value=None):
+                self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            connection.execute("UPDATE ep_local_repository_bindings SET local_root='/tmp/other-checkout'")
+            self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            connection.execute("UPDATE ep_local_repository_bindings SET local_root=?", (str(self.root),))
+            github.repository = "pcvantol/other"  # type: ignore[attr-defined]
+            self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            github.repository = "pcvantol/djconnect"  # type: ignore[attr-defined]
+            self.assertIsNone(runner._attempt_delegated_merge(state, replace(pr, is_draft=True)))
+            github.pull_request = lambda _number: replace(pr, head_sha="d" * 40)  # type: ignore[method-assign]
+            self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            github.pull_request = lambda _number: pr  # type: ignore[method-assign]
+            github.delegated_merge_qualification = None  # type: ignore[attr-defined]
+            self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            repository.protected_main_revision = lambda _root: "f" * 40  # type: ignore[attr-defined]
+            github.delegated_merge_qualification = lambda _number, _head: {  # type: ignore[attr-defined]
+                "conclusion": "PASS", "exact_qualified_sha": head,
+                "pull_request_id": 17, "reviewers": ["independent"],
+                "base_revision": "f" * 40, "strict_checks": False,
+            }
+            self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            self.assertEqual(attempted_calls, [(17, head)])
+            github.delegated_merge_qualification = lambda _number, _head: {  # type: ignore[attr-defined]
+                "conclusion": "PASS", "exact_qualified_sha": head,
+                "pull_request_id": 17, "reviewers": ["independent"],
+                "base_revision": "f" * 40, "strict_checks": True,
+            }
+            with patch("engineering_platform.execution_host.merge_delegation.load",
+                       side_effect=[grant, revoked]):
+                self.assertIsNone(runner._attempt_delegated_merge(state, pr))
+            self.assertEqual(attempted_calls, [(17, head)])
+            merged = replace(pr, state="MERGED", merge_commit="b" * 40)
+            merge_issued = False
+            def successful_merge(number: int, *, expected_head_sha: str) -> None:
+                nonlocal merge_issued
+                self.assertEqual((number, expected_head_sha), (17, head))
+                merge_issued = True
+            github.merge = successful_merge  # type: ignore[method-assign]
+            github.pull_request = lambda _number: merged if merge_issued else pr  # type: ignore[method-assign]
+            with patch.object(runner, "_poll", side_effect=lambda current: current):
+                confirmed = runner._attempt_delegated_merge(state, pr)
+            self.assertTrue(merge_issued)
+            self.assertEqual(confirmed.delegated_merge_actor_reference, "local-uid:501")
+            self.assertEqual(confirmed.delegated_merge_attempt, f"17:{head}")
+            self.assertEqual(repository.refresh_main_reference_calls, [self.root])
+            with patch("engineering_platform.execution_host.load_submission_for_run",
+                       side_effect=RunnerError("readback unavailable")):
+                self.assertIsNone(runner._attempt_delegated_merge(state, pr))
         connection.close()
 
     def test_final_revision_validation_rejects_zero_tests_and_post_validation_mutation(self) -> None:

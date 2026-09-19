@@ -213,6 +213,12 @@ This fallback applies only while `operation.json` is genuinely absent;
 malformed, linked or conflicting records fail closed. Any sibling outside
 those exact updater staging boundaries remains unknown.
 
+For an explicit development runtime, a valid `development-profile.json` binds
+the root, interpreter, venv and exact `development-cache` and `development-logs`
+paths. Preview classifies only those two profile-owned directories as preserved
+runtime controls. They remain unknown on an unmarked root; a malformed profile
+blocks preview. Other sibling paths retain the unknown-path blocker.
+
 Every accepted opaque directory is held through a non-following directory
 descriptor. Immediately before the inventory receipt returns, preview requires
 both that pinned descriptor and the current path to remain the same directory

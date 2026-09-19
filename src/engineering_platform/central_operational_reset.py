@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 from typing import Iterator, Mapping
 
-from . import central_database
+from . import central_database, development_profile
 from .platform_admin import require_installation_owner
 from .platform_version import CURRENT_PLATFORM_VERSION
 from .operational_installation_lock import (
@@ -1035,8 +1035,9 @@ def _recheck_opaque_directory(
         raise OperationalResetError("EXTERNAL_SYMLINK_UNSAFE")
 
 
-def _known_top_level(name: str) -> bool:
-    return name in _KNOWN_TOP_LEVEL or _VERSIONED_RECOVERY_BACKUP.fullmatch(name) is not None
+def _known_top_level(name: str, *, development_owned: frozenset[str] = frozenset()) -> bool:
+    return (name in _KNOWN_TOP_LEVEL or name in development_owned
+            or _VERSIONED_RECOVERY_BACKUP.fullmatch(name) is not None)
 
 
 def _nested_preserved_classification(
@@ -1118,14 +1119,24 @@ def _external_inventory_bound(
     data_root: Path, *, expected_installation_id: str,
     opaque_bindings: list[tuple[Path, str, int, int, int]],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str], list[str]]:
-    unknown = sorted(path.name for path in data_root.iterdir() if not _known_top_level(path.name))
+    try:
+        profile = development_profile.describe(data_root)
+    except development_profile.DevelopmentProfileError as error:
+        raise OperationalResetError("DEVELOPMENT_PROFILE_INVALID") from error
+    development_owned = (
+        frozenset({development_profile.CACHE_DIRECTORY, development_profile.LOG_DIRECTORY})
+        if profile["kind"] == development_profile.PROFILE else frozenset()
+    )
+    unknown = sorted(path.name for path in data_root.iterdir()
+                     if not _known_top_level(path.name, development_owned=development_owned))
     rows: list[dict[str, object]] = []
     for name in _EFFECT_DIRECTORIES:
         rows.extend(_safe_files(data_root / Path(name), name))
     preserved: list[dict[str, object]] = []
     active_ingest_controls: list[str] = []
     for path in sorted(data_root.iterdir(), key=lambda item: item.name):
-        if path.name in {Path(name).parts[0] for name in _EFFECT_DIRECTORIES} or not _known_top_level(path.name):
+        if (path.name in {Path(name).parts[0] for name in _EFFECT_DIRECTORIES}
+                or not _known_top_level(path.name, development_owned=development_owned)):
             if path.name != "runtime":
                 continue
         if path.name in {"artifacts", "file-inbox"}:
@@ -1141,6 +1152,8 @@ def _external_inventory_bound(
         elif path.name.endswith(".lock") or path.name in {
             "runtime.json", "dependabot-producer-heartbeat.json",
         }:
+            classification = "SYSTEM_RUNTIME_CONTROL"
+        elif path.name in development_owned:
             classification = "SYSTEM_RUNTIME_CONTROL"
         elif path.name in {"operations", "recovery", "migration", "backups", "operational-reset-archive"}:
             classification = "MAINTENANCE_AUDIT_OR_RECOVERY"

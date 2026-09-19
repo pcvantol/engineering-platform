@@ -142,6 +142,53 @@ class MergeDelegationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not a GitHub repository"):
                 merge_delegation.bound_github_repository(root)
 
+    def test_bound_origin_requires_a_checkout_and_resolvable_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ValueError, "checkout is unavailable"):
+                merge_delegation.bound_github_repository(root)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            with self.assertRaisesRegex(ValueError, "origin is unavailable"):
+                merge_delegation.bound_github_repository(root)
+
+    def test_grant_input_and_corrupt_ledger_fail_closed(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        try:
+            merge_delegation.install_schema(connection)
+            future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+            scope = dict(delegation_id="d" * 32, actor_reference="local-uid:501",
+                         project_id="project", repository_id="opaque",
+                         github_repository="pcvantol/forge", base_branch="main",
+                         roles=("IMPLEMENTATION",), expires_at=future)
+            for changed, message in (
+                ({"roles": ("UNKNOWN",)}, "scope is invalid"),
+                ({"expires_at": "invalid"}, "expiry is invalid"),
+                ({"expires_at": datetime.now().isoformat()}, "within seven days"),
+            ):
+                with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, message):
+                    merge_delegation.reserve(connection, **{**scope, **changed})
+            grant = merge_delegation.reserve(connection, **scope)
+            self.assertIsNone(merge_delegation.load(connection, "invalid-id"))
+            self.assertIsNone(merge_delegation.load(connection, "e" * 32))
+            self.assertFalse(merge_delegation.revoke(connection, "invalid-id", actor_reference="local-uid:501"))
+            with self.assertRaisesRegex(ValueError, "Mission activation binding is invalid"):
+                merge_delegation.activate(connection, delegation_id=grant.delegation_id,
+                                          mission_id="", mission_revision="1",
+                                          actor_reference="local-uid:501", github_repository="pcvantol/forge")
+            for malformed in ("not-json", '[]', '["UNKNOWN"]'):
+                connection.execute("UPDATE ep_merge_delegations SET roles=? WHERE delegation_id=?",
+                                   (malformed, grant.delegation_id))
+                self.assertIsNone(merge_delegation.load(connection, grant.delegation_id))
+            connection.execute("UPDATE ep_merge_delegations SET roles=?,expires_at=? WHERE delegation_id=?",
+                               ('["IMPLEMENTATION"]', (datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat(),
+                                grant.delegation_id))
+            with self.assertRaisesRegex(ValueError, "expired"):
+                merge_delegation.activate(connection, delegation_id=grant.delegation_id,
+                                          mission_id="mission-1", mission_revision="1",
+                                          actor_reference="local-uid:501", github_repository="pcvantol/forge")
+        finally:
+            connection.close()
+
     def test_reservation_cannot_merge_and_activation_is_one_time_and_actor_bound(self) -> None:
         connection = sqlite3.connect(":memory:")
         merge_delegation.install_schema(connection)
