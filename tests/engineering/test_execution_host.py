@@ -3961,6 +3961,48 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(len(agent.prompts), 2)
         self.assertIn("Local repository validation gate", agent.prompts[1])
 
+    def test_finalization_repair_validates_its_own_pr_after_implementation_merge(self) -> None:
+        branch = "codex/finalize-repair"
+        sha = "b" * 40
+        github = FakeGitHub([
+            PullRequestEvidence(26, "OPEN", True, True, head_branch=branch,
+                                base_branch="main", head_sha=sha),
+        ])
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), github,
+            FakeAgent(AgentResult("COMPLETE")), lambda _: None,
+        )
+        state = TransactionState(
+            "finalization-pr-binding", "pcvantol/djconnect", str(self.prompt),
+            "LOCAL_REPOSITORY_VALIDATION", branch=branch, pull_request=26,
+            implementation_pull_request=25, transaction_kind="FINALIZATION",
+        )
+        candidate = RepositoryEvidence("pcvantol/djconnect", branch, sha, True)
+
+        observed, error = runner._validation_pr_expectation(state, candidate)
+
+        self.assertIsNone(error)
+        self.assertEqual(observed.number, 26)
+        self.assertEqual(github.calls, 1)
+
+    def test_finalization_repair_rejects_conflicting_owning_pr(self) -> None:
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE")), lambda _: None,
+        )
+        state = TransactionState(
+            "finalization-pr-conflict", "pcvantol/djconnect", str(self.prompt),
+            "LOCAL_REPOSITORY_VALIDATION", branch="codex/finalize-repair",
+            pull_request=26, finalization_pull_request=27,
+            implementation_pull_request=25, transaction_kind="FINALIZATION",
+        )
+        candidate = RepositoryEvidence("pcvantol/djconnect", "codex/finalize-repair", "b" * 40, True)
+
+        observed, error = runner._validation_pr_expectation(state, candidate)
+
+        self.assertIsNone(observed)
+        self.assertEqual(error, "validation_pull_request_binding_conflict")
+
     def test_unverified_or_external_implementation_failure_never_starts_local_repair(self) -> None:
         sha = "c" * 40
         result = AgentResult(
