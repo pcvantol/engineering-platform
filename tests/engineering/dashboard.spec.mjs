@@ -4630,7 +4630,13 @@ test.describe("Engineering Status browser smoke", () => {
           observed_at: `2026-08-24T20:${String(index).padStart(2, "0")}:00+00:00`,
           commit_sha: String(index + 1).padStart(40, "a"),
           description: "pull_request_repair_commit_verified",
-        })),
+        })).concat([{
+          phase: "WAIT_FOR_OPERATOR_MERGE",
+          observed_at: "2026-08-24T20:16:00+00:00",
+          commit_sha: "342c3333e22fe1093e1d3bbedff57da2a613ea3c",
+          description: "implementation_merge_verified",
+        }]),
+        evidence: [{ kind: "VALIDATION", result: "Geslaagd; vereiste documenten zijn bijgewerkt." }],
         reviewers: [
           { reviewer: "validation", capability: "ENGINEERING", status: "completed", accepted_recommendations: 2, selected_because: "validation-related objective" },
           { reviewer: "documentation", capability: "ENGINEERING", status: "completed", accepted_recommendations: 1, selected_because: "documentation-oriented objective" },
@@ -4659,8 +4665,21 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(timelineList).toHaveCSS("flex-grow", "1");
     await expect(timelineList).toHaveCSS("align-content", "start");
     const phaseCaption = cards.nth(1).locator(".prompt-detail-commit-timeline__phase h4");
-    await expect(phaseCaption.locator(".prompt-detail-commit-timeline__kind")).toHaveText(DASHBOARD_MESSAGES.nl["detail.commit_type.repair"]);
-    await expect(phaseCaption.locator(".prompt-detail-commit-timeline__phase-name")).toHaveText(DASHBOARD_MESSAGES.nl["state.REPAIR_AGENT"]);
+    await expect(phaseCaption.first().locator(".prompt-detail-commit-timeline__kind")).toHaveText(DASHBOARD_MESSAGES.nl["detail.commit_type.repair"]);
+    await expect(phaseCaption.first().locator(".prompt-detail-commit-timeline__phase-name")).toHaveText(DASHBOARD_MESSAGES.nl["state.REPAIR_AGENT"]);
+    const timelineFit = await cards.nth(1).evaluate((card) => {
+      const list = card.querySelector(".prompt-detail-commit-timeline__list");
+      const sha = card.querySelector(".prompt-detail-commit-timeline__phase:last-child code");
+      const state = card.querySelector(".prompt-detail-commit-timeline__phase:last-child .prompt-detail-commit-timeline__phase-name");
+      return {
+        listFits: list.scrollWidth <= list.clientWidth,
+        shaLines: sha.getBoundingClientRect().height / parseFloat(getComputedStyle(sha).fontSize),
+        stateLines: state.getBoundingClientRect().height / parseFloat(getComputedStyle(state).fontSize),
+      };
+    });
+    expect(timelineFit.listFits).toBe(true);
+    expect(timelineFit.shaLines).toBeLessThanOrEqual(1.6);
+    expect(timelineFit.stateLines).toBeLessThanOrEqual(1.6);
     const stack = page.locator("#promptHistoryDetailContent .prompt-detail-provider-review-stack");
     const reviewersCard = stack.locator(".prompt-detail-card--reviewers");
     await expect(reviewersCard).toHaveCount(1);
@@ -4679,6 +4698,17 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(assuranceCard).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(assuranceCard).toContainText("Freshness edge case recorded.");
     await expect(assuranceCard).toContainText("b".repeat(40));
+    for (const selector of [
+      ".prompt-detail-card--evidence",
+      ".prompt-detail-card--reviewers",
+      ".prompt-detail-card--assurance-reviews",
+    ]) {
+      const fonts = await page.locator(`#promptHistoryDetailContent ${selector}`).evaluate((card) => ({
+        card: getComputedStyle(card).fontFamily,
+        text: getComputedStyle(card.querySelector("pre")).fontFamily,
+      }));
+      expect(fonts.text).toBe(fonts.card);
+    }
 
     await page.setViewportSize({ width: 390, height: 844 });
     const [narrowUsage, narrowTimeline] = await Promise.all([

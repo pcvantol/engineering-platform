@@ -102,6 +102,40 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
                 validation_id="repository_suite", command_id="zero-tests", exit_code=0,
             ), {"status": "UNAVAILABLE"})
 
+    def test_active_ep_run_retains_validation_test_count_before_terminal_projection(self) -> None:
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite_connection(database) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) "
+                "VALUES(?,?,?,?,?,?)",
+                ("active-details", "djconnect", "RUNNING", "2026-01-01T00:00:00+00:00",
+                 "2026-01-01T00:00:00+00:00", "MANAGED"),
+            )
+        persist_validation_result_detail(
+            self.root, run_id="active-details", command_id="active-suite",
+            validation_id="repository_suite", exit_code=0,
+            stdout="", stderr="Ran 1 test in 0.01s\n\nOK\n", capture_available=True,
+            captured_at="2026-01-01T00:00:01+00:00",
+            central_database=database, artifact_root=self.root / "artifacts",
+        )
+        with sqlite_connection(database) as connection:
+            row = connection.execute(
+                "SELECT run_id,ep_run_id FROM execution_artifact_records WHERE artifact_id=?",
+                ("validation-result-detail-active-suite",),
+            ).fetchone()
+            detail = submission_service._validation_result_detail(
+                connection, data_root=self.root, run_id="active-details",
+                validation_id="repository_suite", command_id="active-suite", exit_code=0,
+            )
+            other = submission_service._validation_result_detail(
+                connection, data_root=self.root, run_id="other-run",
+                validation_id="repository_suite", command_id="active-suite", exit_code=0,
+            )
+        self.assertEqual(row, (None, "active-details"))
+        self.assertEqual(detail["status"], "AVAILABLE")
+        self.assertEqual(detail["test_count"], 1)
+        self.assertEqual(other, {"status": "UNAVAILABLE"})
+
     def test_control_definition_digest_changes_when_argv_changes_under_same_identity(self) -> None:
         binding = {"validation_id": "repository_suite", "category": "repository",
                    "control_identity": "python3 -m unittest discover -s tests",
