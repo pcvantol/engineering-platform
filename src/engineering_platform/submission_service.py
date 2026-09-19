@@ -15,13 +15,15 @@ import re
 import unicodedata
 import secrets
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import central_database, execution_host_evidence
+from . import central_database, execution_host_evidence, merge_delegation
 from .platform_version import CURRENT_PLATFORM_VERSION
 from .revision_binding import parse_repository_revision_binding
-from .storage import sqlite_connection
+from .storage import load_submission_for_run, sqlite_connection
+from .validation_profile import ValidationProfileResolutionError, delivery_unittest_binding, delivery_unittest_selectors
 
 
 MAX_PROMPT_BYTES = 65536
@@ -376,10 +378,23 @@ def _forge_provenance(request: SubmissionRequest) -> None:
             "producer_contract_version", "forge_application_version", "action_context_envelope",
             "planning_context_envelope",
         }
+        if "execution_constraints" in raw:
+            permitted.add("execution_constraints")
     else:
         permitted = set()
     if set(raw) != permitted:
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
+    if "execution_constraints" in raw:
+        constraints = raw["execution_constraints"]
+        if (contract_version != FORGE_PROVENANCE_CONTRACT_VERSION
+                or not isinstance(constraints, list) or len(constraints) > 64
+                or any(not isinstance(item, str) or not item or len(item) > MAX_FIELD_LENGTH for item in constraints)
+                or len(set(constraints)) != len(constraints)):
+            raise SubmissionError("INVALID_FORGE_PROVENANCE")
+        try:
+            delivery_unittest_selectors(constraints)
+        except ValidationProfileResolutionError:
+            raise SubmissionError("INVALID_DELIVERY_OBSERVATION_CONTROLS") from None
     prompt = raw.get("runtime_prompt")
     if not isinstance(prompt, Mapping) or set(prompt) != {"id", "content_digest"}:
         raise SubmissionError("INVALID_FORGE_PROVENANCE")
@@ -563,11 +578,38 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
         raise SubmissionError("UNKNOWN_PROJECT", 404)
     if project[0] != "ACTIVE":
         raise SubmissionError("PROJECT_NOT_ACTIVE", 409)
-    repository = connection.execute("SELECT project_id FROM ep_repository_registrations WHERE repository_id=?", (request.repository_id,)).fetchone()
+    repository = connection.execute("SELECT project_id,role FROM ep_repository_registrations WHERE repository_id=?", (request.repository_id,)).fetchone()
     if repository is None:
         raise SubmissionError("UNKNOWN_REPOSITORY", 404)
     if repository[0] != request.project_id:
         raise SubmissionError("REPOSITORY_PROJECT_CONFLICT", 409)
+    if request.producer_type == "FORGE":
+        provenance = (request.constraints or {}).get("forge_execution")
+        approved = provenance.get("execution_constraints", []) if isinstance(provenance, dict) else []
+        tokens = [item for item in approved if item.startswith("ep-merge-delegation:")]
+        if tokens:
+            if repository[1] != "authority":
+                raise SubmissionError("MERGE_DELEGATION_REPOSITORY_SCOPE", 409)
+            if len(tokens) != 1 or re.fullmatch(r"ep-merge-delegation:[0-9a-f]{32}", tokens[0]) is None:
+                raise SubmissionError("INVALID_MERGE_DELEGATION", 409)
+            grant = merge_delegation.load(connection, tokens[0].split(":", 1)[1])
+            if (grant is None or not any(grant.permits(
+                    project_id=request.project_id, repository_id=request.repository_id,
+                    mission_id=str(request.mission_id), mission_revision=str(provenance.get("mission_revision")),
+                    role=role, base_branch="main",
+                ) for role in grant.roles)):
+                raise SubmissionError("MERGE_DELEGATION_UNAVAILABLE", 409)
+            bound = connection.execute(
+                "SELECT local_root FROM ep_local_repository_bindings WHERE project_id=? "
+                "AND repository_id=? AND state='BOUND'",
+                (request.project_id, request.repository_id),
+            ).fetchone()
+            try:
+                live_repository = merge_delegation.bound_github_repository(Path(str(bound[0]))) if bound else None
+            except ValueError:
+                live_repository = None
+            if live_repository != grant.github_repository:
+                raise SubmissionError("MERGE_DELEGATION_REPOSITORY_DRIFT", 409)
     if request.idempotency_key:
         identity = hashlib.sha256(
             f"{request.project_id}\0{request.idempotency_key}".encode("utf-8")
@@ -648,6 +690,23 @@ def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: st
     return {"credential_id": credential_id, "consumer_id": consumer_id, "project_id": project_id, "credential": token}
 
 
+def issue_development_consumer_credential(
+    connection: sqlite3.Connection, *, consumer_id: str, project_id: str,
+) -> dict[str, str]:
+    """Issue one project-scoped token into an already isolated development store."""
+    register_consumer(connection, consumer_id=consumer_id, project_id=project_id)
+    from .ep_consumer_credentials import fingerprint, verifier
+    token = secrets.token_urlsafe(32)
+    credential_id = "development-" + secrets.token_hex(16)
+    connection.execute(
+        "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (credential_id, consumer_id, project_id, verifier(token), fingerprint(token), _now()),
+    )
+    return {"credential_id": credential_id, "consumer_id": consumer_id,
+            "project_id": project_id, "credential": token}
+
+
 PRODUCER_READBACK_CONTRACT_VERSION = "1.2"
 TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.4"
 _TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
@@ -663,6 +722,174 @@ def _canonical_json_bytes(value: object) -> bytes:
 
 def _sha256(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _validation_result_detail(
+    connection: sqlite3.Connection, *, data_root: Path, run_id: str,
+    validation_id: str, command_id: str, exit_code: object,
+) -> dict[str, object]:
+    """Read an exact command's integrity-checked result detail, if retained."""
+    unavailable: dict[str, object] = {"status": "UNAVAILABLE"}
+    artifact_id = f"validation-result-detail-{command_id}"
+    row = connection.execute(
+        "SELECT artifact_type,digest_algorithm,digest,storage_location,execution_id "
+        "FROM execution_artifact_records WHERE artifact_id=? AND run_id=?",
+        (artifact_id, run_id),
+    ).fetchone()
+    if row is None or row[0] != "VALIDATION_RESULT_DETAIL" or row[1] != "sha256" or row[4] != command_id:
+        return unavailable
+    try:
+        artifact_root = (data_root / "artifacts").resolve()
+        path = (artifact_root / str(row[3])).resolve()
+        path.relative_to(artifact_root)
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != row[2]:
+            return unavailable
+        detail = json.loads(raw)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return unavailable
+    if (
+        not isinstance(detail, dict)
+        or detail.get("schema") != "deterministic-validation-result-detail-v1"
+        or detail.get("run_id") != run_id or detail.get("command_id") != command_id
+        or detail.get("validation_id") != validation_id or detail.get("exit_code") != exit_code
+        or detail.get("capture_status") not in {"AVAILABLE", "UNAVAILABLE"}
+        or detail.get("test_count_source") not in {"UNAVAILABLE", "unittest_terminal_summary"}
+        or (detail.get("test_count") is not None and (
+            isinstance(detail["test_count"], bool) or not isinstance(detail["test_count"], int)
+            or detail["test_count"] < 0
+        ))
+        or (detail.get("test_count_source") == "unittest_terminal_summary") != (detail.get("test_count") is not None)
+        or (detail.get("output_digest") is not None and (
+            not isinstance(detail["output_digest"], str)
+            or _SHA256.fullmatch(detail["output_digest"]) is None
+        ))
+        or (detail.get("capture_status") == "AVAILABLE") != (detail.get("output_digest") is not None)
+    ):
+        return unavailable
+    return {**detail, "status": "AVAILABLE", "artifact_id": artifact_id,
+            "digest": "sha256:" + str(row[2])}
+
+
+def _control_definition_digest(
+    *, profile_version: object, profile_reference: object, binding: object,
+) -> str | None:
+    """Bind every command argument without exposing a host interpreter path."""
+    if not isinstance(binding, dict):
+        return None
+    command = binding.get("command")
+    if not isinstance(command, list) or not all(isinstance(arg, str) and arg for arg in command):
+        return None
+    command_identity = ["{python}", *command[1:]] if command and command[0] == sys.executable else list(command)
+    return _sha256(_canonical_json_bytes({
+        "validation_profile_version": profile_version,
+        "profile_reference": profile_reference,
+        "validation_id": binding.get("validation_id"),
+        "category": binding.get("category"),
+        "control_identity": binding.get("control_identity"),
+        "command_identity": command_identity,
+    }).rstrip(b"\n"))
+
+
+def _terminal_validation_controls(
+    data_root: Path, *, repository_root: Path, run_id: str,
+) -> dict[str, object]:
+    """Freeze canonical host observations in the terminal artifact."""
+    from .storage import EngineeringStorageError, load_validation_context
+    try:
+        context = load_validation_context(
+            repository_root, run_id, central_database=central_database.path(data_root),
+        )
+    except (EngineeringStorageError, sqlite3.Error):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    if not isinstance(context, dict):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    try:
+        accepted = load_submission_for_run(
+            repository_root, run_id, central_database=central_database.path(data_root),
+        )
+        constraints = accepted.get("constraints") if isinstance(accepted, dict) else None
+        provenance = constraints.get("forge_execution") if isinstance(constraints, dict) else None
+        approved = provenance.get("execution_constraints", []) if isinstance(provenance, dict) else []
+        selectors = delivery_unittest_selectors(approved)
+    except (EngineeringStorageError, ValidationProfileResolutionError, sqlite3.Error):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    controls = context.get("controls")
+    if not isinstance(controls, dict):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    bindings = context.get("control_bindings")
+    if not isinstance(bindings, tuple):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    binding_by_id = {
+        binding.get("validation_id"): binding for binding in bindings
+        if isinstance(binding, dict) and isinstance(binding.get("validation_id"), str)
+    }
+    required_ids = context.get("required_validation_controls")
+    if not isinstance(required_ids, tuple) or tuple(binding_by_id) != required_ids:
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    projected: dict[str, object] = {}
+    observations: list[dict[str, object]] = []
+    with sqlite_connection(central_database.path(data_root)) as connection:
+        for validation_id in required_ids:
+            raw_control = controls.get(validation_id)
+            if not isinstance(raw_control, dict):
+                continue
+            control = dict(raw_control)
+            binding = binding_by_id.get(validation_id)
+            control["control_definition_digest"] = _control_definition_digest(
+                profile_version=context.get("validation_profile_version"),
+                profile_reference=context.get("profile_reference"), binding=binding,
+            )
+            command_id = control.get("command_id")
+            control["result_detail"] = (
+                _validation_result_detail(
+                    connection, data_root=data_root, run_id=run_id,
+                    validation_id=validation_id, command_id=command_id,
+                    exit_code=control.get("exit_code"),
+                ) if isinstance(command_id, str) else {"status": "UNAVAILABLE"}
+            )
+            projected[validation_id] = control
+        for selector in selectors:
+            binding = delivery_unittest_binding(selector)
+            validation_id = str(binding["validation_id"])
+            raw_control = controls.get(validation_id)
+            control = dict(raw_control) if isinstance(raw_control, dict) else {}
+            if (control.get("required_for_profile") is not False
+                    or control.get("category") != binding["category"]
+                    or control.get("control_identity") != binding["control_identity"]
+                    or control.get("currentness") != context.get("currentness")):
+                control = {"validation_id": validation_id, "result": "UNAVAILABLE",
+                           "execution_status": "NOT_EXECUTED", "required_for_profile": False}
+            control["control_definition_digest"] = _control_definition_digest(
+                profile_version=context.get("validation_profile_version"),
+                profile_reference=context.get("profile_reference"), binding=binding,
+            )
+            command_id = control.get("command_id")
+            control["result_detail"] = (
+                _validation_result_detail(
+                    connection, data_root=data_root, run_id=run_id,
+                    validation_id=validation_id, command_id=command_id,
+                    exit_code=control.get("exit_code"),
+                ) if isinstance(command_id, str) else {"status": "UNAVAILABLE"}
+            )
+            observations.append(control)
+    result = {
+        "contract_version": "1.1" if selectors else "1.0",
+        "status": "AVAILABLE",
+        "selected_validation_tier": context.get("selected_validation_tier"),
+        "validation_profile_version": context.get("validation_profile_version"),
+        "profile_reference": context.get("profile_reference"),
+        "profile_selection_source": context.get("profile_selection_source"),
+        "profile_digest": context.get("profile_digest"),
+        "candidate_sha": context.get("candidate_sha"),
+        "currentness": context.get("currentness"),
+        "profile_currentness_conflict": context.get("profile_currentness_conflict"),
+        "required_validation_controls": list(required_ids),
+        "controls": projected,
+    }
+    if selectors:
+        result["observation_validation_controls"] = observations
+    return result
 
 
 def _accepted_request_digest(*, repository_id: str, producer_id: str,
@@ -971,7 +1198,12 @@ def _repository_revision(state: object, outcome: str) -> tuple[str | None, bool]
         return None, False
     if getattr(state, "action_intent", None) == "VALIDATION_ONLY":
         return None, False
-    revision = getattr(state, "finalization_merge_commit", None) or getattr(state, "implementation_merge_commit", None)
+    if (getattr(state, "reconciliation_pull_request", None) is not None
+            and getattr(state, "reconciliation_merge_commit", None) is None):
+        return None, False
+    revision = (getattr(state, "reconciliation_merge_commit", None)
+                or getattr(state, "finalization_merge_commit", None)
+                or getattr(state, "implementation_merge_commit", None))
     evidence = getattr(state, "commit_evidence", ())
     if isinstance(revision, str) and __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
         if any(isinstance(item, dict) and item.get("commit_sha") == revision for item in evidence):
@@ -1126,6 +1358,9 @@ def write_terminal_evidence(
         "provenance": constraints.get("forge_execution"),
         "run": {"id": run_id, "outcome": outcome, "delivery_qualified": delivery_qualified, **timing},
         "host_execution": host_execution,
+        "validation_controls": _terminal_validation_controls(
+            data_root, repository_root=repository_root, run_id=run_id,
+        ),
         "repository": {
             "id": str(row[2]),
             "requested_revision": checkpoint.requested_repository_revision,

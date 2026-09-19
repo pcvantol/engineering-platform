@@ -298,6 +298,16 @@ only after the maintainer opens the relevant evidence view. It provides local
 copy and download actions only when the matching artifact exists. Downloaded
 files contain the original local Markdown; rendering and copying do not alter
 the report, checkpoint or target repository.
+Execution Report tables use separate Markdown blocks after headings and lists;
+the modal renders their headers and cells as text-safe DOM elements, including
+Invocation Detail and both phase-timing tables. A malformed table remains
+visible as text.
+
+The active-run estimate labels whole-run remaining time as unknown when no
+bounded whole-run evidence exists. Comparable phase telemetry may separately
+show a range for measured internal work, with explicit notice that PR, CI and
+merge waits are outside that range. Elapsed time in one phase is never
+subtracted from a static whole-run fallback to manufacture a remaining minute.
 
 **Promptgeschiedenis** is a private SQLite-backed index of terminal runs.
 Selecting a row opens the run's near-fullscreen operational-detail dialog;

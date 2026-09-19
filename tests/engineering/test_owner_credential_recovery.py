@@ -200,7 +200,7 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "ep"
         identity = server.initialize(self.root)
-        self.assertEqual(server.SERVER_STORE_SCHEMA_VERSION, 68)
+        self.assertEqual(server.SERVER_STORE_SCHEMA_VERSION, 70)
         self.instance = identity.instance_id
         with self.connection() as connection:
             connection.execute(

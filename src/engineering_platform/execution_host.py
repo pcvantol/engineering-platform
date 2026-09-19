@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess  # noqa: F401 - compatibility export for host tests
+import tempfile
 import time
 from threading import Lock
 from typing import Protocol
@@ -20,6 +21,7 @@ import sqlite3
 
 from .validation_identity import is_canonical_dashboard_command
 from .central_database import DATABASE_FILENAME as CENTRAL_DATABASE_FILENAME
+from . import merge_delegation
 
 from .agent_state import MAX_COMMIT_EVIDENCE_RECORDS, StateError, StateStore, TransactionState, redact_diagnostic, verified_commit_evidence_record
 from .capability_review import (
@@ -75,10 +77,12 @@ from .execution_models import AgentResult, PullRequestEvidence, RepositoryEviden
 from .validation_profile import (
     VALIDATION_PROFILE_VERSION, ValidationControlLauncher, ValidationProfile,
     ValidationProfileResolutionError, changed_paths, classify,
+    delivery_unittest_binding, delivery_unittest_selectors,
     matching_control_binding, profile_control_bindings, resolve_producer_profile,
     strict_required_controls_pass,
 )
 from .reviewer_evidence import ReviewerEvidence
+from .assurance_scope import observed_delivery_scope
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
 from .execution_errors import ProviderReadinessBlocked
@@ -93,10 +97,10 @@ from .execution_executor import (
 )
 from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
 from .execution_executor import record_redacted_codex_cli_diagnostic
-from .execution_executor import persist_validation_failure_diagnostic
+from .execution_executor import persist_validation_failure_diagnostic, persist_validation_result_detail
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
-from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, open_storage, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
+from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, open_storage, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile, sqlite_connection
 from .dashboard_browser_validation import dashboard_evidence_path, load_dashboard_evidence
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
@@ -907,8 +911,10 @@ class EngineeringRunner:
             )
         return state
 
-    def _execute_required_validation_controls(self, state: TransactionState) -> TransactionState:
+    def _execute_required_validation_controls(self, state: TransactionState, *, currentness: int | None = None) -> TransactionState:
         """Execute already-persisted required controls before qualification."""
+        if currentness is None:
+            currentness = state.repair_iterations
         try:
             validation_context = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
@@ -941,7 +947,7 @@ class EngineeringRunner:
                         control_identity=str(binding.get("control_identity") or validation_id),
                         required_for_profile=True, execution_status="NOT_EXECUTED",
                         result="UNAVAILABLE", evidence_ref="control_launcher_unavailable",
-                        observed_at=datetime.now(timezone.utc).isoformat(), currentness=validation.repair_iterations,
+                        observed_at=datetime.now(timezone.utc).isoformat(), currentness=currentness,
                         central_database=self.store.central_database,
                     )
                 except EngineeringStorageError:
@@ -965,7 +971,7 @@ class EngineeringRunner:
                     self.root, run_id=validation.run_id, validation_id=launcher.validation_id,
                     command_id=command_id, category=launcher.category,
                     control_identity=launcher.control_identity, required_for_profile=True,
-                    started_at=observed_at, currentness=validation.repair_iterations,
+                    started_at=observed_at, currentness=currentness,
                     central_database=self.store.central_database,
                 )
             except EngineeringStorageError:
@@ -1013,8 +1019,16 @@ class EngineeringRunner:
                         f"validation_environment:{infrastructure_diagnostic}"
                         if infrastructure_diagnostic else "command_terminal"
                     ), observed_at=completed_at,
-                    currentness=validation.repair_iterations,
+                    currentness=currentness,
                     central_database=self.store.central_database,
+                )
+                persist_validation_result_detail(
+                    self.root, run_id=validation.run_id, command_id=command_id,
+                    validation_id=launcher.validation_id, exit_code=exit_code,
+                    stdout=diagnostic_stdout, stderr=diagnostic_stderr,
+                    capture_available=diagnostic_capture_available, captured_at=completed_at,
+                    central_database=self.store.central_database,
+                    artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
                 )
             except EngineeringStorageError:
                 complete_phase(self.root, span, outcome="FAILED")
@@ -1074,12 +1088,12 @@ class EngineeringRunner:
                 diagnostic_code="MANAGED_AUTONOMY_EVIDENCE_UNAVAILABLE", error=error,
             )
 
-    def _managed_gate(self, state: TransactionState, gate_type: str, status: str, pr: int, *, resolved: bool = False) -> None:
+    def _managed_gate(self, state: TransactionState, gate_type: str, status: str, pr: int, *, resolved: bool = False, resolution_actor: str = "operator") -> None:
         try:
             record_managed_gate(
                 self.root, run_id=state.run_id, gate_type=gate_type, status=status,
                 related_pr=pr, phase=state.phase,
-                resolution_actor="operator" if resolved else None,
+                resolution_actor=resolution_actor if resolved else None,
                 resolved_at=datetime.now(timezone.utc).isoformat() if resolved else None,
                 central_database=self.store.central_database,
             )
@@ -1292,7 +1306,7 @@ class EngineeringRunner:
         validated, validation_result = self._run_local_repository_validation(repair, repaired_result)
         if validated.terminal:
             return validated
-        if validation_result.terminal_state != "COMPLETE" or self._has_failed_validation_evidence(validation_result):
+        if not self._host_validated_local_result(validated, validation_result):
             if validated.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
                 return self._save_terminal(validated, "BLOCKED", "repair_budget_exhausted", "Repaired candidate did not pass local validation before the run-wide repair budget was exhausted.")
             return self._repair(validated, "local validation failed. Repair the recorded validation findings for the current candidate.")
@@ -1434,6 +1448,27 @@ class EngineeringRunner:
             if re.search(r"\b(?:failed|failure|error|timeout|timed\s+out)\b", summary):
                 return True
         return False
+
+    def _host_validated_local_result(self, state: TransactionState, result: AgentResult) -> bool:
+        """Prefer exact host terminals over earlier provider test summaries.
+
+        Provider summaries remain in the immutable run audit. They can trigger
+        entry to this gate, but cannot pass it or negate a subsequently
+        executed, candidate-bound host control. Unknown receipts fail closed.
+        """
+        if (result.terminal_state != "COMPLETE" or not state.local_validation_audit
+                or state.local_validation_audit[-1].get("outcome") != "validated"):
+            return False
+        try:
+            context = load_validation_context(
+                self.root, state.run_id, currentness=state.repair_iterations,
+                central_database=self.store.central_database,
+            )
+        except EngineeringStorageError:
+            return False
+        return _required_validation_controls_pass(
+            state, context, expected_candidate_sha=state.implementation_head_sha,
+        )
 
     @staticmethod
     def _is_external_agent_block(result: AgentResult) -> bool:
@@ -2301,6 +2336,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
 
     def _run_quality_assurance(
         self, state: TransactionState, implementation: AgentResult, *, assurance_root: Path | None = None,
+        allow_repair: bool = True,
     ) -> tuple[TransactionState, AgentResult]:
         """Run independent, sandboxed quality and security reviews.
 
@@ -2324,7 +2360,61 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         if not candidate.clean or not re.fullmatch(r"[0-9a-f]{40}", candidate.head_sha):
             return self._save_terminal(quality, "BLOCKED", "assurance_candidate_invalid", "Quality assurance requires one clean, pinned candidate."), implementation
         profile_version = f"validation-profile@{VALIDATION_PROFILE_VERSION}"
-        criteria = Path(quality.prompt_path).read_text(encoding="utf-8")
+        objective = Path(quality.prompt_path).read_text(encoding="utf-8")
+        role = state.transaction_kind
+        delivery_scope: dict[str, object] | None = None
+        if (state.execution_mode == "MANAGED" and isinstance(self.repository, SubprocessRepositoryClient)
+                and not (candidate_root / ".git").exists()):
+            return self._save_terminal(
+                quality, "BLOCKED", "assurance_delivery_scope_unavailable",
+                "The Managed delivery checkout has no Git metadata for exact PR diff assurance.",
+            ), implementation
+        if state.execution_mode == "MANAGED" and (candidate_root / ".git").exists():
+            try:
+                delivery_scope = observed_delivery_scope(
+                    candidate_root, role=role, candidate_sha=candidate.head_sha,
+                )
+            except (OSError, RuntimeError, ValueError):
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_delivery_scope_unavailable",
+                    "The exact delivery PR diff could not be verified before independent assurance.",
+                ), implementation
+            if delivery_scope["out_of_scope_paths"]:
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_delivery_scope_conflict",
+                    "The governance-only delivery PR changes paths outside its host-owned role scope.",
+                ), implementation
+            if delivery_scope["premature_completion_paths"]:
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_premature_completion_claim",
+                    "Finalization repository records claim a merged or completed state before protected merge evidence exists.",
+                ), implementation
+        role_instruction = {
+            "IMPLEMENTATION": (
+                "Assess the implementation candidate against the approved Action and its actual PR diff. "
+                "An open PR head is not yet on protected main; delivered-main acceptance controls are "
+                "checked by the Execution Host after merge, not a pre-merge finding."
+            ),
+            "FINALIZATION": (
+                "Assess only this governance-only Finalization PR diff and the accuracy of its records. "
+                "The implementation was delivered by an earlier PR; this PR must not change implementation code. "
+                "Its open head is not yet on protected main. The original Action's code-path scope "
+                "does not require the Finalization diff to modify that code path. "
+                "The repository handoff is prepared for review, not a claim of merged delivery; "
+                "terminal completion is recorded only after the host reads back the merge."
+            ),
+            "RECONCILIATION": (
+                "Assess only this post-Finalization reconciliation PR diff against the four rolling "
+                "governance records. It must not change implementation code or other files. "
+                "Its open head is not yet on protected main."
+            ),
+        }.get(role, "Assess the candidate against the approved objective and actual repository diff.")
+        criteria = (
+            f"Delivery role: {role}. {role_instruction}\n"
+            f"Host-observed exact candidate diff: {json.dumps(delivery_scope, sort_keys=True) if delivery_scope else 'UNAVAILABLE'}\n"
+            "Original approved Action objective (context for the delivery chain):\n"
+            + objective
+        )
         criteria_digest = "sha256:" + hashlib.sha256(criteria.encode("utf-8")).hexdigest()
         try:
             validation_context = load_validation_context(
@@ -2347,6 +2437,8 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             "version": profile_version, "digest": profile_digest, "candidate_sha": candidate.head_sha,
             "criteria_digest": criteria_digest,
         }
+        if delivery_scope is not None:
+            assurance_profile["base_sha"] = delivery_scope["base_sha"]
         # Genesis deliberately has no host-owned local validation profile.
         if validation_profile_digest is not None:
             assurance_profile["validation_profile_digest"] = validation_profile_digest
@@ -2364,8 +2456,8 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         for selection in selections:
             assurance_objective = (
                 f"Mandatory {selection.reviewer} assurance. Profile {profile_version} ({profile_digest}); "
-                f"candidate {candidate.head_sha}. Report only concrete, bounded findings against the action acceptance criteria. "
-                + Path(quality.prompt_path).read_text(encoding="utf-8")
+                f"candidate {candidate.head_sha}. Report only concrete, bounded findings against this delivery role's applicable criteria and exact PR diff. "
+                + criteria
             )
             started_at = datetime.now(timezone.utc).isoformat()
             result = run_reviews(assurance_root or self.root, (selection,), assurance_objective, self.agent if hasattr(self.agent, "review") else None, evidence=evidence)[0]
@@ -2397,6 +2489,19 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 "started_at": started_at, "completed_at": completed_at,
             })
         quality = replace(quality, assurance_reviews=quality.assurance_reviews + tuple(records))
+        if delivery_scope is not None:
+            try:
+                scope_after_reviews = observed_delivery_scope(
+                    candidate_root, role=role, candidate_sha=candidate.head_sha,
+                )
+            except (OSError, RuntimeError, ValueError):
+                scope_after_reviews = None
+            if scope_after_reviews != delivery_scope:
+                self.store.save(quality)
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_delivery_scope_changed",
+                    "The PR base or exact candidate diff changed during independent assurance.",
+                ), implementation
         # A later PASS does not erase an earlier blocker.  Only a completed
         # reserved repair followed by this exact re-review can append the
         # linked resolution evidence; the original finding remains immutable.
@@ -2425,6 +2530,11 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         findings = [finding for record in records for finding in record["findings"]]
         blockers = [finding for finding in findings if finding["blocking"] and finding["disposition"] == "OPEN"]
         if blockers:
+            if not allow_repair:
+                return self._save_terminal(
+                    quality, "BLOCKED", "delivery_assurance_recovery_blocker",
+                    "Recovered candidate has unresolved independent assurance findings.",
+                ), implementation
             if quality.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
                 return self._save_terminal(quality, "BLOCKED", "repair_budget_exhausted", "Mandatory assurance blockers remain after the run-wide repair budget was exhausted."), implementation
             blocker_roles = sorted({str(record["reviewer"]) for record in records if any(
@@ -2478,6 +2588,43 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         ) and not any(
             finding.get("blocking") and finding.get("disposition") == "OPEN"
             for review in current for finding in review.get("findings", [])
+            if isinstance(finding, dict)
+        )
+
+    @staticmethod
+    def _autonomous_merge_assurance_passes(state: TransactionState, head_sha: str) -> bool:
+        """Verify canonical, separate EP reviews for the exact delivery PR head."""
+        profile = state.assurance_profile
+        if (not isinstance(profile, dict) or profile.get("candidate_sha") != head_sha
+                or not isinstance(profile.get("digest"), str)
+                or not EngineeringRunner._current_assurance_passes(state)):
+            return False
+        current = [review for review in state.assurance_reviews
+                   if review.get("candidate_sha") == head_sha
+                   and review.get("profile_digest") == profile["digest"]]
+        selected = []
+        for role in ("quality", "security"):
+            matching = [review for review in current if review.get("reviewer") == role]
+            if not matching:
+                return False
+            record = matching[-1]
+            if (record.get("status") != "PASS"
+                    or record.get("contract_version") != MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION
+                    or not isinstance(record.get("invocation_id"), str)
+                    or not record["invocation_id"].startswith(f"{state.run_id}:{role}:")
+                    or not isinstance(record.get("started_at"), str)
+                    or not isinstance(record.get("completed_at"), str)
+                    or not isinstance(record.get("findings"), list)):
+                return False
+            selected.append(record)
+        if selected[0]["invocation_id"] == selected[1]["invocation_id"]:
+            return False
+        resolved = {resolution.get("finding_id") for resolution in state.assurance_resolutions
+                    if resolution.get("disposition") == "RESOLVED"}
+        return not any(
+            finding.get("blocking") and finding.get("disposition") == "OPEN"
+            and finding.get("id") not in resolved
+            for review in state.assurance_reviews for finding in review.get("findings", [])
             if isinstance(finding, dict)
         )
 
@@ -2678,7 +2825,7 @@ First implementation pull-request publication gate:
                 state, result = self._run_local_repository_validation(state, result)
                 if state.terminal:
                     return state
-                if result.terminal_state != "COMPLETE" or self._has_failed_validation_evidence(result):
+                if not self._host_validated_local_result(state, result):
                     if state.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
                         return self._save_terminal(state, "BLOCKED", "repair_budget_exhausted", "Local validation requires a repair after the run-wide repair budget was exhausted.")
                     return self._repair(state, "local validation failed. Repair the recorded validation findings for the current candidate.")
@@ -2911,6 +3058,18 @@ First implementation pull-request publication gate:
             persisted_submission = None
         producer_context = persisted_submission.get("execution_context") if isinstance(persisted_submission, dict) else None
         raw_constraints = persisted_submission.get("constraints") if isinstance(persisted_submission, dict) else None
+        delivery_validation_requested = self._accepted_delivery_control_validation(persisted_submission)
+        delegated_merge_id = self._accepted_merge_delegation_id(persisted_submission)
+        if state.merge_delegation_id is not None and state.merge_delegation_id != delegated_merge_id:
+            return self._save_terminal(state, "BLOCKED", "merge_delegation_authority_lost",
+                                       "Accepted merge delegation differs from the durable checkpoint.")
+        if delegated_merge_id is not None:
+            state = replace(state, merge_delegation_id=delegated_merge_id)
+        if state.delivery_control_validation_required and not delivery_validation_requested:
+            return self._save_terminal(state, "BLOCKED", "delivery_validation_authority_lost",
+                                       "Accepted delivery validation authority is unavailable on resume.")
+        if delivery_validation_requested:
+            state = replace(state, delivery_control_validation_required=True)
         try:
             revision_binding = parse_repository_revision_binding(
                 raw_constraints if isinstance(raw_constraints, dict) else None,
@@ -3472,6 +3631,7 @@ First implementation pull-request publication gate:
             branch=state.finalization_branch,
             pull_request=candidate.number,
             finalization_pull_request=candidate.number,
+            finalization_head_sha=candidate.head_sha,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
             next_action="poll_required_checks",
             last_verified_sha=evidence.head_sha,
@@ -3480,6 +3640,9 @@ First implementation pull-request publication gate:
         )
         self.store.save(recovered)
         write_live_status(self.root, recovered, recovered.next_action)
+        recovered = self._recover_autonomous_pr_assurance(recovered, candidate)
+        if recovered.terminal or recovered.phase == "REPAIR_AGENT":
+            return recovered
         return self._poll(recovered)
 
     def _recover_reconciliation_pull_request(
@@ -3509,10 +3672,18 @@ First implementation pull-request publication gate:
                 state, "BLOCKED", "reconciliation_recovery_evidence_required",
                 "No reconciliation pull request matches the checkpointed branch; no replacement was created.",
             )
+        recorded_head = next((item.get("commit_sha") for item in reversed(state.commit_evidence)
+                              if item.get("phase") == "RECONCILE_AGENT"
+                              and item.get("description") == "end_reconciliation_commit_verified"), None)
         if (
             candidate.head_branch != state.branch
             or candidate.base_branch != "main"
             or candidate.state not in {"OPEN", "MERGED"}
+            or not isinstance(candidate.head_sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", candidate.head_sha) is None
+            or (state.reconciliation_head_sha is not None
+                and candidate.head_sha != state.reconciliation_head_sha)
+            or (recorded_head is not None and candidate.head_sha != recorded_head)
         ):
             return self._save_terminal(
                 state, "BLOCKED", "reconciliation_recovery_evidence_invalid",
@@ -3521,6 +3692,7 @@ First implementation pull-request publication gate:
         recovered = replace(
             state, pull_request=candidate.number,
             reconciliation_pull_request=candidate.number,
+            reconciliation_head_sha=candidate.head_sha,
             phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks",
             last_verified_sha=evidence.head_sha,
             latest_repository_evidence=_repository_summary(evidence),
@@ -3528,6 +3700,9 @@ First implementation pull-request publication gate:
         )
         self.store.save(recovered)
         write_live_status(self.root, recovered, recovered.next_action)
+        recovered = self._recover_autonomous_pr_assurance(recovered, candidate)
+        if recovered.terminal or recovered.phase == "REPAIR_AGENT":
+            return recovered
         return self._poll(recovered)
 
     def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
@@ -3648,6 +3823,11 @@ First implementation pull-request publication gate:
                     state, "FAILED", "required_checks_failed", "Required CI check failed."
                 )
             if pr.state == "MERGED":
+                if state.delegated_merge_attempt is not None and state.delegated_merge_attempt != f"{pr.number}:{pr.head_sha}":
+                    return self._save_terminal(
+                        state, "BLOCKED", "delegated_merge_head_mismatch",
+                        "Merged pull request no longer matches the delegated exact-head attempt.",
+                    )
                 # A merge is remote evidence. Refresh origin/main before
                 # verifying ancestry, without switching or fast-forwarding
                 # the shared checkout during a passive wait poll. Local main
@@ -3660,9 +3840,22 @@ First implementation pull-request publication gate:
                     return self._save_operator_merge_wait(state)
                 if pr.merge_commit and self.repository.remote_main_contains(self.root, pr.merge_commit):
                     gate_type = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE_APPROVAL", "FINALIZATION": "FINALIZATION_MERGE_APPROVAL", "RECONCILIATION": "RECONCILIATION_MERGE_APPROVAL"}[state.transaction_kind]
-                    self._managed_gate(state, gate_type, "SATISFIED", pr.number, resolved=True)
+                    delegated_actor = state.delegated_merge_actor_reference if state.delegated_merge_attempt else None
+                    self._managed_gate(state, gate_type, "SATISFIED", pr.number, resolved=True,
+                                       resolution_actor="execution_host" if delegated_actor else
+                                       "unknown" if state.delegated_merge_attempt else "operator")
                     action = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE", "FINALIZATION": "FINALIZATION_MERGE", "RECONCILIATION": "RECONCILIATION_MERGE"}[state.transaction_kind]
-                    self._managed_action(state, action, "EXPECTED_OPERATOR_GATE", actor="operator", evidence_ref="github_merge")
+                    self._managed_action(
+                        state, action,
+                        "AUTONOMOUS_EP_ACTION" if delegated_actor else
+                        "UNKNOWN_AUTHORITY" if state.delegated_merge_attempt else "EXPECTED_OPERATOR_GATE",
+                        actor="execution_host" if delegated_actor else
+                              "unknown" if state.delegated_merge_attempt else "operator",
+                        evidence_ref=(f"delegated_merge:{state.merge_delegation_id}:issuer:{delegated_actor}"
+                                      if delegated_actor else
+                                      f"uncertain_delegated_attempt:{state.delegated_merge_attempt}"
+                                      if state.delegated_merge_attempt else "github_merge"),
+                    )
                     state = self._record_merged_evidence(state, pr, evidence)
                     if state.terminal:
                         return state
@@ -3671,6 +3864,10 @@ First implementation pull-request publication gate:
                     if state.owner_authorized and state.transaction_kind == "FINALIZATION":
                         return self._start_automatic_reconciliation(state)
                     return self._cleanup(state)
+            if pr.state == "OPEN" and pr.checks_terminal and pr.checks_passed and state.merge_delegation_id:
+                delegated = self._attempt_delegated_merge(state, pr)
+                if delegated is not None:
+                    return delegated
             # A green PR is an explicit hand-off to the operator.  The runner
             # must not turn that durable waiting state into a synthetic failure
             # merely because its foreground process has ended.
@@ -3686,6 +3883,256 @@ First implementation pull-request publication gate:
             gate_type = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE_APPROVAL", "FINALIZATION": "FINALIZATION_MERGE_APPROVAL", "RECONCILIATION": "RECONCILIATION_MERGE_APPROVAL"}[state.transaction_kind]
             self._managed_gate(waiting, gate_type, "WAITING", state.pull_request)
             return self._save_operator_merge_wait(waiting)
+
+    def _autonomous_profile_selected(self, state: TransactionState) -> bool:
+        """Consult the owner grant, never provider text, for phase assurance."""
+        if (not state.owner_authorized or state.merge_delegation_id is None
+                or self.store.central_database is None):
+            return False
+        try:
+            with sqlite_connection(self.store.central_database) as connection:
+                grant = merge_delegation.load(connection, state.merge_delegation_id)
+        except (EngineeringStorageError, sqlite3.Error):
+            return False
+        return bool(grant and grant.assurance_profile_id == "qualification-autonomous-qs"
+                    and grant.assurance_profile_revision == "1"
+                    and grant.github_repository == state.repository
+                    == merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY)
+
+    def _recover_autonomous_pr_assurance(
+        self, state: TransactionState, candidate: PullRequestEvidence,
+    ) -> TransactionState:
+        """Review a recovered PR in a disposable checkout pinned to its remote head."""
+        if not self._autonomous_profile_selected(state) or candidate.state != "OPEN":
+            return state
+        head, branch = candidate.head_sha, candidate.head_branch
+        if (not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None
+                or not isinstance(branch, str) or branch != state.branch
+                or candidate.base_branch != "main" or candidate.number != state.pull_request):
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_recovery_identity_invalid",
+                                       "Recovered autonomous PR lacks an exact branch, head and base.")
+        if self._autonomous_merge_assurance_passes(state, head):
+            return state
+        try:
+            if merge_delegation.bound_github_repository(self.root) != state.repository:
+                raise ValueError("recovered repository origin changed")
+            git = GitProvider()
+            origin = git.command(self.root, "git", "remote", "get-url", "origin")
+            scratch_parent = self.store.central_database.parent / "artifacts"  # type: ignore[union-attr]
+            scratch_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="ep-assurance-", dir=scratch_parent) as temporary:
+                checkout = Path(temporary) / "candidate"
+                git.clone_branch(self.root, origin, branch, checkout)
+                # Single-branch clones omit main. Fetch the protected base
+                # explicitly so the independent review can inspect its exact
+                # PR diff rather than treating the whole branch as a change.
+                git.command(checkout, "git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main")
+                pinned = self.repository.inspect(checkout)
+                if (pinned.repository != state.repository or pinned.branch != branch
+                        or pinned.head_sha != head or not pinned.clean):
+                    raise ValueError("recovered checkout does not match the PR head")
+                result = AgentResult("COMPLETE", branch=branch, pull_request=candidate.number,
+                                     commit_sha=head)
+                reviewed, _ = self._run_quality_assurance(
+                    state, result, assurance_root=checkout, allow_repair=False,
+                )
+                if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
+                    return reviewed
+                fresh = self.github.pull_request(candidate.number)
+                if (fresh.state != "OPEN" or fresh.head_sha != head or fresh.head_branch != branch
+                        or fresh.base_branch != "main"
+                        or not self._autonomous_merge_assurance_passes(reviewed, head)):
+                    raise ValueError("recovered PR changed during independent assurance")
+                reviewed = replace(reviewed, phase="WAIT_FOR_TERMINAL_EVIDENCE",
+                                   next_action="poll_required_checks")
+                self.store.save(reviewed)
+                return reviewed
+        except (OSError, subprocess.SubprocessError, RunnerError, RuntimeError, ValueError):
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_recovery_unavailable",
+                                       "Recovered autonomous PR could not receive pinned independent assurance.")
+
+    def _assure_autonomous_delivery_pr(
+        self, state: TransactionState, result: AgentResult,
+    ) -> TransactionState:
+        """Run separate EP Quality/Security on each later delivery PR head."""
+        if not self._autonomous_profile_selected(state):
+            return state
+        if not result.pull_request or not result.branch or not result.commit_sha:
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_candidate_unavailable",
+                                       "Autonomous delivery requires an exact pull-request candidate.")
+        try:
+            local = self.repository.inspect(self.root)
+            remote = self.github.pull_request(result.pull_request)
+        except RunnerError:
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_candidate_unavailable",
+                                       "Autonomous delivery candidate could not be inspected.")
+        if (not local.clean or local.branch != result.branch or local.head_sha != result.commit_sha
+                or remote.state != "OPEN" or remote.is_draft is False
+                or remote.head_branch != result.branch or remote.head_sha != result.commit_sha
+                or remote.base_branch != "main"):
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_candidate_mismatch",
+                                       "Autonomous delivery PR and local review candidate do not match.")
+        reviewed, _ = self._run_quality_assurance(state, result)
+        if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
+            return reviewed
+        if not self._autonomous_merge_assurance_passes(reviewed, result.commit_sha):
+            return self._save_terminal(reviewed, "BLOCKED", "delivery_assurance_unresolved",
+                                       "Autonomous delivery requires current independent Quality and Security reviews.")
+        return reviewed
+
+    def _attempt_delegated_merge(
+        self, state: TransactionState, observed_pr: PullRequestEvidence,
+    ) -> TransactionState | None:
+        """Consume a live scoped owner grant only after exact protected gates pass."""
+        attempted: TransactionState | None = None
+        if (not state.owner_authorized or state.execution_mode != "MANAGED"
+                or self.store.central_database is None or state.merge_delegation_id is None):
+            return None
+
+        try:
+            accepted = load_submission_for_run(
+                self.root, state.run_id, central_database=self.store.central_database,
+            )
+            if self._accepted_merge_delegation_id(accepted) != state.merge_delegation_id:
+                return None
+            with sqlite_connection(self.store.central_database) as connection:
+                scope = connection.execute(
+                    "SELECT d.project_id,d.repository_id,b.local_root FROM ep_parity_lifecycle_dispatches d "
+                    "JOIN ep_project_registrations p ON p.project_id=d.project_id AND p.status='ACTIVE' "
+                    "JOIN ep_repository_registrations r ON r.repository_id=d.repository_id "
+                    "AND r.project_id=d.project_id AND r.role='authority' "
+                    "JOIN ep_local_repository_bindings b ON b.project_id=d.project_id "
+                    "AND b.repository_id=d.repository_id AND b.state='BOUND' "
+                    "WHERE d.run_id=?",
+                    (state.run_id,),
+                ).fetchone()
+                grant = merge_delegation.load(connection, state.merge_delegation_id)
+            if scope is None or grant is None or not isinstance(accepted, dict):
+                return None
+            if Path(str(scope[2])).resolve() != self.root.resolve():
+                return None
+            constraints = accepted.get("constraints")
+            provenance = constraints.get("forge_execution") if isinstance(constraints, dict) else None
+            mission_revision = provenance.get("mission_revision") if isinstance(provenance, dict) else None
+            if not grant.permits(
+                project_id=str(scope[0]), repository_id=str(scope[1]),
+                mission_id=str(accepted.get("mission_id")), mission_revision=str(mission_revision),
+                role=state.transaction_kind, base_branch="main",
+            ):
+                return None
+            repository = self.repository.inspect(self.root)
+            if (repository.repository != grant.github_repository
+                    or getattr(self.github, "repository", None) != grant.github_repository):
+                return None
+            expected_head = (
+                state.implementation_head_sha if state.transaction_kind == "IMPLEMENTATION" else
+                state.finalization_head_sha if state.transaction_kind == "FINALIZATION" else
+                state.reconciliation_head_sha or next((item.get("commit_sha") for item in reversed(state.commit_evidence)
+                      if item.get("phase") == "RECONCILE_AGENT"
+                      and item.get("description") == "end_reconciliation_commit_verified"), None)
+            )
+            if (not isinstance(expected_head, str) or re.fullmatch(r"[0-9a-f]{40}", expected_head) is None
+                    or observed_pr.number != state.pull_request
+                    or observed_pr.head_sha != expected_head
+                    or observed_pr.head_branch != state.branch
+                    or observed_pr.base_branch != "main"
+                    or observed_pr.is_draft
+                    or observed_pr.merge_state_status not in {"CLEAN", "HAS_HOOKS"}):
+                return None
+            attempt = f"{observed_pr.number}:{expected_head}"
+            if state.delegated_merge_attempt == attempt:
+                return None
+            fresh = self.github.pull_request(observed_pr.number)
+            if (fresh.state != "OPEN" or fresh.head_sha != expected_head
+                    or fresh.head_branch != state.branch or fresh.base_branch != "main"
+                    or fresh.is_draft or not fresh.checks_terminal or not fresh.checks_passed
+                    or fresh.merge_state_status not in {"CLEAN", "HAS_HOOKS"}):
+                return None
+            qualifier = getattr(self.github, "delegated_merge_qualification", None)
+            if not callable(qualifier):
+                return None
+            autonomous_profile = (
+                grant.assurance_profile_id == "qualification-autonomous-qs"
+                and grant.assurance_profile_revision == "1"
+            )
+            if grant.assurance_profile_id or grant.assurance_profile_revision:
+                if (not autonomous_profile
+                        or grant.github_repository != merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY
+                        or not self._autonomous_merge_assurance_passes(state, expected_head)):
+                    return None
+            qualification = (qualifier(fresh.number, expected_head,
+                                      assurance_profile=merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE)
+                             if autonomous_profile else qualifier(fresh.number, expected_head))
+            if (not isinstance(qualification, dict) or qualification.get("conclusion") != "PASS"
+                    or qualification.get("exact_qualified_sha") != expected_head
+                    or qualification.get("pull_request_id") != fresh.number
+                    or qualification.get("strict_checks") is not True
+                    or (not autonomous_profile and not qualification.get("reviewers"))
+                    or (autonomous_profile and (
+                        isinstance(qualification.get("required_approvals"), bool)
+                        or not isinstance(qualification.get("required_approvals"), int)
+                        or qualification["required_approvals"] < 0
+                        or not isinstance(qualification.get("reviewers"), list)
+                        or len(qualification["reviewers"]) < qualification["required_approvals"]
+                        or not isinstance(qualification.get("effective_policy"), dict)
+                        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(qualification["effective_policy"].get("digest"))) is None
+                        or qualification["effective_policy"].get("source") != "github-effective-main"))):
+                return None
+            if (autonomous_profile and qualification["effective_policy"]["digest"] != grant.assurance_policy_digest):
+                return None
+            qualified_base = qualification.get("base_revision")
+            if (not isinstance(qualified_base, str)
+                    or re.fullmatch(r"[0-9a-f]{40}", qualified_base) is None
+                    or (autonomous_profile and (state.assurance_profile or {}).get("base_sha") != qualified_base)
+                    or self.repository.protected_main_revision(self.root) != qualified_base):
+                return None
+            with sqlite_connection(self.store.central_database) as connection:
+                current_grant = merge_delegation.load(connection, state.merge_delegation_id)
+            if (current_grant is None or not current_grant.permits(
+                    project_id=str(scope[0]), repository_id=str(scope[1]),
+                    mission_id=str(accepted.get("mission_id")), mission_revision=str(mission_revision),
+                    role=state.transaction_kind, base_branch="main",
+                ) or self.repository.inspect(self.root).repository != current_grant.github_repository):
+                return None
+            if autonomous_profile:
+                if (current_grant.assurance_policy_digest != grant.assurance_policy_digest
+                        or current_grant.assurance_profile_id != grant.assurance_profile_id
+                        or current_grant.assurance_profile_revision != grant.assurance_profile_revision):
+                    return None
+                policy_reader = getattr(self.github, "_autonomous_effective_policy", None)
+                if not callable(policy_reader):
+                    return None
+                current_policy = policy_reader()
+                if (not isinstance(current_policy, dict)
+                        or current_policy.get("digest") != current_grant.assurance_policy_digest):
+                    return None
+            # Persist the one exact PR/head attempt before the external call.
+            # Ambiguous results are read back or sent to the manual wait; the
+            # same candidate is never blindly merged twice after a restart.
+            attempted = replace(state, delegated_merge_attempt=attempt,
+                                delegated_merge_actor_reference=None)
+            self.store.save(attempted)
+            self.github.merge(fresh.number, expected_head_sha=expected_head)
+            merged = self.github.pull_request(fresh.number)
+            self.repository.refresh_main_reference(self.root)
+            if (merged.state == "MERGED" and merged.head_sha == expected_head
+                    and isinstance(merged.merge_commit, str)
+                    and re.fullmatch(r"[0-9a-f]{40}", merged.merge_commit)
+                    and self.repository.remote_main_contains(self.root, merged.merge_commit)):
+                confirmed = replace(attempted, delegated_merge_actor_reference=current_grant.actor_reference)
+                self.store.save(confirmed)
+                return self._poll(confirmed)
+            return self._save_operator_merge_wait(replace(
+                attempted, phase="WAIT_FOR_OPERATOR_MERGE", next_action="verify_delegated_merge_outcome",
+                terminal_condition="delegated_merge_outcome_uncertain",
+            ))
+        except (EngineeringStorageError, sqlite3.Error, RunnerError, TypeError, ValueError):
+            if attempted is not None:
+                return self._save_operator_merge_wait(replace(
+                    attempted, phase="WAIT_FOR_OPERATOR_MERGE", next_action="verify_delegated_merge_outcome",
+                    terminal_condition="delegated_merge_outcome_uncertain",
+                ))
+            return None
 
     def _repair(self, state: TransactionState, objective: str) -> TransactionState:
         if state.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
@@ -3803,6 +4250,7 @@ First implementation pull-request publication gate:
             implementation_pull_request=implementation_pr or state.implementation_pull_request,
             latest_repository_evidence=_repository_summary(evidence),
             waiting_for_merge_since=None,
+            delegated_merge_attempt=None, delegated_merge_actor_reference=None,
         )
         self._managed_action(finalization, "FINALIZATION")
         self.store.save(finalization)
@@ -3892,6 +4340,9 @@ First implementation pull-request publication gate:
                 "finalization_branch_mismatch",
                 "Finalization returned a pull request outside the durable Finalization branch.",
             )
+        finalization = self._assure_autonomous_delivery_pr(finalization, result)
+        if finalization.terminal or finalization.phase == "REPAIR_AGENT":
+            return finalization
         finalization = replace(
             finalization,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
@@ -3899,6 +4350,8 @@ First implementation pull-request publication gate:
             pull_request=result.pull_request,
             finalization_branch=result.branch,
             finalization_pull_request=result.pull_request,
+            finalization_head_sha=result.commit_sha if self._autonomous_profile_selected(finalization)
+            else finalization.finalization_head_sha,
             terminal_condition="repository_reconciled",
             next_action="poll_required_checks",
         )
@@ -3935,7 +4388,9 @@ First implementation pull-request publication gate:
         reconciliation = replace(
             state, phase="RECONCILE_AGENT", transaction_kind="RECONCILIATION",
             branch=expected_branch, pull_request=None, reconciliation_pull_request=None,
+            reconciliation_head_sha=None,
             next_action="create_reconciliation_pull_request", waiting_for_merge_since=None,
+            delegated_merge_attempt=None, delegated_merge_actor_reference=None,
             latest_repository_evidence=_repository_summary(evidence),
         )
         self._managed_action(reconciliation, "AUTOMATIC_RECONCILIATION")
@@ -4010,11 +4465,17 @@ First implementation pull-request publication gate:
                 reconciliation, "BLOCKED", "reconciliation_branch_mismatch",
                 "Reconciliation returned a pull request outside the durable reconciliation branch.",
             )
+        reconciliation = self._assure_autonomous_delivery_pr(reconciliation, result)
+        if reconciliation.terminal or reconciliation.phase == "REPAIR_AGENT":
+            return reconciliation
         reconciliation = replace(
             reconciliation,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
             pull_request=result.pull_request,
             reconciliation_pull_request=result.pull_request,
+            reconciliation_head_sha=next((item.get("commit_sha") for item in reversed(reconciliation.commit_evidence)
+                                          if item.get("phase") == "RECONCILE_AGENT"
+                                          and item.get("description") == "end_reconciliation_commit_verified"), None),
             terminal_condition="repository_reconciled",
             next_action="poll_required_checks",
         )
@@ -4138,6 +4599,7 @@ First implementation pull-request publication gate:
                 repository=self.repository,
                 state=state,
                 save_terminal=self._save_terminal,
+                post_cleanup_validation=self._validate_delivery_revision if state.delivery_control_validation_required else None,
             )
         except Exception:
             complete_phase(self.root, cleanup, outcome="FAILED")
@@ -4145,18 +4607,207 @@ First implementation pull-request publication gate:
         complete_phase(self.root, cleanup, outcome="COMPLETE" if result.phase == "COMPLETE" else "FAILED")
         return result
 
+    @staticmethod
+    def _accepted_delivery_control_validation(accepted: object) -> bool:
+        """Opt in only through the immutable accepted Forge request envelope."""
+        if not isinstance(accepted, dict) or accepted.get("producer_type") != "FORGE":
+            return False
+        constraints = accepted.get("constraints")
+        provenance = constraints.get("forge_execution") if isinstance(constraints, dict) else None
+        authorized = provenance.get("execution_constraints") if isinstance(provenance, dict) else None
+        return (isinstance(authorized, list)
+                and authorized.count("ep-delivery-control-validation:1") == 1)
+
+    @staticmethod
+    def _accepted_merge_delegation_id(accepted: object) -> str | None:
+        if not isinstance(accepted, dict) or accepted.get("producer_type") != "FORGE":
+            return None
+        constraints = accepted.get("constraints")
+        provenance = constraints.get("forge_execution") if isinstance(constraints, dict) else None
+        approved = provenance.get("execution_constraints") if isinstance(provenance, dict) else None
+        if not isinstance(approved, list):
+            return None
+        tokens = [item for item in approved if isinstance(item, str) and item.startswith("ep-merge-delegation:")]
+        if len(tokens) != 1 or re.fullmatch(r"ep-merge-delegation:[0-9a-f]{32}", tokens[0]) is None:
+            return None
+        return tokens[0].split(":", 1)[1]
+
+    def _execute_delivery_observation_controls(
+        self, state: TransactionState, selectors: tuple[str, ...], *, currentness: int,
+    ) -> TransactionState:
+        """Run approved optional unittest selectors on the final delivery revision."""
+        for selector in selectors:
+            binding = delivery_unittest_binding(selector)
+            validation_id = str(binding["validation_id"])
+            command = tuple(binding["command"])
+            observed_at = datetime.now(timezone.utc).isoformat()
+            command_id = f"observation-control-{uuid.uuid4().hex[:16]}"
+            try:
+                record_validation_command_invocation(
+                    self.root, run_id=state.run_id, validation_id=validation_id,
+                    command_id=command_id, category="repository",
+                    control_identity=str(binding["control_identity"]),
+                    required_for_profile=False, started_at=observed_at,
+                    currentness=currentness, central_database=self.store.central_database,
+                )
+                previous_run_id = os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID")
+                os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = state.run_id
+                try:
+                    outcome = self._run_required_validation_command(command)
+                finally:
+                    if previous_run_id is None:
+                        os.environ.pop("ENGINEERING_PLATFORM_VALIDATION_RUN_ID", None)
+                    else:
+                        os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = previous_run_id
+                if isinstance(outcome, int) or outcome is None:
+                    exit_code = outcome
+                    stdout = stderr = None
+                    captured = False
+                    infrastructure_diagnostic = None
+                else:
+                    exit_code = outcome.exit_code
+                    stdout, stderr = outcome.stdout, outcome.stderr
+                    captured = outcome.diagnostic_capture_available
+                    infrastructure_diagnostic = getattr(outcome, "infrastructure_diagnostic", None)
+                completed_at = datetime.now(timezone.utc).isoformat()
+                record_validation_command_terminal(
+                    self.root, run_id=state.run_id, command_id=command_id,
+                    completed_at=completed_at, exit_code=exit_code,
+                    central_database=self.store.central_database,
+                )
+                record_validation_control_result(
+                    self.root, run_id=state.run_id, validation_id=validation_id,
+                    category="repository", control_identity=str(binding["control_identity"]),
+                    required_for_profile=False,
+                    execution_status="NOT_EXECUTED" if infrastructure_diagnostic else "EXECUTED",
+                    result="PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE",
+                    evidence_ref=(f"validation_environment:{infrastructure_diagnostic}"
+                                  if infrastructure_diagnostic else "command_terminal"),
+                    observed_at=completed_at, currentness=currentness,
+                    central_database=self.store.central_database,
+                )
+                persist_validation_result_detail(
+                    self.root, run_id=state.run_id, command_id=command_id,
+                    validation_id=validation_id, exit_code=exit_code,
+                    stdout=stdout, stderr=stderr, capture_available=captured,
+                    captured_at=completed_at, central_database=self.store.central_database,
+                    artifact_root=(self.store.central_database.parent / "artifacts")
+                    if self.store.central_database else None,
+                )
+            except (EngineeringStorageError, RunnerError, OSError):
+                return self._save_terminal(state, "BLOCKED", "delivery_observation_evidence_unavailable",
+                                           "Approved observation control evidence could not be recorded.")
+        return state
+
+    def _validate_delivery_revision(self, state: TransactionState) -> TransactionState:
+        """Observe required controls on synchronized protected main before terminal publication."""
+        if state.reconciliation_pull_request is not None and state.reconciliation_merge_commit is None:
+            return self._save_terminal(state, "BLOCKED", "delivery_revision_unavailable",
+                                       "Reconciliation merge revision is unavailable for validation.")
+        revision = (state.reconciliation_merge_commit or state.finalization_merge_commit
+                    or state.implementation_merge_commit or state.last_verified_sha)
+        if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            return self._save_terminal(state, "BLOCKED", "delivery_revision_unavailable",
+                                       "Final delivered revision is unavailable for validation.")
+        try:
+            evidence = self.repository.inspect(self.root)
+            protected = self.repository.protected_main_revision(self.root)
+        except RunnerError:
+            return self._save_terminal(state, "BLOCKED", "delivery_revision_unavailable",
+                                       "Protected main revision could not be verified.")
+        if evidence.branch != "main" or not evidence.clean or evidence.head_sha != revision or protected != revision:
+            return self._save_terminal(state, "BLOCKED", "delivery_revision_mismatch",
+                                       "Synchronized main does not match the delivered revision.")
+        profile = ValidationProfile("FULL", (), ("full required repository suite",))
+        currentness = state.repair_iterations + 1
+        try:
+            record_validation_profile(
+                self.root, run_id=state.run_id, selected_validation_tier=profile.tier,
+                validation_profile_version=VALIDATION_PROFILE_VERSION,
+                required_validation_controls=profile.required_controls,
+                profile_reference=f"validation-profile-registry:FULL@{VALIDATION_PROFILE_VERSION}",
+                profile_selection_source="delivery_revision",
+                control_bindings=profile_control_bindings(profile, repository_root=self.root),
+                candidate_sha=revision, currentness=currentness,
+                recorded_at=datetime.now(timezone.utc).isoformat(),
+                central_database=self.store.central_database,
+            )
+        except (EngineeringStorageError, ValidationProfileResolutionError):
+            return self._save_terminal(state, "BLOCKED", "delivery_validation_profile_unavailable",
+                                       "Final revision validation profile could not be recorded.")
+        checked = self._execute_required_validation_controls(state, currentness=currentness)
+        if checked.terminal:
+            return checked
+        try:
+            accepted = load_submission_for_run(
+                self.root, state.run_id, central_database=self.store.central_database,
+            )
+            constraints = accepted.get("constraints") if isinstance(accepted, dict) else None
+            provenance = constraints.get("forge_execution") if isinstance(constraints, dict) else None
+            approved = provenance.get("execution_constraints", []) if isinstance(provenance, dict) else []
+            selectors = delivery_unittest_selectors(approved)
+        except (EngineeringStorageError, ValidationProfileResolutionError, sqlite3.Error):
+            return self._save_terminal(checked, "BLOCKED", "delivery_observation_authority_unavailable",
+                                       "Approved delivery observation controls are unavailable.")
+        checked = self._execute_delivery_observation_controls(checked, selectors, currentness=currentness)
+        if checked.terminal:
+            return checked
+        try:
+            context = load_validation_context(
+                self.root, state.run_id, currentness=currentness,
+                central_database=self.store.central_database,
+            )
+            final_evidence = self.repository.inspect(self.root)
+            final_protected = self.repository.protected_main_revision(self.root)
+        except (EngineeringStorageError, RunnerError):
+            return self._save_terminal(checked, "BLOCKED", "delivery_validation_unavailable",
+                                       "Final revision validation evidence is unavailable.")
+        if not strict_required_controls_pass(context, candidate_sha=revision, currentness=currentness):
+            return self._save_terminal(checked, "BLOCKED", "delivery_validation_failed",
+                                       "Required controls did not pass on the final delivered revision.")
+        if self.store.central_database is None:
+            return self._save_terminal(checked, "BLOCKED", "delivery_validation_unavailable",
+                                       "Final revision validation detail is unavailable.")
+        from .submission_service import _terminal_validation_controls
+        projection = _terminal_validation_controls(
+            self.store.central_database.parent, repository_root=self.root, run_id=state.run_id,
+        )
+        suite = projection.get("controls", {}).get("repository_suite") if projection.get("status") == "AVAILABLE" else None
+        detail = suite.get("result_detail") if isinstance(suite, dict) else None
+        if (not isinstance(detail, dict) or detail.get("status") != "AVAILABLE"
+                or isinstance(detail.get("test_count"), bool)
+                or not isinstance(detail.get("test_count"), int)
+                or detail["test_count"] < 1):
+            return self._save_terminal(checked, "BLOCKED", "delivery_test_discovery_unproven",
+                                       "Final revision repository suite did not prove any executed tests.")
+        if (final_evidence.branch != "main" or not final_evidence.clean
+                or final_evidence.head_sha != revision or final_protected != revision):
+            return self._save_terminal(checked, "BLOCKED", "delivery_revision_changed",
+                                       "Repository changed after final revision validation.")
+        return checked
+
     def _record_merged_evidence(
         self, state: TransactionState, pr: PullRequestEvidence, evidence: RepositoryEvidence
     ) -> TransactionState:
+        if (state.delegated_merge_attempt is not None
+                and state.delegated_merge_attempt != f"{pr.number}:{pr.head_sha}"):
+            return self._save_terminal(
+                state, "BLOCKED", "delegated_merge_head_mismatch",
+                "Merged pull request differs from the delegated exact-head attempt.",
+            )
         expected_head = (
             (state.implementation_head_sha or state.last_verified_sha)
             if state.transaction_kind == "IMPLEMENTATION"
             else (state.finalization_head_sha or state.last_verified_sha)
             if state.transaction_kind == "FINALIZATION"
-            else None
+            else next((item.get("commit_sha") for item in reversed(state.commit_evidence)
+                       if item.get("phase") == "RECONCILE_AGENT"
+                       and item.get("description") == "end_reconciliation_commit_verified"), None)
         )
+        if state.transaction_kind == "RECONCILIATION" and state.reconciliation_head_sha is not None:
+            expected_head = state.reconciliation_head_sha
         if (
-            state.transaction_kind in {"IMPLEMENTATION", "FINALIZATION"}
+            state.transaction_kind in {"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"}
             and isinstance(expected_head, str)
             and isinstance(pr.head_sha, str)
             and pr.head_sha != expected_head
@@ -4184,7 +4835,7 @@ First implementation pull-request publication gate:
             )
             description = "implementation_merge_verified"
         elif state.transaction_kind == "RECONCILIATION":
-            recorded = replace(state, reconciliation_pull_request=pr.number, **common)
+            recorded = replace(state, reconciliation_pull_request=pr.number, reconciliation_merge_commit=pr.merge_commit, **common)
             description = "reconciliation_merge_verified"
         else:
             recorded = replace(

@@ -102,6 +102,11 @@ class EngineeringStorageTest(unittest.TestCase):
             {**raw, "admission_decision": "PASS", "admission_completed_at": None},
             {**raw, "provider_recovery_attempts": ({"bad": "ledger"},)},
             {**raw, "commit_evidence": ({"phase": "EXECUTE_AGENT"},)},
+            {**raw, "delivery_control_validation_required": "yes"},
+            {**raw, "merge_delegation_id": "wrong-id"},
+            {**raw, "delegated_merge_attempt": "17:wrong-sha"},
+            {**raw, "delegated_merge_actor_reference": "unverified-owner"},
+            {**raw, "reconciliation_head_sha": "not-a-commit"},
         )
         for checkpoint in cases:
             with self.assertRaises(StateError):

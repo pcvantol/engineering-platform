@@ -7862,10 +7862,8 @@ test.describe("Engineering Status browser smoke", () => {
       },
     }));
 
-    await expect(page.locator("#executionEstimate")).toHaveText("Indicatieve totale duur: 25–34 minuten");
-    await expect(page.locator("#executionEstimateMeta")).toContainText(
-      "3 vergelijkbare voltooide uitvoeringen",
-    );
+    await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
+    await expect(page.locator("#executionEstimateMeta")).toContainText("schatting van de hele run");
   });
 
   test("uses phase-aware comparable telemetry for the remaining duration", async ({ page }) => {
@@ -7887,8 +7885,9 @@ test.describe("Engineering Status browser smoke", () => {
       },
     }));
 
-    await expect(page.locator("#executionEstimate")).toHaveText("Indicatief resterend: 10–15 minuten");
-    await expect(page.locator("#executionEstimateMeta")).toContainText("3 vergelijkbare voltooide uitvoeringen");
+    await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
+    await expect(page.locator("#executionEstimateMeta")).toContainText("Resterend gemeten intern werk: 10–15 minuten.");
+    await expect(page.locator("#executionEstimateMeta")).toContainText("Wachten op PR, CI en merge valt buiten deze bandbreedte.");
   });
 
   test("stops reporting one minute once a phase-aware range is exhausted", async ({ page }) => {
@@ -7910,12 +7909,10 @@ test.describe("Engineering Status browser smoke", () => {
       },
     }));
 
-    await expect(page.locator("#executionEstimate")).toHaveText(
-      "Schatting overschreden; resterende tijd onzeker",
-    );
+    await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
     await expect(page.locator("#executionEstimate")).not.toContainText("1–1");
     await expect(page.locator("#executionEstimateMeta")).toContainText(
-      "De eerdere bandbreedte is verstreken",
+      "De schatting voor gemeten intern werk is verstreken.",
     );
   });
 
@@ -7933,11 +7930,10 @@ test.describe("Engineering Status browser smoke", () => {
       duration_estimate: {},
     }));
 
-    await expect(page.locator("#executionEstimate")).toHaveText(
-      "Schatting overschreden; resterende tijd onzeker",
-    );
+    await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
     await expect(page.locator("#executionEstimate")).not.toContainText("1–1");
-    await expect(page.locator("#executionEstimateMeta")).toContainText("minuten verstreken");
+    await expect(page.locator("#executionEstimateMeta")).toContainText("Huidige fase: Uitvoering.");
+    await expect(page.locator("#executionEstimateMeta")).toContainText("schatting van de hele run");
   });
 
   test("shows the elapsed duration explanation only once without learned history", async ({ page }) => {
@@ -7951,9 +7947,51 @@ test.describe("Engineering Status browser smoke", () => {
       watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "EXECUTE_AGENT", run_id: "duration-copy",
       prompt_characters: 1000,
     }, { prompt_started: { started_at: new Date().toISOString() }, duration_estimate: {} }));
+    await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
     await expect(page.locator("#executionEstimateMeta")).toHaveText(
-      "0 minuten verstreken.\nGebaseerd op opdrachtomvang, fase en verstreken tijd. Geen live Codex-voortgang of tokenverbruik.",
+      "Huidige fase: Uitvoering.\nEr zijn geen vergelijkbare voltooide uitvoeringen voor een schatting van de hele run.",
     );
+  });
+
+  test("does not mistake a nine-minute active phase for whole-run time remaining", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    for (const [phase, label] of [
+      ["REPAIR_AGENT", "Herstel"],
+      ["FINALIZATION_REPAIR_AGENT", "Herstel van finalisatiecontrole"],
+    ]) {
+      await page.evaluate((currentPhase) => r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: currentPhase, run_id: "long-active-run",
+      }, { prompt_started: { started_at: new Date(Date.now() - 9 * 60 * 1000).toISOString() }, duration_estimate: {} }), phase);
+      await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
+      await expect(page.locator("#executionEstimate")).not.toContainText("1–1");
+      await expect(page.locator("#executionEstimateMeta")).toContainText(`Huidige fase: ${label}.`);
+    }
+  });
+
+  test("renders all execution report tables as safe table cells", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      const report = [
+        "### Invocation Detail", "", "| Phase | Role |", "| --- | --- |", "| EXECUTE_AGENT | implementation\\|owner |", "",
+        "### Inclusive Phase Workload", "- These measured category totals may overlap; their shares are not additive.", "",
+        "| Phase | Duration | Share | Spans |", "| --- | ---: | ---: | ---: |", "| VALIDATION | 1.000 s | 25.000% | 1 |", "",
+        "### Exclusive Elapsed-Time Distribution", "- Deterministic non-overlapping interval partition; independent concurrency is PARALLEL_OVERLAP.", "",
+        "| Category | Duration | Share |", "| --- | ---: | ---: |", "| VALIDATION | 1.000 s | 25.000% |", "",
+        "| malformed | row |", "| not a separator |", "| <img src=x onerror=alert(1)> | plain |",
+      ].join("\n");
+      const target = document.querySelector("#promptHistoryReportContent");
+      target.replaceChildren();
+      target.classList.add("markdown-document");
+      renderMarkdownAnswer(target, report);
+    });
+    await expect(page.locator("#promptHistoryReportContent table")).toHaveCount(3);
+    await expect(page.locator("#promptHistoryReportContent table").first().locator("td")).toHaveText(["EXECUTE_AGENT", "implementation|owner"]);
+    await expect(page.locator("#promptHistoryReportContent table").nth(1).locator("td")).toHaveText(["VALIDATION", "1.000 s", "25.000%", "1"]);
+    await expect(page.locator("#promptHistoryReportContent table").nth(2).locator("td")).toHaveText(["VALIDATION", "1.000 s", "25.000%"]);
+    await expect(page.locator("#promptHistoryReportContent img")).toHaveCount(0);
+    await expect(page.locator("#promptHistoryReportContent")).toContainText("not a separator");
   });
 
   test("formats the CENTRAL start time and never renders a JSON diagnostic error", async ({ page }) => {

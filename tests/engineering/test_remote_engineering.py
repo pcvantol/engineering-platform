@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
@@ -34,6 +35,19 @@ class RemoteEngineeringTest(unittest.TestCase):
             self.assertIn(
                 "remote-1", (root / "docs/engineering/runs/index.json").read_text(encoding="utf-8")
             )
+            records = [handoff.read_text(encoding="utf-8"),
+                       (root / "docs/engineering/runs/latest.md").read_text(encoding="utf-8")]
+            index = json.loads((root / "docs/engineering/runs/index.json").read_text(encoding="utf-8"))
+            for record in records:
+                self.assertIn("FINALIZATION_PR_OPEN", record)
+                self.assertIn("FINALIZATION_PENDING", record)
+                self.assertNotIn("MERGED_RECONCILED", record)
+                self.assertNotIn("WORKSPACE_READY", record)
+                self.assertNotIn("- Completed:", record)
+            self.assertEqual(index["repository_state"], "FINALIZATION_PR_OPEN")
+            self.assertEqual(index["workspace_state"], "FINALIZATION_PENDING")
+            self.assertIn("prepared_at", index)
+            self.assertNotIn("completed_at", index)
 
     def test_handoff_command_writes_records_to_the_selected_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

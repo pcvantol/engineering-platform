@@ -2,18 +2,27 @@ from __future__ import annotations
 
 from engineering_platform.storage import sqlite_connection
 from engineering_platform.storage import record_artifact
+from engineering_platform.storage import (
+    record_validation_profile, record_validation_command_invocation,
+    record_validation_command_terminal, record_validation_control_result,
+)
+from engineering_platform.execution_executor import persist_validation_result_detail
 
 import json
+import hashlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import socket
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from engineering_platform import server, submission_service
+from engineering_platform import server, submission_service, merge_delegation
 from engineering_platform.agent_state import TransactionState
 from engineering_platform.platform_version import CURRENT_PLATFORM_VERSION
 
@@ -42,6 +51,80 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
     def tearDown(self) -> None:
         server.stop(self.root)
         self.temporary.cleanup()
+
+    def test_validation_result_detail_distinguishes_zero_missing_and_corrupt_output(self) -> None:
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite_connection(database) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) "
+                "VALUES(?,?,?,?,?,?)",
+                ("run-details", "djconnect", "RUNNING", "2026-01-01T00:00:00+00:00",
+                 "2026-01-01T00:00:00+00:00", "MANAGED"),
+            )
+            connection.execute(
+                "INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,"
+                "execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,"
+                "input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,"
+                "execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("run-details", "2026-01-01", "2026-01-01T00:00:00+00:00",
+                 "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", 0, 1,
+                 "COMPLETE", None, None, None,
+                 "MANAGED", "djconnect", "djconnect", "test"),
+            )
+        for command_id, summary, expected in (
+            ("zero-tests", "Ran 0 tests in 0.01s\n\nOK\n", 0),
+            ("two-tests", "Ran 2 tests in 0.01s\n\nOK\n", 2),
+            ("unknown-tests", "completed successfully", None),
+        ):
+            persist_validation_result_detail(
+                self.root, run_id="run-details", command_id=command_id,
+                validation_id="repository_suite", exit_code=0, stdout="", stderr=summary,
+                capture_available=True, captured_at="2026-01-01T00:00:01+00:00",
+                central_database=database, artifact_root=self.root / "artifacts",
+            )
+            with sqlite_connection(database) as connection:
+                detail = submission_service._validation_result_detail(
+                    connection, data_root=self.root, run_id="run-details",
+                    validation_id="repository_suite", command_id=command_id, exit_code=0,
+                )
+            self.assertEqual(detail["status"], "AVAILABLE")
+            self.assertEqual(detail["test_count"], expected)
+            self.assertRegex(detail["output_digest"], r"^sha256:[0-9a-f]{64}$")
+        target = self.root / "artifacts" / "validation-result-details" / "validation-result-detail-two-tests.json"
+        target.write_text("{}", encoding="utf-8")
+        with sqlite_connection(database) as connection:
+            self.assertEqual(submission_service._validation_result_detail(
+                connection, data_root=self.root, run_id="run-details",
+                validation_id="repository_suite", command_id="two-tests", exit_code=0,
+            ), {"status": "UNAVAILABLE"})
+            self.assertEqual(submission_service._validation_result_detail(
+                connection, data_root=self.root, run_id="other-run",
+                validation_id="repository_suite", command_id="zero-tests", exit_code=0,
+            ), {"status": "UNAVAILABLE"})
+
+    def test_control_definition_digest_changes_when_argv_changes_under_same_identity(self) -> None:
+        binding = {"validation_id": "repository_suite", "category": "repository",
+                   "control_identity": "python3 -m unittest discover -s tests",
+                   "command": [sys.executable, "-m", "unittest", "discover", "-s", "tests"]}
+        expected = submission_service._control_definition_digest(
+            profile_version="1.0", profile_reference="validation-profile-registry:FULL@1.0",
+            binding=binding,
+        )
+        changed = {**binding, "command": [sys.executable, "-m", "unittest", "discover", "-s", "other-tests"]}
+        self.assertNotEqual(expected, submission_service._control_definition_digest(
+            profile_version="1.0", profile_reference="validation-profile-registry:FULL@1.0",
+            binding=changed,
+        ))
+        logical_definition = {
+            "validation_profile_version": "1.0",
+            "profile_reference": "validation-profile-registry:FULL@1.0",
+            "validation_id": "repository_suite", "category": "repository",
+            "control_identity": "python3 -m unittest discover -s tests",
+            "command_identity": ["{python}", "-m", "unittest", "discover", "-s", "tests"],
+        }
+        self.assertEqual(expected, "sha256:" + hashlib.sha256(json.dumps(
+            logical_definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")).hexdigest())
 
     def payload(self, key: str = "same") -> dict[str, object]:
         return {"repository_id": "djconnect", "producer": {"id": "test", "type": "HUMAN", "version": "1"}, "prompt": "Validate only; do not execute.", "idempotency_key": key}
@@ -312,6 +395,159 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         payload["constraints"]["forge_execution"]["forge_application_version"] = "2.7.1"  # type: ignore[index]
         with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PROVENANCE"):
             submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+    def test_delivery_validation_constraint_is_bound_to_accepted_v13_envelope(self) -> None:
+        payload = self.forge_planning_context_payload("delivery-controls")
+        provenance = payload["constraints"]["forge_execution"]  # type: ignore[index]
+        provenance["execution_constraints"] = ["ep-delivery-control-validation:1"]  # type: ignore[index]
+        request = submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        self.assertEqual(request.constraints["forge_execution"]["execution_constraints"], ["ep-delivery-control-validation:1"])
+        provenance["execution_constraints"] = ["ep-delivery-control-validation:1",  # type: ignore[index]
+                                               "ep-delivery-unittest:tests.test_cli.ValidCase.test_valid"]
+        request = submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        self.assertEqual(len(request.constraints["forge_execution"]["execution_constraints"]), 2)
+        provenance["execution_constraints"] = ["ep-delivery-control-validation:1",  # type: ignore[index]
+                                               "ep-delivery-unittest:tests.test_cli;rm"]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_DELIVERY_OBSERVATION_CONTROLS"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        provenance["execution_constraints"] = ["ep-delivery-unittest:tests.test_cli.ValidCase.test_valid"]  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_DELIVERY_OBSERVATION_CONTROLS"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        provenance["execution_constraints"] = ["ep-delivery-control-validation:1", "ep-delivery-control-validation:1"]  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PROVENANCE"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+        provenance["execution_constraints"] = "ep-delivery-control-validation:1"  # type: ignore[index]
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_FORGE_PROVENANCE"):
+            submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+
+    def test_merge_reservation_requires_activation_and_revocation_stops_new_submissions(self) -> None:
+        delegation_id = "a" * 32
+        expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        workspace = self.root / "workspace"
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin",
+                        "https://github.com/pcvantol/djconnect.git"], check=True)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            reserved = merge_delegation.reserve(
+                connection, delegation_id=delegation_id, actor_reference="local-uid:501",
+                project_id="djconnect", repository_id="djconnect",
+                github_repository="pcvantol/djconnect", base_branch="main",
+                roles=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"), expires_at=expires,
+            )
+            self.assertFalse(reserved.permits(
+                project_id="djconnect", repository_id="djconnect",
+                mission_id="mission-merge-reservation", mission_revision="1",
+                role="IMPLEMENTATION", base_branch="main",
+            ))
+            payload = self.forge_planning_context_payload("merge-reservation")
+            payload["constraints"]["forge_execution"]["execution_constraints"] = [  # type: ignore[index]
+                f"ep-merge-delegation:{delegation_id}",
+            ]
+            request = submission_service.request_from_mapping("djconnect", payload, transport="HTTP")
+            with self.assertRaisesRegex(submission_service.SubmissionError, "MERGE_DELEGATION_UNAVAILABLE"):
+                submission_service.submit(connection, request)
+            active = merge_delegation.activate(
+                connection, delegation_id=delegation_id,
+                mission_id="mission-merge-reservation", mission_revision="1",
+                actor_reference="local-uid:501", github_repository="pcvantol/djconnect",
+            )
+            self.assertTrue(active.permits(
+                project_id="djconnect", repository_id="djconnect",
+                mission_id="mission-merge-reservation", mission_revision="1",
+                role="IMPLEMENTATION", base_branch="main",
+            ))
+            submission_service.submit(connection, request)
+            self.assertTrue(merge_delegation.revoke(connection, delegation_id, actor_reference="local-uid:501"))
+            self.assertFalse(merge_delegation.load(connection, delegation_id).permits(
+                project_id="djconnect", repository_id="djconnect",
+                mission_id="mission-merge-reservation", mission_revision="1",
+                role="IMPLEMENTATION", base_branch="main",
+            ))
+            payload = self.forge_planning_context_payload("merge-after-revoke")
+            payload["constraints"]["forge_execution"]["execution_constraints"] = [  # type: ignore[index]
+                f"ep-merge-delegation:{delegation_id}",
+            ]
+            with self.assertRaisesRegex(submission_service.SubmissionError, "MERGE_DELEGATION_UNAVAILABLE"):
+                submission_service.submit(
+                    connection, submission_service.request_from_mapping("djconnect", payload, transport="HTTP"),
+                )
+
+    def test_authenticated_merge_grant_readback_reports_scope_and_lifecycle(self) -> None:
+        delegation_id = "b" * 32
+        expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        workspace = self.root / "workspace"
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin",
+                        "https://github.com/pcvantol/djconnect.git"], check=True)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            merge_delegation.reserve(
+                connection, delegation_id=delegation_id, actor_reference="local-uid:501",
+                project_id="djconnect", repository_id="djconnect",
+                github_repository="pcvantol/djconnect", base_branch="main",
+                roles=("IMPLEMENTATION",), expires_at=expires,
+            )
+        server.start(self.root)
+        endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/merge-delegations/{delegation_id}"
+        def readback() -> dict[str, object]:
+            with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+                return json.loads(response.read())
+        with self.assertRaises(HTTPError) as unauthorized:
+            urlopen(endpoint)  # nosec B310
+        self.assertEqual(unauthorized.exception.code, 401)
+        reserved = readback()
+        self.assertEqual(reserved["contract_version"], "1.1")
+        self.assertEqual((reserved["assurance_profile_id"], reserved["assurance_profile_revision"]), ("", ""))
+        self.assertEqual(reserved["assurance_policy_digest"], "")
+        self.assertEqual(reserved["status"], "RESERVED")
+        self.assertEqual(reserved["github_repository"], "pcvantol/djconnect")
+        self.assertEqual(reserved["mission_id"], "")
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            merge_delegation.activate(
+                connection, delegation_id=delegation_id,
+                mission_id="mission-readback", mission_revision="7",
+                actor_reference="local-uid:501", github_repository="pcvantol/djconnect",
+            )
+        active = readback()
+        self.assertEqual(active["status"], "ACTIVE")
+        self.assertEqual((active["mission_id"], active["mission_revision"]), ("mission-readback", "7"))
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            merge_delegation.revoke(connection, delegation_id, actor_reference="local-uid:501")
+        self.assertEqual(readback()["status"], "REVOKED")
+
+    def test_authenticated_profiled_grant_readback_binds_owner_policy_digest(self) -> None:
+        delegation_id = "c" * 32
+        digest = "sha256:" + "a" * 64
+        workspace = self.root / "workspace"
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin",
+                        "https://github.com/pcvantol/forge-mission-qualification.git"], check=True)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            merge_delegation.reserve(
+                connection, delegation_id=delegation_id, actor_reference="local-uid:501",
+                project_id="djconnect", repository_id="djconnect",
+                github_repository="pcvantol/forge-mission-qualification", base_branch="main",
+                roles=("IMPLEMENTATION",),
+                expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                assurance_profile=merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE,
+                assurance_policy_digest=digest,
+            )
+        server.start(self.root)
+        endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/merge-delegations/{delegation_id}"
+        with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+            payload = json.loads(response.read())
+        self.assertEqual(payload["contract_version"], "1.1")
+        self.assertEqual((payload["assurance_profile_id"], payload["assurance_profile_revision"],
+                          payload["assurance_policy_digest"]),
+                         ("qualification-autonomous-qs", "1", digest))
+        self.assertEqual(payload["status"], "RESERVED")
+
+    def test_final_reconciliation_merge_is_the_delivery_revision(self) -> None:
+        final = "d" * 40
+        state = TransactionState(
+            "reconciled-delivery", "pcvantol/djconnect", "prompt.md", "COMPLETE",
+            finalization_merge_commit="c" * 40, reconciliation_merge_commit=final,
+            commit_evidence=({"commit_sha": final},), terminal=True,
+        )
+        self.assertEqual(submission_service._repository_revision(state, "COMPLETE"), (final, True))
 
     def test_service_preserves_cross_transport_idempotency_and_history(self) -> None:
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
@@ -558,6 +794,8 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with urlopen(scoped) as response:  # nosec B310
             authenticated = json.loads(response.read())
         self.assertEqual(authenticated["contract_version"], "1.1")
+        self.assertEqual(authenticated["contracts"]["validation_controls"], ["1.0", "1.1"])
+        self.assertEqual(authenticated["contracts"]["delivery_revision_validation"], ["1.0"])
         self.assertEqual(authenticated["authentication"], {
             "consumer_id": "cli", "consumer_status": "ACTIVE",
             "project_id": "djconnect", "project_status": "ACTIVE",
@@ -672,6 +910,50 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps(checkpoint.to_dict()), "COMPLETE", "now"))
             connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)", ("run-readback", "COMPLETE", "safe", "now", None, "/private/report", "now"))
+        binding = {"validation_id": "repository_suite", "required": True,
+                   "category": "repository", "control_identity": "python3 -m unittest discover -s tests",
+                   "command": ["python3", "-m", "unittest", "discover", "-s", "tests"]}
+        record_validation_profile(
+            self.root, run_id="run-readback", selected_validation_tier="FULL",
+            validation_profile_version="1.0", required_validation_controls=("repository_suite",),
+            recorded_at="2026-01-01T00:00:00+00:00", control_bindings=(binding,),
+            candidate_sha="c" * 40, currentness=2,
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        record_validation_command_invocation(
+            self.root, run_id="run-readback", validation_id="repository_suite",
+            command_id="required-control-fixture", category="repository",
+            control_identity=binding["control_identity"], required_for_profile=True,
+            started_at="2026-01-01T00:00:00+00:00", currentness=2,
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        record_validation_command_terminal(
+            self.root, run_id="run-readback", command_id="required-control-fixture",
+            completed_at="2026-01-01T00:00:01+00:00", exit_code=0,
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        record_validation_control_result(
+            self.root, run_id="run-readback", validation_id="repository_suite",
+            category="repository", control_identity=binding["control_identity"],
+            required_for_profile=True, execution_status="EXECUTED", result="PASS",
+            evidence_ref="command_terminal", observed_at="2026-01-01T00:00:01+00:00",
+            currentness=2, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        record_validation_control_result(
+            self.root, run_id="run-readback", validation_id="provider_observed_repository_suite",
+            category="agent", control_identity="private optional provider command",
+            required_for_profile=False, execution_status="EXECUTED", result="PASS",
+            evidence_ref="provider_report", observed_at="2026-01-01T00:00:01+00:00",
+            currentness=2, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        persist_validation_result_detail(
+            self.root, run_id="run-readback", command_id="required-control-fixture",
+            validation_id="repository_suite", exit_code=0,
+            stdout="", stderr="Ran 2 tests in 0.01s\n\nOK\n", capture_available=True,
+            captured_at="2026-01-01T00:00:01+00:00",
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+            artifact_root=self.root / "artifacts",
+        )
         artifact_id = submission_service.write_terminal_evidence(self.root, repository_root=self.root, run_id="run-readback")
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             direct = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submission_id)
@@ -715,6 +997,26 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(artifact["delivery"], {"status": "NOT_DELIVERED", "revision": None})
         self.assertEqual(artifact["assurance"]["repair_rounds"], {"used": 2, "maximum": 3})
         self.assertEqual(artifact["assurance"]["findings"]["artifact"]["id"], "assurance-findings:run-readback")
+        controls = artifact["validation_controls"]
+        self.assertEqual(controls["contract_version"], "1.0")
+        self.assertEqual(controls["candidate_sha"], "c" * 40)
+        self.assertEqual(controls["required_validation_controls"], ["repository_suite"])
+        control = controls["controls"]["repository_suite"]
+        self.assertEqual(tuple(controls["controls"]), ("repository_suite",))
+        self.assertNotIn("private optional provider command", returned_artifact_bytes.decode("utf-8"))
+        self.assertEqual(control["evidence_authority"], "command_terminal")
+        self.assertEqual(control["result_detail"]["test_count"], 2)
+        logical_definition = {
+            "validation_profile_version": "1.0",
+            "profile_reference": "validation-profile-registry:FULL@1.0",
+            "validation_id": "repository_suite", "category": "repository",
+            "control_identity": binding["control_identity"],
+            "command_identity": binding["command"],
+        }
+        expected_definition = "sha256:" + hashlib.sha256(json.dumps(
+            logical_definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")).hexdigest()
+        self.assertEqual(control["control_definition_digest"], expected_definition)
 
         # A new writer must not replace a previously immutable v1.3 terminal
         # artifact merely because it can now emit a richer v1.4 shape.

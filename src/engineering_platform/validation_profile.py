@@ -16,6 +16,10 @@ DASHBOARD_PREFIXES = ("src/engineering_platform/assets/",)
 DASHBOARD_FILES = {"src/engineering_platform/server_console_services.py", "src/engineering_platform/server.py", "tests/engineering/dashboard.spec.mjs", "package.json", "package-lock.json"}
 RUNTIME_PREFIXES = ("src/engineering_platform/", "tests/engineering/", ".github/workflows/")
 VALIDATION_PROFILE_VERSION = "1.0"
+DELIVERY_UNITTEST_PREFIX = "ep-delivery-unittest:"
+_DELIVERY_UNITTEST_SELECTOR = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\Z"
+)
 REQUIRED_CONTROLS = {
     "DOCUMENTATION": ("git_diff_check", "documentation_contract"),
     "DASHBOARD": ("git_diff_check", "engineering_python", "console_route_ownership", "ui_localization", "dashboard_browser"),
@@ -47,6 +51,35 @@ class ValidationControlLauncher:
 
 class ValidationProfileResolutionError(ValueError):
     """The selected run profile is absent or does not match this registry."""
+
+
+def delivery_unittest_selectors(constraints: object) -> tuple[str, ...]:
+    """Resolve bounded immutable Mission selectors; no shell or provider text."""
+    if not isinstance(constraints, list) or any(not isinstance(item, str) for item in constraints):
+        raise ValidationProfileResolutionError("Delivery observation constraints are invalid.")
+    tokens = [item for item in constraints if item.startswith(DELIVERY_UNITTEST_PREFIX)]
+    if not tokens:
+        return ()
+    selectors = [item[len(DELIVERY_UNITTEST_PREFIX):] for item in tokens]
+    if (len(selectors) > 8 or len(set(selectors)) != len(selectors)
+            or any(len(value) > 100 or _DELIVERY_UNITTEST_SELECTOR.fullmatch(value) is None
+                   for value in selectors)
+            or constraints.count("ep-delivery-control-validation:1") != 1):
+        raise ValidationProfileResolutionError("Delivery observation selectors are invalid.")
+    return tuple(sorted(selectors))
+
+
+def delivery_unittest_binding(selector: str) -> dict[str, object]:
+    """Canonical optional test launcher identity for one approved selector."""
+    if len(selector) > 100 or _DELIVERY_UNITTEST_SELECTOR.fullmatch(selector) is None:
+        raise ValidationProfileResolutionError("Delivery observation selector is invalid.")
+    return {
+        "validation_id": "unittest_selector_" + hashlib.sha256(selector.encode("utf-8")).hexdigest()[:16],
+        "required": False,
+        "category": "repository",
+        "control_identity": "python3 -m unittest " + selector,
+        "command": list(_python_command("-m", "unittest", selector)),
+    }
 
 
 def validation_profile_identity(

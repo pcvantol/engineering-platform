@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 import os
@@ -49,6 +50,7 @@ _VALIDATION_STREAM_LIMIT = MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS // 2
 _UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): [^(]+ \(([^)]+)\)$", re.MULTILINE)
 _UNITTEST_COUNTS = re.compile(r"FAILED \((?P<details>[^)]*)\)")
 _UNITTEST_COUNT = re.compile(r"\b(?P<name>failures|errors)=(?P<count>\d+)\b")
+_UNITTEST_DISCOVERY = re.compile(r"^Ran (?P<count>\d+) tests? in [0-9.]+s$", re.MULTILINE)
 _TURN_ABORTED = re.compile(r'"type"\s*:\s*"turn_aborted"[^\n]*"reason"\s*:\s*"interrupted"', re.IGNORECASE)
 _ASSESSMENT_STATES = frozenset({"COMPLETE", "WAITING", "FAILED", "BLOCKED"})
 
@@ -218,6 +220,59 @@ def _bounded_redacted_validation_tail(value: str | None, *, limit: int = _VALIDA
 
 def validation_failure_artifact_id(command_id: str) -> str:
     return f"validation-failure-diagnostic-{command_id}"
+
+
+def persist_validation_result_detail(
+    root: Path, *, run_id: str, command_id: str, validation_id: str,
+    exit_code: int | None, stdout: str | None, stderr: str | None,
+    capture_available: bool, captured_at: str,
+    central_database: Path | None = None, artifact_root: Path | None = None,
+) -> str:
+    """Retain bounded machine-readable test discovery from actual host output.
+
+    Command text and raw output stay out of this artifact. A zero or unknown
+    count is represented exactly and must not be interpreted as test proof.
+    """
+    available = capture_available and isinstance(stdout, str) and isinstance(stderr, str)
+    output = f"{stdout}\n{stderr}" if available else None
+    matches = _UNITTEST_DISCOVERY.findall(output) if output is not None else []
+    test_count = int(matches[0]) if len(matches) == 1 else None
+    artifact_id = f"validation-result-detail-{command_id}"
+    payload = {
+        "schema": "deterministic-validation-result-detail-v1",
+        "run_id": run_id, "command_id": command_id, "validation_id": validation_id,
+        "exit_code": exit_code, "captured_at": captured_at,
+        "capture_status": "AVAILABLE" if available else "UNAVAILABLE",
+        "output_digest": "sha256:" + hashlib.sha256(output.encode("utf-8")).hexdigest() if output is not None else None,
+        "test_count": test_count,
+        "test_count_source": "unittest_terminal_summary" if test_count is not None else "UNAVAILABLE",
+    }
+    directory = ((artifact_root / "validation-result-details") if artifact_root else
+                 (root / ".engineering" / "artifacts" / "validation-result-details"))
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / f"{artifact_id}.json"
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    if path.exists():
+        if path.read_bytes() != encoded:
+            raise EngineeringStorageError("Validation result detail identity conflicts with existing evidence.")
+    else:
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{artifact_id}.", suffix=".tmp", dir=directory)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    record_artifact(
+        root, path, artifact_id=artifact_id, artifact_type="VALIDATION_RESULT_DETAIL",
+        content_type="application/json", created_at=captured_at, run_id=run_id,
+        execution_id=command_id,
+        central_database=central_database, artifact_root=artifact_root,
+    )
+    return f"artifact:{artifact_id}"
 
 
 def persist_validation_failure_diagnostic(

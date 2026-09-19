@@ -13,6 +13,8 @@ import sys
 import tempfile
 import unittest
 
+from engineering_platform import server
+
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "tools" / "qualification" / "operational_reset_coordinator.py"
@@ -413,7 +415,8 @@ class OperationalResetCoordinatorTests(unittest.TestCase):
 
         self.assertEqual("BOTH_PREVIEWED", result["state"])
         self.assertEqual(
-            68, result["products"]["engineering-platform"]["target"]["schema_version"],
+            server.SERVER_STORE_SCHEMA_VERSION,
+            result["products"]["engineering-platform"]["target"]["schema_version"],
         )
 
 

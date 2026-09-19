@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import re
 import time
@@ -44,7 +45,8 @@ class GitHubClient(Protocol):
     def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None: ...
     def ready(self, number: int) -> None: ...
     def normalize_markdown_body(self, number: int) -> bool: ...
-    def merge(self, number: int) -> None: ...
+    def merge(self, number: int, *, expected_head_sha: str | None = None) -> None: ...
+    def delegated_merge_qualification(self, number: int, head_sha: str, *, assurance_profile: str | None = None) -> dict[str, object]: ...
     def create_or_recover_pull_request(
         self, branch: str, base: str, title: str, body: str, *, draft: bool = False,
     ) -> PullRequestEvidence: ...
@@ -203,7 +205,9 @@ class GhCliClient:
         self.repository = repository
 
     def _github(self, *args: str) -> str:
-        scoped = (*args, "--repo", self.repository) if self.repository else args
+        # REST endpoints already carry the exact repository in their path.
+        # `gh api` has no `--repo` flag; only `gh pr` accepts that selector.
+        scoped = (*args, "--repo", self.repository) if self.repository and args and args[0] == "pr" else args
         return self.provider.github(*scoped)
 
     def version_preparation_writer(self) -> dict[str, object]:
@@ -333,7 +337,7 @@ class GhCliClient:
         missing = sorted(names - observed)
         if missing:
             raise RunnerError("Version preparation qualification is missing required checks: " + ", ".join(missing))
-        return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "required_checks": sorted(names), "checks": checks, "conclusion": "PASS"}
+        return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "required_checks": sorted(names), "strict_checks": required.get("strict") is True, "checks": checks, "conclusion": "PASS"}
     def ready(self, number: int) -> None:
         try: self._github("pr", "ready", str(number))
         except RuntimeError as error:
@@ -356,6 +360,229 @@ class GhCliClient:
         except RuntimeError as error:
             raise RunnerError("Pull request Markdown could not be normalized.") from error
         return True
-    def merge(self, number: int) -> None:
-        try: self._github("pr", "merge", str(number), "--squash", "--delete-branch")
-        except RuntimeError as error: raise RunnerError(str(error)) from error
+    def _autonomous_effective_policy(self) -> dict[str, object]:
+        """Read all active main rules and classic protection without inferring zero from errors."""
+        if self.repository != "pcvantol/forge-mission-qualification":
+            raise RunnerError("Autonomous assurance profile has a different repository scope.")
+        try:
+            raw_rules = json.loads(self._github("api", f"repos/{self.repository}/rules/branches/main?per_page=100"))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Effective GitHub ruleset policy could not be read.") from error
+        if not isinstance(raw_rules, list) or len(raw_rules) >= 100:
+            raise RunnerError("Effective GitHub ruleset policy is incomplete.")
+        rulesets: dict[int, list[dict[str, object]]] = {}
+        for rule in raw_rules:
+            if not isinstance(rule, dict) or not isinstance(rule.get("ruleset_id"), int):
+                raise RunnerError("Effective GitHub ruleset identity is incomplete.")
+            rulesets.setdefault(rule["ruleset_id"], []).append(rule)
+        verified_rules: list[dict[str, object]] = []
+        for ruleset_id, applied in sorted(rulesets.items()):
+            try:
+                detail = json.loads(self._github("api", f"repos/{self.repository}/rulesets/{ruleset_id}"))
+            except (RuntimeError, json.JSONDecodeError) as error:
+                raise RunnerError("Effective GitHub ruleset detail could not be read.") from error
+            if (not isinstance(detail, dict) or detail.get("id") != ruleset_id
+                    or detail.get("target") != "branch" or detail.get("enforcement") != "active"
+                    or detail.get("bypass_actors") != [] or not isinstance(detail.get("rules"), list)):
+                raise RunnerError("Effective GitHub ruleset detail is incomplete or permits bypass.")
+            detailed = detail["rules"]
+            if sorted(json.dumps({"type": item.get("type"), "parameters": item.get("parameters")}, sort_keys=True)
+                      for item in applied) != sorted(json.dumps({"type": item.get("type"), "parameters": item.get("parameters")}, sort_keys=True)
+                      for item in detailed if isinstance(item, dict)):
+                raise RunnerError("Effective GitHub ruleset changed during qualification.")
+            verified_rules.extend(applied)
+        try:
+            classic = json.loads(self._github("api", f"repos/{self.repository}/branches/main/protection"))
+        except RuntimeError as error:
+            # A 404 is explained only by independently verified, active and
+            # sufficient ruleset protection. Other failures remain unknown.
+            if not re.search(r"\bHTTP 404\b", str(error)) or not verified_rules:
+                raise RunnerError("Classic GitHub protection policy could not be read.") from error
+            classic = None
+        except json.JSONDecodeError as error:
+            raise RunnerError("Classic GitHub protection policy is malformed.") from error
+        if classic is not None and not isinstance(classic, dict):
+            raise RunnerError("Classic GitHub protection policy is malformed.")
+        if classic is not None:
+            enforcement = classic.get("enforce_admins")
+            if not isinstance(enforcement, dict) or enforcement.get("enabled") is not True:
+                raise RunnerError("Autonomous assurance requires classic protection to apply to administrators.")
+            for setting in ("allow_force_pushes", "allow_deletions"):
+                value = classic.get(setting)
+                if not isinstance(value, dict) or value.get("enabled") is not False:
+                    raise RunnerError("Autonomous assurance requires protected main to reject direct destructive writes.")
+        required_checks: set[str] = set()
+        required_apps: dict[str, set[int]] = {}
+        strict_values: list[bool] = []
+        required_approvals: list[int] = []
+        classic_checks = classic.get("required_status_checks") if classic else None
+        if classic_checks is not None:
+            if not isinstance(classic_checks, dict) or not isinstance(classic_checks.get("strict"), bool):
+                raise RunnerError("Classic required-check policy is incomplete.")
+            if not isinstance(classic_checks.get("contexts"), list) or not isinstance(classic_checks.get("checks"), list):
+                raise RunnerError("Classic required-check policy is incomplete.")
+            strict_values.append(classic_checks["strict"])
+            required_checks.update(item for item in classic_checks.get("contexts", []) if isinstance(item, str) and item)
+            required_checks.update(item["context"] for item in classic_checks.get("checks", [])
+                                   if isinstance(item, dict) and isinstance(item.get("context"), str) and item["context"])
+            for item in classic_checks["checks"]:
+                if not isinstance(item, dict) or not isinstance(item.get("context"), str) or not item["context"]:
+                    raise RunnerError("Classic required-check identity is incomplete.")
+                app_id = item.get("app_id")
+                if app_id is not None:
+                    if isinstance(app_id, bool) or not isinstance(app_id, int):
+                        raise RunnerError("Classic required-check application identity is invalid.")
+                    if app_id >= 0:
+                        required_apps.setdefault(item["context"], set()).add(app_id)
+        classic_reviews = classic.get("required_pull_request_reviews") if classic else None
+        if classic_reviews is not None:
+            if not isinstance(classic_reviews, dict):
+                raise RunnerError("Classic review policy is incomplete.")
+            count = classic_reviews.get("required_approving_review_count")
+            if (isinstance(count, bool) or not isinstance(count, int) or count < 0
+                    or classic_reviews.get("require_code_owner_reviews") is True
+                    or classic_reviews.get("require_last_push_approval") is True
+                    or classic_reviews.get("required_review_thread_resolution") is True):
+                raise RunnerError("Classic review policy requires unsupported or unknown approval evidence.")
+            required_approvals.append(count)
+        supported = {"required_status_checks", "pull_request", "non_fast_forward", "deletion", "required_linear_history"}
+        for rule in verified_rules:
+            rule_type, parameters = rule.get("type"), rule.get("parameters")
+            if rule_type not in supported:
+                raise RunnerError("Effective GitHub ruleset contains an unsupported rule.")
+            if rule_type == "required_status_checks":
+                if not isinstance(parameters, dict) or not isinstance(parameters.get("strict_required_status_checks_policy"), bool) or not isinstance(parameters.get("required_status_checks"), list):
+                    raise RunnerError("Ruleset required-check policy is incomplete.")
+                strict_values.append(parameters["strict_required_status_checks_policy"])
+                for item in parameters["required_status_checks"]:
+                    if not isinstance(item, dict) or not isinstance(item.get("context"), str) or not item["context"]:
+                        raise RunnerError("Ruleset required-check policy is incomplete.")
+                    required_checks.add(item["context"])
+                    app_id = item.get("integration_id")
+                    if app_id is not None:
+                        if isinstance(app_id, bool) or not isinstance(app_id, int):
+                            raise RunnerError("Ruleset required-check application identity is invalid.")
+                        if app_id >= 0:
+                            required_apps.setdefault(item["context"], set()).add(app_id)
+            elif rule_type == "pull_request":
+                if not isinstance(parameters, dict):
+                    raise RunnerError("Ruleset pull-request policy is incomplete.")
+                count = parameters.get("required_approving_review_count")
+                if (isinstance(count, bool) or not isinstance(count, int) or count < 0
+                        or parameters.get("require_code_owner_review") is True
+                        or parameters.get("required_review_thread_resolution") is True
+                        or parameters.get("required_reviewers")):
+                    raise RunnerError("Ruleset review policy requires unsupported or unknown approval evidence.")
+                required_approvals.append(count)
+        if not required_checks or not strict_values or not all(strict_values):
+            raise RunnerError("Autonomous assurance requires strict protected status checks.")
+        effective_rule_types = {rule.get("type") for rule in verified_rules}
+        if classic_reviews is None and "pull_request" not in effective_rule_types:
+            raise RunnerError("Effective protection lacks a required pull-request rule.")
+        if classic is None and not {"non_fast_forward", "deletion"} <= effective_rule_types:
+            raise RunnerError("Ruleset-only protection lacks force-push and deletion prevention.")
+        policy = {"source": "github-effective-main", "classic": classic,
+                  "rulesets": verified_rules, "required_checks": sorted(required_checks),
+                  "required_apps": {name: sorted(apps) for name, apps in sorted(required_apps.items())},
+                  "required_approvals": max(required_approvals, default=0), "strict_checks": True}
+        policy["digest"] = "sha256:" + hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return policy
+
+    def delegated_merge_qualification(self, number: int, head_sha: str, *, assurance_profile: str | None = None) -> dict[str, object]:
+        """Fresh protected checks and independent head-bound GitHub reviews."""
+        autonomous = assurance_profile == "qualification-autonomous-qs@1"
+        if assurance_profile is not None and not autonomous:
+            raise RunnerError("Unknown delegated merge assurance profile.")
+        policy = self._autonomous_effective_policy() if autonomous else None
+        if policy is None:
+            checks = self.qualification_for_exact_head(number, head_sha)
+        else:
+            if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+                raise RunnerError("Qualification requires an exact candidate SHA.")
+            try:
+                raw = json.loads(self._github("pr", "view", str(number), "--json", "headRefOid,baseRefOid,baseRefName,statusCheckRollup"))
+            except (RuntimeError, json.JSONDecodeError) as error:
+                raise RunnerError("Autonomous PR qualification could not be read.") from error
+            if not isinstance(raw, dict) or raw.get("headRefOid") != head_sha or raw.get("baseRefName") != "main":
+                raise RunnerError("Autonomous PR qualification has a changed head or base.")
+            rollup = raw.get("statusCheckRollup")
+            if not isinstance(rollup, list) or not rollup or any(
+                not isinstance(item, dict) or item.get("status") != "COMPLETED"
+                or item.get("conclusion") not in {"SUCCESS", "NEUTRAL", "SKIPPED"} for item in rollup
+            ):
+                raise RunnerError("Autonomous PR required checks are incomplete or failed.")
+            observed = {item.get("name") for item in rollup}
+            if not set(policy["required_checks"]) <= observed:
+                raise RunnerError("Autonomous PR is missing effective required checks.")
+            if policy["required_apps"]:
+                try:
+                    runs = json.loads(self._github("api", f"repos/{self.repository}/commits/{head_sha}/check-runs?per_page=100"))
+                except (RuntimeError, json.JSONDecodeError) as error:
+                    raise RunnerError("Required check application identity could not be read.") from error
+                check_runs = runs.get("check_runs") if isinstance(runs, dict) else None
+                if (not isinstance(check_runs, list) or len(check_runs) >= 100
+                        or runs.get("total_count") != len(check_runs)):
+                    raise RunnerError("Required check application identity is incomplete.")
+                for name, app_ids in policy["required_apps"].items():
+                    for app_id in app_ids:
+                        if not any(item.get("name") == name and item.get("head_sha") == head_sha
+                                   and item.get("status") == "completed"
+                                   and item.get("conclusion") in {"success", "neutral", "skipped"}
+                                   and isinstance(item.get("app"), dict)
+                                   and item["app"].get("id") == app_id
+                                   for item in check_runs if isinstance(item, dict)):
+                            raise RunnerError("Required check application identity does not match policy.")
+            checks = {"pull_request_id": number, "exact_qualified_sha": head_sha,
+                      "base_revision": raw.get("baseRefOid"), "required_checks": policy["required_checks"],
+                      "strict_checks": True, "checks": rollup, "conclusion": "PASS",
+                      "effective_policy": {"digest": policy["digest"], "source": policy["source"],
+                                           "ruleset_ids": sorted({item["ruleset_id"] for item in policy["rulesets"]}),
+                                           "required_approvals": policy["required_approvals"]}}
+        if checks.get("strict_checks") is not True:
+            raise RunnerError("Delegated merge requires strict protected status checks against the current base.")
+        if not self.repository:
+            raise RunnerError("Delegated merge requires an exact GitHub repository.")
+        try:
+            pull = json.loads(self._github("api", f"repos/{self.repository}/pulls/{number}"))
+            reviews = json.loads(self._github("api", f"repos/{self.repository}/pulls/{number}/reviews?per_page=100"))
+            protection = ({"required_approving_review_count": policy["required_approvals"]} if policy is not None else
+                          json.loads(self._github("api", f"repos/{self.repository}/branches/main/protection/required_pull_request_reviews")))
+        except (RuntimeError, json.JSONDecodeError) as error:
+            raise RunnerError("Delegated merge review policy could not be verified.") from error
+        if (not isinstance(pull, dict) or pull.get("number") != number
+                or pull.get("state") != "open" or pull.get("draft") is True
+                or (pull.get("head") or {}).get("sha") != head_sha
+                or (pull.get("base") or {}).get("ref") != "main"
+                or not isinstance(reviews, list) or len(reviews) >= 100
+                or not isinstance(protection, dict)):
+            raise RunnerError("Delegated merge PR identity changed during review qualification.")
+        author = (pull.get("user") or {}).get("login")
+        required = protection.get("required_approving_review_count")
+        if isinstance(required, bool) or not isinstance(required, int) or required < (0 if autonomous else 1):
+            raise RunnerError("Delegated merge requires protected independent review policy.")
+        latest: dict[str, tuple[str, str]] = {}
+        for review in reviews:
+            if not isinstance(review, dict):
+                continue
+            reviewer = (review.get("user") or {}).get("login")
+            if isinstance(reviewer, str) and reviewer:
+                latest[reviewer] = (str(review.get("state")), str(review.get("commit_id")))
+        approvals = sorted(
+            reviewer for reviewer, (decision, commit) in latest.items()
+            if reviewer != author and decision == "APPROVED" and commit == head_sha
+        )
+        if len(approvals) < required:
+            raise RunnerError("Delegated merge lacks required independent approvals for this exact head.")
+        return {**checks, "reviewers": approvals, "required_approvals": required}
+
+    def merge(self, number: int, *, expected_head_sha: str | None = None) -> None:
+        try:
+            if expected_head_sha is None:
+                self._github("pr", "merge", str(number), "--squash", "--delete-branch")
+            elif self.repository and re.fullmatch(r"[0-9a-f]{40}", expected_head_sha):
+                self._github("api", "--method", "PUT", f"repos/{self.repository}/pulls/{number}/merge",
+                             "-f", "merge_method=squash", "-f", f"sha={expected_head_sha}")
+            else:
+                raise RunnerError("Delegated merge requires an exact repository and head SHA.")
+        except RuntimeError as error:
+            raise RunnerError(str(error)) from error
