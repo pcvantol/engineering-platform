@@ -122,6 +122,10 @@ four rolling records. The host inspects the full diff without hiding rename
 sources, rejects out-of-scope paths and anticipatory completion claims, and
 rechecks the same base and head after both reviews. The autonomous profile
 requires the qualified protected-main revision to match that reviewed base.
+The installed Managed GitHub qualification agent may add only its exact
+`.engineering-platform/managed-github-e2e-finalization-proof.json` path to a
+Finalization PR. That proof is host-owned; unrelated files beneath
+`.engineering-platform/` remain outside Finalization scope.
 An open Finalization PR's repository handoff records say
 `FINALIZATION_PR_OPEN` and `FINALIZATION_PENDING`; only the host's terminal
 merge and cleanup readback may assert completed delivery.

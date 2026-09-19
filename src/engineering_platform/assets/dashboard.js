@@ -317,27 +317,28 @@ function phaseAwareRange(estimate) {
 function estimate(x, durationEstimate = {}) {
   const phase = x.current_phase || "";
   const phaseRange = phaseAwareRange(durationEstimate);
-  const activePhases = ["INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"];
-  const phaseContext = t("estimate.current_phase", { phase: t("state." + phase, {}, phase) });
+  const activePhases = ["INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "LOCAL_REPOSITORY_VALIDATION", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"];
+  const phaseContext = phase ? t("estimate.current_phase", { phase: t("state." + phase, {}, phase) }) : "";
+  const activeContext = (...details) => [phaseContext, ...details].filter(Boolean).join("\n");
   if (["INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT", "FINALIZE_AGENT", "REPOSITORY_CLEANUP"].includes(phase) && phaseRange) {
     const remainingUpperSeconds = Number(durationEstimate?.remaining_upper_seconds);
     if (Number.isFinite(remainingUpperSeconds) && remainingUpperSeconds <= 0) {
       return {
         summary: t("estimate.remaining_unknown"),
-        context: `${phaseContext}\n${t("estimate.internal_exceeded")}\n${t("estimate.internal_context")}`,
+        context: activeContext(t("estimate.internal_exceeded"), t("estimate.internal_context")),
       };
     }
     const [minimum, maximum] = phaseRange;
     return {
       summary: t("estimate.remaining_unknown"),
-      context: `${phaseContext}\n${t("estimate.internal_remaining", { minimum, maximum })}\n${t("estimate.internal_context")}`,
+      context: activeContext(t("estimate.internal_remaining", { minimum, maximum }), t("estimate.internal_context")),
     };
   }
-  if (activePhases.includes(phase))
-    return { summary: t("estimate.remaining_unknown"), context: `${phaseContext}\n${t("estimate.remaining_unknown_context")}` };
   if (phase === "COMPLETE") return { summary: t("status.complete"), context: "" };
   if (["BLOCKED", "FAILED"].includes(phase))
     return { summary: t("estimate.action_required"), context: "" };
+  if (activePhases.includes(phase) || x.watcher_state === "ENGINEERING_RUN_ACTIVE")
+    return { summary: t("estimate.remaining_unknown"), context: activeContext(t("estimate.remaining_unknown_context")) };
   return { summary: t("estimate.not_available"), context: "" };
 }
 function renderEstimate(x, durationEstimate = latestDurationEstimate) {
@@ -3483,9 +3484,47 @@ function appendMarkdownInline(target, value) {
   }
   target.append(document.createTextNode(value.slice(offset)));
 }
+function appendFencedCode(target, lines, language) {
+  const pre = document.createElement("pre"), code = document.createElement("code"),
+    value = lines.join(String.fromCharCode(10));
+  pre.className = "markdown-code-block";
+  if (language === "json") {
+    code.className = "language-json";
+    try {
+      // Highlight only well-formed, bounded JSON. Text nodes and spans keep
+      // report content inert even when a string contains HTML-like markup.
+      if (value.length > 262144) throw new SyntaxError("JSON code block is too large");
+      JSON.parse(value);
+      const tokens = /"(?:\\.|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b|[{}\[\],:]/g;
+      let offset = 0, tokenCount = 0;
+      for (const token of value.matchAll(tokens)) {
+        // Dense valid JSON can have more tokens than characters of prose.
+        // Keep the modal's DOM bounded and show the exact raw code instead.
+        if (++tokenCount > 4096) throw new RangeError("JSON code block has too many tokens");
+        code.append(document.createTextNode(value.slice(offset, token.index)));
+        const span = document.createElement("span"), text = token[0];
+        span.className = `markdown-json-${text.startsWith('"')
+          ? /^\s*:/.test(value.slice(token.index + text.length)) ? "key" : "string"
+          : /^[-\d]/.test(text) ? "number"
+          : /^(?:true|false|null)$/.test(text) ? "literal" : "punctuation"}`;
+        span.textContent = text;
+        code.append(span);
+        offset = token.index + text.length;
+      }
+      code.append(document.createTextNode(value.slice(offset)));
+    } catch (error) {
+      code.textContent = value;
+    }
+  } else {
+    code.textContent = value;
+  }
+  pre.append(code);
+  target.append(pre);
+}
 function renderMarkdownAnswer(target, value) {
   const newline = String.fromCharCode(10);
   let codeLines = null,
+    codeLanguage = "",
     list = null,
     listType = "";
   const lines = String(value).split(newline);
@@ -3499,13 +3538,11 @@ function renderMarkdownAnswer(target, value) {
     if (line.startsWith("```")) {
       if (codeLines === null) {
         codeLines = [];
+        codeLanguage = line.slice(3).trim().toLowerCase();
       } else {
-        const pre = document.createElement("pre"),
-          code = document.createElement("code");
-        code.textContent = codeLines.join(newline);
-        pre.append(code);
-        target.append(pre);
+        appendFencedCode(target, codeLines, codeLanguage);
         codeLines = null;
+        codeLanguage = "";
       }
       list = null;
       continue;
@@ -3579,11 +3616,7 @@ function renderMarkdownAnswer(target, value) {
     target.append(paragraph);
   }
   if (codeLines !== null) {
-    const pre = document.createElement("pre"),
-      code = document.createElement("code");
-    code.textContent = codeLines.join(newline);
-    pre.append(code);
-    target.append(pre);
+    appendFencedCode(target, codeLines, codeLanguage);
   }
 }
 const plainChatMessage = chatMessage;

@@ -12,6 +12,9 @@ from .reconciliation_adoption import ROLLING_RECORDS
 _HISTORY = re.compile(r"docs/engineering/prompt-history/\d{4}/[^/]+\.md")
 _RUN = re.compile(r"docs/engineering/runs/\d{4}/[^/]+\.md")
 _RUN_INDEX = frozenset({"docs/engineering/runs/index.json", "docs/engineering/runs/latest.md"})
+# The installed Managed GitHub qualification agent writes this one proof file
+# on its Finalization branch. It is a host-owned record, not Action code.
+_FINALIZATION_PROOF = ".engineering-platform/managed-github-e2e-finalization-proof.json"
 _PREMATURE_COMPLETION = re.compile(
     r"(?:MERGED_RECONCILED|WORKSPACE_READY|(?:^|[\s\"-])(?:Completed|completed_at)\s*[:\"])",
     re.IGNORECASE,
@@ -23,7 +26,8 @@ def permitted_delivery_path(role: str, path: str) -> bool:
     if role == "RECONCILIATION":
         return path in ROLLING_RECORDS
     if role == "FINALIZATION":
-        return path in ROLLING_RECORDS or path in _RUN_INDEX or bool(_HISTORY.fullmatch(path) or _RUN.fullmatch(path))
+        return (path in ROLLING_RECORDS or path in _RUN_INDEX or path == _FINALIZATION_PROOF
+                or bool(_HISTORY.fullmatch(path) or _RUN.fullmatch(path)))
     return role == "IMPLEMENTATION"  # The approved Action governs only implementation paths.
 
 
