@@ -494,7 +494,9 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             urlopen(endpoint)  # nosec B310
         self.assertEqual(unauthorized.exception.code, 401)
         reserved = readback()
-        self.assertEqual(reserved["contract_version"], "1.0")
+        self.assertEqual(reserved["contract_version"], "1.1")
+        self.assertEqual((reserved["assurance_profile_id"], reserved["assurance_profile_revision"]), ("", ""))
+        self.assertEqual(reserved["assurance_policy_digest"], "")
         self.assertEqual(reserved["status"], "RESERVED")
         self.assertEqual(reserved["github_repository"], "pcvantol/djconnect")
         self.assertEqual(reserved["mission_id"], "")
@@ -510,6 +512,33 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             merge_delegation.revoke(connection, delegation_id, actor_reference="local-uid:501")
         self.assertEqual(readback()["status"], "REVOKED")
+
+    def test_authenticated_profiled_grant_readback_binds_owner_policy_digest(self) -> None:
+        delegation_id = "c" * 32
+        digest = "sha256:" + "a" * 64
+        workspace = self.root / "workspace"
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin",
+                        "https://github.com/pcvantol/forge-mission-qualification.git"], check=True)
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            merge_delegation.reserve(
+                connection, delegation_id=delegation_id, actor_reference="local-uid:501",
+                project_id="djconnect", repository_id="djconnect",
+                github_repository="pcvantol/forge-mission-qualification", base_branch="main",
+                roles=("IMPLEMENTATION",),
+                expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                assurance_profile=merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE,
+                assurance_policy_digest=digest,
+            )
+        server.start(self.root)
+        endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/merge-delegations/{delegation_id}"
+        with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
+            payload = json.loads(response.read())
+        self.assertEqual(payload["contract_version"], "1.1")
+        self.assertEqual((payload["assurance_profile_id"], payload["assurance_profile_revision"],
+                          payload["assurance_policy_digest"]),
+                         ("qualification-autonomous-qs", "1", digest))
+        self.assertEqual(payload["status"], "RESERVED")
 
     def test_final_reconciliation_merge_is_the_delivery_revision(self) -> None:
         final = "d" * 40

@@ -21,6 +21,62 @@ from engineering_platform.validation_profile import (
 
 
 class MergeDelegationTest(unittest.TestCase):
+    def test_schema_69_grant_migrates_to_immutable_empty_profile(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version=69))")
+            connection.execute("INSERT INTO ep_installations VALUES('fixture','2026-09-19T00:00:00+00:00',69)")
+            connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
+            connection.execute("CREATE TABLE engineering_metadata(key TEXT PRIMARY KEY,value TEXT)")
+            connection.execute("INSERT INTO engineering_metadata VALUES('installation.schema_version','69')")
+            connection.execute("CREATE TABLE ep_merge_delegations (delegation_id TEXT PRIMARY KEY,actor_reference TEXT NOT NULL,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,github_repository TEXT NOT NULL,mission_id TEXT NOT NULL,mission_revision TEXT NOT NULL,base_branch TEXT NOT NULL,roles TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,activated_at TEXT,revoked_at TEXT)")
+            connection.execute("INSERT INTO ep_merge_delegations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                               ("8" * 32, "local-uid:501", "project", "opaque", "pcvantol/forge", "mission-1",
+                                "1", "main", '["IMPLEMENTATION"]', "2099-01-01T00:00:00+00:00",
+                                "2026-09-19T00:00:00+00:00", "2026-09-19T00:00:00+00:00", None))
+            server._migrate_schema_70(connection)
+            grant = merge_delegation.load(connection, "8" * 32)
+            self.assertIsNotNone(grant)
+            self.assertEqual((grant.assurance_profile_id, grant.assurance_profile_revision), ("", ""))
+            self.assertEqual(connection.execute("SELECT schema_version FROM ep_installations").fetchone(), (70,))
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("UPDATE ep_merge_delegations SET assurance_profile_id='other' WHERE delegation_id=?", ("8" * 32,))
+        finally:
+            connection.close()
+
+    def test_owner_profile_is_bound_to_only_the_qualification_repository(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        try:
+            merge_delegation.install_schema(connection)
+            scope = dict(delegation_id="9" * 32, actor_reference="local-uid:501",
+                         project_id="qualification", repository_id="qualification",
+                         github_repository=merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY,
+                         base_branch="main", roles=("IMPLEMENTATION",),
+                         expires_at=(datetime.now(timezone.utc) + timedelta(hours=2)).isoformat())
+            with self.assertRaisesRegex(ValueError, "unavailable for this repository"):
+                merge_delegation.reserve(connection, **{**scope, "github_repository": "pcvantol/forge"},
+                                         assurance_profile=merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE,
+                                         assurance_policy_digest="sha256:" + "a" * 64)
+            with self.assertRaisesRegex(ValueError, "unavailable for this repository"):
+                merge_delegation.reserve(connection, **scope, assurance_profile="unknown@1")
+            grant = merge_delegation.reserve(connection, **scope,
+                                             assurance_profile=merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE,
+                                             assurance_policy_digest="sha256:" + "a" * 64)
+            self.assertEqual((grant.assurance_profile_id, grant.assurance_profile_revision, grant.assurance_policy_digest),
+                             ("qualification-autonomous-qs", "1", "sha256:" + "a" * 64))
+            activated = merge_delegation.activate(
+                connection, delegation_id=grant.delegation_id, mission_id="mission-1",
+                mission_revision="1", actor_reference=grant.actor_reference,
+                github_repository=grant.github_repository)
+            self.assertEqual((activated.assurance_profile_id, activated.assurance_profile_revision, activated.assurance_policy_digest),
+                             ("qualification-autonomous-qs", "1", "sha256:" + "a" * 64))
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "profile is immutable"):
+                connection.execute("UPDATE ep_merge_delegations SET assurance_profile_revision='2' WHERE delegation_id=?",
+                                   (grant.delegation_id,))
+            self.assertEqual(merge_delegation.load(connection, grant.delegation_id), activated)
+        finally:
+            connection.close()
+
     def test_delivery_observation_selectors_are_bounded_and_immutable_commands(self) -> None:
         accepted = ["ep-delivery-control-validation:1",
                     "ep-delivery-unittest:tests.test_cli.ValidCase.test_valid",

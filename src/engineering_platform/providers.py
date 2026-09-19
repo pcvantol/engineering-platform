@@ -558,6 +558,16 @@ class GitProvider(LocalProcessProvider):
             raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "git command failed")
         return completed.stdout.strip()
 
+    def clone_branch(self, root: Path, origin: str, branch: str, destination: Path, *, timeout: int = 120) -> None:
+        """Create one bounded, disposable checkout for a pinned remote review."""
+        completed = subprocess.run(
+            ("git", "clone", "--quiet", "--single-branch", "--no-tags", "--branch", branch,
+             origin, str(destination)), cwd=root, text=True, capture_output=True,
+            check=False, timeout=timeout,
+        )
+        if completed.returncode:
+            raise RuntimeError("Pinned Git review checkout could not be created.")
+
 
 class GitHubProvider:
     def status(self, root: Path) -> ProviderStatus:

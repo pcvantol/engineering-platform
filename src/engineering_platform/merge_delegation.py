@@ -20,6 +20,8 @@ from .execution_repository import github_repository_slug
 _ID = re.compile(r"[0-9a-f]{32}\Z")
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _ROLES = frozenset({"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"})
+AUTONOMOUS_ASSURANCE_PROFILE = "qualification-autonomous-qs@1"
+AUTONOMOUS_ASSURANCE_REPOSITORY = "pcvantol/forge-mission-qualification"
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,9 @@ class MergeDelegation:
     expires_at: str
     activated_at: str | None
     revoked_at: str | None
+    assurance_profile_id: str = ""
+    assurance_profile_revision: str = ""
+    assurance_policy_digest: str = ""
 
     def permits(self, *, project_id: str, repository_id: str, mission_id: str,
                 mission_revision: str, role: str, base_branch: str,
@@ -68,8 +73,21 @@ def install_schema(connection: sqlite3.Connection) -> None:
         expires_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         activated_at TEXT,
-        revoked_at TEXT
+        revoked_at TEXT,
+        assurance_profile_id TEXT NOT NULL DEFAULT '',
+        assurance_profile_revision TEXT NOT NULL DEFAULT '',
+        assurance_policy_digest TEXT NOT NULL DEFAULT ''
     )""")
+    install_profile_guard(connection)
+
+
+def install_profile_guard(connection: sqlite3.Connection) -> None:
+    connection.execute("""CREATE TRIGGER IF NOT EXISTS ep_merge_delegations_profile_immutable
+        BEFORE UPDATE OF assurance_profile_id, assurance_profile_revision, assurance_policy_digest ON ep_merge_delegations
+        WHEN NEW.assurance_profile_id != OLD.assurance_profile_id
+          OR NEW.assurance_profile_revision != OLD.assurance_profile_revision
+          OR NEW.assurance_policy_digest != OLD.assurance_policy_digest
+        BEGIN SELECT RAISE(ABORT, 'merge delegation assurance profile is immutable'); END""")
 
 
 def bound_github_repository(root: Path) -> str:
@@ -94,7 +112,8 @@ def bound_github_repository(root: Path) -> str:
 def reserve(connection: sqlite3.Connection, *, delegation_id: str, actor_reference: str,
           project_id: str, repository_id: str, github_repository: str,
           base_branch: str, roles: Iterable[str],
-          expires_at: str) -> MergeDelegation:
+          expires_at: str, assurance_profile: str | None = None,
+          assurance_policy_digest: str = "") -> MergeDelegation:
     selected = tuple(sorted(set(roles)))
     if (not _ID.fullmatch(delegation_id) or not actor_reference.strip()
             or not all(isinstance(value, str) and value and len(value) <= 160 for value in (
@@ -109,18 +128,28 @@ def reserve(connection: sqlite3.Connection, *, delegation_id: str, actor_referen
     now = datetime.now(timezone.utc)
     if expiry.tzinfo is None or not now < expiry <= now + timedelta(days=7):
         raise ValueError("merge delegation expiry must be within seven days")
+    if assurance_profile is not None and (
+        assurance_profile != AUTONOMOUS_ASSURANCE_PROFILE
+        or github_repository != AUTONOMOUS_ASSURANCE_REPOSITORY
+    ):
+        raise ValueError("autonomous assurance profile is unavailable for this repository")
+    profile_id, profile_revision = ("qualification-autonomous-qs", "1") if assurance_profile else ("", "")
+    if (assurance_profile and re.fullmatch(r"sha256:[0-9a-f]{64}", assurance_policy_digest) is None
+            or not assurance_profile and assurance_policy_digest):
+        raise ValueError("merge delegation assurance policy digest is invalid")
     import json
     connection.execute("""INSERT INTO ep_merge_delegations
         (delegation_id,actor_reference,project_id,repository_id,github_repository,mission_id,
-         mission_revision,base_branch,roles,expires_at,created_at,activated_at,revoked_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)""", (
+         mission_revision,base_branch,roles,expires_at,created_at,activated_at,revoked_at,
+         assurance_profile_id,assurance_profile_revision,assurance_policy_digest)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,?,?)""", (
         delegation_id, actor_reference.strip(), project_id, repository_id, github_repository, '',
         '', base_branch, json.dumps(selected), expires_at,
-        datetime.now(timezone.utc).isoformat(),
+        datetime.now(timezone.utc).isoformat(), profile_id, profile_revision, assurance_policy_digest,
     ))
     return MergeDelegation(delegation_id, actor_reference.strip(), project_id,
                            repository_id, github_repository, '', '', base_branch,
-                           selected, expires_at, None, None)
+                           selected, expires_at, None, None, profile_id, profile_revision, assurance_policy_digest)
 
 
 def activate(connection: sqlite3.Connection, *, delegation_id: str,
@@ -151,7 +180,8 @@ def load(connection: sqlite3.Connection, delegation_id: str) -> MergeDelegation 
         return None
     row = connection.execute("""SELECT delegation_id,actor_reference,project_id,
         repository_id,github_repository,mission_id,mission_revision,base_branch,roles,expires_at,
-        activated_at,revoked_at FROM ep_merge_delegations WHERE delegation_id=?""",
+        activated_at,revoked_at,assurance_profile_id,assurance_profile_revision,assurance_policy_digest
+        FROM ep_merge_delegations WHERE delegation_id=?""",
         (delegation_id,)).fetchone()
     if row is None:
         return None
@@ -162,7 +192,14 @@ def load(connection: sqlite3.Connection, delegation_id: str) -> MergeDelegation 
         return None
     if not isinstance(roles, list) or not roles or any(role not in _ROLES for role in roles):
         return None
-    return MergeDelegation(*row[:8], tuple(roles), row[9], row[10], row[11])
+    if (row[12], row[13]) not in {("", ""), ("qualification-autonomous-qs", "1")}:
+        return None
+    if row[12] and row[4] != AUTONOMOUS_ASSURANCE_REPOSITORY:
+        return None
+    if (row[12] and re.fullmatch(r"sha256:[0-9a-f]{64}", row[14]) is None
+            or not row[12] and row[14] != ""):
+        return None
+    return MergeDelegation(*row[:8], tuple(roles), row[9], row[10], row[11], row[12], row[13], row[14])
 
 
 def revoke(connection: sqlite3.Connection, delegation_id: str, *, actor_reference: str) -> bool:

@@ -44,6 +44,34 @@ installed host can publish canonical control receipts and run required controls
 on the final delivered revision. The public `v1.0` declaration keeps its
 historical exact shape.
 
+The authenticated merge-delegation status response is `v1.1`: it retains the
+`v1.0` grant scope and status and adds `assurance_profile_id` and
+`assurance_profile_revision` as strings, plus `assurance_policy_digest`.
+Ordinary grants report three empty strings.
+An installation owner can select `qualification-autonomous-qs@1` only when
+reserving a grant for the bound GitHub origin
+`pcvantol/forge-mission-qualification`; the retained grant then reports
+`qualification-autonomous-qs` and `1`. The profile fields cannot be changed
+on activation. Reservation also reads and pins the exact effective policy
+digest (`sha256:<64 lowercase hex>`); later policy drift blocks merge. Forge
+binds the opaque grant ID in its approved Mission and
+compares this authenticated status before dispatch; the identifier alone is
+never merge authority.
+
+For this profile, EP reads active effective branch rules, each ruleset detail
+including bypass actors, and classic protection before each delegated merge.
+The policy receipt binds its digest, ruleset IDs, required approvals, exact
+required checks and application identities to the PR head and base. A classic
+404 is accepted only when complete active rulesets independently establish
+protected PR delivery; any unreadable, unsupported, or ambiguous policy
+blocks the autonomous merge. An actual higher GitHub approval requirement
+still requires independent exact-head GitHub approval. Zero approvals is
+valid only with the owner-selected profile and verified effective policy.
+EP also requires its own separate read-only Quality and Security review
+invocations, with positive canonical CENTRAL evidence for the exact PR head
+and no unresolved blocking finding. The guarded GitHub merge still pins the
+head SHA and uses normal GitHub protection; no administrator bypass is used.
+
 ```
 GET /v1/projects/{project_id}/submissions/{submission_id}
 Authorization: Bearer <EP-issued scoped credential>

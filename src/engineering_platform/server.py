@@ -141,7 +141,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 69
+SERVER_STORE_SCHEMA_VERSION = 70
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -2053,6 +2053,28 @@ def _migrate_schema_69(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=69")
 
 
+def _migrate_schema_70(connection: sqlite3.Connection) -> None:
+    """Bind an immutable, owner-selected assurance profile to each merge grant."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema69")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 70))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,70 FROM ep_installations_schema69")
+    connection.execute("DROP TABLE ep_installations_schema69")
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(ep_merge_delegations)")}
+    if "assurance_profile_id" not in columns:
+        connection.execute("ALTER TABLE ep_merge_delegations ADD COLUMN assurance_profile_id TEXT NOT NULL DEFAULT ''")
+    if "assurance_profile_revision" not in columns:
+        connection.execute("ALTER TABLE ep_merge_delegations ADD COLUMN assurance_profile_revision TEXT NOT NULL DEFAULT ''")
+    if "assurance_policy_digest" not in columns:
+        connection.execute("ALTER TABLE ep_merge_delegations ADD COLUMN assurance_policy_digest TEXT NOT NULL DEFAULT ''")
+    merge_delegation.install_profile_guard(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(70)")
+    connection.execute("UPDATE engineering_metadata SET value='70' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=70")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2082,6 +2104,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (67, _migrate_schema_67),
     (68, _migrate_schema_68),
     (69, _migrate_schema_69),
+    (70, _migrate_schema_70),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -2123,6 +2146,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         "ep_technical_diagnostics_immutable_update",
         "ep_technical_diagnostics_immutable_delete",
         "ep_terminal_evidence_reconciliation_immutable_update",
+        "ep_merge_delegations_profile_immutable",
         "ep_terminal_evidence_reconciliation_immutable_delete",
     } <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
@@ -7015,7 +7039,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                               mission_id=grant.mission_id, mission_revision=grant.mission_revision,
                               role=grant.roles[0], base_branch=grant.base_branch,
                           ) else "EXPIRED")
-                self._send(200, {"contract_version": "1.0", "delegation_id": grant.delegation_id,
+                self._send(200, {"contract_version": "1.1", "delegation_id": grant.delegation_id,
                                  "actor_reference": grant.actor_reference, "project_id": grant.project_id,
                                  "repository_id": grant.repository_id,
                                  "github_repository": grant.github_repository,
@@ -7023,7 +7047,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                                  "mission_revision": grant.mission_revision, "base_branch": grant.base_branch,
                                  "roles": list(grant.roles), "expires_at": grant.expires_at,
                                  "activated_at": grant.activated_at, "revoked_at": grant.revoked_at,
-                                 "status": status}, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+                                 "status": status,
+                                 "assurance_profile_id": grant.assurance_profile_id,
+                                 "assurance_profile_revision": grant.assurance_profile_revision,
+                                 "assurance_policy_digest": grant.assurance_policy_digest},
+                           initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except sqlite3.Error:
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
@@ -7408,6 +7436,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mission-id")
     parser.add_argument("--mission-revision")
     parser.add_argument("--merge-role", action="append", choices=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"))
+    parser.add_argument("--assurance-profile")
     parser.add_argument("--expires-at")
     parser.add_argument("--expected-instance-id")
     parser.add_argument("--peer-binding-id")
@@ -8229,6 +8258,8 @@ def main(argv: list[str] | None = None) -> int:
                     changed = connection.execute("UPDATE ep_operator_capabilities SET revoked_at=? WHERE consumer_id=? AND project_id=? AND capability=? AND revoked_at IS NULL", (_utcnow(), args.consumer_id, args.project_id, args.capability)).rowcount
                     result = {"result": "REVOKED" if changed else "NOT_ACTIVE", "consumer_id": args.consumer_id, "project_id": args.project_id, "capability": args.capability}
         elif args.command in {"reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation"}:
+            if args.command != "reserve-merge-delegation" and args.assurance_profile is not None:
+                raise ServerConfigurationError("Assurance profile can only be selected at reservation.")
             initialize(args.data_root)
             try:
                 from .platform_admin import require_installation_owner
@@ -8252,12 +8283,24 @@ def main(argv: list[str] | None = None) -> int:
                         raise ServerConfigurationError("ACTIVE_AUTHORITY_REPOSITORY_REQUIRED")
                     try:
                         github_repository = merge_delegation.bound_github_repository(Path(str(scope[0])))
+                        policy_digest = ""
+                        if args.assurance_profile is not None:
+                            if args.assurance_profile != merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE:
+                                raise ValueError("Unknown autonomous assurance profile")
+                            from .execution_repository import GhCliClient
+                            from .execution_errors import RunnerError
+                            try:
+                                policy_digest = str(GhCliClient(repository=github_repository)._autonomous_effective_policy()["digest"])
+                            except RunnerError as error:
+                                raise ValueError("Autonomous effective GitHub policy is unavailable") from error
                         grant = merge_delegation.reserve(
                             connection, delegation_id=uuid4().hex,
                             actor_reference=actor_reference,
                             project_id=args.project_id, repository_id=args.repository_id,
                             github_repository=github_repository,
                             base_branch="main", roles=args.merge_role, expires_at=args.expires_at,
+                            assurance_profile=args.assurance_profile,
+                            assurance_policy_digest=policy_digest,
                         )
                     except ValueError as error:
                         raise ServerConfigurationError(str(error)) from error

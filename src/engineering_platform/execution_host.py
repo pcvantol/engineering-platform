@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess  # noqa: F401 - compatibility export for host tests
+import tempfile
 import time
 from threading import Lock
 from typing import Protocol
@@ -2313,6 +2314,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
 
     def _run_quality_assurance(
         self, state: TransactionState, implementation: AgentResult, *, assurance_root: Path | None = None,
+        allow_repair: bool = True,
     ) -> tuple[TransactionState, AgentResult]:
         """Run independent, sandboxed quality and security reviews.
 
@@ -2437,6 +2439,11 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         findings = [finding for record in records for finding in record["findings"]]
         blockers = [finding for finding in findings if finding["blocking"] and finding["disposition"] == "OPEN"]
         if blockers:
+            if not allow_repair:
+                return self._save_terminal(
+                    quality, "BLOCKED", "delivery_assurance_recovery_blocker",
+                    "Recovered candidate has unresolved independent assurance findings.",
+                ), implementation
             if quality.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
                 return self._save_terminal(quality, "BLOCKED", "repair_budget_exhausted", "Mandatory assurance blockers remain after the run-wide repair budget was exhausted."), implementation
             blocker_roles = sorted({str(record["reviewer"]) for record in records if any(
@@ -2490,6 +2497,43 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         ) and not any(
             finding.get("blocking") and finding.get("disposition") == "OPEN"
             for review in current for finding in review.get("findings", [])
+            if isinstance(finding, dict)
+        )
+
+    @staticmethod
+    def _autonomous_merge_assurance_passes(state: TransactionState, head_sha: str) -> bool:
+        """Verify canonical, separate EP reviews for the exact delivery PR head."""
+        profile = state.assurance_profile
+        if (not isinstance(profile, dict) or profile.get("candidate_sha") != head_sha
+                or not isinstance(profile.get("digest"), str)
+                or not EngineeringRunner._current_assurance_passes(state)):
+            return False
+        current = [review for review in state.assurance_reviews
+                   if review.get("candidate_sha") == head_sha
+                   and review.get("profile_digest") == profile["digest"]]
+        selected = []
+        for role in ("quality", "security"):
+            matching = [review for review in current if review.get("reviewer") == role]
+            if not matching:
+                return False
+            record = matching[-1]
+            if (record.get("status") != "PASS"
+                    or record.get("contract_version") != MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION
+                    or not isinstance(record.get("invocation_id"), str)
+                    or not record["invocation_id"].startswith(f"{state.run_id}:{role}:")
+                    or not isinstance(record.get("started_at"), str)
+                    or not isinstance(record.get("completed_at"), str)
+                    or not isinstance(record.get("findings"), list)):
+                return False
+            selected.append(record)
+        if selected[0]["invocation_id"] == selected[1]["invocation_id"]:
+            return False
+        resolved = {resolution.get("finding_id") for resolution in state.assurance_resolutions
+                    if resolution.get("disposition") == "RESOLVED"}
+        return not any(
+            finding.get("blocking") and finding.get("disposition") == "OPEN"
+            and finding.get("id") not in resolved
+            for review in state.assurance_reviews for finding in review.get("findings", [])
             if isinstance(finding, dict)
         )
 
@@ -3496,6 +3540,7 @@ First implementation pull-request publication gate:
             branch=state.finalization_branch,
             pull_request=candidate.number,
             finalization_pull_request=candidate.number,
+            finalization_head_sha=candidate.head_sha,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
             next_action="poll_required_checks",
             last_verified_sha=evidence.head_sha,
@@ -3504,6 +3549,9 @@ First implementation pull-request publication gate:
         )
         self.store.save(recovered)
         write_live_status(self.root, recovered, recovered.next_action)
+        recovered = self._recover_autonomous_pr_assurance(recovered, candidate)
+        if recovered.terminal or recovered.phase == "REPAIR_AGENT":
+            return recovered
         return self._poll(recovered)
 
     def _recover_reconciliation_pull_request(
@@ -3561,6 +3609,9 @@ First implementation pull-request publication gate:
         )
         self.store.save(recovered)
         write_live_status(self.root, recovered, recovered.next_action)
+        recovered = self._recover_autonomous_pr_assurance(recovered, candidate)
+        if recovered.terminal or recovered.phase == "REPAIR_AGENT":
+            return recovered
         return self._poll(recovered)
 
     def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
@@ -3742,6 +3793,98 @@ First implementation pull-request publication gate:
             self._managed_gate(waiting, gate_type, "WAITING", state.pull_request)
             return self._save_operator_merge_wait(waiting)
 
+    def _autonomous_profile_selected(self, state: TransactionState) -> bool:
+        """Consult the owner grant, never provider text, for phase assurance."""
+        if (not state.owner_authorized or state.merge_delegation_id is None
+                or self.store.central_database is None):
+            return False
+        try:
+            with sqlite_connection(self.store.central_database) as connection:
+                grant = merge_delegation.load(connection, state.merge_delegation_id)
+        except (EngineeringStorageError, sqlite3.Error):
+            return False
+        return bool(grant and grant.assurance_profile_id == "qualification-autonomous-qs"
+                    and grant.assurance_profile_revision == "1"
+                    and grant.github_repository == state.repository
+                    == merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY)
+
+    def _recover_autonomous_pr_assurance(
+        self, state: TransactionState, candidate: PullRequestEvidence,
+    ) -> TransactionState:
+        """Review a recovered PR in a disposable checkout pinned to its remote head."""
+        if not self._autonomous_profile_selected(state) or candidate.state != "OPEN":
+            return state
+        head, branch = candidate.head_sha, candidate.head_branch
+        if (not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None
+                or not isinstance(branch, str) or branch != state.branch
+                or candidate.base_branch != "main" or candidate.number != state.pull_request):
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_recovery_identity_invalid",
+                                       "Recovered autonomous PR lacks an exact branch, head and base.")
+        if self._autonomous_merge_assurance_passes(state, head):
+            return state
+        try:
+            if merge_delegation.bound_github_repository(self.root) != state.repository:
+                raise ValueError("recovered repository origin changed")
+            git = GitProvider()
+            origin = git.command(self.root, "git", "remote", "get-url", "origin")
+            scratch_parent = self.store.central_database.parent / "artifacts"  # type: ignore[union-attr]
+            scratch_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="ep-assurance-", dir=scratch_parent) as temporary:
+                checkout = Path(temporary) / "candidate"
+                git.clone_branch(self.root, origin, branch, checkout)
+                pinned = self.repository.inspect(checkout)
+                if (pinned.repository != state.repository or pinned.branch != branch
+                        or pinned.head_sha != head or not pinned.clean):
+                    raise ValueError("recovered checkout does not match the PR head")
+                result = AgentResult("COMPLETE", branch=branch, pull_request=candidate.number,
+                                     commit_sha=head)
+                reviewed, _ = self._run_quality_assurance(
+                    state, result, assurance_root=checkout, allow_repair=False,
+                )
+                if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
+                    return reviewed
+                fresh = self.github.pull_request(candidate.number)
+                if (fresh.state != "OPEN" or fresh.head_sha != head or fresh.head_branch != branch
+                        or fresh.base_branch != "main"
+                        or not self._autonomous_merge_assurance_passes(reviewed, head)):
+                    raise ValueError("recovered PR changed during independent assurance")
+                reviewed = replace(reviewed, phase="WAIT_FOR_TERMINAL_EVIDENCE",
+                                   next_action="poll_required_checks")
+                self.store.save(reviewed)
+                return reviewed
+        except (OSError, subprocess.SubprocessError, RunnerError, RuntimeError, ValueError):
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_recovery_unavailable",
+                                       "Recovered autonomous PR could not receive pinned independent assurance.")
+
+    def _assure_autonomous_delivery_pr(
+        self, state: TransactionState, result: AgentResult,
+    ) -> TransactionState:
+        """Run separate EP Quality/Security on each later delivery PR head."""
+        if not self._autonomous_profile_selected(state):
+            return state
+        if not result.pull_request or not result.branch or not result.commit_sha:
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_candidate_unavailable",
+                                       "Autonomous delivery requires an exact pull-request candidate.")
+        try:
+            local = self.repository.inspect(self.root)
+            remote = self.github.pull_request(result.pull_request)
+        except RunnerError:
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_candidate_unavailable",
+                                       "Autonomous delivery candidate could not be inspected.")
+        if (not local.clean or local.branch != result.branch or local.head_sha != result.commit_sha
+                or remote.state != "OPEN" or remote.is_draft is False
+                or remote.head_branch != result.branch or remote.head_sha != result.commit_sha
+                or remote.base_branch != "main"):
+            return self._save_terminal(state, "BLOCKED", "delivery_assurance_candidate_mismatch",
+                                       "Autonomous delivery PR and local review candidate do not match.")
+        reviewed, _ = self._run_quality_assurance(state, result)
+        if reviewed.terminal or reviewed.phase == "REPAIR_AGENT":
+            return reviewed
+        if not self._autonomous_merge_assurance_passes(reviewed, result.commit_sha):
+            return self._save_terminal(reviewed, "BLOCKED", "delivery_assurance_unresolved",
+                                       "Autonomous delivery requires current independent Quality and Security reviews.")
+        return reviewed
+
     def _attempt_delegated_merge(
         self, state: TransactionState, observed_pr: PullRequestEvidence,
     ) -> TransactionState | None:
@@ -3750,6 +3893,7 @@ First implementation pull-request publication gate:
         if (not state.owner_authorized or state.execution_mode != "MANAGED"
                 or self.store.central_database is None or state.merge_delegation_id is None):
             return None
+
         try:
             accepted = load_submission_for_run(
                 self.root, state.run_id, central_database=self.store.central_database,
@@ -3812,12 +3956,34 @@ First implementation pull-request publication gate:
             qualifier = getattr(self.github, "delegated_merge_qualification", None)
             if not callable(qualifier):
                 return None
-            qualification = qualifier(fresh.number, expected_head)
+            autonomous_profile = (
+                grant.assurance_profile_id == "qualification-autonomous-qs"
+                and grant.assurance_profile_revision == "1"
+            )
+            if grant.assurance_profile_id or grant.assurance_profile_revision:
+                if (not autonomous_profile
+                        or grant.github_repository != merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY
+                        or not self._autonomous_merge_assurance_passes(state, expected_head)):
+                    return None
+            qualification = (qualifier(fresh.number, expected_head,
+                                      assurance_profile=merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE)
+                             if autonomous_profile else qualifier(fresh.number, expected_head))
             if (not isinstance(qualification, dict) or qualification.get("conclusion") != "PASS"
                     or qualification.get("exact_qualified_sha") != expected_head
                     or qualification.get("pull_request_id") != fresh.number
                     or qualification.get("strict_checks") is not True
-                    or not qualification.get("reviewers")):
+                    or (not autonomous_profile and not qualification.get("reviewers"))
+                    or (autonomous_profile and (
+                        isinstance(qualification.get("required_approvals"), bool)
+                        or not isinstance(qualification.get("required_approvals"), int)
+                        or qualification["required_approvals"] < 0
+                        or not isinstance(qualification.get("reviewers"), list)
+                        or len(qualification["reviewers"]) < qualification["required_approvals"]
+                        or not isinstance(qualification.get("effective_policy"), dict)
+                        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(qualification["effective_policy"].get("digest"))) is None
+                        or qualification["effective_policy"].get("source") != "github-effective-main"))):
+                return None
+            if (autonomous_profile and qualification["effective_policy"]["digest"] != grant.assurance_policy_digest):
                 return None
             qualified_base = qualification.get("base_revision")
             if (not isinstance(qualified_base, str)
@@ -3832,6 +3998,18 @@ First implementation pull-request publication gate:
                     role=state.transaction_kind, base_branch="main",
                 ) or self.repository.inspect(self.root).repository != current_grant.github_repository):
                 return None
+            if autonomous_profile:
+                if (current_grant.assurance_policy_digest != grant.assurance_policy_digest
+                        or current_grant.assurance_profile_id != grant.assurance_profile_id
+                        or current_grant.assurance_profile_revision != grant.assurance_profile_revision):
+                    return None
+                policy_reader = getattr(self.github, "_autonomous_effective_policy", None)
+                if not callable(policy_reader):
+                    return None
+                current_policy = policy_reader()
+                if (not isinstance(current_policy, dict)
+                        or current_policy.get("digest") != current_grant.assurance_policy_digest):
+                    return None
             # Persist the one exact PR/head attempt before the external call.
             # Ambiguous results are read back or sent to the manual wait; the
             # same candidate is never blindly merged twice after a restart.
@@ -4066,6 +4244,9 @@ First implementation pull-request publication gate:
                 "finalization_branch_mismatch",
                 "Finalization returned a pull request outside the durable Finalization branch.",
             )
+        finalization = self._assure_autonomous_delivery_pr(finalization, result)
+        if finalization.terminal or finalization.phase == "REPAIR_AGENT":
+            return finalization
         finalization = replace(
             finalization,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
@@ -4073,6 +4254,8 @@ First implementation pull-request publication gate:
             pull_request=result.pull_request,
             finalization_branch=result.branch,
             finalization_pull_request=result.pull_request,
+            finalization_head_sha=result.commit_sha if self._autonomous_profile_selected(finalization)
+            else finalization.finalization_head_sha,
             terminal_condition="repository_reconciled",
             next_action="poll_required_checks",
         )
@@ -4186,6 +4369,9 @@ First implementation pull-request publication gate:
                 reconciliation, "BLOCKED", "reconciliation_branch_mismatch",
                 "Reconciliation returned a pull request outside the durable reconciliation branch.",
             )
+        reconciliation = self._assure_autonomous_delivery_pr(reconciliation, result)
+        if reconciliation.terminal or reconciliation.phase == "REPAIR_AGENT":
+            return reconciliation
         reconciliation = replace(
             reconciliation,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
