@@ -1944,6 +1944,29 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(snapshot["status"]["execution_context"], detail["execution_context"])
         self.assertEqual(snapshot["runs"], [])
 
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO execution_lifecycle_events(run_id,phase,checkpoint,recorded_at) VALUES(?,?,?,?)",
+                ("run-forge", "WAIT_FOR_FINALIZATION_MERGE", json.dumps({
+                    "repository": "pcvantol/forge-mission-qualification",
+                    "implementation_pull_request": 18,
+                    "finalization_pull_request": 19,
+                    "reconciliation_pull_request": None,
+                }), "later"),
+            )
+        snapshot = server._central_console_project_snapshot(self.root, "project-a")
+        self.assertEqual(snapshot["status"]["implementation_pr"], 18)
+        self.assertEqual(snapshot["status"]["finalization_pr"], 19)
+        self.assertEqual(snapshot["status"]["github_repository"], "pcvantol/forge-mission-qualification")
+        detail = server._central_console_run_detail(self.root, "project-a", "run-forge")
+        assert detail is not None
+        self.assertEqual(detail["pull_requests"], [
+            {"role": "implementation", "number": 18,
+             "url": "https://github.com/pcvantol/forge-mission-qualification/pull/18"},
+            {"role": "finalization", "number": 19,
+             "url": "https://github.com/pcvantol/forge-mission-qualification/pull/19"},
+        ])
+
     def test_central_detail_uses_persisted_usage_and_activity_not_host_reconstruction(self) -> None:
         """Role-aware activity and usage survive CENTRAL's detail projection."""
         run_id = "run-persisted-activity"
@@ -2019,6 +2042,10 @@ class InstallationBoundaryTests(unittest.TestCase):
                 "reviewer": "quality", "status": "PASS", "candidate_sha": "b" * 40,
                 "findings": [],
             }],
+            "pull_requests": [{
+                "role": "implementation", "number": 18,
+                "url": "https://github.com/pcvantol/forge-mission-qualification/pull/18",
+            }],
         }
         with patch("engineering_platform.server._console_projects", return_value=projects), patch(
             "engineering_platform.server._central_console_run_detail", return_value=detail
@@ -2035,6 +2062,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["runtime"], detail["runtime"])
         self.assertEqual(payload["lifecycle"], lifecycle)
         self.assertEqual(payload["commit_timeline"], timeline)
+        self.assertEqual(payload["pull_requests"], detail["pull_requests"])
         self.assertEqual(payload["usage"], detail["usage"])
         self.assertEqual(payload["evidence"], detail["evidence"])
         self.assertEqual(payload["reviewers"], detail["reviewers"])

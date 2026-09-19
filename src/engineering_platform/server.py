@@ -3824,6 +3824,38 @@ def _central_console_assurance_reviews(
     return projected
 
 
+def _central_console_pull_request_context(data_root: Path, run_id: str) -> dict[str, object]:
+    """Project the PRs already recorded in this run's durable checkpoint."""
+    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+        row = connection.execute(
+            """SELECT checkpoint FROM execution_lifecycle_events
+                 WHERE run_id=? ORDER BY id DESC LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+    checkpoint = _central_json_object(row[0]) if row else {}
+    repository = checkpoint.get("repository")
+    if not isinstance(repository, str) or re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository,
+    ) is None:
+        repository = None
+    context: dict[str, object] = {"github_repository": repository, "pull_requests": []}
+    for role, field, projection in (
+        ("implementation", "implementation_pull_request", "implementation_pr"),
+        ("finalization", "finalization_pull_request", "finalization_pr"),
+        ("reconciliation", "reconciliation_pull_request", "reconciliation_pr"),
+    ):
+        number = checkpoint.get(field)
+        if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+            context[projection] = number
+            if repository is not None:
+                context["pull_requests"].append({
+                    "role": role,
+                    "number": number,
+                    "url": f"https://github.com/{repository}/pull/{number}",
+                })
+    return context
+
+
 def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
     """Return the project status and terminal-history projections from CENTRAL.
 
@@ -3840,6 +3872,7 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
     ]
     active_status: dict[str, object] = {}
     if active is not None:
+        pull_request_context = _central_console_pull_request_context(data_root, str(active["run_id"]))
         # The retained dashboard renderer recognizes this established current
         # lifecycle contract. CENTRAL owns the facts, while this small shape
         # adapter keeps the active run visible without inventing history.
@@ -3875,6 +3908,7 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
             # The current-run card is a distinct projection, but it must show
             # the same immutable Forge context as the terminal detail view.
             **active,
+            **pull_request_context,
             "reviewer_agents": _central_console_reviewer_agents(
                 data_root, project_id, str(active["run_id"]),
             ),
@@ -3963,6 +3997,7 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
             record["blocking_reason"] = diagnostic
     return {
         **record,
+        **_central_console_pull_request_context(data_root, run_id),
         "execution": execution,
         "runtime": runtime,
         "usage": _central_console_provider_usage(data_root, run_id),
@@ -6361,7 +6396,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "assurance_reviews": detail.get("assurance_reviews", []),
                         "commits": {},
                         "commit_timeline": detail.get("commit_timeline", []),
-                        "pull_requests": [],
+                        "pull_requests": detail.get("pull_requests", []),
                         "usage": detail.get("usage", {}),
                         "evidence": detail.get("evidence", []),
                         "lifecycle": detail.get("lifecycle", {}),

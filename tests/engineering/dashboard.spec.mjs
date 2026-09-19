@@ -3845,6 +3845,7 @@ test.describe("Engineering Status browser smoke", () => {
       target_repository: "pcvantol/djconnect",
       implementation_pr: 990,
       finalization_pr: 991,
+      reconciliation_pr: 992,
       lifecycle: {
         available: true, run_id: "inbox-reconciliation", terminal_state: "ACTIVE",
         steps: [
@@ -3861,9 +3862,10 @@ test.describe("Engineering Status browser smoke", () => {
     expect(await pullRequests.evaluate((element) =>
       getComputedStyle(element).backgroundColor !== "rgba(0, 0, 0, 0)",
     )).toBeTruthy();
-    await expect(pullRequests.locator("a")).toHaveCount(2);
+    await expect(pullRequests.locator("a")).toHaveCount(3);
     await expect(pullRequests.locator("a").nth(0)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/990");
     await expect(pullRequests.locator("a").nth(1)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/991");
+    await expect(pullRequests.locator("a").nth(2)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/992");
     await expect(pullRequests.locator("a").nth(0)).toHaveCSS("outline-style", "none");
     await page.locator(".execution-lifecycle__item--active .execution-lifecycle__node").click();
     await expect(page.locator("#lifecycleDetailModal")).toBeVisible();
@@ -4588,12 +4590,13 @@ test.describe("Engineering Status browser smoke", () => {
       pull_requests: [
         { role: "implementation", number: 948, url: "https://github.com/pcvantol/djconnect/pull/948" },
         { role: "finalization", number: 949, url: "https://github.com/pcvantol/djconnect/pull/949" },
+        { role: "reconciliation", number: 950, url: "https://github.com/pcvantol/djconnect/pull/950" },
       ],
     }));
     await page.locator("#promptHistoryDetailModal").evaluate((modal) => modal.showModal());
     const card = page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests");
     await expect(card.locator("h3")).toHaveText(DASHBOARD_MESSAGES.nl["detail.pull_requests"]);
-    await expect(card.locator("a")).toHaveCount(2);
+    await expect(card.locator("a")).toHaveCount(3);
     await expect(card.locator("a").nth(0)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/948");
     await expect(card.locator("a").nth(0)).toHaveText("#948 ↗");
     await expect(card).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
@@ -4601,6 +4604,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(card.locator("a").nth(0)).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(card.locator("a").nth(0)).toHaveCSS("outline-style", "none");
     await expect(card.locator("a").nth(1)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/949");
+    await expect(card.locator("a").nth(2)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/950");
     const [contextBounds, cardBounds] = await Promise.all([
       page.locator("#promptHistoryDetailContent .prompt-detail-card--execution-context").boundingBox(),
       card.boundingBox(),

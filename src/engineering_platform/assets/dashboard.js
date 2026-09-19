@@ -2335,6 +2335,7 @@ function activeRunPullRequestEntries(execution) {
     ["bound", execution?.pull_request],
     ["implementation", execution?.implementation_pr],
     ["finalization", execution?.finalization_pr],
+    ["reconciliation", execution?.reconciliation_pr],
   ].flatMap(([role, value]) => {
     const number = Number(value);
     if (!Number.isInteger(number) || number <= 0 || seen.has(number)) return [];
@@ -2358,6 +2359,7 @@ function renderActivePullRequests(execution, lifecycle) {
     bound: t("detail.bound_pull_request"),
     implementation: t("detail.implementation_pull_request"),
     finalization: t("detail.finalization_pull_request"),
+    reconciliation: t("detail.reconciliation_pull_request"),
   };
   const fields = entries.map((entry) => {
     const field = detailField(labels[entry.role], "");
@@ -8312,7 +8314,7 @@ function promptDetailCommitsSection(commits) {
 }
 function promptDetailPullRequestEntries(pullRequests) {
   return Array.isArray(pullRequests) ? pullRequests.filter((item) =>
-    item && ["implementation", "finalization"].includes(item.role) &&
+    item && ["implementation", "finalization", "reconciliation"].includes(item.role) &&
     Number.isInteger(item.number) && item.number > 0 &&
     typeof item.url === "string" &&
     /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/.test(item.url),
@@ -8334,6 +8336,7 @@ function promptDetailPullRequestsSection(pullRequests) {
   const labels = {
     implementation: t("detail.implementation_pull_request"),
     finalization: t("detail.finalization_pull_request"),
+    reconciliation: t("detail.reconciliation_pull_request"),
   };
   const fields = links.map((item) => {
     const label = labels[item.role], field = detailField(label, "");
