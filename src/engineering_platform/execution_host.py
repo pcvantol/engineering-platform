@@ -93,7 +93,7 @@ from .execution_executor import (
 )
 from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
 from .execution_executor import record_redacted_codex_cli_diagnostic
-from .execution_executor import persist_validation_failure_diagnostic
+from .execution_executor import persist_validation_failure_diagnostic, persist_validation_result_detail
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
 from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, open_storage, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
@@ -1015,6 +1015,14 @@ class EngineeringRunner:
                     ), observed_at=completed_at,
                     currentness=validation.repair_iterations,
                     central_database=self.store.central_database,
+                )
+                persist_validation_result_detail(
+                    self.root, run_id=validation.run_id, command_id=command_id,
+                    validation_id=launcher.validation_id, exit_code=exit_code,
+                    stdout=diagnostic_stdout, stderr=diagnostic_stderr,
+                    capture_available=diagnostic_capture_available, captured_at=completed_at,
+                    central_database=self.store.central_database,
+                    artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
                 )
             except EngineeringStorageError:
                 complete_phase(self.root, span, outcome="FAILED")

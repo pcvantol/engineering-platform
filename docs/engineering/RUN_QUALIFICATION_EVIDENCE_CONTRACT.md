@@ -64,6 +64,52 @@ conflict with a required control. For a non-EP checkout with a conventional
 control to that checkout's `python3 -m unittest discover -s tests` suite;
 EP's specialised documentation-contract test is used only for an EP checkout.
 
+## Authenticated Forge control readback
+
+The project-scoped consumer first reads its submission at
+`GET /v1/projects/{project_id}/submissions/{submission_id}` and then reads the
+referenced, digest-verified terminal artifact at
+`GET /v1/projects/{project_id}/artifacts/{terminal_artifact_id}`. Both routes
+require the existing project consumer credential. This read path executes no
+control or provider command. The outer terminal artifact remains version
+`1.4`; new artifacts add `validation_controls` contract `1.0`. An older
+artifact without that member stays valid history but supplies no criterion
+control proof.
+
+`validation_controls` freezes the persisted profile tier/version/reference,
+the candidate-bound profile digest and candidate SHA, currentness, required
+control IDs and each required host control observation. Each control includes
+its stable definition digest, computed from profile version/reference,
+validation ID/category/control identity and every command argument. Only an
+exact first argument matching EP's runtime Python executable is replaced by
+the fixed `{python}` token before hashing; all other arguments stay exact.
+The command argument vector is not separately published in the new snapshot.
+The actual resolved argument vector remains part of the separate candidate-bound
+profile digest. Each control also includes execution status, result,
+command ID, start/end times, exit code and evidence authority. A profile
+digest includes candidate and currentness, so it is a run binding, not a
+preapproval identity. Forge preapproves a stable control definition and owns
+the interpretation of that control for a Mission criterion.
+
+For deterministic host controls, a second immutable local artifact retains
+only the command's run/command/control identity, exit code, capture state,
+SHA-256 output digest and a parsed unittest `Ran N tests` count. The terminal
+artifact embeds the detail only after checking the local artifact digest and
+exact run/command/exit binding. Raw output and arbitrary command text are not
+published. `test_count=0` means zero discovered tests; `null` means no
+recognized count. Neither establishes behavioral test execution. A passing
+exit code alone therefore does not prove a functional criterion. The detail
+does not claim coverage beyond the approved test/control scope.
+
+The terminal artifact's existing submission, correlation, run, repository,
+candidate, assurance and delivery fields bind the control snapshot to the
+accepted Action and delivery. An unavailable, missing, conflicting, skipped,
+nonterminal or corrupt control stays unproven. EP confirms observed execution;
+Forge separately decides criterion fit and revision validity. The result
+detail is not a signature or independent third-party attestation; its trust
+boundary is the authenticated EP Server readback of an integrity-checked
+owning record.
+
 ## Historical dashboard projection
 
 For a terminal blocked or failed run, the detail projection exposes the safe,

@@ -15,6 +15,7 @@ import re
 import unicodedata
 import secrets
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -665,6 +666,136 @@ def _sha256(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def _validation_result_detail(
+    connection: sqlite3.Connection, *, data_root: Path, run_id: str,
+    validation_id: str, command_id: str, exit_code: object,
+) -> dict[str, object]:
+    """Read an exact command's integrity-checked result detail, if retained."""
+    unavailable: dict[str, object] = {"status": "UNAVAILABLE"}
+    artifact_id = f"validation-result-detail-{command_id}"
+    row = connection.execute(
+        "SELECT artifact_type,digest_algorithm,digest,storage_location,execution_id "
+        "FROM execution_artifact_records WHERE artifact_id=? AND run_id=?",
+        (artifact_id, run_id),
+    ).fetchone()
+    if row is None or row[0] != "VALIDATION_RESULT_DETAIL" or row[1] != "sha256" or row[4] != command_id:
+        return unavailable
+    try:
+        artifact_root = (data_root / "artifacts").resolve()
+        path = (artifact_root / str(row[3])).resolve()
+        path.relative_to(artifact_root)
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != row[2]:
+            return unavailable
+        detail = json.loads(raw)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return unavailable
+    if (
+        not isinstance(detail, dict)
+        or detail.get("schema") != "deterministic-validation-result-detail-v1"
+        or detail.get("run_id") != run_id or detail.get("command_id") != command_id
+        or detail.get("validation_id") != validation_id or detail.get("exit_code") != exit_code
+        or detail.get("capture_status") not in {"AVAILABLE", "UNAVAILABLE"}
+        or detail.get("test_count_source") not in {"UNAVAILABLE", "unittest_terminal_summary"}
+        or (detail.get("test_count") is not None and (
+            isinstance(detail["test_count"], bool) or not isinstance(detail["test_count"], int)
+            or detail["test_count"] < 0
+        ))
+        or (detail.get("test_count_source") == "unittest_terminal_summary") != (detail.get("test_count") is not None)
+        or (detail.get("output_digest") is not None and (
+            not isinstance(detail["output_digest"], str)
+            or _SHA256.fullmatch(detail["output_digest"]) is None
+        ))
+        or (detail.get("capture_status") == "AVAILABLE") != (detail.get("output_digest") is not None)
+    ):
+        return unavailable
+    return {**detail, "status": "AVAILABLE", "artifact_id": artifact_id,
+            "digest": "sha256:" + str(row[2])}
+
+
+def _control_definition_digest(
+    *, profile_version: object, profile_reference: object, binding: object,
+) -> str | None:
+    """Bind every command argument without exposing a host interpreter path."""
+    if not isinstance(binding, dict):
+        return None
+    command = binding.get("command")
+    if not isinstance(command, list) or not all(isinstance(arg, str) and arg for arg in command):
+        return None
+    command_identity = ["{python}", *command[1:]] if command and command[0] == sys.executable else list(command)
+    return _sha256(_canonical_json_bytes({
+        "validation_profile_version": profile_version,
+        "profile_reference": profile_reference,
+        "validation_id": binding.get("validation_id"),
+        "category": binding.get("category"),
+        "control_identity": binding.get("control_identity"),
+        "command_identity": command_identity,
+    }).rstrip(b"\n"))
+
+
+def _terminal_validation_controls(
+    data_root: Path, *, repository_root: Path, run_id: str,
+) -> dict[str, object]:
+    """Freeze canonical host observations in the terminal artifact."""
+    from .storage import EngineeringStorageError, load_validation_context
+    try:
+        context = load_validation_context(
+            repository_root, run_id, central_database=central_database.path(data_root),
+        )
+    except (EngineeringStorageError, sqlite3.Error):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    if not isinstance(context, dict):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    controls = context.get("controls")
+    if not isinstance(controls, dict):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    bindings = context.get("control_bindings")
+    if not isinstance(bindings, tuple):
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    binding_by_id = {
+        binding.get("validation_id"): binding for binding in bindings
+        if isinstance(binding, dict) and isinstance(binding.get("validation_id"), str)
+    }
+    required_ids = context.get("required_validation_controls")
+    if not isinstance(required_ids, tuple) or tuple(binding_by_id) != required_ids:
+        return {"contract_version": "1.0", "status": "UNAVAILABLE"}
+    projected: dict[str, object] = {}
+    with sqlite_connection(central_database.path(data_root)) as connection:
+        for validation_id in required_ids:
+            raw_control = controls.get(validation_id)
+            if not isinstance(raw_control, dict):
+                continue
+            control = dict(raw_control)
+            binding = binding_by_id.get(validation_id)
+            control["control_definition_digest"] = _control_definition_digest(
+                profile_version=context.get("validation_profile_version"),
+                profile_reference=context.get("profile_reference"), binding=binding,
+            )
+            command_id = control.get("command_id")
+            control["result_detail"] = (
+                _validation_result_detail(
+                    connection, data_root=data_root, run_id=run_id,
+                    validation_id=validation_id, command_id=command_id,
+                    exit_code=control.get("exit_code"),
+                ) if isinstance(command_id, str) else {"status": "UNAVAILABLE"}
+            )
+            projected[validation_id] = control
+    return {
+        "contract_version": "1.0",
+        "status": "AVAILABLE",
+        "selected_validation_tier": context.get("selected_validation_tier"),
+        "validation_profile_version": context.get("validation_profile_version"),
+        "profile_reference": context.get("profile_reference"),
+        "profile_selection_source": context.get("profile_selection_source"),
+        "profile_digest": context.get("profile_digest"),
+        "candidate_sha": context.get("candidate_sha"),
+        "currentness": context.get("currentness"),
+        "profile_currentness_conflict": context.get("profile_currentness_conflict"),
+        "required_validation_controls": list(required_ids),
+        "controls": projected,
+    }
+
+
 def _accepted_request_digest(*, repository_id: str, producer_id: str,
                              producer_type: str, producer_version: object,
                              prompt_digest: str, constraints: object,
@@ -1126,6 +1257,9 @@ def write_terminal_evidence(
         "provenance": constraints.get("forge_execution"),
         "run": {"id": run_id, "outcome": outcome, "delivery_qualified": delivery_qualified, **timing},
         "host_execution": host_execution,
+        "validation_controls": _terminal_validation_controls(
+            data_root, repository_root=repository_root, run_id=run_id,
+        ),
         "repository": {
             "id": str(row[2]),
             "requested_revision": checkpoint.requested_repository_revision,

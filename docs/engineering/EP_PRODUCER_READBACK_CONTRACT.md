@@ -94,6 +94,21 @@ authentication and digest verification. It never parses and reserializes the
 artifact response. A missing, corrupt, or mismatched artifact is represented as
 `MISSING`, `CORRUPT`, or `INCOMPLETE`; the reader never fills it in.
 
+Newly written v1.4 terminal artifacts may include `validation_controls`
+sub-contract v1.0. This is an additive, immutable snapshot of EP's own
+candidate-bound validation profile, required control identities, executed
+command receipts, results, and verified bounded result details. Its outer
+artifact version and authenticated routes do not change, so existing v1.4
+consumers remain compatible. An older artifact without this member has no
+published criterion control evidence. A control's stable
+`control_definition_digest` covers its logical identity, profile version/reference
+and normalized command argument vector;
+the separate `profile_digest` covers the actual candidate and currentness.
+For unittest controls, `result_detail.test_count` comes from the captured
+`Ran N tests` terminal summary and can be zero or unavailable. The complete
+field and trust semantics are in
+[Run Qualification Evidence Contract](RUN_QUALIFICATION_EVIDENCE_CONTRACT.md#authenticated-forge-control-readback).
+
 `COMPLETE` mutating delivery is qualified only when the checkpoint contains
 verified, run-bound delivery evidence: normally a recorded merge revision, or
 an explicit host-verified Managed no-op revision after the unchanged,

@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from engineering_platform.storage import sqlite_connection
 from engineering_platform.storage import record_artifact
+from engineering_platform.storage import (
+    record_validation_profile, record_validation_command_invocation,
+    record_validation_command_terminal, record_validation_control_result,
+)
+from engineering_platform.execution_executor import persist_validation_result_detail
 
 import json
+import hashlib
 from pathlib import Path
 import socket
 import sqlite3
+import sys
 import tempfile
 import unittest
 from urllib.error import HTTPError
@@ -42,6 +49,80 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
     def tearDown(self) -> None:
         server.stop(self.root)
         self.temporary.cleanup()
+
+    def test_validation_result_detail_distinguishes_zero_missing_and_corrupt_output(self) -> None:
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite_connection(database) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) "
+                "VALUES(?,?,?,?,?,?)",
+                ("run-details", "djconnect", "RUNNING", "2026-01-01T00:00:00+00:00",
+                 "2026-01-01T00:00:00+00:00", "MANAGED"),
+            )
+            connection.execute(
+                "INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,"
+                "execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,"
+                "input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,"
+                "execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("run-details", "2026-01-01", "2026-01-01T00:00:00+00:00",
+                 "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", 0, 1,
+                 "COMPLETE", None, None, None,
+                 "MANAGED", "djconnect", "djconnect", "test"),
+            )
+        for command_id, summary, expected in (
+            ("zero-tests", "Ran 0 tests in 0.01s\n\nOK\n", 0),
+            ("two-tests", "Ran 2 tests in 0.01s\n\nOK\n", 2),
+            ("unknown-tests", "completed successfully", None),
+        ):
+            persist_validation_result_detail(
+                self.root, run_id="run-details", command_id=command_id,
+                validation_id="repository_suite", exit_code=0, stdout="", stderr=summary,
+                capture_available=True, captured_at="2026-01-01T00:00:01+00:00",
+                central_database=database, artifact_root=self.root / "artifacts",
+            )
+            with sqlite_connection(database) as connection:
+                detail = submission_service._validation_result_detail(
+                    connection, data_root=self.root, run_id="run-details",
+                    validation_id="repository_suite", command_id=command_id, exit_code=0,
+                )
+            self.assertEqual(detail["status"], "AVAILABLE")
+            self.assertEqual(detail["test_count"], expected)
+            self.assertRegex(detail["output_digest"], r"^sha256:[0-9a-f]{64}$")
+        target = self.root / "artifacts" / "validation-result-details" / "validation-result-detail-two-tests.json"
+        target.write_text("{}", encoding="utf-8")
+        with sqlite_connection(database) as connection:
+            self.assertEqual(submission_service._validation_result_detail(
+                connection, data_root=self.root, run_id="run-details",
+                validation_id="repository_suite", command_id="two-tests", exit_code=0,
+            ), {"status": "UNAVAILABLE"})
+            self.assertEqual(submission_service._validation_result_detail(
+                connection, data_root=self.root, run_id="other-run",
+                validation_id="repository_suite", command_id="zero-tests", exit_code=0,
+            ), {"status": "UNAVAILABLE"})
+
+    def test_control_definition_digest_changes_when_argv_changes_under_same_identity(self) -> None:
+        binding = {"validation_id": "repository_suite", "category": "repository",
+                   "control_identity": "python3 -m unittest discover -s tests",
+                   "command": [sys.executable, "-m", "unittest", "discover", "-s", "tests"]}
+        expected = submission_service._control_definition_digest(
+            profile_version="1.0", profile_reference="validation-profile-registry:FULL@1.0",
+            binding=binding,
+        )
+        changed = {**binding, "command": [sys.executable, "-m", "unittest", "discover", "-s", "other-tests"]}
+        self.assertNotEqual(expected, submission_service._control_definition_digest(
+            profile_version="1.0", profile_reference="validation-profile-registry:FULL@1.0",
+            binding=changed,
+        ))
+        logical_definition = {
+            "validation_profile_version": "1.0",
+            "profile_reference": "validation-profile-registry:FULL@1.0",
+            "validation_id": "repository_suite", "category": "repository",
+            "control_identity": "python3 -m unittest discover -s tests",
+            "command_identity": ["{python}", "-m", "unittest", "discover", "-s", "tests"],
+        }
+        self.assertEqual(expected, "sha256:" + hashlib.sha256(json.dumps(
+            logical_definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")).hexdigest())
 
     def payload(self, key: str = "same") -> dict[str, object]:
         return {"repository_id": "djconnect", "producer": {"id": "test", "type": "HUMAN", "version": "1"}, "prompt": "Validate only; do not execute.", "idempotency_key": key}
@@ -672,6 +753,50 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             )
             connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-readback", json.dumps(checkpoint.to_dict()), "COMPLETE", "now"))
             connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)", ("run-readback", "COMPLETE", "safe", "now", None, "/private/report", "now"))
+        binding = {"validation_id": "repository_suite", "required": True,
+                   "category": "repository", "control_identity": "python3 -m unittest discover -s tests",
+                   "command": ["python3", "-m", "unittest", "discover", "-s", "tests"]}
+        record_validation_profile(
+            self.root, run_id="run-readback", selected_validation_tier="FULL",
+            validation_profile_version="1.0", required_validation_controls=("repository_suite",),
+            recorded_at="2026-01-01T00:00:00+00:00", control_bindings=(binding,),
+            candidate_sha="c" * 40, currentness=2,
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        record_validation_command_invocation(
+            self.root, run_id="run-readback", validation_id="repository_suite",
+            command_id="required-control-fixture", category="repository",
+            control_identity=binding["control_identity"], required_for_profile=True,
+            started_at="2026-01-01T00:00:00+00:00", currentness=2,
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        record_validation_command_terminal(
+            self.root, run_id="run-readback", command_id="required-control-fixture",
+            completed_at="2026-01-01T00:00:01+00:00", exit_code=0,
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        record_validation_control_result(
+            self.root, run_id="run-readback", validation_id="repository_suite",
+            category="repository", control_identity=binding["control_identity"],
+            required_for_profile=True, execution_status="EXECUTED", result="PASS",
+            evidence_ref="command_terminal", observed_at="2026-01-01T00:00:01+00:00",
+            currentness=2, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        record_validation_control_result(
+            self.root, run_id="run-readback", validation_id="provider_observed_repository_suite",
+            category="agent", control_identity="private optional provider command",
+            required_for_profile=False, execution_status="EXECUTED", result="PASS",
+            evidence_ref="provider_report", observed_at="2026-01-01T00:00:01+00:00",
+            currentness=2, central_database=self.root / server.SERVER_DATABASE_FILENAME,
+        )
+        persist_validation_result_detail(
+            self.root, run_id="run-readback", command_id="required-control-fixture",
+            validation_id="repository_suite", exit_code=0,
+            stdout="", stderr="Ran 2 tests in 0.01s\n\nOK\n", capture_available=True,
+            captured_at="2026-01-01T00:00:01+00:00",
+            central_database=self.root / server.SERVER_DATABASE_FILENAME,
+            artifact_root=self.root / "artifacts",
+        )
         artifact_id = submission_service.write_terminal_evidence(self.root, repository_root=self.root, run_id="run-readback")
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             direct = submission_service.producer_readback(connection, project_id="djconnect", submission_id=submission_id)
@@ -715,6 +840,26 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         self.assertEqual(artifact["delivery"], {"status": "NOT_DELIVERED", "revision": None})
         self.assertEqual(artifact["assurance"]["repair_rounds"], {"used": 2, "maximum": 3})
         self.assertEqual(artifact["assurance"]["findings"]["artifact"]["id"], "assurance-findings:run-readback")
+        controls = artifact["validation_controls"]
+        self.assertEqual(controls["contract_version"], "1.0")
+        self.assertEqual(controls["candidate_sha"], "c" * 40)
+        self.assertEqual(controls["required_validation_controls"], ["repository_suite"])
+        control = controls["controls"]["repository_suite"]
+        self.assertEqual(tuple(controls["controls"]), ("repository_suite",))
+        self.assertNotIn("private optional provider command", returned_artifact_bytes.decode("utf-8"))
+        self.assertEqual(control["evidence_authority"], "command_terminal")
+        self.assertEqual(control["result_detail"]["test_count"], 2)
+        logical_definition = {
+            "validation_profile_version": "1.0",
+            "profile_reference": "validation-profile-registry:FULL@1.0",
+            "validation_id": "repository_suite", "category": "repository",
+            "control_identity": binding["control_identity"],
+            "command_identity": binding["command"],
+        }
+        expected_definition = "sha256:" + hashlib.sha256(json.dumps(
+            logical_definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")).hexdigest()
+        self.assertEqual(control["control_definition_digest"], expected_definition)
 
         # A new writer must not replace a previously immutable v1.3 terminal
         # artifact merely because it can now emit a richer v1.4 shape.
