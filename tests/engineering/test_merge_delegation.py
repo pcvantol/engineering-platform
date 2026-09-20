@@ -316,9 +316,11 @@ class MergeDelegationTest(unittest.TestCase):
                 self.assertFalse(cli("inspect-assurance-target")["target_profile_ready"])
                 with sqlite_connection(data / "epdata.sqlite") as connection:
                     connection.execute("UPDATE ep_local_repository_bindings SET updated_at=?", (now,))
+                    connection.execute("UPDATE ep_local_repository_bindings SET state='UNBOUND'")
                 self.assertEqual(cli("revoke-assurance-target", "--expected-selection-revision", "1")
                                  ["target_selection"]["revision"], 2)
-                self.assertFalse(cli("inspect-assurance-target")["target_profile_ready"])
+                with sqlite_connection(data / "epdata.sqlite") as connection:
+                    self.assertEqual(merge_delegation.target_selection(connection, "project", "opaque")["profile_id"], "")
             with sqlite_connection(data / "epdata.sqlite") as connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_merge_delegations").fetchone()[0], 0)
 

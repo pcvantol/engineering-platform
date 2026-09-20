@@ -132,7 +132,8 @@ def select_target_profile(connection: sqlite3.Connection, *, project_id: str,
                           expected_revision: int, revoke: bool = False) -> dict[str, object]:
     """Record one owner decision after the caller checks actual registration and origin."""
     current = target_selection(connection, project_id, repository_id)
-    binding_digest = _current_binding_digest(connection, project_id, repository_id)
+    binding_digest = (str(current["binding_digest"]) if revoke and current else
+                      _current_binding_digest(connection, project_id, repository_id))
     revision = int(current["revision"]) if current else 0
     if (not isinstance(expected_revision, int) or expected_revision != revision
             or not actor_reference.startswith("local-uid:")

@@ -8327,6 +8327,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ServerConfigurationError("PLATFORM_ADMIN_FORBIDDEN") from error
             actor_reference = f"local-uid:{owner_uid}"
             with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                current = merge_delegation.target_selection(connection, args.project_id, args.repository_id)
                 scope = connection.execute(
                     "SELECT b.local_root FROM ep_project_registrations p JOIN ep_repository_registrations r "
                     "ON r.project_id=p.project_id JOIN ep_local_repository_bindings b "
@@ -8335,19 +8336,19 @@ def main(argv: list[str] | None = None) -> int:
                     "AND r.role='authority' AND b.state='BOUND'",
                     (args.project_id, args.repository_id),
                 ).fetchone()
-                if scope is None:
+                if scope is None and args.command != "revoke-assurance-target":
                     raise ServerConfigurationError("ACTIVE_AUTHORITY_REPOSITORY_REQUIRED")
-                try:
-                    github_repository = merge_delegation.bound_github_repository(Path(str(scope[0])))
-                except ValueError as error:
-                    raise ServerConfigurationError(str(error)) from error
-                current = merge_delegation.target_selection(connection, args.project_id, args.repository_id)
                 if args.command == "revoke-assurance-target":
                     if current is None:
                         raise ServerConfigurationError("No assurance target selection exists to revoke.")
+                    github_repository = str(current["github_repository"])
                     policy = {"digest": current["policy_digest"], "required_checks": [],
                               "required_approvals": None, "required_thread_resolution": None}
                 else:
+                    try:
+                        github_repository = merge_delegation.bound_github_repository(Path(str(scope[0])))
+                    except ValueError as error:
+                        raise ServerConfigurationError(str(error)) from error
                     from .execution_repository import GhCliClient
                     from .execution_errors import RunnerError
                     try:
