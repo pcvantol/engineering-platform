@@ -593,7 +593,8 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
             if len(tokens) != 1 or re.fullmatch(r"ep-merge-delegation:[0-9a-f]{32}", tokens[0]) is None:
                 raise SubmissionError("INVALID_MERGE_DELEGATION", 409)
             grant = merge_delegation.load(connection, tokens[0].split(":", 1)[1])
-            if (grant is None or not any(grant.permits(
+            if (grant is None or not merge_delegation.target_selection_permits(connection, grant)
+                    or not any(grant.permits(
                     project_id=request.project_id, repository_id=request.repository_id,
                     mission_id=str(request.mission_id), mission_revision=str(provenance.get("mission_revision")),
                     role=role, base_branch="main",

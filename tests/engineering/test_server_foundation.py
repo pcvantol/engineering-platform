@@ -1306,7 +1306,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 "INSERT INTO ep_installations SELECT instance_id,created_at,70 FROM ep_installations_schema71"
             )
             connection.execute("DROP TABLE ep_installations_schema71")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version=71")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=71")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(70)")
             connection.execute("UPDATE engineering_metadata SET value='70' WHERE key='installation.schema_version'")
 
@@ -1320,7 +1320,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )} <= triggers)
             self.assertEqual(connection.execute(
                 "SELECT schema_version FROM ep_installations"
-            ).fetchone(), (71,))
+            ).fetchone(), (72,))
         self.assertNotIn("WRITER_FENCE_INCOMPLETE", central_operational_reset.preview(self.root)["blocking_codes"])
 
     def test_schema_41_installation_upgrades_through_the_ordered_current_path(self) -> None:
