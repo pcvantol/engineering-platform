@@ -423,6 +423,12 @@ class GhCliClient:
         strict_values: list[bool] = []
         required_approvals: list[int] = []
         required_thread_resolution = False
+        classic_conversations = classic.get("required_conversation_resolution") if classic else None
+        if repository_profile and classic_conversations is not None:
+            if (not isinstance(classic_conversations, dict)
+                    or not isinstance(classic_conversations.get("enabled"), bool)):
+                raise RunnerError("Classic review-thread policy is incomplete.")
+            required_thread_resolution = classic_conversations["enabled"]
         classic_checks = classic.get("required_status_checks") if classic else None
         if classic_checks is not None:
             if not isinstance(classic_checks, dict) or not isinstance(classic_checks.get("strict"), bool):
@@ -519,6 +525,8 @@ class GhCliClient:
                     "enforce_admins": classic["enforce_admins"]["enabled"],
                     "allow_force_pushes": classic["allow_force_pushes"]["enabled"],
                     "allow_deletions": classic["allow_deletions"]["enabled"],
+                    "required_conversation_resolution": None if classic_conversations is None
+                        else classic_conversations["enabled"],
                     "required_status_checks": None if classic_checks is None else {
                         "strict": classic_checks["strict"],
                         "contexts": sorted(classic_checks["contexts"]),
@@ -529,6 +537,7 @@ class GhCliClient:
                     },
                     "required_pull_request_reviews": None if classic_reviews is None else {
                         "required_approving_review_count": classic_reviews["required_approving_review_count"],
+                        "dismiss_stale_reviews": classic_reviews.get("dismiss_stale_reviews", False),
                         "require_code_owner_reviews": classic_reviews.get("require_code_owner_reviews", False),
                         "require_last_push_approval": classic_reviews.get("require_last_push_approval", False),
                         "required_review_thread_resolution": classic_reviews.get("required_review_thread_resolution", False),
