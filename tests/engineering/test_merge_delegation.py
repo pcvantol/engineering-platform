@@ -321,6 +321,14 @@ class MergeDelegationTest(unittest.TestCase):
                                  ["target_selection"]["revision"], 2)
                 with sqlite_connection(data / "epdata.sqlite") as connection:
                     self.assertEqual(merge_delegation.target_selection(connection, "project", "opaque")["profile_id"], "")
+                    connection.execute("UPDATE ep_local_repository_bindings SET state='BOUND',updated_at='new-origin'")
+                subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin",
+                                "https://github.com/pcvantol/another-target.git"], check=True)
+                replaced = cli("select-assurance-target", "--assurance-profile", "repository-autonomous-qs@1",
+                               "--expected-selection-revision", "2")
+                self.assertEqual(replaced["target_selection"]["revision"], 3)
+                self.assertEqual(replaced["github_repository"], "pcvantol/another-target")
+                self.assertTrue(replaced["target_profile_ready"])
             with sqlite_connection(data / "epdata.sqlite") as connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_merge_delegations").fetchone()[0], 0)
 

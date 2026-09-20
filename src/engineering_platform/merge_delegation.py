@@ -140,7 +140,8 @@ def select_target_profile(connection: sqlite3.Connection, *, project_id: str,
             or _REPOSITORY.fullmatch(github_repository) is None
             or binding_digest is None
             or re.fullmatch(r"sha256:[0-9a-f]{64}", policy_digest) is None
-            or current is not None and current["github_repository"] != github_repository):
+            or current is not None and current["github_repository"] != github_repository
+               and (revoke or current["profile_id"] != "")):
         raise ValueError("target profile selection scope or revision changed")
     profile_id, profile_revision = ("", "") if revoke else (REPOSITORY_ASSURANCE_ID, "1")
     connection.execute("""INSERT INTO ep_assurance_target_selections
