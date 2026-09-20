@@ -141,7 +141,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 71
+SERVER_STORE_SCHEMA_VERSION = 72
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -604,6 +604,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_queue_disposition_operations",
         "ep_operator_capabilities",
         "ep_merge_delegations",
+        "ep_assurance_target_selections",
         "ep_parity_lifecycle_dispatches",
         "ep_receipt_run_provenance",
         "ep_external_producer_bindings",
@@ -2090,6 +2091,23 @@ def _migrate_schema_71(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=71")
 
 
+def _migrate_schema_72(connection: sqlite3.Connection) -> None:
+    """Retain owner target decisions and immutable grant selection bindings."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema71")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 72))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,72 FROM ep_installations_schema71")
+    connection.execute("DROP TABLE ep_installations_schema71")
+    merge_delegation.install_selection_schema(connection)
+    merge_delegation.install_profile_guard(connection)
+    central_operational_reset.install_writer_fences(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(72)")
+    connection.execute("UPDATE engineering_metadata SET value='72' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=72")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2121,6 +2139,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (69, _migrate_schema_69),
     (70, _migrate_schema_70),
     (71, _migrate_schema_71),
+    (72, _migrate_schema_72),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -2163,6 +2182,8 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         "ep_technical_diagnostics_immutable_delete",
         "ep_terminal_evidence_reconciliation_immutable_update",
         "ep_merge_delegations_profile_immutable",
+        "ep_assurance_target_selections_immutable_update",
+        "ep_assurance_target_selections_immutable_delete",
         "ep_terminal_evidence_reconciliation_immutable_delete",
     } <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
@@ -7061,7 +7082,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     live_repository = merge_delegation.bound_github_repository(Path(str(bound[0]))) if bound else None
                 except ValueError:
                     live_repository = None
-                status = ("DRIFT" if live_repository != grant.github_repository else
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    selection_current = merge_delegation.target_selection_permits(connection, grant)
+                status = ("DRIFT" if live_repository != grant.github_repository or not selection_current else
                           "REVOKED" if grant.revoked_at is not None else
                           "EXPIRED" if datetime.fromisoformat(grant.expires_at) <= datetime.now(timezone.utc) else
                           "RESERVED" if grant.activated_at is None else
@@ -7442,7 +7465,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -7468,6 +7491,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mission-revision")
     parser.add_argument("--merge-role", action="append", choices=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"))
     parser.add_argument("--assurance-profile")
+    parser.add_argument("--expected-selection-revision", type=int)
     parser.add_argument("--expires-at")
     parser.add_argument("--expected-instance-id")
     parser.add_argument("--peer-binding-id")
@@ -8288,6 +8312,75 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     changed = connection.execute("UPDATE ep_operator_capabilities SET revoked_at=? WHERE consumer_id=? AND project_id=? AND capability=? AND revoked_at IS NULL", (_utcnow(), args.consumer_id, args.project_id, args.capability)).rowcount
                     result = {"result": "REVOKED" if changed else "NOT_ACTIVE", "consumer_id": args.consumer_id, "project_id": args.project_id, "capability": args.capability}
+        elif args.command in {"inspect-assurance-target", "select-assurance-target", "revoke-assurance-target"}:
+            if not args.project_id or not args.repository_id:
+                raise ServerConfigurationError("Assurance target requires project and repository IDs.")
+            if args.command != "inspect-assurance-target" and args.expected_selection_revision is None:
+                raise ServerConfigurationError("Owner selection requires --expected-selection-revision.")
+            if args.command == "select-assurance-target" and args.assurance_profile != merge_delegation.REPOSITORY_ASSURANCE_PROFILE:
+                raise ServerConfigurationError("Owner selection requires repository-autonomous-qs@1.")
+            initialize(args.data_root)
+            try:
+                from .platform_admin import require_installation_owner
+                owner_uid = require_installation_owner(args.data_root)
+            except PermissionError as error:
+                raise ServerConfigurationError("PLATFORM_ADMIN_FORBIDDEN") from error
+            actor_reference = f"local-uid:{owner_uid}"
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                scope = connection.execute(
+                    "SELECT b.local_root FROM ep_project_registrations p JOIN ep_repository_registrations r "
+                    "ON r.project_id=p.project_id JOIN ep_local_repository_bindings b "
+                    "ON b.project_id=p.project_id AND b.repository_id=r.repository_id "
+                    "WHERE p.project_id=? AND p.status='ACTIVE' AND r.repository_id=? "
+                    "AND r.role='authority' AND b.state='BOUND'",
+                    (args.project_id, args.repository_id),
+                ).fetchone()
+                if scope is None:
+                    raise ServerConfigurationError("ACTIVE_AUTHORITY_REPOSITORY_REQUIRED")
+                try:
+                    github_repository = merge_delegation.bound_github_repository(Path(str(scope[0])))
+                except ValueError as error:
+                    raise ServerConfigurationError(str(error)) from error
+                current = merge_delegation.target_selection(connection, args.project_id, args.repository_id)
+                if args.command == "revoke-assurance-target":
+                    if current is None:
+                        raise ServerConfigurationError("No assurance target selection exists to revoke.")
+                    policy = {"digest": current["policy_digest"], "required_checks": [],
+                              "required_approvals": None, "required_thread_resolution": None}
+                else:
+                    from .execution_repository import GhCliClient
+                    from .execution_errors import RunnerError
+                    try:
+                        policy = GhCliClient(repository=github_repository)._autonomous_effective_policy(
+                            assurance_profile=merge_delegation.REPOSITORY_ASSURANCE_PROFILE)
+                    except RunnerError as error:
+                        raise ServerConfigurationError("Effective GitHub policy is unavailable: " + str(error)) from error
+                if args.command != "inspect-assurance-target":
+                    try:
+                        current = merge_delegation.select_target_profile(
+                            connection, project_id=args.project_id, repository_id=args.repository_id,
+                            github_repository=github_repository, actor_reference=actor_reference,
+                            policy_digest=str(policy["digest"]),
+                            expected_revision=args.expected_selection_revision,
+                            revoke=args.command == "revoke-assurance-target",
+                        )
+                    except ValueError as error:
+                        raise ServerConfigurationError(str(error)) from error
+                selected = bool(current and current["profile_id"] == merge_delegation.REPOSITORY_ASSURANCE_ID
+                                and current["github_repository"] == github_repository
+                                and current["policy_digest"] == policy["digest"])
+                result = {"result": "TARGET_PROFILE_INSPECTED" if args.command == "inspect-assurance-target"
+                          else "TARGET_PROFILE_SELECTED" if args.command == "select-assurance-target"
+                          else "TARGET_PROFILE_REVOKED",
+                          "project_id": args.project_id, "repository_id": args.repository_id,
+                          "github_repository": github_repository,
+                          "supported_profiles": [merge_delegation.REPOSITORY_ASSURANCE_PROFILE],
+                          "effective_policy": None if args.command == "revoke-assurance-target" else {"digest": policy["digest"],
+                                               "required_checks": policy["required_checks"],
+                                               "required_approvals": policy["required_approvals"],
+                                               "required_thread_resolution": policy["required_thread_resolution"]},
+                          "target_selection": current, "target_profile_ready": selected,
+                          "mission_delegation_required_for_execution": True}
         elif args.command in {"reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation"}:
             if args.command != "reserve-merge-delegation" and args.assurance_profile is not None:
                 raise ServerConfigurationError("Assurance profile can only be selected at reservation.")
@@ -8316,12 +8409,14 @@ def main(argv: list[str] | None = None) -> int:
                         github_repository = merge_delegation.bound_github_repository(Path(str(scope[0])))
                         policy_digest = ""
                         if args.assurance_profile is not None:
-                            if args.assurance_profile != merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE:
+                            if args.assurance_profile not in {merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE,
+                                                              merge_delegation.REPOSITORY_ASSURANCE_PROFILE}:
                                 raise ValueError("Unknown autonomous assurance profile")
                             from .execution_repository import GhCliClient
                             from .execution_errors import RunnerError
                             try:
-                                policy_digest = str(GhCliClient(repository=github_repository)._autonomous_effective_policy()["digest"])
+                                policy_digest = str(GhCliClient(repository=github_repository)._autonomous_effective_policy(
+                                    assurance_profile=args.assurance_profile)["digest"])
                             except RunnerError as error:
                                 raise ValueError("Autonomous effective GitHub policy is unavailable") from error
                         grant = merge_delegation.reserve(

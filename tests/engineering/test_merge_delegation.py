@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from engineering_platform import merge_delegation, server, submission_service
+from engineering_platform import central_operational_reset, merge_delegation, server, submission_service
 from engineering_platform.storage import sqlite_connection
 from engineering_platform.validation_profile import (
     ValidationProfileResolutionError, delivery_unittest_binding, delivery_unittest_selectors,
@@ -21,6 +21,88 @@ from engineering_platform.validation_profile import (
 
 
 class MergeDelegationTest(unittest.TestCase):
+    def test_schema_71_upgrade_retains_legacy_grant_and_installs_selection_ledger(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version=71))")
+            connection.execute("INSERT INTO ep_installations VALUES('fixture','2026-09-19T00:00:00+00:00',71)")
+            connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
+            connection.execute("CREATE TABLE engineering_metadata(key TEXT PRIMARY KEY,value TEXT)")
+            connection.execute("INSERT INTO engineering_metadata VALUES('installation.schema_version','71')")
+            connection.execute("""CREATE TABLE ep_merge_delegations (
+                delegation_id TEXT PRIMARY KEY,actor_reference TEXT NOT NULL,project_id TEXT NOT NULL,
+                repository_id TEXT NOT NULL,github_repository TEXT NOT NULL,mission_id TEXT NOT NULL,
+                mission_revision TEXT NOT NULL,base_branch TEXT NOT NULL,roles TEXT NOT NULL,
+                expires_at TEXT NOT NULL,created_at TEXT NOT NULL,activated_at TEXT,revoked_at TEXT,
+                assurance_profile_id TEXT NOT NULL,assurance_profile_revision TEXT NOT NULL,
+                assurance_policy_digest TEXT NOT NULL)""")
+            connection.execute("INSERT INTO ep_merge_delegations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                               ("8" * 32, "local-uid:501", "project", "opaque", "pcvantol/forge", "mission-1",
+                                "1", "main", '["IMPLEMENTATION"]', "2099-01-01T00:00:00+00:00",
+                                "2026-09-19T00:00:00+00:00", "2026-09-19T00:00:00+00:00", None,
+                                "", "", ""))
+            central_operational_reset.install_schema(connection)
+            server._migrate_schema_72(connection)
+            grant = merge_delegation.load(connection, "8" * 32)
+            self.assertIsNotNone(grant)
+            self.assertEqual(grant.target_selection_revision, 0)
+            self.assertEqual(connection.execute("SELECT schema_version FROM ep_installations").fetchone(), (72,))
+            self.assertIsNone(merge_delegation.target_selection(connection, "project", "opaque"))
+        finally:
+            connection.close()
+
+    def test_repository_profile_requires_exact_owner_selection_and_revision(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        try:
+            merge_delegation.install_schema(connection)
+            digest = "sha256:" + "a" * 64
+            scope = dict(delegation_id="a" * 32, actor_reference="local-uid:501",
+                         project_id="forge-project", repository_id="forge-repository",
+                         github_repository="pcvantol/forge", base_branch="main",
+                         roles=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"),
+                         expires_at=(datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+                         assurance_profile=merge_delegation.REPOSITORY_ASSURANCE_PROFILE,
+                         assurance_policy_digest=digest)
+            with self.assertRaisesRegex(ValueError, "lacks a current owner selection"):
+                merge_delegation.reserve(connection, **scope)
+            with self.assertRaisesRegex(ValueError, "scope or revision changed"):
+                merge_delegation.select_target_profile(
+                    connection, project_id="forge-project", repository_id="forge-repository",
+                    github_repository="pcvantol/forge", actor_reference="local-uid:501",
+                    policy_digest=digest, expected_revision=1)
+            selection = merge_delegation.select_target_profile(
+                connection, project_id="forge-project", repository_id="forge-repository",
+                github_repository="pcvantol/forge", actor_reference="local-uid:501",
+                policy_digest=digest, expected_revision=0)
+            self.assertEqual(selection["revision"], 1)
+            for changed in ({"project_id": "other"}, {"repository_id": "other"},
+                            {"github_repository": "pcvantol/other"},
+                            {"assurance_policy_digest": "sha256:" + "b" * 64}):
+                with self.subTest(changed=changed), self.assertRaises(ValueError):
+                    merge_delegation.reserve(connection, **{**scope, **changed})
+            grant = merge_delegation.reserve(connection, **scope)
+            self.assertEqual(grant.target_selection_revision, 1)
+            self.assertTrue(merge_delegation.target_selection_permits(connection, grant))
+            activated = merge_delegation.activate(
+                connection, delegation_id=grant.delegation_id, mission_id="MISSION-0018",
+                mission_revision="revision-1", actor_reference=grant.actor_reference,
+                github_repository=grant.github_repository)
+            self.assertTrue(activated.permits(project_id=scope["project_id"],
+                                              repository_id=scope["repository_id"],
+                                              mission_id="MISSION-0018", mission_revision="revision-1",
+                                              role="FINALIZATION", base_branch="main"))
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("UPDATE ep_assurance_target_selections SET profile_id='' WHERE revision=1")
+            revoked = merge_delegation.select_target_profile(
+                connection, project_id="forge-project", repository_id="forge-repository",
+                github_repository="pcvantol/forge", actor_reference="local-uid:501",
+                policy_digest=digest, expected_revision=1, revoke=True)
+            self.assertEqual(revoked["revision"], 2)
+            self.assertFalse(merge_delegation.target_selection_permits(connection, activated))
+            self.assertEqual(merge_delegation.load(connection, grant.delegation_id), activated)
+        finally:
+            connection.close()
+
     def test_schema_69_grant_migrates_to_immutable_empty_profile(self) -> None:
         connection = sqlite3.connect(":memory:")
         try:
@@ -185,6 +267,48 @@ class MergeDelegationTest(unittest.TestCase):
             self.assertEqual(active["mission_id"], "mission-1")
             revoked = cli("revoke-merge-delegation", "--delegation-id", delegation_id)
             self.assertEqual(revoked["result"], "REVOKED")
+
+    def test_owner_cli_inspects_selects_and_reads_target_before_mission(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            data, root = base / "data", base / "repo"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "https://github.com/pcvantol/forge.git"], check=True)
+            server.initialize(data)
+            now = datetime.now(timezone.utc).isoformat()
+            with sqlite_connection(data / "epdata.sqlite") as connection:
+                connection.execute("INSERT INTO ep_project_registrations VALUES(?,?,?,?,?)",
+                                   ("project", "{}", "ACTIVE", now, now))
+                connection.execute("INSERT INTO ep_repository_registrations "
+                                   "(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) "
+                                   "VALUES(?,?,?,?,?,?,?)",
+                                   ("opaque", "project", "opaque", "authority", "{}", now, now))
+                connection.execute("INSERT INTO ep_local_repository_bindings VALUES(?,?,?,?,?,?)",
+                                   ("project", "opaque", str(root), "BOUND", now, now))
+            observed_policy = {"digest": "sha256:" + "a" * 64, "required_checks": ["validate"],
+                               "required_approvals": 0, "required_thread_resolution": True}
+            def cli(*args: str) -> dict[str, object]:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(server.main([*args, "--data-root", str(data),
+                                                  "--project-id", "project", "--repository-id", "opaque"]), 0)
+                return json.loads(output.getvalue())
+            with patch("engineering_platform.execution_repository.GhCliClient._autonomous_effective_policy",
+                       return_value=observed_policy):
+                before = cli("inspect-assurance-target")
+                self.assertIsNone(before["target_selection"])
+                self.assertFalse(before["target_profile_ready"])
+                selected = cli("select-assurance-target", "--assurance-profile", "repository-autonomous-qs@1",
+                               "--expected-selection-revision", "0")
+                self.assertEqual(selected["target_selection"]["revision"], 1)
+                self.assertTrue(cli("inspect-assurance-target")["target_profile_ready"])
+                self.assertEqual(cli("revoke-assurance-target", "--expected-selection-revision", "1")
+                                 ["target_selection"]["revision"], 2)
+                self.assertFalse(cli("inspect-assurance-target")["target_profile_ready"])
+            with sqlite_connection(data / "epdata.sqlite") as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_merge_delegations").fetchone()[0], 0)
 
     def test_bound_origin_must_be_github_and_exact_owner_repository(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

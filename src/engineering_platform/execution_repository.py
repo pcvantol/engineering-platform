@@ -360,10 +360,17 @@ class GhCliClient:
         except RuntimeError as error:
             raise RunnerError("Pull request Markdown could not be normalized.") from error
         return True
-    def _autonomous_effective_policy(self) -> dict[str, object]:
+    def _autonomous_effective_policy(self, *, assurance_profile: str = "qualification-autonomous-qs@1") -> dict[str, object]:
         """Read all active main rules and classic protection without inferring zero from errors."""
-        if self.repository != "pcvantol/forge-mission-qualification":
+        if (assurance_profile == "qualification-autonomous-qs@1"
+                and self.repository != "pcvantol/forge-mission-qualification"):
             raise RunnerError("Autonomous assurance profile has a different repository scope.")
+        if assurance_profile not in {"qualification-autonomous-qs@1", "repository-autonomous-qs@1"}:
+            raise RunnerError("Unknown delegated merge assurance profile.")
+        repository_profile = assurance_profile == "repository-autonomous-qs@1"
+        if repository_profile and (not isinstance(self.repository, str)
+                                   or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository) is None):
+            raise RunnerError("Autonomous assurance requires an exact repository.")
         try:
             raw_rules = json.loads(self._github("api", f"repos/{self.repository}/rules/branches/main?per_page=100"))
         except (RuntimeError, json.JSONDecodeError) as error:
@@ -415,6 +422,7 @@ class GhCliClient:
         required_apps: dict[str, set[int]] = {}
         strict_values: list[bool] = []
         required_approvals: list[int] = []
+        required_thread_resolution = False
         classic_checks = classic.get("required_status_checks") if classic else None
         if classic_checks is not None:
             if not isinstance(classic_checks, dict) or not isinstance(classic_checks.get("strict"), bool):
@@ -442,9 +450,10 @@ class GhCliClient:
             if (isinstance(count, bool) or not isinstance(count, int) or count < 0
                     or classic_reviews.get("require_code_owner_reviews") is True
                     or classic_reviews.get("require_last_push_approval") is True
-                    or classic_reviews.get("required_review_thread_resolution") is True):
+                    or (classic_reviews.get("required_review_thread_resolution") is True and not repository_profile)):
                 raise RunnerError("Classic review policy requires unsupported or unknown approval evidence.")
             required_approvals.append(count)
+            required_thread_resolution |= classic_reviews.get("required_review_thread_resolution") is True
         supported = {"required_status_checks", "pull_request", "non_fast_forward", "deletion", "required_linear_history"}
         for rule in verified_rules:
             rule_type, parameters = rule.get("type"), rule.get("parameters")
@@ -467,13 +476,28 @@ class GhCliClient:
             elif rule_type == "pull_request":
                 if not isinstance(parameters, dict):
                     raise RunnerError("Ruleset pull-request policy is incomplete.")
+                if repository_profile:
+                    supported_parameters = {
+                        "allowed_merge_methods", "dismiss_stale_reviews_on_push",
+                        "require_code_owner_review", "require_extra_approval_for_unattributed_changes",
+                        "require_last_push_approval", "required_approving_review_count",
+                        "required_review_thread_resolution", "required_reviewers",
+                    }
+                    if (set(parameters) - supported_parameters
+                            or parameters.get("require_extra_approval_for_unattributed_changes") is True
+                            or parameters.get("require_last_push_approval") is True
+                            or ("allowed_merge_methods" in parameters
+                                and (not isinstance(parameters["allowed_merge_methods"], list)
+                                     or "squash" not in parameters["allowed_merge_methods"]))):
+                        raise RunnerError("Ruleset pull-request policy has an unsupported merge condition.")
                 count = parameters.get("required_approving_review_count")
                 if (isinstance(count, bool) or not isinstance(count, int) or count < 0
                         or parameters.get("require_code_owner_review") is True
-                        or parameters.get("required_review_thread_resolution") is True
+                        or (parameters.get("required_review_thread_resolution") is True and not repository_profile)
                         or parameters.get("required_reviewers")):
                     raise RunnerError("Ruleset review policy requires unsupported or unknown approval evidence.")
                 required_approvals.append(count)
+                required_thread_resolution |= parameters.get("required_review_thread_resolution") is True
         if not required_checks or not strict_values or not all(strict_values):
             raise RunnerError("Autonomous assurance requires strict protected status checks.")
         effective_rule_types = {rule.get("type") for rule in verified_rules}
@@ -484,16 +508,71 @@ class GhCliClient:
         policy = {"source": "github-effective-main", "classic": classic,
                   "rulesets": verified_rules, "required_checks": sorted(required_checks),
                   "required_apps": {name: sorted(apps) for name, apps in sorted(required_apps.items())},
-                  "required_approvals": max(required_approvals, default=0), "strict_checks": True}
-        policy["digest"] = "sha256:" + hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                  "required_approvals": max(required_approvals, default=0), "strict_checks": True,
+                  "required_thread_resolution": required_thread_resolution}
+        if repository_profile:
+            # GitHub embeds observation URLs and other changing metadata in
+            # protection responses. Bind only the effective rule semantics.
+            classic_binding = None
+            if classic is not None:
+                classic_binding = {
+                    "enforce_admins": classic["enforce_admins"]["enabled"],
+                    "allow_force_pushes": classic["allow_force_pushes"]["enabled"],
+                    "allow_deletions": classic["allow_deletions"]["enabled"],
+                    "required_status_checks": None if classic_checks is None else {
+                        "strict": classic_checks["strict"],
+                        "contexts": sorted(classic_checks["contexts"]),
+                        "checks": sorted(({"context": item["context"],
+                                           "app_id": item.get("app_id")}
+                                          for item in classic_checks["checks"]),
+                                         key=lambda item: (item["context"], str(item["app_id"]))),
+                    },
+                    "required_pull_request_reviews": None if classic_reviews is None else {
+                        "required_approving_review_count": classic_reviews["required_approving_review_count"],
+                        "require_code_owner_reviews": classic_reviews.get("require_code_owner_reviews", False),
+                        "require_last_push_approval": classic_reviews.get("require_last_push_approval", False),
+                        "required_review_thread_resolution": classic_reviews.get("required_review_thread_resolution", False),
+                    },
+                }
+            stable_rules = []
+            for item in verified_rules:
+                parameters = item.get("parameters")
+                if isinstance(parameters, dict):
+                    parameters = dict(parameters)
+                    if item["type"] == "required_status_checks":
+                        parameters["required_status_checks"] = sorted(
+                            parameters["required_status_checks"],
+                            key=lambda check: (check["context"], str(check.get("integration_id"))))
+                    elif item["type"] == "pull_request" and "allowed_merge_methods" in parameters:
+                        parameters["allowed_merge_methods"] = sorted(parameters["allowed_merge_methods"])
+                stable_rules.append({"ruleset_id": item["ruleset_id"],
+                                     "type": item["type"], "parameters": parameters})
+            policy_binding = {
+                "version": "repository-effective-main/v1",
+                "repository": self.repository,
+                "classic": classic_binding,
+                "rulesets": sorted(stable_rules,
+                                    key=lambda item: (item["ruleset_id"], item["type"],
+                                                      json.dumps(item["parameters"], sort_keys=True))),
+                "required_checks": policy["required_checks"],
+                "required_apps": policy["required_apps"],
+                "required_approvals": policy["required_approvals"],
+                "required_thread_resolution": required_thread_resolution,
+                "strict_checks": True,
+            }
+        else:
+            # Preserve the original synthetic profile's immutable digest semantics.
+            policy_binding = {key: value for key, value in policy.items()
+                              if key != "required_thread_resolution"}
+        policy["digest"] = "sha256:" + hashlib.sha256(json.dumps(policy_binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return policy
 
     def delegated_merge_qualification(self, number: int, head_sha: str, *, assurance_profile: str | None = None) -> dict[str, object]:
         """Fresh protected checks and independent head-bound GitHub reviews."""
-        autonomous = assurance_profile == "qualification-autonomous-qs@1"
+        autonomous = assurance_profile in {"qualification-autonomous-qs@1", "repository-autonomous-qs@1"}
         if assurance_profile is not None and not autonomous:
             raise RunnerError("Unknown delegated merge assurance profile.")
-        policy = self._autonomous_effective_policy() if autonomous else None
+        policy = self._autonomous_effective_policy(assurance_profile=assurance_profile) if autonomous else None
         if policy is None:
             checks = self.qualification_for_exact_head(number, head_sha)
         else:
@@ -573,6 +652,22 @@ class GhCliClient:
         )
         if len(approvals) < required:
             raise RunnerError("Delegated merge lacks required independent approvals for this exact head.")
+        if policy is not None and policy["required_thread_resolution"]:
+            owner, repository_name = self.repository.split("/", 1)
+            query = ("query { repository(owner:\"" + owner + "\",name:\"" + repository_name
+                     + "\") { pullRequest(number:" + str(number)
+                     + ") { reviewThreads(first:100) { totalCount nodes { isResolved } } } } }")
+            try:
+                response = json.loads(self._github("api", "graphql", "-f", "query=" + query))
+                threads = response["data"]["repository"]["pullRequest"]["reviewThreads"]
+            except (RuntimeError, ValueError, KeyError, TypeError) as error:
+                raise RunnerError("Required review-thread resolution could not be read.") from error
+            nodes = threads.get("nodes") if isinstance(threads, dict) else None
+            if (not isinstance(nodes, list) or not isinstance(threads.get("totalCount"), int)
+                    or threads["totalCount"] != len(nodes) or len(nodes) >= 100
+                    or any(not isinstance(item, dict) or item.get("isResolved") is not True
+                           for item in nodes)):
+                raise RunnerError("Delegated merge has unresolved or unreadable review threads.")
         return {**checks, "reviewers": approvals, "required_approvals": required}
 
     def merge(self, number: int, *, expected_head_sha: str | None = None) -> None:

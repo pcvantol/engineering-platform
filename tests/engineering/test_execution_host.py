@@ -1642,6 +1642,67 @@ class ClientContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RunnerError, "Classic GitHub protection policy could not be read"):
             client.delegated_merge_qualification(17, head, assurance_profile=profile)
 
+    def test_repository_profile_uses_stable_policy_and_resolved_threads(self) -> None:
+        head = "e" * 40
+        repository = "pcvantol/forge"
+        class Provider:
+            def __init__(self) -> None:
+                self.observed_at = "first"
+                self.approvals = 0
+                self.resolved = True
+            def github(self, *args: str) -> str:
+                endpoint = args[1] if len(args) > 1 else ""
+                rules = [
+                    {"ruleset_id": 7, "type": "non_fast_forward", "parameters": None},
+                    {"ruleset_id": 7, "type": "deletion", "parameters": None},
+                    {"ruleset_id": 7, "type": "required_status_checks", "parameters": {
+                        "strict_required_status_checks_policy": True,
+                        "required_status_checks": [{"context": "validate"}]}},
+                    {"ruleset_id": 7, "type": "pull_request", "parameters": {
+                        "allowed_merge_methods": ["squash"],
+                        "required_approving_review_count": self.approvals,
+                        "required_review_thread_resolution": True}},
+                ]
+                if args[:2] == ("pr", "view"):
+                    return json.dumps({"headRefOid": head, "baseRefOid": "f" * 40,
+                                       "baseRefName": "main", "statusCheckRollup": [
+                                           {"name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}]})
+                if endpoint == f"repos/{repository}/rules/branches/main?per_page=100":
+                    return json.dumps([{**rule, "observed_at": self.observed_at} for rule in rules])
+                if endpoint == f"repos/{repository}/rulesets/7":
+                    return json.dumps({"id": 7, "target": "branch", "enforcement": "active",
+                                       "bypass_actors": [], "rules": [{"type": rule["type"],
+                                                                        "parameters": rule["parameters"]}
+                                                                       for rule in rules]})
+                if endpoint == f"repos/{repository}/branches/main/protection":
+                    raise RuntimeError("HTTP 404: Branch not protected")
+                if endpoint == f"repos/{repository}/pulls/17":
+                    return json.dumps({"number": 17, "state": "open", "draft": False,
+                                       "head": {"sha": head}, "base": {"ref": "main"},
+                                       "user": {"login": "implementer"}})
+                if endpoint == f"repos/{repository}/pulls/17/reviews?per_page=100":
+                    return "[]"
+                if endpoint == "graphql":
+                    return json.dumps({"data": {"repository": {"pullRequest": {
+                        "reviewThreads": {"totalCount": 1,
+                                          "nodes": [{"isResolved": self.resolved}]}}}}})
+                raise AssertionError(args)
+        provider = Provider()
+        client = GhCliClient(provider, repository)
+        profile = "repository-autonomous-qs@1"
+        first = client.delegated_merge_qualification(17, head, assurance_profile=profile)
+        self.assertEqual((first["required_approvals"], first["reviewers"]), (0, []))
+        provider.observed_at = "later"
+        self.assertEqual(first["effective_policy"]["digest"],
+                         client._autonomous_effective_policy(assurance_profile=profile)["digest"])
+        provider.resolved = False
+        with self.assertRaisesRegex(RunnerError, "unresolved or unreadable review threads"):
+            client.delegated_merge_qualification(17, head, assurance_profile=profile)
+        provider.resolved = True
+        provider.approvals = 1
+        with self.assertRaisesRegex(RunnerError, "lacks required independent approvals"):
+            client.delegated_merge_qualification(17, head, assurance_profile=profile)
+
     @patch("engineering_platform.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:
         review_message = json.dumps(

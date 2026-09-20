@@ -325,6 +325,36 @@ cancelled by a queue action.
 
 ## Bounded owner merge delegation
 
+The `repository-autonomous-qs@1` profile is an EP-defined assurance and
+protected-merge rule. It remains closed until the installation owner selects
+it for one active authority repository. The selection records the project and
+repository IDs, actual bound GitHub origin, actor, effective main-policy digest
+and an append-only revision. It approves no Mission. A changed or revoked
+selection invalidates grants bound to the prior revision; their historical
+records remain readable. `qualification-autonomous-qs@1` retains its original
+synthetic-repository scope.
+
+The local owner can inspect the target before a Mission exists, then make or
+revoke the explicit target decision. The first selection uses expected revision
+`0`; every later decision uses the revision returned by readback.
+
+```text
+python3 -m engineering_platform.server inspect-assurance-target --data-root <EP_DATA_ROOT> --project-id <PROJECT_ID> --repository-id <REPOSITORY_ID>
+python3 -m engineering_platform.server select-assurance-target --data-root <EP_DATA_ROOT> --project-id <PROJECT_ID> --repository-id <REPOSITORY_ID> --assurance-profile repository-autonomous-qs@1 --expected-selection-revision <CURRENT_REVISION>
+python3 -m engineering_platform.server revoke-assurance-target --data-root <EP_DATA_ROOT> --project-id <PROJECT_ID> --repository-id <REPOSITORY_ID> --expected-selection-revision <CURRENT_REVISION>
+```
+
+Inspection reads effective classic protection and active branch rulesets,
+required checks and approvals, and review-thread resolution. It does not
+allocate a Mission or grant. Selection requires the local installation owner
+and a readable compatible policy. Revocation remains available when GitHub
+policy readback is temporarily unavailable. For a later approved Mission,
+reserve a new grant with `--assurance-profile repository-autonomous-qs@1`
+and the exact registered project/repository. Activation still binds the
+approved Mission ID and revision once. GitHub's actual required approvals
+remain required; zero account approvals is accepted only when effective policy
+requires zero and distinct EP Quality and Security evidence passes.
+
 The installed owner reserves a grant before Forge Mission intake allocates a
 Mission ID. The reservation is scoped to the active project, its authority
 repository, the actual bound GitHub.com origin, `main`, allowed delivery

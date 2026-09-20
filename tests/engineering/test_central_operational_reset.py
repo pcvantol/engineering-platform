@@ -15,7 +15,7 @@ import warnings
 from unittest.mock import patch
 
 from engineering_platform import central_operational_reset as reset
-from engineering_platform import development_profile, server, submission_service
+from engineering_platform import development_profile, merge_delegation, server, submission_service
 from engineering_platform.operational_installation_lock import OperationalInstallationLock
 from engineering_platform.storage import sqlite_connection
 
@@ -267,6 +267,10 @@ class CentralOperationalResetTests(unittest.TestCase):
                  "mission-1", "1", "main", '["IMPLEMENTATION"]', "2099-01-01T00:00:00+00:00",
                  "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00", None),
             )
+            merge_delegation.select_target_profile(
+                connection, project_id="djconnect", repository_id="djconnect",
+                github_repository="pcvantol/djconnect", actor_reference="local-uid:501",
+                policy_digest="sha256:" + "a" * 64, expected_revision=0)
         operation_id, digest = self._prepared()
         with sqlite_connection(self.root / "epdata.sqlite") as connection:
             with self.assertRaisesRegex(submission_service.SubmissionError, "PLATFORM_MAINTENANCE_ACTIVE"):
@@ -286,6 +290,7 @@ class CentralOperationalResetTests(unittest.TestCase):
             ).fetchone(), (1,))
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone(), (0,))
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_merge_delegations").fetchone(), (1,))
+            self.assertEqual(merge_delegation.target_selection(connection, "djconnect", "djconnect")["revision"], 1)
             with self.assertRaisesRegex(submission_service.SubmissionError, "IDEMPOTENCY_RETIRED"):
                 submission_service.submit(connection, request)
             changed = submission_service.SubmissionRequest(

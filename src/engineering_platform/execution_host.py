@@ -3898,12 +3898,14 @@ First implementation pull-request publication gate:
         try:
             with sqlite_connection(self.store.central_database) as connection:
                 grant = merge_delegation.load(connection, state.merge_delegation_id)
+                selection_current = bool(grant and merge_delegation.target_selection_permits(connection, grant))
         except (EngineeringStorageError, sqlite3.Error):
             return False
-        return bool(grant and grant.assurance_profile_id == "qualification-autonomous-qs"
-                    and grant.assurance_profile_revision == "1"
+        return bool(grant and selection_current and grant.assurance_profile_revision == "1"
                     and grant.github_repository == state.repository
-                    == merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY)
+                    and (grant.assurance_profile_id == merge_delegation.REPOSITORY_ASSURANCE_ID
+                         or (grant.assurance_profile_id == "qualification-autonomous-qs"
+                             and state.repository == merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY)))
 
     def _recover_autonomous_pr_assurance(
         self, state: TransactionState, candidate: PullRequestEvidence,
@@ -4013,7 +4015,8 @@ First implementation pull-request publication gate:
                     (state.run_id,),
                 ).fetchone()
                 grant = merge_delegation.load(connection, state.merge_delegation_id)
-            if scope is None or grant is None or not isinstance(accepted, dict):
+                selection_current = bool(grant and merge_delegation.target_selection_permits(connection, grant))
+            if scope is None or grant is None or not selection_current or not isinstance(accepted, dict):
                 return None
             if Path(str(scope[2])).resolve() != self.root.resolve():
                 return None
@@ -4057,17 +4060,21 @@ First implementation pull-request publication gate:
             qualifier = getattr(self.github, "delegated_merge_qualification", None)
             if not callable(qualifier):
                 return None
-            autonomous_profile = (
-                grant.assurance_profile_id == "qualification-autonomous-qs"
-                and grant.assurance_profile_revision == "1"
-            )
+            autonomous_profile = (grant.assurance_profile_revision == "1" and
+                                  grant.assurance_profile_id in {
+                                      "qualification-autonomous-qs",
+                                      merge_delegation.REPOSITORY_ASSURANCE_ID})
             if grant.assurance_profile_id or grant.assurance_profile_revision:
                 if (not autonomous_profile
-                        or grant.github_repository != merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY
+                        or (grant.assurance_profile_id == "qualification-autonomous-qs"
+                            and grant.github_repository != merge_delegation.AUTONOMOUS_ASSURANCE_REPOSITORY)
                         or not self._autonomous_merge_assurance_passes(state, expected_head)):
                     return None
+            selected_profile = (merge_delegation.REPOSITORY_ASSURANCE_PROFILE
+                                if grant.assurance_profile_id == merge_delegation.REPOSITORY_ASSURANCE_ID
+                                else merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE)
             qualification = (qualifier(fresh.number, expected_head,
-                                      assurance_profile=merge_delegation.AUTONOMOUS_ASSURANCE_PROFILE)
+                                      assurance_profile=selected_profile)
                              if autonomous_profile else qualifier(fresh.number, expected_head))
             if (not isinstance(qualification, dict) or qualification.get("conclusion") != "PASS"
                     or qualification.get("exact_qualified_sha") != expected_head
@@ -4094,7 +4101,8 @@ First implementation pull-request publication gate:
                 return None
             with sqlite_connection(self.store.central_database) as connection:
                 current_grant = merge_delegation.load(connection, state.merge_delegation_id)
-            if (current_grant is None or not current_grant.permits(
+                current_selection = bool(current_grant and merge_delegation.target_selection_permits(connection, current_grant))
+            if (current_grant is None or not current_selection or not current_grant.permits(
                     project_id=str(scope[0]), repository_id=str(scope[1]),
                     mission_id=str(accepted.get("mission_id")), mission_revision=str(mission_revision),
                     role=state.transaction_kind, base_branch="main",
@@ -4108,7 +4116,9 @@ First implementation pull-request publication gate:
                 policy_reader = getattr(self.github, "_autonomous_effective_policy", None)
                 if not callable(policy_reader):
                     return None
-                current_policy = policy_reader()
+                current_policy = (policy_reader(assurance_profile=selected_profile)
+                                  if grant.assurance_profile_id == merge_delegation.REPOSITORY_ASSURANCE_ID
+                                  else policy_reader())
                 if (not isinstance(current_policy, dict)
                         or current_policy.get("digest") != current_grant.assurance_policy_digest):
                     return None
@@ -4118,7 +4128,21 @@ First implementation pull-request publication gate:
             attempted = replace(state, delegated_merge_attempt=attempt,
                                 delegated_merge_actor_reference=None)
             self.store.save(attempted)
-            self.github.merge(fresh.number, expected_head_sha=expected_head)
+            # Linearize revocation against the external merge call. A revoke
+            # committed before this lock is observed; one waiting for this lock
+            # can only commit after the bounded call has returned.
+            with sqlite_connection(self.store.central_database) as authority:
+                authority.execute("BEGIN IMMEDIATE")
+                final_grant = merge_delegation.load(authority, state.merge_delegation_id)
+                if (final_grant is None or not final_grant.permits(
+                        project_id=str(scope[0]), repository_id=str(scope[1]),
+                        mission_id=str(accepted.get("mission_id")),
+                        mission_revision=str(mission_revision),
+                        role=state.transaction_kind, base_branch="main")
+                        or not merge_delegation.target_selection_permits(authority, final_grant)
+                        or final_grant != current_grant):
+                    raise ValueError("merge authority changed before the external call")
+                self.github.merge(fresh.number, expected_head_sha=expected_head)
             merged = self.github.pull_request(fresh.number)
             self.repository.refresh_main_reference(self.root)
             if (merged.state == "MERGED" and merged.head_sha == expected_head
