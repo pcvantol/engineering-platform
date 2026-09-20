@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/producer-readback-v1.3.schema.json",
+  "title": "Engineering Platform producer readback v1.3 current execution disposition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "submission", "producer", "correlation", "provenance", "disposition", "run", "result", "evidence"],
+  "properties": {
+    "contract_version": {"const": "1.3"},
+    "submission": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "project_id", "repository_id", "state", "admission", "transport", "created_at", "accepted_request_digest"],
+      "properties": {
+        "id": {"type": "string"}, "project_id": {"type": "string"},
+        "repository_id": {"type": "string"}, "state": {"type": "string"},
+        "admission": {"type": "string"}, "transport": {"type": "string"},
+        "created_at": {"type": "string"},
+        "accepted_request_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "producer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "version"],
+      "properties": {
+        "id": {"type": "string"}, "type": {"type": "string"},
+        "version": {"type": ["string", "null"]}
+      }
+    },
+    "correlation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["correlation_id", "mission_id", "engineering_action_id"],
+      "properties": {
+        "correlation_id": {"type": ["string", "null"]},
+        "mission_id": {"type": ["string", "null"]},
+        "engineering_action_id": {"type": ["string", "null"]}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "forge_execution"],
+      "properties": {
+        "status": {"type": "string"},
+        "forge_execution": {"type": ["object", "null"]}
+      }
+    },
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "terminal", "execution_eligible", "revision", "operation_id", "event_reference", "reason", "actor_reference", "recorded_at", "resolution_submission_id", "retry_parent_run_id"],
+      "properties": {
+        "state": {"enum": ["QUEUED", "DEFERRED", "QUARANTINED", "DECLINED", "CLAIMED", "RUNNING", "COMPLETE", "BLOCKED", "FAILED", "DISMISSED"]},
+        "terminal": {"type": "boolean"},
+        "execution_eligible": {"type": "boolean"},
+        "revision": {"type": "integer", "minimum": 0},
+        "operation_id": {"type": ["string", "null"]},
+        "event_reference": {"type": ["string", "null"]},
+        "reason": {"type": "string"},
+        "actor_reference": {"type": "string"},
+        "recorded_at": {"type": ["string", "null"]},
+        "resolution_submission_id": {"type": ["string", "null"]},
+        "retry_parent_run_id": {"type": ["string", "null"]}
+      }
+    },
+    "run": {
+      "type": ["object", "null"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "minLength": 1},
+        "terminal": {"type": "boolean"},
+        "operator_resolution": {"type": "string"},
+        "updated_at": {"type": "string"},
+        "execution_started_at": {"type": "string", "format": "date-time"},
+        "execution_completed_at": {"type": "string", "format": "date-time"},
+        "execution_duration_ms": {"type": "integer", "minimum": 1}
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["outcome", "terminal", "delivery_qualified"],
+      "properties": {
+        "outcome": {"type": "string"},
+        "terminal": {"type": "boolean"},
+        "delivery_qualified": {"type": "boolean"}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "terminal_artifact", "repository"],
+      "properties": {
+        "status": {"type": "string"},
+        "terminal_artifact": {"type": ["object", "null"]},
+        "repository": {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "revision"],
+          "properties": {
+            "id": {"type": ["string", "null"]},
+            "revision": {"type": ["string", "null"]}
+          }
+        }
+      }
+    }
+  }
+}

@@ -245,6 +245,19 @@ from telemetry alone.
 The machine-readable response shape is
 [`producer-readback-v1.2.schema.json`](../../src/engineering_platform/schemas/producer-readback-v1.2.schema.json).
 
+Version 1.2 retains its historical queue-disposition enum. A consumer can
+request version 1.3 through the `EP-Producer-Readback-Contract: 1.3` header;
+the default remains 1.2 for existing consumers. The [v1.3
+schema](../../src/engineering_platform/schemas/producer-readback-v1.3.schema.json)
+adds current dispatch states and terminal `DISMISSED` operator resolution.
+The submission row and its historical QUEUED event remain unchanged. A
+claimed dispatch is never execution-eligible as a queued submission; a blocked
+dispatch with a dismissed gate and no active lease projects terminal
+`DISMISSED` in v1.3. The disposition's reason and time come from the gate
+transition, while any earlier queue operation retains its own separate
+historical event and actor. Current queue counts exclude dispatch-owned
+submissions.
+
 ## Forge admission receipt and bidirectional audit
 
 Producer readback stays at `v1.2`; its exact root shape is not changed by this

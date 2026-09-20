@@ -108,6 +108,10 @@ class FakeRepository:
         self.refresh_main_reference_error: RunnerError | None = None
         self.synchronize_calls: list[Path] = []
         self.synchronize_error: RunnerError | None = None
+        self.prepare_calls: list[tuple[Path, str, str]] = []
+        self.prepare_error: RunnerError | None = None
+        self.origin_override: str | None = None
+        self.operation_active = False
 
     def inspect(self, root: Path) -> RepositoryEvidence:
         self.inspect_calls.append(root)
@@ -124,10 +128,26 @@ class FakeRepository:
     def remote_main_contains(self, root: Path, sha: str) -> bool:
         return self.contains
 
+    def revision_is_ancestor(self, root: Path, ancestor: str, descendant: str) -> bool:
+        return self.contains
+
+    def trusted_origin_identity(self, root: Path) -> str | None:
+        return self.origin_override if self.origin_override is not None else self.evidence.repository
+
+    def workspace_operation_active(self, root: Path) -> bool:
+        return self.operation_active
+
     def synchronize_main(self, root: Path) -> None:
         self.synchronize_calls.append(root)
         if self.synchronize_error:
             raise self.synchronize_error
+
+    def prepare_main_revision(self, root: Path, revision: str, repository_id: str) -> RepositoryEvidence:
+        self.prepare_calls.append((root, revision, repository_id))
+        if self.prepare_error:
+            raise self.prepare_error
+        self.evidence = RepositoryEvidence(repository_id, "main", revision, True, True)
+        return self.evidence
 
     def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
         self.cleanup_calls.append(branches)
@@ -381,7 +401,8 @@ class ClientContractTest(unittest.TestCase):
         self._git(seed, "config", "user.name", "Engineering tests")
         self._git(seed, "checkout", "-b", "main")
         (seed / "base.txt").write_text("base\n", encoding="utf-8")
-        self._git(seed, "add", "base.txt")
+        (seed / "BOOTSTRAP.md").write_text("test repository\n", encoding="utf-8")
+        self._git(seed, "add", "base.txt", "BOOTSTRAP.md")
         self._git(seed, "commit", "-m", "base")
         self._git(seed, "remote", "add", "origin", str(origin))
         self._git(seed, "push", "-u", "origin", "main")
@@ -390,6 +411,50 @@ class ClientContractTest(unittest.TestCase):
         self._git(checkout, "config", "user.email", "tests@example.invalid")
         self._git(checkout, "config", "user.name", "Engineering tests")
         return seed, checkout
+
+    def test_exact_managed_revision_prepares_old_clean_main_and_rejects_dirty_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            seed, checkout = self._managed_sync_fixture(temporary)
+            old = self._git(checkout, "rev-parse", "HEAD")
+            (seed / "next.txt").write_text("next\n", encoding="utf-8")
+            self._git(seed, "add", "next.txt")
+            self._git(seed, "commit", "-m", "next")
+            self._git(seed, "push", "origin", "main")
+            requested = self._git(seed, "rev-parse", "HEAD")
+            client = SubprocessRepositoryClient()
+            repository_id = client.inspect(checkout).repository
+            with patch("engineering_platform.execution_repository.trusted_github_repository_slug", return_value=repository_id):
+                prepared = client.prepare_main_revision(checkout, requested, repository_id)
+            self.assertNotEqual(old, requested)
+            self.assertEqual(prepared.head_sha, requested)
+            self.assertTrue(prepared.clean)
+            with patch("engineering_platform.execution_repository.trusted_github_repository_slug", return_value=repository_id):
+                self.assertEqual(client.prepare_main_revision(checkout, requested, repository_id).head_sha, requested)
+            (checkout / "unknown.txt").write_text("unknown local work\n", encoding="utf-8")
+            with patch("engineering_platform.execution_repository.trusted_github_repository_slug", return_value=repository_id):
+                with self.assertRaisesRegex(RunnerError, "UNSAFE_WORKTREE"):
+                    client.prepare_main_revision(checkout, requested, repository_id)
+            self.assertTrue((checkout / "unknown.txt").exists())
+
+    def test_exact_managed_revision_rejects_wrong_repository_and_unreachable_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _seed, checkout = self._managed_sync_fixture(temporary)
+            client = SubprocessRepositoryClient()
+            observed = client.inspect(checkout)
+            with patch("engineering_platform.execution_repository.trusted_github_repository_slug", return_value="another/repository"):
+                with self.assertRaisesRegex(RunnerError, "REPOSITORY_MISMATCH"):
+                    client.prepare_main_revision(checkout, observed.head_sha, "another/repository")
+            with patch("engineering_platform.execution_repository.trusted_github_repository_slug", return_value=observed.repository):
+                with self.assertRaisesRegex(RunnerError, "REVISION_NOT_ON_PROTECTED_MAIN"):
+                    client.prepare_main_revision(checkout, "f" * 40, observed.repository)
+            self.assertEqual(self._git(checkout, "rev-parse", "HEAD"), observed.head_sha)
+
+    def test_exact_preparation_rejects_local_origin_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _seed, checkout = self._managed_sync_fixture(temporary)
+            client = SubprocessRepositoryClient()
+            with self.assertRaisesRegex(RunnerError, "ORIGIN_UNTRUSTED"):
+                client.prepare_main_revision(checkout, client.inspect(checkout).head_sha, "pcvantol/forge")
 
     def test_repository_synchronization_ignores_multiple_merge_targets_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2271,9 +2336,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(state.assurance_profile["candidate_sha"], "a" * 40)
         self.assertEqual(repository.synchronize_calls, [self.root])
 
-    def test_exact_requested_revision_refuses_mismatch_before_synchronization_or_provider(self) -> None:
+    def test_exact_requested_revision_prepares_old_clean_workspace_before_provider(self) -> None:
         repository = FakeRepository()
-        agent = FakeAgent(AgentResult("COMPLETE"))
+        agent = FakeAgent(AgentResult("WAITING"))
         submission = {
             "execution_context": None,
             "constraints": {"repository_revision_binding": {
@@ -2285,12 +2350,160 @@ class LocalAgentRunnerTest(unittest.TestCase):
             state = EngineeringRunner(
                 self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
             ).run(self.prompt, run_id="pinned-revision-mismatch")
+        self.assertNotEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.requested_repository_revision, "b" * 40)
+        self.assertEqual(state.execution_baseline_sha, "b" * 40)
+        self.assertEqual(repository.synchronize_calls, [])
+        self.assertEqual(repository.prepare_calls, [(self.root, "b" * 40, "pcvantol/djconnect")])
+        self.assertGreaterEqual(len(repository.inspect_calls), 2)
+        self.assertNotEqual(agent.prompts, [])
+
+    def test_invalid_exact_revision_binding_blocks_before_workspace_or_provider(self) -> None:
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "not-a-commit", "allowed_baseline_revision": None,
+        }}}
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id="invalid-exact-revision-binding")
         self.assertEqual(state.phase, "BLOCKED")
         self.assertEqual(state.next_action, "repository_revision_binding")
-        self.assertEqual(state.requested_repository_revision, "b" * 40)
-        self.assertIsNone(state.execution_baseline_sha)
+        self.assertEqual(repository.prepare_calls, [])
+        self.assertEqual(agent.prompts, [])
+
+    def test_resume_rejects_checkpoint_revision_that_conflicts_with_accepted_submission(self) -> None:
+        run_id = "checkpoint-revision-conflict"
+        self.store.save(TransactionState(
+            run_id, "pcvantol/djconnect", str(self.prompt), "INITIALIZE",
+            requested_repository_revision="c" * 40,
+        ))
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": None,
+        }}}
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id=run_id, resume=True)
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "repository_revision_binding")
+        self.assertEqual(repository.prepare_calls, [])
+        self.assertEqual(agent.prompts, [])
+
+    def test_resume_rejects_checkpoint_allowed_baseline_that_conflicts_with_submission(self) -> None:
+        run_id = "checkpoint-allowed-baseline-conflict"
+        self.store.save(TransactionState(
+            run_id, "pcvantol/djconnect", str(self.prompt), "INITIALIZE",
+            requested_repository_revision="b" * 40,
+            allowed_baseline_revision="c" * 40,
+        ))
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": "a" * 40,
+        }}}
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id=run_id, resume=True)
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "repository_revision_binding")
         self.assertEqual(repository.synchronize_calls, [])
-        self.assertGreaterEqual(len(repository.inspect_calls), 2)
+        self.assertEqual(agent.prompts, [])
+
+    def test_uncertain_exact_preparation_blocks_before_provider(self) -> None:
+        repository = FakeRepository()
+        repository.prepare_error = RunnerError("MANAGED_PREPARATION_RESULT_UNCERTAIN")
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": None,
+        }}}
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id="uncertain-exact-preparation")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(agent.prompts, [])
+
+    def test_exact_revision_rejects_wrong_origin_before_preparation(self) -> None:
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": None,
+            "repository_identity": "another/repository",
+        }}}
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id="wrong-origin-preparation")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "repository_identity_binding")
+        self.assertEqual(repository.prepare_calls, [])
+        self.assertEqual(agent.prompts, [])
+
+    def test_prepared_workspace_drift_blocks_before_implementation_provider(self) -> None:
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": None,
+        }}}
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+        )
+        def drift_after_admission(*_args: object, **_kwargs: object) -> None:
+            repository.evidence = RepositoryEvidence(
+                repository.evidence.repository, "main", "c" * 40, True, True,
+            )
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            with patch.object(runner, "_managed_action", side_effect=drift_after_admission):
+                state = runner.run(self.prompt, run_id="prepared-workspace-drift")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "managed_workspace_drift")
+        self.assertEqual(agent.prompts, [])
+
+    def test_origin_only_drift_blocks_before_capability_review(self) -> None:
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": None,
+            "repository_identity": "pcvantol/djconnect",
+        }}}
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+        )
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            with patch.object(
+                runner, "_managed_action",
+                side_effect=lambda *_args, **_kwargs: setattr(
+                    repository, "origin_override", "another/repository",
+                ),
+            ):
+                state = runner.run(self.prompt, run_id="origin-only-drift")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "managed_workspace_drift")
+        self.assertEqual(agent.prompts, [])
+
+    def test_index_lock_after_preparation_blocks_before_reviewer(self) -> None:
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": None,
+            "repository_identity": "pcvantol/djconnect",
+        }}}
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+        )
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            with patch.object(
+                runner, "_managed_action",
+                side_effect=lambda *_args, **_kwargs: setattr(repository, "operation_active", True),
+            ):
+                state = runner.run(self.prompt, run_id="index-lock-after-preparation")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "managed_workspace_drift")
         self.assertEqual(agent.prompts, [])
 
     def test_explicitly_allowed_baseline_transition_is_recorded_separately(self) -> None:

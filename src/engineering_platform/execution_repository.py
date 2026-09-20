@@ -31,6 +31,18 @@ def github_repository_slug(remote: str) -> str:
     return value
 
 
+def trusted_github_repository_slug(remote: str) -> str | None:
+    """Resolve only an authorized GitHub transport, never a path or alias."""
+    value = remote.strip()
+    if value.startswith("git@github.com:"):
+        slug = value.removeprefix("git@github.com:").removesuffix(".git")
+    elif value.startswith("https://github.com/"):
+        slug = value.removeprefix("https://github.com/").removesuffix(".git")
+    else:
+        return None
+    return slug if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", slug) else None
+
+
 class RepositoryClient(Protocol):
     def inspect(self, root: Path) -> RepositoryEvidence: ...
     def main_contains(self, root: Path, sha: str) -> bool: ...
@@ -38,6 +50,10 @@ class RepositoryClient(Protocol):
     def refresh_main_reference(self, root: Path) -> None: ...
     def remote_main_contains(self, root: Path, sha: str) -> bool: ...
     def synchronize_main(self, root: Path) -> None: ...
+    def prepare_main_revision(self, root: Path, revision: str, repository_id: str) -> RepositoryEvidence: ...
+    def revision_is_ancestor(self, root: Path, ancestor: str, descendant: str) -> bool: ...
+    def trusted_origin_identity(self, root: Path) -> str | None: ...
+    def workspace_operation_active(self, root: Path) -> bool: ...
 
 
 class GitHubClient(Protocol):
@@ -73,6 +89,19 @@ class SubprocessRepositoryClient:
         contained = self.provider.execute(root, "git", "merge-base", "--is-ancestor", head_sha, "main").returncode == 0
         return RepositoryEvidence(repository, branch, head_sha, clean, contained)
 
+    def trusted_origin_identity(self, root: Path) -> str | None:
+        return trusted_github_repository_slug(self._run(root, "git", "remote", "get-url", "origin"))
+
+    def workspace_operation_active(self, root: Path) -> bool:
+        for name in ("index.lock", "MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD",
+                     "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply"):
+            path = Path(self._run(root, "git", "rev-parse", "--git-path", name))
+            if not path.is_absolute():
+                path = root / path
+            if path.exists():
+                return True
+        return False
+
     def main_contains(self, root: Path, sha: str) -> bool:
         return self.provider.execute(root, "git", "merge-base", "--is-ancestor", sha, "main").returncode == 0
 
@@ -90,6 +119,13 @@ class SubprocessRepositoryClient:
 
     def remote_main_contains(self, root: Path, sha: str) -> bool:
         return self.provider.execute(root, "git", "merge-base", "--is-ancestor", sha, "origin/main").returncode == 0
+
+    def revision_is_ancestor(self, root: Path, ancestor: str, descendant: str) -> bool:
+        if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (ancestor, descendant)):
+            return False
+        return self.provider.execute(
+            root, "git", "merge-base", "--is-ancestor", ancestor, descendant,
+        ).returncode == 0
 
     @staticmethod
     def _is_transient_index_lock_conflict(error: RuntimeError) -> bool:
@@ -179,6 +215,46 @@ class SubprocessRepositoryClient:
                 "MANAGED_MAIN_FAST_FORWARD_FAILED: operation=git-merge-ff-only-origin-main "
                 f"{self._managed_sync_diagnostics(root)}; {self._managed_sync_error_detail(error)}"
             ) from error
+
+    def prepare_main_revision(self, root: Path, revision: str, repository_id: str) -> RepositoryEvidence:
+        """Fast forward a clean Managed main to one authorized protected revision.
+
+        The caller owns the execution lease.  This method never resets local
+        work, switches branches, or treats a branch name as commit evidence.
+        """
+        if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise RunnerError("MANAGED_PREPARATION_INVALID_REVISION")
+        before = self.inspect(root)
+        if self.trusted_origin_identity(root) != repository_id:
+            raise RunnerError("MANAGED_PREPARATION_ORIGIN_UNTRUSTED")
+        if before.repository != repository_id:
+            raise RunnerError("MANAGED_PREPARATION_REPOSITORY_MISMATCH")
+        if before.branch != "main" or not before.clean or not before.main_contains_head:
+            raise RunnerError("MANAGED_PREPARATION_UNSAFE_WORKTREE")
+        if self.workspace_operation_active(root):
+            raise RunnerError("MANAGED_PREPARATION_GIT_OPERATION_ACTIVE")
+        self._synchronize_command(root, "git", "fetch", "--prune", "origin", "main")
+        if not self.remote_main_contains(root, revision):
+            raise RunnerError("MANAGED_PREPARATION_REVISION_NOT_ON_PROTECTED_MAIN")
+        if before.head_sha == revision:
+            if (self.inspect(root) != before or self.trusted_origin_identity(root) != repository_id
+                    or self.workspace_operation_active(root)):
+                raise RunnerError("MANAGED_PREPARATION_WORKSPACE_DRIFT")
+            return before
+        if self.provider.execute(root, "git", "merge-base", "--is-ancestor", before.head_sha, revision).returncode:
+            raise RunnerError("MANAGED_PREPARATION_NON_FAST_FORWARD")
+        after_fetch = self.inspect(root)
+        if (after_fetch != before or self.trusted_origin_identity(root) != repository_id
+                or self.workspace_operation_active(root)):
+            raise RunnerError("MANAGED_PREPARATION_WORKSPACE_DRIFT")
+        self._synchronize_command(root, "git", "merge", "--ff-only", revision)
+        prepared = self.inspect(root)
+        if (prepared.repository != repository_id or prepared.branch != "main" or not prepared.clean
+                or not prepared.main_contains_head or prepared.head_sha != revision
+                or self.trusted_origin_identity(root) != repository_id
+                or self.workspace_operation_active(root)):
+            raise RunnerError("MANAGED_PREPARATION_RESULT_UNCERTAIN")
+        return prepared
 
     def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
         self._run(root, "git", "fetch", "--prune"); self.synchronize_main(root)

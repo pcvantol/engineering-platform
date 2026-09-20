@@ -157,6 +157,30 @@ A recovered record is phase-scoped historical evidence: it may be retained for
 reporting, but it can be consumed only by its recorded lifecycle phase and
 cannot satisfy or interfere with a later provider phase.
 
+## Exact Managed Action baseline and current submission disposition
+
+For a Forge-bound Action, EP receives the exact requested revision and, when
+available, the authorized GitHub repository identity. Under the existing run
+lease, the Managed repository client checks origin, clean main, Git operation
+markers, protected-main reachability and fast-forward ancestry. A clean older
+workspace may advance only to the requested SHA. The runner rereads HEAD and
+clean state before provider implementation; uncertainty or drift blocks. The
+terminal execution receipt retains the actual execution baseline separately
+from candidate and protected delivery revisions. Branch name alone does not
+establish baseline equivalence.
+
+The authenticated Managed-workspace-readiness route inspects the bound target,
+origin, HEAD, cleanliness, Git operation and lease state without submission or
+checkout mutation. It reports capability for later exact preparation; the
+Action-specific baseline is supplied only by the subsequent authorized
+submission.
+
+The submission's original QUEUED event remains historical audit. Once a
+dispatch owns it, current execution eligibility comes from the dispatch and
+gate lifecycle, not the old queue row. A blocked run whose operator gate is
+dismissed and whose lease is released projects a terminal DISMISSED current
+disposition; it is absent from the active queue and remains in history.
+
 ## Planned subagent orchestration and efficiency follow-up
 
 The [retained source audit and target design](SUBAGENT_ORCHESTRATION_AND_EFFICIENCY.md)

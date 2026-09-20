@@ -10,6 +10,7 @@ from engineering_platform.execution_executor import persist_validation_result_de
 
 import json
 import hashlib
+import http.server
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import socket
@@ -17,12 +18,14 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from engineering_platform import server, submission_service, merge_delegation
+from engineering_platform.parity_lifecycle_dispatcher import dismiss_operator_gate
 from engineering_platform.agent_state import TransactionState
 from engineering_platform.platform_version import CURRENT_PLATFORM_VERSION
 
@@ -51,6 +54,34 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
     def tearDown(self) -> None:
         server.stop(self.root)
         self.temporary.cleanup()
+
+    def test_managed_workspace_readiness_requires_consumer_and_repository_scope(self) -> None:
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), server._HealthHandler)
+        httpd.data_root = self.root
+        worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+        worker.start()
+        try:
+            endpoint = (f"http://127.0.0.1:{httpd.server_port}"
+                        "/v1/projects/djconnect/managed-workspace-readiness")
+            with self.assertRaises(HTTPError) as unauthenticated:
+                urlopen(Request(endpoint, headers={"EP-Repository-ID": "djconnect"}))  # nosec B310
+            self.assertEqual(unauthenticated.exception.code, 401)
+            unauthenticated.exception.close()
+            with self.assertRaises(HTTPError) as missing_scope:
+                urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"}))  # nosec B310
+            self.assertEqual(missing_scope.exception.code, 400)
+            missing_scope.exception.close()
+            with urlopen(Request(endpoint, headers={
+                "Authorization": f"Bearer {self.credential}", "EP-Repository-ID": "djconnect",
+            })) as response:  # nosec B310
+                readiness = json.load(response)
+            self.assertEqual(readiness["status"], "BLOCKED")
+            self.assertEqual(readiness["known_blocker"], "MANAGED_WORKSPACE_UNAVAILABLE")
+            self.assertEqual(readiness["repository_id"], "djconnect")
+        finally:
+            httpd.shutdown()
+            worker.join(timeout=5)
+            httpd.server_close()
 
     def test_validation_result_detail_distinguishes_zero_missing_and_corrupt_output(self) -> None:
         database = self.root / server.SERVER_DATABASE_FILENAME
@@ -350,6 +381,19 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             request.constraints and request.constraints["repository_revision_binding"],
             {"requested_revision": "a" * 40, "allowed_baseline_revision": "b" * 40},
         )
+        scoped = self.payload("origin-binding")
+        scoped["constraints"] = {"repository_revision_binding": {
+            "requested_revision": "a" * 40, "allowed_baseline_revision": None,
+            "repository_identity": "pcvantol/forge",
+        }}
+        self.assertEqual(
+            submission_service.request_from_mapping("djconnect", scoped, transport="HTTP")
+            .constraints["repository_revision_binding"]["repository_identity"],
+            "pcvantol/forge",
+        )
+        scoped["constraints"]["repository_revision_binding"]["repository_identity"] = "https://wrong.example/repo"
+        with self.assertRaisesRegex(submission_service.SubmissionError, "INVALID_REPOSITORY_REVISION_BINDING"):
+            submission_service.request_from_mapping("djconnect", scoped, transport="HTTP")
         invalid = self.payload("bad-revision-binding")
         invalid["constraints"] = {"repository_revision_binding": {
             "requested_revision": "a" * 7,
@@ -664,6 +708,44 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT state,disposition_revision FROM ep_submissions WHERE submission_id=?", (submitted.submission_id,)).fetchone(), before)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submission_events WHERE submission_id=? AND event_kind LIKE 'OPERATOR_QUEUE_%'", (submitted.submission_id,)).fetchone()[0], 0)
 
+    def test_dismissed_pre_execution_run_keeps_queued_history_but_is_not_executable(self) -> None:
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite_connection(database) as connection:
+            submitted = submission_service.submit(
+                connection, submission_service.request_from_mapping(
+                    "djconnect", self.payload("terminal-block"), transport="HTTP"))
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?,?,?,?,?)",
+                ("run-terminal-block", "djconnect", "BLOCKED", "now", "now", "MANAGED"),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution) VALUES(?,?,?,?,?,?,?,?,?)",
+                (submitted.submission_id, "djconnect", "djconnect", "run-terminal-block", "BLOCKED", "prompt", "now", "later", "OPEN"),
+            )
+            resumable = submission_service.producer_readback(
+                connection, project_id="djconnect", submission_id=submitted.submission_id,
+                contract_version="1.3")
+            self.assertEqual(resumable["disposition"]["state"], "BLOCKED")
+            self.assertFalse(resumable["disposition"]["terminal"])
+        dismiss_operator_gate(self.root, project_id="djconnect", run_id="run-terminal-block")
+        with sqlite_connection(database) as reopened:
+            current = submission_service.producer_readback(
+                reopened, project_id="djconnect", submission_id=submitted.submission_id,
+                contract_version="1.3")
+            self.assertEqual(current["submission"]["state"], "QUEUED")
+            self.assertEqual(current["disposition"]["state"], "DISMISSED")
+            self.assertTrue(current["disposition"]["terminal"])
+            self.assertFalse(current["disposition"]["execution_eligible"])
+            events = [row[0] for row in reopened.execute(
+                "SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id",
+                (submitted.submission_id,))]
+            self.assertIn("SUBMISSION_ACCEPTED", events)
+            legacy = submission_service.producer_readback(
+                reopened, project_id="djconnect", submission_id=submitted.submission_id,
+            )
+            self.assertEqual(legacy["contract_version"], "1.2")
+            self.assertEqual(legacy["disposition"]["state"], "QUEUED")
+
     def test_queue_operation_id_replays_once_and_rejects_payload_collision(self) -> None:
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             submitted = submission_service.submit(connection, submission_service.request_from_mapping("djconnect", self.payload("operation"), transport="HTTP"))
@@ -815,7 +897,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         server.start(self.root)
         with urlopen(f"http://127.0.0.1:{self.port}/v1/producer-compatibility") as response:  # nosec B310
             compatibility = json.loads(response.read())
-        self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2"], "terminal_evidence": ["1.4"]})
+            self.assertEqual(compatibility["contracts"], {"producer_readback": ["1.2", "1.3"], "terminal_evidence": ["1.4"]})
         self.assertEqual(compatibility["producer"]["id"], "engineering-platform")
         scoped = Request(
             f"http://127.0.0.1:{self.port}/v1/producer-compatibility",
@@ -999,6 +1081,16 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
             self.assertEqual(json.loads(findings_artifact or b"{}")["reviews"], list(reviews))
         with urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"})) as response:  # nosec B310
             terminal = json.loads(response.read())
+        with urlopen(Request(endpoint, headers={
+            "Authorization": f"Bearer {self.credential}",
+            "EP-Producer-Readback-Contract": "1.3",
+        })) as response:  # nosec B310
+            current_contract = json.loads(response.read())
+        self.assertEqual(terminal["contract_version"], "1.2")
+        self.assertEqual(terminal["disposition"]["state"], "QUEUED")
+        self.assertEqual(current_contract["contract_version"], "1.3")
+        self.assertEqual(current_contract["disposition"]["state"], "COMPLETE")
+        self.assertFalse(current_contract["disposition"]["execution_eligible"])
         self.assertEqual(terminal["run"]["id"], "run-readback")
         self.assertEqual(terminal["run"]["execution_started_at"], "2026-01-01T00:00:00+00:00")
         self.assertEqual(terminal["run"]["execution_completed_at"], "2026-01-01T00:00:01+00:00")

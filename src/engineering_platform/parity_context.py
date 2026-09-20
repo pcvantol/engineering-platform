@@ -78,8 +78,11 @@ class ParityProjectStore:
 
     def queued_submissions(self) -> list[dict[str, object]]:
         rows = self.connection.execute(
-            "SELECT submission_id,repository_id,state,admission,created_at,prompt_digest "
-            "FROM ep_submissions WHERE project_id=? ORDER BY created_at,submission_id",
+            "SELECT s.submission_id,s.repository_id,s.state,s.admission,s.created_at,s.prompt_digest "
+            "FROM ep_submissions AS s LEFT JOIN ep_parity_lifecycle_dispatches AS d "
+            "ON d.submission_id=s.submission_id WHERE s.project_id=? AND d.submission_id IS NULL "
+            "AND s.state='QUEUED' AND s.admission='ADMITTED' "
+            "ORDER BY s.created_at,s.submission_id",
             (self.context.project_id,),
         ).fetchall()
         return [{"submission_id": str(row[0]), "repository_id": str(row[1]), "state": str(row[2]),

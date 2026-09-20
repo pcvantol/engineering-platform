@@ -117,6 +117,8 @@ def _retry_constraints_for_current_main(
         "requested_revision": binding.requested_revision,
         "allowed_baseline_revision": current_main,
     }
+    if binding.repository_identity is not None:
+        rebound[CONSTRAINT_KEY]["repository_identity"] = binding.repository_identity
     return rebound
 
 
@@ -477,7 +479,12 @@ class ParityLifecycleDispatcher:
             retry_parent_run_id=candidate.retry_parent_run_id, resume_parent_run_id=None, recorded_at=now,
         )
         host = execute_host_preflight(repository_root, run_id=run_id)
-        workspace = execute_workspace_preflight(repository_root, candidate.prompt, run_id=run_id)
+        revision_binding = parse_repository_revision_binding(candidate.constraints)
+        workspace = execute_workspace_preflight(
+            repository_root, candidate.prompt, run_id=run_id,
+            **({"exact_revision_preparation": True}
+               if revision_binding is not None and revision_binding.allowed_baseline_revision is None else {}),
+        )
         capability = execute_capability_preflight(repository_root, candidate.prompt, run_id=run_id)
         decision, _ = _record_provider_free_admission(
             repository_root, run_id=run_id, submission_id=canonical_submission_id,
