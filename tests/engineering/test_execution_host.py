@@ -1650,6 +1650,7 @@ class ClientContractTest(unittest.TestCase):
                 self.observed_at = "first"
                 self.approvals = 0
                 self.resolved = True
+                self.reviews = []
             def github(self, *args: str) -> str:
                 endpoint = args[1] if len(args) > 1 else ""
                 rules = [
@@ -1681,7 +1682,7 @@ class ClientContractTest(unittest.TestCase):
                                        "head": {"sha": head}, "base": {"ref": "main"},
                                        "user": {"login": "implementer"}})
                 if endpoint == f"repos/{repository}/pulls/17/reviews?per_page=100":
-                    return "[]"
+                    return json.dumps(self.reviews)
                 if endpoint == "graphql":
                     return json.dumps({"data": {"repository": {"pullRequest": {
                         "reviewThreads": {"totalCount": 1,
@@ -1699,6 +1700,11 @@ class ClientContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RunnerError, "unresolved or unreadable review threads"):
             client.delegated_merge_qualification(17, head, assurance_profile=profile)
         provider.resolved = True
+        provider.reviews = [{"state": "CHANGES_REQUESTED", "commit_id": head,
+                             "user": {"login": "reviewer"}}]
+        with self.assertRaisesRegex(RunnerError, "unresolved changes-requested review"):
+            client.delegated_merge_qualification(17, head, assurance_profile=profile)
+        provider.reviews = []
         provider.approvals = 1
         with self.assertRaisesRegex(RunnerError, "lacks required independent approvals"):
             client.delegated_merge_qualification(17, head, assurance_profile=profile)

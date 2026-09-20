@@ -650,11 +650,15 @@ class GhCliClient:
             raise RunnerError("Delegated merge requires protected independent review policy.")
         latest: dict[str, tuple[str, str]] = {}
         for review in reviews:
-            if not isinstance(review, dict):
-                continue
-            reviewer = (review.get("user") or {}).get("login")
-            if isinstance(reviewer, str) and reviewer:
-                latest[reviewer] = (str(review.get("state")), str(review.get("commit_id")))
+            if not isinstance(review, dict) or not isinstance(review.get("user"), dict):
+                raise RunnerError("Delegated merge review evidence is incomplete.")
+            reviewer = review["user"].get("login")
+            decision = review.get("state")
+            if not isinstance(reviewer, str) or not reviewer or not isinstance(decision, str):
+                raise RunnerError("Delegated merge review evidence is incomplete.")
+            latest[reviewer] = (decision, str(review.get("commit_id")))
+        if any(decision == "CHANGES_REQUESTED" for decision, _commit in latest.values()):
+            raise RunnerError("Delegated merge has an unresolved changes-requested review.")
         approvals = sorted(
             reviewer for reviewer, (decision, commit) in latest.items()
             if reviewer != author and decision == "APPROVED" and commit == head_sha
