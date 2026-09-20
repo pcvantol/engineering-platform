@@ -8368,6 +8368,8 @@ def main(argv: list[str] | None = None) -> int:
                         raise ServerConfigurationError(str(error)) from error
                 selected = bool(current and current["profile_id"] == merge_delegation.REPOSITORY_ASSURANCE_ID
                                 and current["github_repository"] == github_repository
+                                and current["binding_digest"] == merge_delegation._current_binding_digest(
+                                    connection, args.project_id, args.repository_id)
                                 and current["policy_digest"] == policy["digest"])
                 result = {"result": "TARGET_PROFILE_INSPECTED" if args.command == "inspect-assurance-target"
                           else "TARGET_PROFILE_SELECTED" if args.command == "select-assurance-target"

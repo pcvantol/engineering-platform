@@ -328,7 +328,8 @@ cancelled by a queue action.
 The `repository-autonomous-qs@1` profile is an EP-defined assurance and
 protected-merge rule. It remains closed until the installation owner selects
 it for one active authority repository. The selection records the project and
-repository IDs, actual bound GitHub origin, actor, effective main-policy digest
+repository IDs, actual bound GitHub origin, current local binding revision,
+actor, effective main-policy digest
 and an append-only revision. It approves no Mission. A changed or revoked
 selection invalidates grants bound to the prior revision; their historical
 records remain readable. `qualification-autonomous-qs@1` retains its original

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import re
 import sqlite3
 import subprocess
@@ -91,7 +92,8 @@ def install_selection_schema(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE TABLE IF NOT EXISTS ep_assurance_target_selections (
         project_id TEXT NOT NULL, repository_id TEXT NOT NULL,
         revision INTEGER NOT NULL CHECK(revision > 0),
-        github_repository TEXT NOT NULL, profile_id TEXT NOT NULL,
+        github_repository TEXT NOT NULL, binding_digest TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
         profile_revision TEXT NOT NULL, actor_reference TEXT NOT NULL,
         policy_digest TEXT NOT NULL, selected_at TEXT NOT NULL,
         PRIMARY KEY(project_id,repository_id,revision)
@@ -104,14 +106,24 @@ def install_selection_schema(connection: sqlite3.Connection) -> None:
 
 def target_selection(connection: sqlite3.Connection, project_id: str,
                      repository_id: str) -> dict[str, object] | None:
-    row = connection.execute("""SELECT revision,github_repository,profile_id,
+    row = connection.execute("""SELECT revision,github_repository,binding_digest,profile_id,
         profile_revision,actor_reference,policy_digest,selected_at
         FROM ep_assurance_target_selections WHERE project_id=? AND repository_id=?
         ORDER BY revision DESC LIMIT 1""", (project_id, repository_id)).fetchone()
     if row is None:
         return None
-    return dict(zip(("revision", "github_repository", "profile_id", "profile_revision",
+    return dict(zip(("revision", "github_repository", "binding_digest", "profile_id", "profile_revision",
                      "actor_reference", "policy_digest", "selected_at"), row))
+
+
+def _current_binding_digest(connection: sqlite3.Connection, project_id: str,
+                            repository_id: str) -> str | None:
+    row = connection.execute("""SELECT local_root,updated_at FROM ep_local_repository_bindings
+        WHERE project_id=? AND repository_id=? AND state='BOUND'""",
+        (project_id, repository_id)).fetchone()
+    if row is None or not all(isinstance(value, str) and value for value in row):
+        return None
+    return "sha256:" + hashlib.sha256((row[0] + "\0" + row[1]).encode()).hexdigest()
 
 
 def select_target_profile(connection: sqlite3.Connection, *, project_id: str,
@@ -120,19 +132,21 @@ def select_target_profile(connection: sqlite3.Connection, *, project_id: str,
                           expected_revision: int, revoke: bool = False) -> dict[str, object]:
     """Record one owner decision after the caller checks actual registration and origin."""
     current = target_selection(connection, project_id, repository_id)
+    binding_digest = _current_binding_digest(connection, project_id, repository_id)
     revision = int(current["revision"]) if current else 0
     if (not isinstance(expected_revision, int) or expected_revision != revision
             or not actor_reference.startswith("local-uid:")
             or _REPOSITORY.fullmatch(github_repository) is None
+            or binding_digest is None
             or re.fullmatch(r"sha256:[0-9a-f]{64}", policy_digest) is None
             or current is not None and current["github_repository"] != github_repository):
         raise ValueError("target profile selection scope or revision changed")
     profile_id, profile_revision = ("", "") if revoke else (REPOSITORY_ASSURANCE_ID, "1")
     connection.execute("""INSERT INTO ep_assurance_target_selections
-        (project_id,repository_id,revision,github_repository,profile_id,
+        (project_id,repository_id,revision,github_repository,binding_digest,profile_id,
          profile_revision,actor_reference,policy_digest,selected_at)
-        VALUES(?,?,?,?,?,?,?,?,?)""", (project_id, repository_id, revision + 1,
-        github_repository, profile_id, profile_revision, actor_reference, policy_digest,
+        VALUES(?,?,?,?,?,?,?,?,?,?)""", (project_id, repository_id, revision + 1,
+        github_repository, binding_digest, profile_id, profile_revision, actor_reference, policy_digest,
         datetime.now(timezone.utc).isoformat()))
     result = target_selection(connection, project_id, repository_id)
     assert result is not None
@@ -145,6 +159,8 @@ def target_selection_permits(connection: sqlite3.Connection, grant: MergeDelegat
     selected = target_selection(connection, grant.project_id, grant.repository_id)
     return bool(selected and selected["revision"] == grant.target_selection_revision
                 and selected["github_repository"] == grant.github_repository
+                and selected["binding_digest"] == _current_binding_digest(
+                    connection, grant.project_id, grant.repository_id)
                 and selected["profile_id"] == grant.assurance_profile_id
                 and selected["profile_revision"] == grant.assurance_profile_revision
                 and selected["policy_digest"] == grant.assurance_policy_digest)
@@ -210,6 +226,7 @@ def reserve(connection: sqlite3.Connection, *, delegation_id: str, actor_referen
     elif assurance_profile == REPOSITORY_ASSURANCE_PROFILE:
         selection = target_selection(connection, project_id, repository_id)
         if (selection is None or selection["github_repository"] != github_repository
+                or selection["binding_digest"] != _current_binding_digest(connection, project_id, repository_id)
                 or selection["profile_id"] != REPOSITORY_ASSURANCE_ID
                 or selection["profile_revision"] != "1"
                 or selection["policy_digest"] != assurance_policy_digest):

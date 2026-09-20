@@ -55,6 +55,10 @@ class MergeDelegationTest(unittest.TestCase):
         connection = sqlite3.connect(":memory:")
         try:
             merge_delegation.install_schema(connection)
+            connection.execute("""CREATE TABLE ep_local_repository_bindings (
+                project_id TEXT,repository_id TEXT,local_root TEXT,state TEXT,updated_at TEXT)""")
+            connection.execute("INSERT INTO ep_local_repository_bindings VALUES(?,?,?,?,?)",
+                               ("forge-project", "forge-repository", "/fixture/forge", "BOUND", "revision-1"))
             digest = "sha256:" + "a" * 64
             scope = dict(delegation_id="a" * 32, actor_reference="local-uid:501",
                          project_id="forge-project", repository_id="forge-repository",
@@ -93,6 +97,9 @@ class MergeDelegationTest(unittest.TestCase):
                                               role="FINALIZATION", base_branch="main"))
             with self.assertRaises(sqlite3.IntegrityError):
                 connection.execute("UPDATE ep_assurance_target_selections SET profile_id='' WHERE revision=1")
+            connection.execute("UPDATE ep_local_repository_bindings SET updated_at='revision-2'")
+            self.assertFalse(merge_delegation.target_selection_permits(connection, activated))
+            connection.execute("UPDATE ep_local_repository_bindings SET updated_at='revision-1'")
             revoked = merge_delegation.select_target_profile(
                 connection, project_id="forge-project", repository_id="forge-repository",
                 github_repository="pcvantol/forge", actor_reference="local-uid:501",
@@ -304,6 +311,11 @@ class MergeDelegationTest(unittest.TestCase):
                                "--expected-selection-revision", "0")
                 self.assertEqual(selected["target_selection"]["revision"], 1)
                 self.assertTrue(cli("inspect-assurance-target")["target_profile_ready"])
+                with sqlite_connection(data / "epdata.sqlite") as connection:
+                    connection.execute("UPDATE ep_local_repository_bindings SET updated_at='rebound'")
+                self.assertFalse(cli("inspect-assurance-target")["target_profile_ready"])
+                with sqlite_connection(data / "epdata.sqlite") as connection:
+                    connection.execute("UPDATE ep_local_repository_bindings SET updated_at=?", (now,))
                 self.assertEqual(cli("revoke-assurance-target", "--expected-selection-revision", "1")
                                  ["target_selection"]["revision"], 2)
                 self.assertFalse(cli("inspect-assurance-target")["target_profile_ready"])

@@ -267,10 +267,12 @@ class CentralOperationalResetTests(unittest.TestCase):
                  "mission-1", "1", "main", '["IMPLEMENTATION"]', "2099-01-01T00:00:00+00:00",
                  "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00", None),
             )
-            merge_delegation.select_target_profile(
-                connection, project_id="djconnect", repository_id="djconnect",
-                github_repository="pcvantol/djconnect", actor_reference="local-uid:501",
-                policy_digest="sha256:" + "a" * 64, expected_revision=0)
+            connection.execute(
+                "INSERT INTO ep_assurance_target_selections VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("djconnect", "djconnect", 1, "pcvantol/djconnect", "sha256:" + "b" * 64,
+                 "repository-autonomous-qs", "1", "local-uid:501",
+                 "sha256:" + "a" * 64, "2026-01-01T00:00:00+00:00"),
+            )
         operation_id, digest = self._prepared()
         with sqlite_connection(self.root / "epdata.sqlite") as connection:
             with self.assertRaisesRegex(submission_service.SubmissionError, "PLATFORM_MAINTENANCE_ACTIVE"):
