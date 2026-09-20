@@ -223,6 +223,31 @@ def _implementation_digest() -> str:
     })
 
 
+# The published 2.3.89 reset implementation can leave an operation at
+# ARTIFACTS_ARCHIVED when operational engineering_metadata rows are present.
+# Permit only that exact installed implementation to cross the fixed apply
+# boundary; the plan, backup, identity, schema, generation and fences are still
+# verified by apply before any database effect.
+_ARCHIVED_RESET_COMPATIBILITY = frozenset({
+    ("2.3.89", "UNAVAILABLE_IN_INSTALLED_PACKAGE",
+     "sha256:17ec03725e15672ef9511382e0b3d2c72e3f502823a35b89bea170882f4a14b8"),
+})
+
+
+def _implementation_binding_valid(plan: dict[str, object], state: str) -> bool:
+    binding = (
+        plan.get("product_version"), plan.get("implementation_source_revision"),
+        plan.get("implementation_digest"),
+    )
+    current = (
+        CURRENT_PLATFORM_VERSION, _implementation_source_revision(),
+        _implementation_digest(),
+    )
+    return binding == current or (
+        state == "ARTIFACTS_ARCHIVED" and binding in _ARCHIVED_RESET_COMPATIBILITY
+    )
+
+
 def _implementation_source_revision() -> str:
     try:
         module = Path(__file__).resolve()
@@ -2302,11 +2327,7 @@ def apply(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, 
                     raise OperationalResetError("PRESERVED_BINDINGS_CHANGED")
                 if _schema_objects(connection) != plan["schema_objects"]:
                     raise OperationalResetError("SCHEMA_OBJECTS_CHANGED")
-                if (
-                    plan.get("product_version") != CURRENT_PLATFORM_VERSION
-                    or plan.get("implementation_source_revision") != _implementation_source_revision()
-                    or plan.get("implementation_digest") != _implementation_digest()
-                ):
+                if not _implementation_binding_valid(plan, "ARTIFACTS_ARCHIVED"):
                     raise OperationalResetError("IMPLEMENTATION_PROVENANCE_CHANGED")
                 generation_before = int(connection.execute(
                     "SELECT generation FROM ep_operational_dataset_state WHERE singleton=1"
@@ -2316,11 +2337,15 @@ def apply(data_root: Path, *, operation_id: str, plan_digest: str) -> dict[str, 
                 # Immutable-evidence and maintenance-block triggers are removed and
                 # recreated inside this one uncommitted transaction. Other writers
                 # cannot observe an unfenced schema window.
+                reset_trigger_tables = (
+                    OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION
+                    | {"engineering_metadata"}
+                )
                 triggers = [
                     (str(name), str(sql)) for name, sql in connection.execute(
                         "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name IN ("
-                        + ",".join("?" for _ in (OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION)) + ")",
-                        tuple(sorted(OPERATIONAL_HISTORY | DERIVED_CACHE_OR_PROJECTION)),
+                        + ",".join("?" for _ in reset_trigger_tables) + ")",
+                        tuple(sorted(reset_trigger_tables)),
                     ).fetchall() if sql is not None
                 ]
                 for name, _sql in triggers:

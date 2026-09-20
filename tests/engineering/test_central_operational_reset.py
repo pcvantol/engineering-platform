@@ -465,6 +465,79 @@ class CentralOperationalResetTests(unittest.TestCase):
         self.assertEqual(resumed["operation"]["state"], "VERIFIED")
         self.assertEqual(resumed["dataset_generation"], 1)
 
+    def test_archived_reset_resumes_with_operational_metadata_and_one_generation(self) -> None:
+        self._populate()
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            connection.execute(
+                "INSERT INTO engineering_metadata(key,value) VALUES(?,?)",
+                ("central_database.maintenance_last_attempt_at", "synthetic-time"),
+            )
+        operation_id, digest = self._prepared(operation_id="reset-metadata-0001")
+        with patch.object(reset, "_delete_operational", side_effect=RuntimeError("crash")):
+            with self.assertRaisesRegex(RuntimeError, "crash"):
+                reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        self.assertEqual(
+            reset.status(self.root, operation_id=operation_id)["operation"]["state"],
+            "ARTIFACTS_ARCHIVED",
+        )
+        result = reset.resume(self.root, operation_id=operation_id, plan_digest=digest)
+        self.assertEqual(result["operation"]["state"], "VERIFIED")
+        self.assertEqual(result["dataset_generation"], 1)
+        self.assertEqual(
+            reset.resume(self.root, operation_id=operation_id, plan_digest=digest)["dataset_generation"],
+            1,
+        )
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM engineering_metadata WHERE key=?",
+                ("central_database.maintenance_last_attempt_at",),
+            ).fetchone()[0], 0)
+
+    def test_legacy_archived_provenance_binding_is_exact_and_state_scoped(self) -> None:
+        legacy = (
+            "2.3.89", "UNAVAILABLE_IN_INSTALLED_PACKAGE",
+            "sha256:17ec03725e15672ef9511382e0b3d2c72e3f502823a35b89bea170882f4a14b8",
+        )
+        plan = dict(zip(
+            ("product_version", "implementation_source_revision", "implementation_digest"),
+            legacy,
+        ))
+        self.assertTrue(reset._implementation_binding_valid(plan, "ARTIFACTS_ARCHIVED"))
+        self.assertFalse(reset._implementation_binding_valid(plan, "AUTHORIZED"))
+        plan["implementation_digest"] = "sha256:" + "0" * 64
+        self.assertFalse(reset._implementation_binding_valid(plan, "ARTIFACTS_ARCHIVED"))
+
+    def test_persisted_legacy_archived_plan_resumes_under_new_implementation(self) -> None:
+        self._populate()
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            connection.execute(
+                "INSERT INTO engineering_metadata(key,value) VALUES(?,?)",
+                ("ep.provider_capacity_history.v1", "synthetic-history"),
+            )
+        with (
+            patch.object(reset, "CURRENT_PLATFORM_VERSION", "2.3.89"),
+            patch.object(reset, "_implementation_source_revision",
+                         return_value="UNAVAILABLE_IN_INSTALLED_PACKAGE"),
+            patch.object(reset, "_implementation_digest", return_value=(
+                "sha256:17ec03725e15672ef9511382e0b3d2c72e3f502823a35b89bea170882f4a14b8"
+            )),
+        ):
+            operation_id, digest = self._prepared(operation_id="reset-legacy-archived-0001")
+            with patch.object(reset, "_delete_operational", side_effect=RuntimeError("crash")):
+                with self.assertRaisesRegex(RuntimeError, "crash"):
+                    reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        self.assertEqual(
+            reset.status(self.root, operation_id=operation_id)["operation"]["state"],
+            "ARTIFACTS_ARCHIVED",
+        )
+        resumed = reset.resume(self.root, operation_id=operation_id, plan_digest=digest)
+        self.assertEqual(resumed["operation"]["state"], "VERIFIED")
+        self.assertEqual(resumed["dataset_generation"], 1)
+        self.assertEqual(
+            reset.resume(self.root, operation_id=operation_id, plan_digest=digest)["dataset_generation"],
+            1,
+        )
+
     def test_durable_fence_survives_new_connection_and_blocks_server_restart(self) -> None:
         operation_id, _digest = self._prepared(operation_id="reset-fence-0001")
         self.assertTrue(reset.maintenance_active(self.root))
