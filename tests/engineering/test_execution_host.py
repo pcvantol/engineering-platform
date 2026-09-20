@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from engineering_platform.storage import sqlite_connection
 
 from pathlib import Path
@@ -31,7 +32,7 @@ from engineering_platform.storage import (
 )
 from engineering_platform.execution_errors import CodexHandoffTimeout, CodexInvocationError
 from engineering_platform.execution_reporting import _target_repository_name
-from engineering_platform import execution_host
+from engineering_platform import execution_host, merge_delegation
 from engineering_platform.execution_host import (
     AgentResult,
     CodexCliClient,
@@ -5812,6 +5813,94 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 self.assertEqual(attempts, [17])
                 github._autonomous_effective_policy = lambda: {"digest": "sha256:" + "e" * 64}  # type: ignore[attr-defined]
                 self.assertIsNone(runner._attempt_delegated_merge(reviewed, pr))
+                self.assertEqual(attempts, [17])
+        finally:
+            connection.close()
+
+    def test_repository_profile_runner_rechecks_owner_selection_before_merge(self) -> None:
+        head, base, target = "a" * 40, "f" * 40, "pcvantol/forge"
+        delegation_id, policy_digest = "d" * 32, "sha256:" + "e" * 64
+        repository = FakeRepository(branch="codex/feature")
+        repository.evidence = replace(repository.evidence, repository=target)
+        repository.protected_main_revision = lambda _root: base  # type: ignore[attr-defined]
+        github = FakeGitHub([])
+        github.repository = target  # type: ignore[attr-defined]
+        pr = PullRequestEvidence(17, "OPEN", True, True, head_branch="codex/feature",
+                                 base_branch="main", merge_state_status="CLEAN", head_sha=head)
+        github.pull_request = lambda _number: pr  # type: ignore[method-assign]
+        profiles: list[str] = []
+        def qualify(_number: int, _head: str, *, assurance_profile: str) -> dict[str, object]:
+            profiles.append(assurance_profile)
+            return {"conclusion": "PASS", "exact_qualified_sha": head, "pull_request_id": 17,
+                    "reviewers": [], "required_approvals": 0, "base_revision": base,
+                    "strict_checks": True, "effective_policy": {
+                        "source": "github-effective-main", "digest": policy_digest}}
+        github.delegated_merge_qualification = qualify  # type: ignore[attr-defined]
+        github._autonomous_effective_policy = lambda **_kwargs: {"digest": policy_digest}  # type: ignore[attr-defined]
+        attempts: list[int] = []
+        def merge(number: int, *, expected_head_sha: str) -> None:
+            attempts.append(number)
+            raise RunnerError("acknowledgement uncertain")
+        github.merge = merge  # type: ignore[method-assign]
+        runner = EngineeringRunner(self.root, self.store, repository, github,
+                                   FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.store.central_database = self.root / "epdata.sqlite"
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.execute("CREATE TABLE ep_parity_lifecycle_dispatches(run_id TEXT,project_id TEXT,repository_id TEXT)")
+            connection.execute("CREATE TABLE ep_project_registrations(project_id TEXT,status TEXT)")
+            connection.execute("CREATE TABLE ep_repository_registrations(repository_id TEXT,project_id TEXT,role TEXT)")
+            connection.execute("CREATE TABLE ep_local_repository_bindings(project_id TEXT,repository_id TEXT,state TEXT,local_root TEXT,updated_at TEXT)")
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches VALUES('repo-run','project','opaque')")
+            connection.execute("INSERT INTO ep_project_registrations VALUES('project','ACTIVE')")
+            connection.execute("INSERT INTO ep_repository_registrations VALUES('opaque','project','authority')")
+            connection.execute("INSERT INTO ep_local_repository_bindings VALUES(?,?,?,?,?)",
+                               ("project", "opaque", "BOUND", str(self.root), "binding-1"))
+            merge_delegation.install_schema(connection)
+            merge_delegation.select_target_profile(
+                connection, project_id="project", repository_id="opaque", github_repository=target,
+                actor_reference="local-uid:501", policy_digest=policy_digest, expected_revision=0)
+            grant = merge_delegation.reserve(
+                connection, delegation_id=delegation_id, actor_reference="local-uid:501",
+                project_id="project", repository_id="opaque", github_repository=target,
+                base_branch="main", roles=("IMPLEMENTATION",),
+                expires_at=(datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+                assurance_profile=merge_delegation.REPOSITORY_ASSURANCE_PROFILE,
+                assurance_policy_digest=policy_digest)
+            merge_delegation.activate(connection, delegation_id=delegation_id,
+                                      mission_id="mission-1", mission_revision="1",
+                                      actor_reference="local-uid:501", github_repository=target)
+            digest = "sha256:" + "b" * 64
+            def review(role: str, ordinal: int) -> dict[str, object]:
+                return {"reviewer": role, "status": "PASS", "candidate_sha": head,
+                        "profile_digest": digest, "invocation_id": f"repo-run:{role}:{ordinal}",
+                        "contract_version": execution_host.MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+                        "started_at": "2026-09-19T00:00:00+00:00", "completed_at": "2026-09-19T00:00:01+00:00",
+                        "findings": []}
+            state = TransactionState("repo-run", target, str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE",
+                                     branch="codex/feature", pull_request=17, implementation_head_sha=head,
+                                     owner_authorized=True, merge_delegation_id=delegation_id,
+                                     assurance_profile={"version": "validation-profile@1", "digest": digest,
+                                                        "candidate_sha": head, "base_sha": base},
+                                     assurance_reviews=(review("quality", 0), review("security", 1)))
+            accepted = {"producer_type": "FORGE", "mission_id": "mission-1", "constraints": {
+                "forge_execution": {"mission_revision": "1", "execution_constraints": [
+                    f"ep-merge-delegation:{delegation_id}"]}}}
+            with (patch("engineering_platform.execution_host.load_submission_for_run", return_value=accepted),
+                  patch("engineering_platform.execution_host.sqlite_connection", return_value=connection),
+                  patch.object(self.store, "save"),
+                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting: waiting)):
+                self.assertTrue(runner._autonomous_profile_selected(state))
+                result = runner._attempt_delegated_merge(state, pr)
+                self.assertEqual(profiles, [merge_delegation.REPOSITORY_ASSURANCE_PROFILE])
+                self.assertEqual(attempts, [17])
+                self.assertEqual(result.delegated_merge_attempt, f"17:{head}")
+                merge_delegation.select_target_profile(
+                    connection, project_id="project", repository_id="opaque", github_repository=target,
+                    actor_reference="local-uid:501", policy_digest=policy_digest,
+                    expected_revision=1, revoke=True)
+                self.assertFalse(runner._autonomous_profile_selected(state))
+                self.assertIsNone(runner._attempt_delegated_merge(state, pr))
                 self.assertEqual(attempts, [17])
         finally:
             connection.close()
