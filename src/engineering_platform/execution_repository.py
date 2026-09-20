@@ -594,12 +594,24 @@ class GhCliClient:
             if not isinstance(raw, dict) or raw.get("headRefOid") != head_sha or raw.get("baseRefName") != "main":
                 raise RunnerError("Autonomous PR qualification has a changed head or base.")
             rollup = raw.get("statusCheckRollup")
-            if not isinstance(rollup, list) or not rollup or any(
-                not isinstance(item, dict) or item.get("status") != "COMPLETED"
-                or item.get("conclusion") not in {"SUCCESS", "NEUTRAL", "SKIPPED"} for item in rollup
-            ):
+            if not isinstance(rollup, list) or not rollup:
                 raise RunnerError("Autonomous PR required checks are incomplete or failed.")
-            observed = {item.get("name") for item in rollup}
+            observed: set[str] = set()
+            for item in rollup:
+                if not isinstance(item, dict):
+                    raise RunnerError("Autonomous PR required checks are incomplete or failed.")
+                if item.get("__typename") == "StatusContext" or (
+                    "context" in item and "state" in item and "name" not in item
+                ):
+                    name = item.get("context")
+                    passed = item.get("state") == "SUCCESS"
+                else:
+                    name = item.get("name")
+                    passed = (item.get("status") == "COMPLETED" and
+                              item.get("conclusion") in {"SUCCESS", "NEUTRAL", "SKIPPED"})
+                if not isinstance(name, str) or not name or not passed:
+                    raise RunnerError("Autonomous PR required checks are incomplete or failed.")
+                observed.add(name)
             if not set(policy["required_checks"]) <= observed:
                 raise RunnerError("Autonomous PR is missing effective required checks.")
             if policy["required_apps"]:

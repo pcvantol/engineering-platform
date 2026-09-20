@@ -1483,12 +1483,16 @@ class ClientContractTest(unittest.TestCase):
                 self.omit_non_fast_forward = False
                 self.rollup_head = head
                 self.rollup_conclusion = "SUCCESS"
+                self.rollup_status_context = False
+                self.classic_app_bound = True
                 self.check_runs_total = 1
             def github(self, *args: str) -> str:
                 endpoint = args[1] if len(args) > 1 else ""
                 if args[:2] == ("pr", "view"):
                     return json.dumps({"headRefOid": self.rollup_head, "baseRefOid": "f" * 40,
                                        "baseRefName": "main", "statusCheckRollup": [
+                                           {"__typename": "StatusContext", "context": "validate", "state": self.rollup_conclusion}
+                                           if self.rollup_status_context else
                                            {"name": "validate", "status": "COMPLETED", "conclusion": self.rollup_conclusion}]})
                 if self.denied == endpoint:
                     raise RuntimeError("HTTP 403: Resource not accessible")
@@ -1528,7 +1532,8 @@ class ClientContractTest(unittest.TestCase):
                                        "allow_force_pushes": {"enabled": self.allow_force_pushes},
                                        "allow_deletions": {"enabled": self.allow_deletions},
                                        "required_status_checks": {"strict": self.classic_strict, "contexts": ["validate"],
-                                                                  "checks": [{"context": "validate", "app_id": 15368}]},
+                                                                  "checks": [{"context": "validate", "app_id": 15368}]
+                                                                  if self.classic_app_bound else []},
                                        "required_pull_request_reviews": {
                                            "required_approving_review_count": 0,
                                            "require_code_owner_reviews": self.code_owner}
@@ -1550,6 +1555,15 @@ class ClientContractTest(unittest.TestCase):
         receipt = client.delegated_merge_qualification(17, head, assurance_profile=profile)
         self.assertEqual((receipt["required_approvals"], receipt["reviewers"]), (0, []))
         self.assertEqual(receipt["effective_policy"]["ruleset_ids"], [42])
+        provider.rollup_status_context = True
+        provider.classic_app_bound = False
+        self.assertEqual(client.delegated_merge_qualification(17, head, assurance_profile=profile)["required_checks"], ["validate"])
+        provider.rollup_conclusion = "PENDING"
+        with self.assertRaisesRegex(RunnerError, "incomplete or failed"):
+            client.delegated_merge_qualification(17, head, assurance_profile=profile)
+        provider.rollup_status_context = False
+        provider.classic_app_bound = True
+        provider.rollup_conclusion = "SUCCESS"
         provider.classic = False
         self.assertEqual(client.delegated_merge_qualification(17, head, assurance_profile=profile)["required_approvals"], 0)
         provider.approvals = 1
