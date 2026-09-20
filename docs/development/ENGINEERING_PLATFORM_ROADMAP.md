@@ -490,6 +490,16 @@ defect.
 
 ## Forge integration after standalone/self-development proof
 
+De productie-MISSION-0003-baselinemismatch en achtergebleven actuele
+QUEUED-projectie zijn regressie-evidence voor één gezamenlijke Forge/EP-
+herstelassignment. EP bezit hierin de read-only Managed-workspace-readiness,
+exacte workspace-preparation onder owning lease, admission en terminale
+submissionprojectie. Forge bezit de Actionbaseline, forecast/Action-scheiding
+en evidence-bound seriële opvolgplanning. De oorspronkelijke QUEUED-gebeurtenis
+blijft auditbaar; de actuele queue telt uitsluitend uitvoerbaar werk. Deze
+scope verklaart geen parallelle Actionexecution of algemene workspace-engine
+gereed, en sluit de opdracht pas na geïntegreerde en installed kwalificatie.
+
 ```text
 Forge immutable Action/submission intent
   -> EP canonical P-TRANSPORT HTTP submission

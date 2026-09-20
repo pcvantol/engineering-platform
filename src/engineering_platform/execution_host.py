@@ -3086,6 +3086,15 @@ First implementation pull-request publication gate:
                 "Accepted repository revision binding is invalid.",
             )
         if revision_binding is not None:
+            if (revision_binding.repository_identity is not None
+                    and (evidence.repository != revision_binding.repository_identity
+                         or not callable(getattr(self.repository, "trusted_origin_identity", None))
+                         or self.repository.trusted_origin_identity(self.root)
+                         != revision_binding.repository_identity)):
+                return self._save_terminal(
+                    state, "BLOCKED", "repository_identity_binding",
+                    "Managed workspace origin differs from the authorized repository identity.",
+                )
             if state.requested_repository_revision not in {None, revision_binding.requested_revision}:
                 return self._save_terminal(
                     state, "BLOCKED", "repository_revision_binding",
@@ -3212,10 +3221,47 @@ First implementation pull-request publication gate:
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
         if recovered_resume:
+            self._heartbeat()
+            if revision_binding is not None and context.execution_mode == "MANAGED":
+                recovered_head = self.repository.inspect(self.root)
+                expected_baseline = (
+                    revision_binding.allowed_baseline_revision
+                    or revision_binding.requested_revision
+                )
+                if (state.execution_baseline_sha != expected_baseline
+                        or recovered_head.repository != state.repository
+                        or not recovered_head.clean
+                        or self.repository.workspace_operation_active(self.root)
+                        or (state.branch is not None and recovered_head.branch not in {state.branch, "main"})
+                        or not callable(getattr(self.repository, "trusted_origin_identity", None))
+                        or self.repository.trusted_origin_identity(self.root) != state.repository
+                        or not callable(getattr(self.repository, "revision_is_ancestor", None))
+                        or not self.repository.revision_is_ancestor(
+                            self.root, expected_baseline, recovered_head.head_sha,
+                        )):
+                    return self._save_terminal(
+                        state, "BLOCKED", "recovered_workspace_baseline",
+                        "Recovered provider result lacks the authorized workspace baseline.",
+                    )
             # Consume immutable attempt-two evidence before any fresh provider
             # preparation or repository synchronization. This preserves the
             # original branch/worktree and cannot allocate a new invocation.
             result = self._invoke_agent_with_timing(state, "")
+            if (revision_binding is not None and context.execution_mode == "MANAGED"
+                    and recovery_snapshot["lifecycle_phase"] == "EXECUTE_AGENT"
+                    and result.terminal_state == "COMPLETE"):
+                result_head = self.repository.inspect(self.root)
+                if (not result.commit_sha or not result.branch
+                        or result_head.head_sha != result.commit_sha
+                        or result_head.branch != result.branch or not result_head.clean
+                        or self.repository.trusted_origin_identity(self.root) != state.repository
+                        or not self.repository.revision_is_ancestor(
+                            self.root, state.execution_baseline_sha, result.commit_sha,
+                        )):
+                    return self._save_terminal(
+                        state, "BLOCKED", "recovered_workspace_result_drift",
+                        "Recovered provider result no longer matches the bound workspace commit.",
+                    )
             state = self._record_agent_execution_time(state)
             state = self._record_validation_evidence(state, result)
             state = self._record_verified_result_commit(
@@ -3229,10 +3275,18 @@ First implementation pull-request publication gate:
         # and so the bounded retry policy in the repository client is used.
         if context.execution_mode == "MANAGED":
             try:
-                # A pin is a pre-mutation contract: never synchronize it to a
-                # newer ambient main. A named transition is explicit and is
-                # verified immediately after the normal host-owned sync.
-                if revision_binding is None or revision_binding.allowed_baseline_revision is not None:
+                # An exact pin is prepared by the owning repository client
+                # under this lease. It may fast forward only to that SHA,
+                # never to an ambient newer origin/main.
+                if revision_binding is not None and revision_binding.allowed_baseline_revision is None:
+                    prepare = getattr(self.repository, "prepare_main_revision", None)
+                    if not callable(prepare):
+                        raise RunnerError("MANAGED_PREPARATION_UNAVAILABLE")
+                    evidence = prepare(
+                        self.root, revision_binding.requested_revision,
+                        revision_binding.repository_identity or state.repository,
+                    )
+                else:
                     self.repository.synchronize_main(self.root)
                 # The initial observation predates lease acquisition. Always
                 # refresh it here: an exact pin skips synchronization, never
@@ -3326,6 +3380,19 @@ First implementation pull-request publication gate:
             self.reviewer_runtime,
         )
         self._require_provider_dispatch_admission(state)
+        self._heartbeat()
+        if state.execution_mode == "MANAGED" and state.execution_baseline_sha is not None:
+            reviewer_head = self.repository.inspect(self.root)
+            if (reviewer_head.repository != state.repository or reviewer_head.branch != "main"
+                    or not reviewer_head.clean or reviewer_head.head_sha != state.execution_baseline_sha
+                    or self.repository.workspace_operation_active(self.root)
+                    or (state.requested_repository_revision is not None
+                        and self.repository.trusted_origin_identity(self.root) != state.repository)):
+                complete_phase(self.root, capability_review, outcome="FAILED")
+                return self._save_terminal(
+                    state, "BLOCKED", "managed_workspace_drift",
+                    "Managed workspace changed after baseline admission and before capability review.",
+                )
         results = run_reviews(
             self.root,
             selections,
@@ -3426,6 +3493,18 @@ First implementation pull-request publication gate:
                         ),
                     )[1]
                 )
+            if state.execution_mode == "MANAGED" and state.execution_baseline_sha is not None:
+                self._heartbeat()
+                execution_head = self.repository.inspect(self.root)
+                if (execution_head.repository != state.repository or execution_head.branch != "main"
+                        or not execution_head.clean or execution_head.head_sha != state.execution_baseline_sha
+                        or self.repository.workspace_operation_active(self.root)
+                        or (state.requested_repository_revision is not None
+                            and self.repository.trusted_origin_identity(self.root) != state.repository)):
+                    return self._save_terminal(
+                        state, "BLOCKED", "managed_workspace_drift",
+                        "Managed workspace changed after baseline admission and before provider implementation.",
+                    )
             result = self._invoke_agent_with_timing(
                 state,
                 assemble_prompt(

@@ -1412,6 +1412,7 @@ def write_terminal_evidence(
 
 def producer_readback(
     connection: sqlite3.Connection, *, project_id: str, submission_id: str,
+    contract_version: str = "1.2",
 ) -> dict[str, object] | None:
     """Project one canonical producer-visible submission/readback record.
 
@@ -1421,6 +1422,8 @@ def producer_readback(
     authenticated project scope, so the HTTP adapter does not disclose another
     project's submission identities.
     """
+    if contract_version not in {"1.2", "1.3"}:
+        raise ValueError("unsupported producer readback contract")
     row = connection.execute(
         """SELECT s.repository_id,s.producer_id,s.producer_type,s.producer_version,
                   s.prompt_digest,s.constraints,s.correlation_id,s.mission_id,
@@ -1445,8 +1448,44 @@ def producer_readback(
         "SELECT o.operation_id,o.event_id,o.actor_reference,e.payload,o.recorded_at FROM ep_queue_disposition_operations o JOIN ep_submission_events e ON e.event_id=o.event_id WHERE o.project_id=? AND o.submission_id=? ORDER BY o.recorded_at DESC LIMIT 1",
         (project_id, submission_id),
     ).fetchone()
-    disposition = {"state": str(submission_state), "terminal": str(submission_state) == "DECLINED", "execution_eligible": str(submission_state) == "QUEUED", "revision": int(disposition_revision), "operation_id": None, "event_reference": None, "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED", "recorded_at": None, "resolution_submission_id": None, "retry_parent_run_id": None}
-    if disposition_row is not None:
+    # The submission row records its historical QUEUED event.  A claimed
+    # dispatch owns current execution state; a dismissed terminal gate must
+    # never be projected as executable merely because that row is immutable.
+    active_lease = False
+    if run_id is not None:
+        active_lease = connection.execute(
+            "SELECT 1 FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE' LIMIT 1",
+            (run_id,),
+        ).fetchone() is not None
+    terminal_dismissal = (
+        str(dispatch_state) in {"BLOCKED", "FAILED"}
+        and str(operator_resolution) == "DISMISSED"
+        and not active_lease
+    )
+    current_state = (
+        "DISMISSED" if terminal_dismissal else
+        str(dispatch_state) if run_id is not None else str(submission_state)
+    )
+    disposition = {
+        "state": current_state,
+        "terminal": current_state in {"DECLINED", "COMPLETE", "DISMISSED"},
+        "execution_eligible": run_id is None and str(submission_state) == "QUEUED"
+        and str(admission) == "ADMITTED",
+        "revision": int(disposition_revision), "operation_id": None, "event_reference": None,
+        "reason": "OPERATOR_GATE_DISMISSED" if terminal_dismissal else "NOT_RECORDED",
+        "actor_reference": "EP_OPERATOR_GATE" if terminal_dismissal else "NOT_RECORDED",
+        "recorded_at": str(updated_at) if terminal_dismissal else None,
+        "resolution_submission_id": None, "retry_parent_run_id": None,
+    }
+    if contract_version == "1.2":
+        disposition.update({
+            "state": str(submission_state),
+            "terminal": str(submission_state) == "DECLINED",
+            "execution_eligible": str(submission_state) == "QUEUED",
+            "reason": "NOT_RECORDED", "actor_reference": "NOT_RECORDED",
+            "recorded_at": None,
+        })
+    if disposition_row is not None and (run_id is None or contract_version == "1.2"):
         try:
             reason = json.loads(str(disposition_row[3])).get("reason", "NOT_RECORDED")
         except json.JSONDecodeError:
@@ -1557,7 +1596,7 @@ def producer_readback(
                             qualified = bool(document.get("run", {}).get("delivery_qualified"))
                             result["delivery_qualified"] = qualified and evidence["status"] == "AVAILABLE"
     return {
-        "contract_version": PRODUCER_READBACK_CONTRACT_VERSION,
+        "contract_version": contract_version,
         "submission": {
             "id": submission_id, "project_id": project_id,
             "repository_id": str(repository_id), "state": str(submission_state),

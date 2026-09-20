@@ -77,6 +77,7 @@ from . import system_server_service
 from . import storage
 from . import telemetry_export
 from . import managed_codex_runtime
+from . import managed_workspace_readiness
 from . import provider_readiness
 from .platform_components import (
     PLATFORM_COMPONENT_BY_ID,
@@ -3972,7 +3973,7 @@ def _no_project_console_snapshot(data_root: Path) -> dict[str, object]:
         ).fetchone()[0])
         queue_depth = int(connection.execute(
             """SELECT COUNT(*) FROM ep_submissions AS submission
-                 WHERE submission.state IN ('QUEUED','ADMITTED')
+                 WHERE submission.state='QUEUED' AND submission.admission='ADMITTED'
                    AND NOT EXISTS (
                        SELECT 1 FROM ep_parity_lifecycle_dispatches AS dispatch
                         WHERE dispatch.submission_id=submission.submission_id
@@ -6971,7 +6972,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 "producer": {"id": "engineering-platform", "version": CURRENT_PLATFORM_VERSION},
                 "instance": {"id": identity},
                 "contracts": {
-                    "producer_readback": [submission_service.PRODUCER_READBACK_CONTRACT_VERSION],
+                    "producer_readback": [submission_service.PRODUCER_READBACK_CONTRACT_VERSION, "1.3"],
                     "terminal_evidence": [submission_service.TERMINAL_EVIDENCE_CONTRACT_VERSION],
                 },
             }
@@ -7043,6 +7044,29 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
                 return
             self._send(200, declaration, identity)
+            return
+        workspace_readiness = re.fullmatch(
+            r"/v1/projects/([^/]+)/managed-workspace-readiness", request.path,
+        )
+        if workspace_readiness:
+            project_id = workspace_readiness.group(1)
+            repository_id = self.headers.get("EP-Repository-ID")
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    if _authenticated_consumer(connection, token, project_id) is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    if not repository_id:
+                        self._send(400, {"error": "REPOSITORY_SCOPE_REQUIRED"})
+                        return
+                    readiness = managed_workspace_readiness.project_readiness(
+                        connection, project_id=project_id, repository_id=repository_id,
+                    )
+                self._send(200, readiness, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
         if request.path == "/diagnostics/topology":
             try:
@@ -7121,6 +7145,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         return
                     projection = submission_service.producer_readback(
                         connection, project_id=project_id, submission_id=submission_id,
+                        contract_version=(
+                            "1.3" if self.headers.get("EP-Producer-Readback-Contract") == "1.3"
+                            else "1.2"
+                        ),
                     )
                 if projection is None:
                     self._send(404, {"error": "SUBMISSION_NOT_FOUND"})
@@ -8258,7 +8286,7 @@ def main(argv: list[str] | None = None) -> int:
                         early = {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"}
             receipt_complete = transport != "FILE_INBOX" or (isinstance(receipt_id, str) and bool(receipt_id) and isinstance(received_at, str) and bool(received_at))
             scope_complete = run_id is not None and (dispatch_project, dispatch_repository) == (project_id, repository_id)
-            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "admission_audit_provenance": "PRESENT" if admission_audit else "UNAVAILABLE", "receipt_run_provenance": "PRESENT" if run_id else "UNAVAILABLE", "dispatch_scope_provenance": "COMPLETE" if scope_complete else "UNAVAILABLE", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
+            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "admission_audit_provenance": "PRESENT" if admission_audit else "UNAVAILABLE", "receipt_run_provenance": "PRESENT" if run_id else "UNAVAILABLE", "dispatch_scope_provenance": "COMPLETE" if scope_complete else "UNAVAILABLE", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and run_id is None and blocked is None}
         elif args.command == "register-topology":
             if args.declaration is None:
                 raise ServerConfigurationError("--declaration is required for explicit topology registration.")

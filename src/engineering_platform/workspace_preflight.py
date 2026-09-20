@@ -151,7 +151,8 @@ def _persist(root: Path, result: WorkspacePreflightResult, run_id: str | None) -
             Path(temporary).unlink(missing_ok=True)
 
 
-def execute(root: Path, prompt: str, *, run_id: str | None = None) -> WorkspacePreflightResult:
+def execute(root: Path, prompt: str, *, run_id: str | None = None,
+            exact_revision_preparation: bool = False) -> WorkspacePreflightResult:
     """Run Level 2 workspace checks without mutating the selected repository."""
     started = monotonic()
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -237,7 +238,14 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> WorkspaceP
             checks.append(_check("managed_remote", remote_valid, "Managed target has a valid origin remote." if remote_valid else "Managed target has no valid origin remote.", "Configure the managed repository origin remote."))
             divergence = _git(target, "rev-list", "--left-right", "--count", "@{upstream}...HEAD") if remote_valid else None
             synchronized = bool(divergence and divergence.returncode == 0 and divergence.stdout.strip() == "0\t0")
-            checks.append(_check("managed_synchronization", synchronized, "Managed target is synchronized with its upstream." if synchronized else "Managed target is not synchronized with its upstream.", "Synchronize the expected branch with its configured upstream."))
+            checks.append(_check(
+                "managed_synchronization", synchronized or exact_revision_preparation,
+                "Managed target is synchronized with its upstream." if synchronized else
+                "Exact revision preparation is required under the execution lease." if exact_revision_preparation else
+                "Managed target is not synchronized with its upstream.",
+                "The owning runner must prepare the exact authorized revision before provider execution." if exact_revision_preparation else
+                "Synchronize the expected branch with its configured upstream.",
+            ))
     workspace = configuration.workspace.name if configuration else "unavailable"
     outcome = "FAIL" if any(check.outcome == "FAIL" for check in checks) else "PASS"
     drift_evidence = persist_drift_evidence(root, evidence_for_checks(
