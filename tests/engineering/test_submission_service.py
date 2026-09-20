@@ -53,6 +53,25 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         server.stop(self.root)
         self.temporary.cleanup()
 
+    def test_managed_workspace_readiness_requires_consumer_and_repository_scope(self) -> None:
+        server.start(self.root)
+        endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/managed-workspace-readiness"
+        with self.assertRaises(HTTPError) as unauthenticated:
+            urlopen(Request(endpoint, headers={"EP-Repository-ID": "djconnect"}))  # nosec B310
+        self.assertEqual(unauthenticated.exception.code, 401)
+        unauthenticated.exception.close()
+        with self.assertRaises(HTTPError) as missing_scope:
+            urlopen(Request(endpoint, headers={"Authorization": f"Bearer {self.credential}"}))  # nosec B310
+        self.assertEqual(missing_scope.exception.code, 400)
+        missing_scope.exception.close()
+        with urlopen(Request(endpoint, headers={
+            "Authorization": f"Bearer {self.credential}", "EP-Repository-ID": "djconnect",
+        })) as response:  # nosec B310
+            readiness = json.load(response)
+        self.assertEqual(readiness["status"], "BLOCKED")
+        self.assertEqual(readiness["known_blocker"], "MANAGED_WORKSPACE_UNAVAILABLE")
+        self.assertEqual(readiness["repository_id"], "djconnect")
+
     def test_validation_result_detail_distinguishes_zero_missing_and_corrupt_output(self) -> None:
         database = self.root / server.SERVER_DATABASE_FILENAME
         with sqlite_connection(database) as connection:

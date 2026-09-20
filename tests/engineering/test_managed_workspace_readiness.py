@@ -10,6 +10,18 @@ from engineering_platform.storage import sqlite_connection
 
 
 class ManagedWorkspaceReadinessTests(unittest.TestCase):
+    def test_unbound_repository_reports_blocker_without_workspace_access(self) -> None:
+        with TemporaryDirectory() as temporary:
+            data = Path(temporary) / "central"
+            server.initialize(data)
+            with sqlite_connection(data / server.SERVER_DATABASE_FILENAME) as connection:
+                readiness = managed_workspace_readiness.project_readiness(
+                    connection, project_id="forge", repository_id="forge",
+                )
+            self.assertEqual(readiness["known_blocker"], "MANAGED_WORKSPACE_UNBOUND")
+            self.assertIsNone(readiness["head_sha"])
+            self.assertEqual(readiness["status"], "BLOCKED")
+
     def test_readiness_inspects_without_mutating_unknown_future_baseline(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -54,3 +66,17 @@ class ManagedWorkspaceReadinessTests(unittest.TestCase):
                 self.assertEqual(blocked["known_blocker"], "MANAGED_WORKSPACE_DIRTY")
                 self.assertEqual(git("rev-parse", "HEAD"), head)
                 self.assertTrue((checkout / "unknown.txt").exists())
+                (checkout / "unknown.txt").unlink()
+                git_dir = Path(git("rev-parse", "--git-path", "index.lock"))
+                if not git_dir.is_absolute():
+                    git_dir = checkout / git_dir
+                git_dir.touch()
+                try:
+                    blocked_lock = managed_workspace_readiness.project_readiness(
+                        connection, project_id="forge", repository_id="forge",
+                    )
+                    self.assertEqual(blocked_lock["known_blocker"], "MANAGED_GIT_OPERATION_ACTIVE")
+                    self.assertTrue(blocked_lock["busy"])
+                    self.assertEqual(blocked_lock["head_sha"], head)
+                finally:
+                    git_dir.unlink()

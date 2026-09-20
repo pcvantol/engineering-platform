@@ -2358,6 +2358,62 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertGreaterEqual(len(repository.inspect_calls), 2)
         self.assertNotEqual(agent.prompts, [])
 
+    def test_invalid_exact_revision_binding_blocks_before_workspace_or_provider(self) -> None:
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "not-a-commit", "allowed_baseline_revision": None,
+        }}}
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id="invalid-exact-revision-binding")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "repository_revision_binding")
+        self.assertEqual(repository.prepare_calls, [])
+        self.assertEqual(agent.prompts, [])
+
+    def test_resume_rejects_checkpoint_revision_that_conflicts_with_accepted_submission(self) -> None:
+        run_id = "checkpoint-revision-conflict"
+        self.store.save(TransactionState(
+            run_id, "pcvantol/djconnect", str(self.prompt), "INITIALIZE",
+            requested_repository_revision="c" * 40,
+        ))
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": None,
+        }}}
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id=run_id, resume=True)
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "repository_revision_binding")
+        self.assertEqual(repository.prepare_calls, [])
+        self.assertEqual(agent.prompts, [])
+
+    def test_resume_rejects_checkpoint_allowed_baseline_that_conflicts_with_submission(self) -> None:
+        run_id = "checkpoint-allowed-baseline-conflict"
+        self.store.save(TransactionState(
+            run_id, "pcvantol/djconnect", str(self.prompt), "INITIALIZE",
+            requested_repository_revision="b" * 40,
+            allowed_baseline_revision="c" * 40,
+        ))
+        repository = FakeRepository()
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        submission = {"execution_context": None, "constraints": {"repository_revision_binding": {
+            "requested_revision": "b" * 40, "allowed_baseline_revision": "a" * 40,
+        }}}
+        with patch("engineering_platform.execution_host.load_submission_for_run", return_value=submission):
+            state = EngineeringRunner(
+                self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None,
+            ).run(self.prompt, run_id=run_id, resume=True)
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "repository_revision_binding")
+        self.assertEqual(repository.synchronize_calls, [])
+        self.assertEqual(agent.prompts, [])
+
     def test_uncertain_exact_preparation_blocks_before_provider(self) -> None:
         repository = FakeRepository()
         repository.prepare_error = RunnerError("MANAGED_PREPARATION_RESULT_UNCERTAIN")
