@@ -119,6 +119,7 @@ from .execution_timing import complete_active_phase as _complete_active_phase
 from .execution_timing import complete_phase as _complete_phase
 from .execution_timing import start_or_resume_phase as _start_or_resume_phase
 from .execution_timing import start_phase as _start_phase
+from .execution_timing import update_active_phase_metadata as _update_active_phase_metadata
 from .managed_autonomy import (
     append_action as record_managed_action,
     append_pr_check_observation as record_managed_pr_check,
@@ -191,6 +192,20 @@ def complete_phase(root: Path, active: ActivePhase | None, **kwargs: object) -> 
             return
         _timing_unavailable(
             root, active_run_id, error, central_database=_central_database_from_kwargs(kwargs),
+        )
+
+
+def update_phase_metadata(
+    root: Path, active: ActivePhase | None, metadata: dict[str, object],
+) -> None:
+    """Publish optional bounded live phase data without affecting the run."""
+    if active is None:
+        return
+    try:
+        _update_active_phase_metadata(root, active, metadata)
+    except EngineeringStorageError as error:
+        _timing_unavailable(
+            root, active.run_id, error, central_database=active.central_database,
         )
 
 
@@ -700,6 +715,7 @@ class EngineeringRunner:
         selection: ReviewerSelection,
         event: str,
         result: ReviewerResult | None = None,
+        phase: ActivePhase | None = None,
     ) -> None:
         """Publish bounded reviewer lifecycle status without granting reviewer authority."""
         self._heartbeat()
@@ -725,6 +741,18 @@ class EngineeringRunner:
                         else 0
                     )
                 break
+            update_phase_metadata(
+                self.root,
+                phase,
+                {"reviewer_agents": [
+                    {
+                        "reviewer": str(item.get("reviewer", ""))[:80],
+                        "capability": str(item.get("capability", "engineering"))[:80],
+                        "status": str(item.get("status", "selected"))[:16],
+                    }
+                    for item in self.reviewer_runtime[:12]
+                ]},
+            )
             write_live_status(self.root, state, "Capability review: " + selection.reviewer, self.reviewer_runtime)
 
     def _persist_agent_usage(self, run_id: str) -> None:
@@ -3366,6 +3394,18 @@ First implementation pull-request publication gate:
             }
             for item in selections
         ]
+        update_phase_metadata(
+            self.root,
+            capability_review,
+            {"reviewer_agents": [
+                {
+                    "reviewer": str(item["reviewer"])[:80],
+                    "capability": str(item["capability"])[:80],
+                    "status": "selected",
+                }
+                for item in self.reviewer_runtime[:12]
+            ]},
+        )
         write_live_status(
             self.root,
             state
@@ -3399,7 +3439,7 @@ First implementation pull-request publication gate:
             objective,
             self.agent if hasattr(self.agent, "review") else None,
             progress=lambda selection, event, result: self._publish_reviewer_progress(
-                state, selection, event, result
+                state, selection, event, result, capability_review
             ),
             evidence=reviewer_evidence,
         )

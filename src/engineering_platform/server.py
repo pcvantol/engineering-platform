@@ -3788,6 +3788,12 @@ def _central_console_invocation_reviewers(data_root: Path, run_id: str) -> list[
     """
     try:
         with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+            active_phase = connection.execute(
+                """SELECT metadata FROM execution_phase_spans
+                     WHERE run_id=? AND phase_name='CAPABILITY_REVIEW' AND outcome='ACTIVE'
+                     ORDER BY ordinal DESC LIMIT 1""",
+                (run_id,),
+            ).fetchone()
             rows = connection.execute(
                 """SELECT role,completed_at FROM provider_invocations
                      WHERE run_id=? AND phase='CAPABILITY_REVIEW'
@@ -3797,6 +3803,33 @@ def _central_console_invocation_reviewers(data_root: Path, run_id: str) -> list[
             ).fetchall()
     except (sqlite3.DatabaseError, storage.EngineeringStorageError):
         return []
+    if active_phase is not None:
+        try:
+            metadata = json.loads(str(active_phase[0]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+        live = metadata.get("reviewer_agents") if isinstance(metadata, dict) else None
+        if isinstance(live, list) and 0 < len(live) <= 12:
+            projected: list[dict[str, object]] = []
+            for item in live:
+                if not isinstance(item, Mapping):
+                    projected = []
+                    break
+                reviewer = str(item.get("reviewer") or "").strip()
+                capability = str(item.get("capability") or "engineering").strip()
+                status = str(item.get("status") or "").strip().lower()
+                if (
+                    re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", reviewer) is None
+                    or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", capability) is None
+                    or status not in {"selected", "running", "completed", "failed"}
+                ):
+                    projected = []
+                    break
+                projected.append({
+                    "reviewer": reviewer, "capability": capability, "status": status,
+                })
+            if len(projected) == len(live):
+                return projected
     reviewers: list[dict[str, object]] = []
     for role, completed_at in rows:
         name = str(role).removeprefix("reviewer:").strip()

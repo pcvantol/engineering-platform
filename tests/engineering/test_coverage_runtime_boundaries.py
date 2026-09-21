@@ -24,7 +24,7 @@ import socket
 from contextlib import redirect_stdout
 from threading import RLock
 
-from engineering_platform import agent_trust, central_database, project_topology, server, server_relay, storage
+from engineering_platform import agent_trust, central_database, execution_timing, project_topology, server, server_relay, storage
 from engineering_platform import providers
 from engineering_platform import codex_capacity
 from engineering_platform import pr_check_repair
@@ -1799,6 +1799,18 @@ class InstallationBoundaryTests(unittest.TestCase):
         """Central reviewer identities are ledger facts; terminal findings use the report."""
         run_id = "run-central-reviewers"
         database = self.root / server.SERVER_DATABASE_FILENAME
+        active_review = execution_timing.start_phase(
+            self.root, run_id, "CAPABILITY_REVIEW", central_database=database,
+            metadata={"reviewer_agents": [
+                {"reviewer": "repository_governance", "capability": "engineering", "status": "running"},
+                {"reviewer": "validation", "capability": "engineering", "status": "selected"},
+            ]},
+        )
+        self.assertEqual(server._central_console_invocation_reviewers(self.root, run_id), [
+            {"reviewer": "repository_governance", "capability": "engineering", "status": "running"},
+            {"reviewer": "validation", "capability": "engineering", "status": "selected"},
+        ])
+        execution_timing.complete_phase(self.root, active_review)
         for ordinal, reviewer in enumerate(("repository_governance", "validation"), 1):
             persist_provider_invocation(self.root, ProviderInvocation(
                 run_id, ordinal, "codex_cli", "gpt-5.6-terra", "CAPABILITY_REVIEW",
