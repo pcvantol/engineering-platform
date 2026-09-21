@@ -22,14 +22,15 @@ _GITHUB_ORIGIN = re.compile(
 )
 
 
-def _successful_reviewer_agents(value: object) -> list[dict[str, object]]:
-    """Return immutable review evidence only after every reviewer succeeded."""
+def _terminal_reviewer_agents(value: object) -> list[dict[str, object]]:
+    """Return immutable review evidence after every reviewer terminated."""
     if not isinstance(value, list):
         return []
     reviewers = [item for item in value if isinstance(item, dict)]
     if not reviewers or len(reviewers) != len(value):
         return []
-    return reviewers if all(item.get("status") == "completed" for item in reviewers) else []
+    terminal = {"completed", "failed"}
+    return reviewers if all(item.get("status") in terminal for item in reviewers) else []
 
 
 def _github_repository(checkout: Path) -> str | None:
@@ -98,11 +99,10 @@ def write_live_status(
         ):
             previous_reviewers = [item for item in stored_reviewers if isinstance(item, dict)]
         elif not reviewer_projection_active:
-            # Once the review is wholly successful, retain its compact,
-            # completed result as historical evidence for this live run. A
-            # partial, failed or malformed projection is never carried into a
-            # later lifecycle phase.
-            previous_reviewers = _successful_reviewer_agents(stored_reviewers)
+            # Once every reviewer has terminated, retain the compact results
+            # as historical evidence for this live run. A running or malformed
+            # projection is never carried into a later lifecycle phase.
+            previous_reviewers = _terminal_reviewer_agents(stored_reviewers)
         if runtime_metadata is None and isinstance(previous.get("runtime_metadata"), dict):
             previous_runtime = {
                 key: value[:120]
@@ -200,9 +200,9 @@ def write_live_status(
         # that it is delivered or independently assured.
         "candidate_sha": state.last_verified_sha,
         "repair_iteration": state.repair_iterations,
-        # Reviewer progress is phase-scoped, while a fully successful review
-        # remains compact historical evidence during the rest of this active
-        # run. The dashboard renders that retained list as completed, never as
+        # Reviewer progress is phase-scoped, while terminal review results
+        # remain compact historical evidence during the rest of this active
+        # run. The dashboard renders that retained list as evidence, never as
         # live work.
         "reviewer_agents": (
             reviewer_agents if reviewer_projection_active and reviewer_agents is not None

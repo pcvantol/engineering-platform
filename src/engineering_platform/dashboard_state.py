@@ -29,14 +29,15 @@ RunJsonReader = Callable[[Path, str | None], bytes]
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
-def _successful_reviewer_agents(value: object) -> list[dict[str, object]]:
-    """Expose only a wholly successful review beyond its live phase."""
+def _terminal_reviewer_agents(value: object) -> list[dict[str, object]]:
+    """Expose a wholly terminal review beyond its live phase."""
     if not isinstance(value, list):
         return []
     reviewers = [item for item in value if isinstance(item, dict)]
     if not reviewers or len(reviewers) != len(value):
         return []
-    return reviewers if all(item.get("status") == "completed" for item in reviewers) else []
+    terminal = {"completed", "failed"}
+    return reviewers if all(item.get("status") in terminal for item in reviewers) else []
 
 
 def _run_workspace_preflight(root: Path, run_id: object) -> dict[str, object]:
@@ -417,13 +418,13 @@ def status(root: Path) -> bytes:
                 "candidate_sha": live.get("candidate_sha"),
                 "repair_iteration": live.get("repair_iteration"),
                 "workspace_preflight": run_workspace_preflight,
-                # Only a wholly successful specialist review survives its
-                # live phase as historical evidence for this active run. A
-                # partial, failed or stale reviewer projection remains hidden.
+                # Only a wholly terminal specialist review survives its live
+                # phase as historical evidence for this active run. A running
+                # or malformed reviewer projection remains hidden.
                 "reviewer_agents": (
                     live.get("reviewer_agents", [])
                     if live.get("phase") == "CAPABILITY_REVIEW"
-                    else _successful_reviewer_agents(live.get("reviewer_agents"))
+                    else _terminal_reviewer_agents(live.get("reviewer_agents"))
                 ),
                 "runtime_metadata": live.get("runtime_metadata", {}),
                 "workspace_progress": live.get("workspace_progress"),

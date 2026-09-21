@@ -4677,7 +4677,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn(call(4321, signal.SIGTERM), killpg.call_args_list)
         self.assertFalse(process.terminated)
 
-    def test_live_status_retains_only_completed_reviewers_after_capability_review(self) -> None:
+    def test_live_status_retains_only_terminal_reviewers_after_capability_review(self) -> None:
         state = TransactionState(
             "genesis-context",
             "pcvantol/djconnect",
@@ -4707,11 +4707,14 @@ class LocalAgentRunnerTest(unittest.TestCase):
         write_live_status(self.root, finalization, "create_finalization", reviewers)
         cleared = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
         self.assertEqual(cleared["reviewer_agents"], [])
-        completed = [{"reviewer": "validation", "capability": "engineering", "status": "completed"}]
-        write_live_status(self.root, state, "review completed", completed)
+        terminal = [
+            {"reviewer": "repository_governance", "capability": "engineering", "status": "failed"},
+            {"reviewer": "validation", "capability": "engineering", "status": "completed"},
+        ]
+        write_live_status(self.root, state, "review completed", terminal)
         write_live_status(self.root, finalization, "create_finalization")
         historical = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
-        self.assertEqual(historical["reviewer_agents"], completed)
+        self.assertEqual(historical["reviewer_agents"], terminal)
 
     @patch("engineering_platform.live_status.GitProvider")
     def test_live_status_uses_only_a_valid_host_observed_github_remote_for_pr_links(self, provider: object) -> None:
