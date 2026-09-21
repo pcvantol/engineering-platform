@@ -78,6 +78,7 @@ from . import storage
 from . import telemetry_export
 from . import managed_codex_runtime
 from . import managed_workspace_readiness
+from . import managed_workspace_recovery
 from . import provider_readiness
 from .platform_components import (
     PLATFORM_COMPONENT_BY_ID,
@@ -7544,7 +7545,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "recover-managed-workspace", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -7565,6 +7566,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reason")
     parser.add_argument("--capability", choices=("QUEUE_HOLD_RESUME", "QUEUE_DECLINE"))
     parser.add_argument("--operation-id")
+    parser.add_argument("--expected-branch")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--backup-root", type=Path)
     parser.add_argument("--delegation-id")
     parser.add_argument("--mission-id")
     parser.add_argument("--mission-revision")
@@ -8593,6 +8597,27 @@ def main(argv: list[str] | None = None) -> int:
                 target.write_text(json.dumps(declaration, sort_keys=True, indent=2) + "\n", encoding="utf-8")
                 target.chmod(0o600)
             result = {"project_id": args.project_id, "repository_id": args.repository_id, "path": str(target), "result": "PROVISIONED"}
+        elif args.command == "recover-managed-workspace":
+            if not all((args.project_id, args.repository_id, args.operation_id,
+                        args.expected_branch, args.expected_head)) or args.backup_root is None:
+                raise ServerConfigurationError(
+                    "Managed workspace recovery requires project, repository, operation, expected branch/head and backup root."
+                )
+            if status(args.data_root)["running"]:
+                raise ServerConfigurationError("MANAGED_WORKSPACE_RECOVERY_SERVER_ACTIVE")
+            initialize(args.data_root)
+            try:
+                from .platform_admin import require_installation_owner
+                require_installation_owner(args.data_root)
+                with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                    result = managed_workspace_recovery.recover(
+                        connection=connection, data_root=args.data_root,
+                        project_id=args.project_id, repository_id=args.repository_id,
+                        operation_id=args.operation_id, expected_branch=args.expected_branch,
+                        expected_head=args.expected_head, backup_root=args.backup_root,
+                    )
+            except PermissionError as error:
+                raise ServerConfigurationError("PLATFORM_ADMIN_FORBIDDEN") from error
         elif args.command in {"bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"}:
             if not args.project_id or not args.repository_id:
                 raise ServerConfigurationError("--project-id and --repository-id are required for local binding commands.")
@@ -8637,6 +8662,7 @@ def main(argv: list[str] | None = None) -> int:
             server_service.ServerServiceError,
             development_profile.DevelopmentProfileError,
             local_repository_binding.LocalRepositoryBindingError,
+            managed_workspace_recovery.ManagedWorkspaceRecoveryError,
             external_producer_binding.ProducerBindingError) as error:
         print(json.dumps({"error": str(error), "ready": False}, sort_keys=True))
         return 2

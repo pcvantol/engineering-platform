@@ -459,6 +459,22 @@ creating an autonomous retry loop.
 Neither control rewrites history, stashes work, or deletes a branch without
 the explicit second confirmation.
 
+### Abandoned Managed workspace recovery
+
+An interrupted provider can leave uncommitted work on its exact transaction
+branch after CENTRAL history has been reset. The installation owner may recover
+that checkout only with the stopped Server command `recover-managed-workspace`.
+The command binds the project, repository, expected branch and exact HEAD,
+requires no active execution lease, and refuses Git operation markers or any
+identity drift. Before mutation it writes a private recovery directory with a
+binary tracked patch, bounded copies of every non-ignored untracked regular
+file, hashes and a manifest. It then restores the expected HEAD, removes those
+untracked files, synchronizes `main`, removes only the named local transaction
+branch and verifies a clean synchronized result. Symlinks, special files,
+oversized recovery sets, an active Server or an existing destination fail
+closed. The recovery artifact is retained for diagnosis or manual reuse; it is
+not Action evidence and is never submitted or pushed automatically.
+
 ## CENTRAL operational-history maintenance
 
 The product-owned local reset route, exact preservation/purge mapping,
