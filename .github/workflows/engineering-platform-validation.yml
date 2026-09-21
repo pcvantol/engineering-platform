@@ -63,9 +63,11 @@ jobs:
   validate:
     needs: validation-profile
     runs-on: ubuntu-latest
-    # The complete installed qualification normally finishes in a few minutes.
-    # Bound an unavailable child process so a failed proof remains observable.
-    timeout-minutes: 15
+    # The installed qualification runs the complete product suite once for
+    # behavior and once with coverage instrumentation, after the transport and
+    # deterministic execution matrices. Keep a bounded ceiling with enough
+    # margin for the measured pass on shared GitHub runners.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
