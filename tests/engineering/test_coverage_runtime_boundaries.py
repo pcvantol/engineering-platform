@@ -1828,13 +1828,17 @@ class InstallationBoundaryTests(unittest.TestCase):
 - Reviewer: validation
   - Capability: engineering
   - Selected because: Required validation evidence.
+  - Initial observation: Validation coverage checked.
   - Accepted recommendations: 2
+  - Rejected recommendations: 1
 ## Next section
 """
         self.assertEqual(server._central_console_report_reviewers(report), [{
             "reviewer": "validation", "capability": "engineering",
             "selected_because": "Required validation evidence.",
-            "accepted_recommendations": 2, "status": "completed",
+            "contribution": "Validation coverage checked.",
+            "accepted_recommendations": 2, "rejected_recommendations": 1,
+            "status": "completed",
         }])
 
         assurance = [

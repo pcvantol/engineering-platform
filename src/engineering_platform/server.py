@@ -3770,7 +3770,9 @@ def _central_console_report_reviewers(report: bytes | None) -> list[dict[str, ob
             # the viewer's locale-specific fallback instead of leaking a Dutch
             # server string into another locale.
             "selected_because": field("Selected because"),
+            "contribution": field("Initial observation"),
             "accepted_recommendations": int(accepted) if accepted and accepted.isdigit() else 0,
+            "rejected_recommendations": int(rejected) if (rejected := field("Rejected recommendations")) and rejected.isdigit() else 0,
             "status": "completed",
         })
         if len(records) == 12:
@@ -3788,9 +3790,9 @@ def _central_console_invocation_reviewers(data_root: Path, run_id: str) -> list[
     """
     try:
         with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
-            active_phase = connection.execute(
-                """SELECT metadata FROM execution_phase_spans
-                     WHERE run_id=? AND phase_name='CAPABILITY_REVIEW' AND outcome='ACTIVE'
+            capability_phase = connection.execute(
+                """SELECT metadata,outcome FROM execution_phase_spans
+                     WHERE run_id=? AND phase_name='CAPABILITY_REVIEW'
                      ORDER BY ordinal DESC LIMIT 1""",
                 (run_id,),
             ).fetchone()
@@ -3803,9 +3805,9 @@ def _central_console_invocation_reviewers(data_root: Path, run_id: str) -> list[
             ).fetchall()
     except (sqlite3.DatabaseError, storage.EngineeringStorageError):
         return []
-    if active_phase is not None:
+    if capability_phase is not None:
         try:
-            metadata = json.loads(str(active_phase[0]))
+            metadata = json.loads(str(capability_phase[0]))
         except (TypeError, ValueError, json.JSONDecodeError):
             metadata = {}
         live = metadata.get("reviewer_agents") if isinstance(metadata, dict) else None
@@ -3827,8 +3829,24 @@ def _central_console_invocation_reviewers(data_root: Path, run_id: str) -> list[
                     break
                 projected.append({
                     "reviewer": reviewer, "capability": capability, "status": status,
+                    **({"selected_because": str(item["selected_because"])[:180]}
+                       if isinstance(item.get("selected_because"), str) else {}),
+                    **({"contribution": str(item["contribution"])[:240]}
+                       if isinstance(item.get("contribution"), str) else {}),
+                    **({"accepted_recommendations": max(0, int(item["accepted_recommendations"]))}
+                       if isinstance(item.get("accepted_recommendations"), int)
+                       and not isinstance(item.get("accepted_recommendations"), bool) else {}),
+                    **({"rejected_recommendations": max(0, int(item["rejected_recommendations"]))}
+                       if isinstance(item.get("rejected_recommendations"), int)
+                       and not isinstance(item.get("rejected_recommendations"), bool) else {}),
                 })
-            if len(projected) == len(live):
+            phase_outcome = str(capability_phase[1] or "").upper()
+            terminal_detail = all(
+                item.get("status") in {"completed", "failed"} for item in projected
+            )
+            if len(projected) == len(live) and (
+                phase_outcome == "ACTIVE" or terminal_detail
+            ):
                 return projected
     reviewers: list[dict[str, object]] = []
     for role, completed_at in rows:

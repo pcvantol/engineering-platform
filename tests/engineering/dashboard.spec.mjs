@@ -3228,8 +3228,112 @@ test.describe("Engineering Status browser smoke", () => {
     const detail = page.locator("#lifecycleDetailModal");
     await expect(detail).toBeVisible();
     await expect(detail).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_local_validation_evidence"]);
-    await expect(detail).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_repair_iteration"].replace("{iteration}", "2"));
+    await expect(detail).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_validation_pass"].replace("{iteration}", "2"));
     await expect(detail).toContainText("Validation passes.");
+  });
+
+  test("refreshes an open validation popup and separates repeated validation passes", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const activeStep = {
+      id: "LOCAL_REPOSITORY_VALIDATION",
+      presentation_key: "lifecycle.step.local_repository_validation",
+      state: "ACTIVE",
+      timing: {
+        started_at: "2026-09-21T09:20:38Z",
+        finished_at: "2026-09-21T09:40:20Z",
+        spans: [
+          { phase: "PROVIDER_EXECUTION", started_at: "2026-09-21T09:20:38Z", finished_at: "2026-09-21T09:20:52Z", duration_ms: 14000, outcome: "COMPLETE" },
+          { phase: "PROVIDER_EXECUTION", started_at: "2026-09-21T10:01:44Z", duration_ms: null, outcome: "ACTIVE" },
+        ],
+      },
+    };
+    await page.evaluate((step) => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "live-validation-refresh",
+      lifecycle: { available: true, run_id: "live-validation-refresh", terminal_state: "ACTIVE", steps: [step] },
+    }, {}), activeStep);
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator(".execution-lifecycle__node"));
+    const modal = page.locator("#lifecycleDetailModal");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.state.active"]);
+    await expect(modal).not.toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_finished_at"]);
+
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "live-validation-refresh",
+      current_phase: "QUALITY_CONTROL_AGENT",
+      lifecycle: { available: true, run_id: "live-validation-refresh", terminal_state: "ACTIVE", steps: [{
+        id: "LOCAL_REPOSITORY_VALIDATION", presentation_key: "lifecycle.step.local_repository_validation",
+        state: "COMPLETED", timing: {
+          started_at: "2026-09-21T09:20:38Z", finished_at: "2026-09-21T10:01:58Z",
+          spans: [
+            { phase: "PROVIDER_EXECUTION", started_at: "2026-09-21T09:20:38Z", finished_at: "2026-09-21T09:20:52Z", duration_ms: 14000, outcome: "COMPLETE" },
+            { phase: "PROVIDER_EXECUTION", started_at: "2026-09-21T10:01:44Z", finished_at: "2026-09-21T10:01:58Z", duration_ms: 14000, outcome: "COMPLETE" },
+          ],
+        },
+      }] },
+    }, {}));
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.state.completed"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_finished_at"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_validation_pass"].replace("{iteration}", "1"));
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_validation_pass"].replace("{iteration}", "2"));
+  });
+
+  test("projects specialist reviewers and implementation result into their step popups", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "step-evidence",
+      reviewer_agents: [
+        { reviewer: "repository_governance", capability: "engineering", status: "completed", selected_because: "governance objective", contribution: "Repository policy checked.", accepted_recommendations: 2, rejected_recommendations: 1 },
+        { reviewer: "validation", capability: "engineering", status: "completed" },
+      ],
+      implementation_branch: "implementation/mission-health",
+      implementation_candidate_sha: "a".repeat(40), implementation_pr: 173,
+      lifecycle: { available: true, run_id: "step-evidence", terminal_state: "ACTIVE", steps: [
+        { id: "CAPABILITY_REVIEW", presentation_key: "lifecycle.step.capability_review", state: "COMPLETED" },
+        { id: "EXECUTE_AGENT", presentation_key: "lifecycle.step.execute_agent", state: "COMPLETED" },
+      ] },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    const nodes = page.locator(".execution-lifecycle__node");
+    await dispatchDashboardPointerClick(nodes.nth(0));
+    const modal = page.locator("#lifecycleDetailModal");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["detail.specialist_reviews"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.repository_governance"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.validation"]);
+    await expect(modal).toContainText("Repository policy checked.");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["detail.accepted_recommendations"] + ": 2");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["detail.rejected_recommendations"] + ": 1");
+    await page.locator("#lifecycleDetailClose").click();
+    await dispatchDashboardPointerClick(nodes.nth(1));
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_implementation_evidence"]);
+    await expect(modal).toContainText("implementation/mission-health");
+    await expect(modal).toContainText("#173");
+  });
+
+  test("places a visual divider between repair rounds", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "repair-divider",
+      lifecycle: { available: true, run_id: "repair-divider", terminal_state: "ACTIVE", steps: [{
+        id: "REPAIR_AGENT", presentation_key: "lifecycle.step.repair_agent", state: "ACTIVE",
+        repair_audit: [
+          { iteration: "1", failed_checks: "Quality", proposed_action: "Repair", agent_summary: "First", commit_sha: "a".repeat(40), outcome: "submitted_for_recheck" },
+          { iteration: "2", failed_checks: "Security", proposed_action: "Repair", agent_summary: "Second", commit_sha: "b".repeat(40), outcome: "submitted_for_recheck" },
+        ],
+      }] },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator(".execution-lifecycle__node"));
+    const rounds = page.locator("#lifecycleDetailModal .lifecycle-detail-modal__repair-iteration");
+    await expect(rounds).toHaveCount(2);
+    await expect(rounds.nth(0)).toHaveCSS("border-top-width", "0px");
+    await expect(rounds.nth(1)).toHaveCSS("border-top-width", "1px");
+    await expect(page.locator("#lifecycleDetailTitle")).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.repair_agent"]);
   });
 
   test("places finalization pull-request repair after Finalization and before its merge", async ({ page }) => {
@@ -3598,6 +3702,14 @@ test.describe("Engineering Status browser smoke", () => {
       return range.getClientRects().length;
     });
     expect(reviewLines).toBe(1);
+    const [reviewHeadingBox, reviewBodyBox] = await Promise.all([
+      securityReview.boundingBox(),
+      securityReview.locator("xpath=..").locator("span").boundingBox(),
+    ]);
+    expect(reviewHeadingBox).not.toBeNull();
+    expect(reviewBodyBox).not.toBeNull();
+    expect(Math.abs(reviewHeadingBox.x - reviewBodyBox.x)).toBeLessThan(1);
+    expect(reviewBodyBox.y).toBeGreaterThan(reviewHeadingBox.y);
   });
 
   test("localizes repair audit sentinel values", async ({ page }) => {

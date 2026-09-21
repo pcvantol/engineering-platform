@@ -254,11 +254,15 @@ The **Estimated execution time** card follows identity, then the lifecycle
 flow, execution status, execution context and local Codex processes. This
 keeps the estimate adjacent to the run it describes.
 
-Step labels name their operational boundary rather than only its generic
-phase: **PR-controleherstel** identifies bounded repair of failed PR checks,
-**Implementatie-merge** identifies the implementation PR hand-off, and
-**Finalisatie-merge** identifies the separate finalization PR hand-off. These
-three labels are localized as a related set in every supported language.
+Step labels name their operational boundary. **Herstelronde** identifies the
+shared bounded repair boundary because it can repair local validation,
+assurance, hosted checks or finalization and may be entered before a pull
+request exists. The detail view names the concrete trigger for each round.
+Genesis retains the more specific **Autonoom kwaliteitsherstel** label because
+that mode has no pull-request merge boundary. **Implementatie-merge** identifies
+the implementation PR hand-off and **Finalisatie-merge** the separate
+finalization PR hand-off. These labels are localized in every supported
+language.
 
 Within the active-execution container, the lifecycle and execution-context
 blocks use the same card surface as status and operational blocks. Their

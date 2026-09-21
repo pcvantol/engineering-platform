@@ -2157,6 +2157,68 @@ function lifecycleAssuranceEvidence(step) {
   void localizeDynamicEvidence(dynamicRows);
   return section;
 }
+function lifecycleCapabilityEvidence(step) {
+  const reviewers = Array.isArray(step?.reviewer_evidence) ? step.reviewer_evidence : [];
+  if (!reviewers.length) return null;
+  const section = document.createElement("section");
+  section.className = "lifecycle-detail-modal__quality-evidence lifecycle-detail-modal__reviewer-evidence";
+  section.append(Object.assign(document.createElement("h3"), {
+    textContent: t("detail.specialist_reviews"),
+  }));
+  const list = document.createElement("ol");
+  list.className = "lifecycle-detail-modal__phase-list";
+  for (const reviewer of reviewers) {
+    if (!reviewer || typeof reviewer !== "object") continue;
+    const item = document.createElement("li");
+    const details = [
+      reviewerCapabilityLabel(reviewer.capability || "ENGINEERING"),
+      reviewerStatusLabel(reviewer.status || "completed"),
+      reviewer.selected_because
+        ? t("detail.selected_because") + ": " + String(reviewer.selected_because)
+        : null,
+      reviewer.contribution
+        ? t("detail.initial_observation") + ": " + String(reviewer.contribution)
+        : null,
+      Number.isInteger(reviewer.accepted_recommendations)
+        ? t("detail.accepted_recommendations") + ": " + reviewer.accepted_recommendations
+        : null,
+      Number.isInteger(reviewer.rejected_recommendations)
+        ? t("detail.rejected_recommendations") + ": " + reviewer.rejected_recommendations
+        : null,
+    ].filter(Boolean);
+    item.append(
+      Object.assign(document.createElement("strong"), {
+        textContent: reviewerLabel(reviewer.reviewer, t("detail.specialist_review")),
+      }),
+      Object.assign(document.createElement("span"), {
+        textContent: details.join("\n"),
+      }),
+    );
+    list.append(item);
+  }
+  if (!list.childElementCount) return null;
+  section.append(list);
+  return section;
+}
+function lifecycleImplementationEvidence(step) {
+  const evidence = step?.implementation_evidence;
+  if (!evidence || typeof evidence !== "object") return null;
+  const fields = [];
+  if (evidence.branch) fields.push(lifecycleDetailField(t("workspace.current_branch"), String(evidence.branch)));
+  if (evidence.candidate_sha) fields.push(lifecycleDetailField(t("detail.candidate_sha"), String(evidence.candidate_sha)));
+  if (Number.isInteger(evidence.pull_request) && evidence.pull_request > 0) {
+    fields.push(lifecycleDetailField(t("detail.implementation_pull_request"), `#${evidence.pull_request}`));
+  }
+  if (!fields.length) return null;
+  const section = document.createElement("section");
+  section.className = "lifecycle-detail-modal__implementation-evidence";
+  section.append(
+    Object.assign(document.createElement("h3"), { textContent: t("lifecycle.detail_implementation_evidence") }),
+    Object.assign(document.createElement("div"), { className: "technical-grid" }),
+  );
+  section.lastElementChild.append(...fields);
+  return section;
+}
 function lifecycleRepairEvidence(step) {
   const audit = Array.isArray(step?.repair_audit) ? step.repair_audit : [];
   if (!audit.length) return null;
@@ -2171,9 +2233,16 @@ function lifecycleRepairEvidence(step) {
     const iteration = String(item.iteration || "").trim();
     if (!iteration) continue;
     const heading = document.createElement("h4");
-    heading.textContent = t("lifecycle.detail_repair_iteration", { iteration });
+    heading.textContent = t(
+      step?.id === "LOCAL_REPOSITORY_VALIDATION"
+        ? "lifecycle.detail_validation_pass"
+        : "lifecycle.detail_repair_iteration",
+      { iteration },
+    );
     const grid = document.createElement("div");
     grid.className = "technical-grid";
+    const iterationSection = document.createElement("section");
+    iterationSection.className = "lifecycle-detail-modal__repair-iteration";
     const outcome = String(item.outcome || "").trim();
     const dynamicField = (label, source) => {
       const value = String(source || t("detail.not_recorded"));
@@ -2188,7 +2257,8 @@ function lifecycleRepairEvidence(step) {
       lifecycleDetailField(t("detail.commit"), item.commit_sha === "not_recorded" ? t("detail.not_recorded") : String(item.commit_sha || t("detail.not_recorded"))),
       lifecycleDetailField(t("detail.outcome"), t("lifecycle.repair_outcome." + outcome, {}, outcome || t("detail.not_recorded"))),
     );
-    section.append(heading, grid);
+    iterationSection.append(heading, grid);
+    section.append(iterationSection);
   }
   if (section.childElementCount <= 1) return null;
   void localizeDynamicEvidence(dynamicRows);
@@ -2219,16 +2289,29 @@ function openLifecycleDetail(step, trigger, { presentationOnly = false } = {}) {
   content.replaceChildren();
   const overview = document.createElement("section"), grid = document.createElement("div");
   grid.className = "technical-grid";
+  const rawSpans = Array.isArray(timing.spans) ? timing.spans : [];
+  const activeSpan = [...rawSpans].reverse().find((span) => String(span?.outcome || "").toUpperCase() === "ACTIVE");
   grid.append(
     lifecycleDetailStatusField(step?.state),
-    lifecycleDetailField(t("lifecycle.detail_started_at"), formatTimestamp(timing.started_at || step?.started_at)),
-    lifecycleDetailField(t("lifecycle.detail_finished_at"), formatTimestamp(timing.finished_at, t("format.unavailable"))),
+    lifecycleDetailField(
+      t("lifecycle.detail_started_at"),
+      formatTimestamp(activeSpan?.started_at || timing.started_at || step?.started_at),
+    ),
   );
+  if (String(step?.state || "").toUpperCase() !== "ACTIVE") {
+    grid.append(lifecycleDetailField(
+      t("lifecycle.detail_finished_at"),
+      formatTimestamp(timing.finished_at, t("format.unavailable")),
+    ));
+  }
   if (Number.isInteger(step?.iteration_count) && step.iteration_count > 0) {
     grid.append(lifecycleDetailField(t("lifecycle.detail_iterations"), String(step.iteration_count)));
   }
   overview.append(grid); content.append(overview);
-  const spans = lifecyclePhaseTiming(Array.isArray(timing.spans) ? timing.spans : []);
+  const localValidation = String(step?.id || "").toUpperCase() === "LOCAL_REPOSITORY_VALIDATION";
+  const spans = localValidation && rawSpans.length > 1
+    ? rawSpans.filter((span) => span && typeof span === "object").map((span, index) => ({ ...span, occurrence: index + 1 }))
+    : lifecyclePhaseTiming(rawSpans);
   const phaseTiming = document.createElement("section");
   phaseTiming.append(Object.assign(document.createElement("h3"), { textContent: t("lifecycle.detail_phase_timing") }));
   if (!spans.length) {
@@ -2237,7 +2320,9 @@ function openLifecycleDetail(step, trigger, { presentationOnly = false } = {}) {
     const list = document.createElement("ol"); list.className = "lifecycle-detail-modal__phase-list";
     for (const span of spans) {
       const item = document.createElement("li"), heading = document.createElement("strong"), meta = document.createElement("span");
-      heading.textContent = telemetryLabel(span.phase);
+      heading.textContent = localValidation
+        ? t("lifecycle.detail_validation_pass", { iteration: span.occurrence })
+        : telemetryLabel(span.phase);
       meta.textContent = t("lifecycle.detail_phase_meta", {
         duration: telemetryMs(span.duration_ms), outcome: lifecycleStateLabel(span.outcome),
       });
@@ -2257,8 +2342,12 @@ function openLifecycleDetail(step, trigger, { presentationOnly = false } = {}) {
   content.append(phaseTiming);
   const qualityEvidence = lifecycleQualityEvidence(step);
   if (qualityEvidence) content.append(qualityEvidence);
+  const capabilityEvidence = lifecycleCapabilityEvidence(step);
+  if (capabilityEvidence) content.append(capabilityEvidence);
   const assuranceEvidence = lifecycleAssuranceEvidence(step);
   if (assuranceEvidence) content.append(assuranceEvidence);
+  const implementationEvidence = lifecycleImplementationEvidence(step);
+  if (implementationEvidence) content.append(implementationEvidence);
   const repairEvidence = lifecycleRepairEvidence(step);
   if (repairEvidence) content.append(repairEvidence);
   if (!modal.open) modal.showModal();
@@ -2266,7 +2355,28 @@ function openLifecycleDetail(step, trigger, { presentationOnly = false } = {}) {
 }
 $("lifecycleDetailClose")?.addEventListener("click", closeLifecycleDetail);
 $("lifecycleDetailModal")?.addEventListener("close", () => { lifecycleDetailTrigger?.focus?.(); lifecycleDetailTrigger = null; lifecycleDetailStep = null; });
-function lifecycleFlow(projection, { historical = false } = {}) {
+function lifecycleStepWithEvidence(step, context = {}) {
+  const enriched = { ...step };
+  const id = String(step?.id || "").toUpperCase();
+  if (id === "CAPABILITY_REVIEW") {
+    const reviewers = Array.isArray(context.reviewer_agents)
+      ? context.reviewer_agents
+      : Array.isArray(context.reviewers) ? context.reviewers : [];
+    if (reviewers.length) enriched.reviewer_evidence = reviewers;
+  }
+  if (id === "EXECUTE_AGENT") {
+    const candidate = String(context.implementation_candidate_sha || "").trim();
+    const branch = String(context.implementation_branch || "").trim();
+    const pullRequest = Number(context.implementation_pr);
+    const evidence = {};
+    if (/^[0-9a-f]{40}$/.test(candidate)) evidence.candidate_sha = candidate;
+    if (branch) evidence.branch = branch;
+    if (Number.isInteger(pullRequest) && pullRequest > 0) evidence.pull_request = pullRequest;
+    if (Object.keys(evidence).length) enriched.implementation_evidence = evidence;
+  }
+  return enriched;
+}
+function lifecycleFlow(projection, { historical = false, context = {} } = {}) {
   const section = document.createElement("section");
   section.className = "execution-lifecycle" + (historical ? " execution-lifecycle--historical" : "");
   if (projection?.run_id) section.dataset.runId = projection.run_id;
@@ -2278,7 +2388,9 @@ function lifecycleFlow(projection, { historical = false } = {}) {
   }
   const scroll = document.createElement("div"), list = document.createElement("ol");
   scroll.className = "execution-lifecycle__scroll"; list.className = "execution-lifecycle__path";
-  const steps = Array.isArray(projection.steps) ? projection.steps : [];
+  const steps = Array.isArray(projection.steps)
+    ? projection.steps.map((step) => lifecycleStepWithEvidence(step, context))
+    : [];
   for (const [index, step] of steps.entries()) {
     const state = String(step?.state || "UNKNOWN").toLowerCase();
     const operatorWait = state === "active" && !historical && isOperatorMergeStep(step);
@@ -2315,8 +2427,8 @@ function lifecycleFlow(projection, { historical = false } = {}) {
   }
   scroll.append(list); section.append(scroll);
   const summary = document.createElement("p"); summary.className = "execution-lifecycle__summary";
-  const currentStep = (projection.steps || []).find((step) => step?.state === "ACTIVE")
-    || (projection.steps || []).find((step) => step?.state === projection?.terminal_state) || {};
+  const currentStep = steps.find((step) => step?.state === "ACTIVE")
+    || steps.find((step) => step?.state === projection?.terminal_state) || {};
   summary.textContent = t("lifecycle.summary", {
     step: lifecycleLabel(currentStep),
     status: isOperatorMergeStep(currentStep)
@@ -2395,7 +2507,7 @@ function renderActiveLifecycle(projection, execution = {}) {
       : 0;
   previous?.remove();
   if (projection?.run_id) {
-    const lifecycle = lifecycleFlow(projection);
+    const lifecycle = lifecycleFlow(projection, { context: execution });
     const identity = $("executionIdentity"), estimate = $("executionEstimate")?.closest(".card");
     placeExecutionEstimate();
     // Keep run identity and its phase-aware estimate ahead of the read-only
@@ -2419,6 +2531,18 @@ function renderActiveLifecycle(projection, execution = {}) {
       revealActiveLifecycleStep(lifecycle.querySelector(".execution-lifecycle__scroll"));
     }
     renderActivePullRequests(execution, lifecycle);
+    if ($("lifecycleDetailModal")?.open && lifecycleDetailStep) {
+      const refreshed = (projection.steps || []).find((step) => step?.id === lifecycleDetailStep.id);
+      if (refreshed) {
+        const scrollTop = $("lifecycleDetailContent")?.scrollTop || 0;
+        openLifecycleDetail(
+          lifecycleStepWithEvidence(refreshed, execution),
+          lifecycleDetailTrigger,
+          { presentationOnly: true },
+        );
+        if ($("lifecycleDetailContent")) $("lifecycleDetailContent").scrollTop = scrollTop;
+      }
+    }
   } else {
     renderActivePullRequests(execution, null);
   }
@@ -8516,7 +8640,10 @@ function renderPromptHistoryDetail(payload) {
         ]),
       ]),
       promptDetailRightbar([executionContext, promptDetailPullRequestsSection(pullRequests)]),
-      lifecycleFlow(payload?.lifecycle, { historical: true }),
+      lifecycleFlow(payload?.lifecycle, {
+        historical: true,
+        context: { ...history, reviewers, commit_timeline: commitTimeline, pull_requests: pullRequests },
+      }),
       statusReconciliationCard(payload?.lifecycle?.recovery),
       promptDetailProviderReviewSections(usage, reviewers, commitTimeline),
       promptDetailAssuranceReviewsSection(assuranceReviews),
