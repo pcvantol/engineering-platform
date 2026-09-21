@@ -3881,6 +3881,12 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(pullRequests.locator("a").nth(1)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/991");
     await expect(pullRequests.locator("a").nth(2)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/992");
     await expect(pullRequests.locator("a").nth(0)).toHaveCSS("outline-style", "none");
+    const [lifecycleBounds, pullRequestBounds] = await Promise.all([
+      page.locator(".execution-lifecycle").boundingBox(), pullRequests.boundingBox(),
+    ]);
+    expect(lifecycleBounds).not.toBeNull();
+    expect(pullRequestBounds).not.toBeNull();
+    expect(pullRequestBounds.x).toBeCloseTo(lifecycleBounds.x, 0);
     await page.locator(".execution-lifecycle__item--active .execution-lifecycle__node").click();
     await expect(page.locator("#lifecycleDetailModal")).toBeVisible();
   });

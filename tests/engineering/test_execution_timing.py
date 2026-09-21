@@ -7,13 +7,30 @@ import unittest
 
 from engineering_platform.execution_timing import (
     complete_active_phase, complete_phase, phase_spans, reconcile_interrupted_phases, record_phase,
-    start_phase, timing_summary,
+    start_phase, timing_summary, update_active_phase_metadata,
 )
-from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
+from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, open_storage
 from engineering_platform.telemetry import ExecutionTelemetry, persist_execution
 
 
 class ExecutionPhaseTimingTest(unittest.TestCase):
+    def test_active_phase_metadata_can_project_live_progress_until_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            active = start_phase(root, "run-live-review", "CAPABILITY_REVIEW", monotonic_clock=1)
+            update_active_phase_metadata(root, active, {
+                "reviewer_agents": [{
+                    "reviewer": "validation", "capability": "engineering", "status": "running",
+                }],
+            })
+            self.assertEqual(
+                phase_spans(root, "run-live-review")[0]["metadata"]["reviewer_agents"][0]["status"],
+                "running",
+            )
+            complete_phase(root, active, monotonic_clock=2)
+            with self.assertRaisesRegex(EngineeringStorageError, "not active"):
+                update_active_phase_metadata(root, active, {"reviewer_agents": []})
+
     def test_persists_monotonic_repeated_and_nested_spans_without_double_counting(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

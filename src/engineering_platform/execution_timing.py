@@ -132,6 +132,29 @@ def complete_phase(root: Path, active: ActivePhase, *, outcome: str = "COMPLETE"
         connection.close()
 
 
+def update_active_phase_metadata(
+    root: Path, active: ActivePhase, metadata: Mapping[str, object],
+) -> None:
+    """Replace bounded metadata for one exact active phase.
+
+    Live projections can change while the measured phase is active. The phase
+    identity and timing remain immutable; only its bounded presentation data is
+    replaced, and a terminal phase cannot be rewritten.
+    """
+    encoded = _metadata(metadata)
+    connection = _connection(root, active.central_database)
+    try:
+        changed = connection.execute(
+            """UPDATE execution_phase_spans SET metadata=?
+                 WHERE phase_id=? AND run_id=? AND outcome='ACTIVE'""",
+            (encoded, active.phase_id, active.run_id),
+        ).rowcount
+        if changed != 1:
+            raise EngineeringStorageError("Execution phase is not active.")
+    finally:
+        connection.close()
+
+
 def start_or_resume_phase(root: Path, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase:
     """Start one envelope or resume its observed active database boundary.
 
