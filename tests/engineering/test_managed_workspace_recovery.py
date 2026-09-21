@@ -89,6 +89,43 @@ class ManagedWorkspaceRecoveryTests(unittest.TestCase):
                 )
         resolver.assert_not_called()
 
+    def test_invalid_scope_and_backup_location_fail_before_mutation(self) -> None:
+        cases = (
+            ({"operation_id": "short"}, "OPERATION_INVALID"),
+            ({"expected_branch": "main"}, "BRANCH_INVALID"),
+            ({"expected_head": "not-a-sha"}, "HEAD_INVALID"),
+            ({"backup_root": self.base / "data" / "nested"}, "BACKUP_UNSAFE"),
+        )
+        defaults = {
+            "connection": self.connection, "data_root": self.base / "data",
+            "project_id": "forge", "repository_id": "forge",
+            "operation_id": "recover-mission3-r18-0003",
+            "expected_branch": "forge/mission-0014-installed-health",
+            "expected_head": self.head, "backup_root": self.base / "backups",
+        }
+        with patch.object(managed_workspace_recovery, "resolve_execution_repository") as resolver:
+            for changes, code in cases:
+                with self.subTest(code=code), self.assertRaisesRegex(
+                    managed_workspace_recovery.ManagedWorkspaceRecoveryError, code,
+                ):
+                    managed_workspace_recovery.recover(**(defaults | changes))
+        resolver.assert_not_called()
+
+    def test_expected_branch_and_head_must_still_match(self) -> None:
+        with patch.object(managed_workspace_recovery, "resolve_execution_repository",
+                          return_value=self.binding()):
+            with self.assertRaisesRegex(
+                managed_workspace_recovery.ManagedWorkspaceRecoveryError,
+                "EXPECTATION_MISMATCH",
+            ):
+                managed_workspace_recovery.recover(
+                    connection=self.connection, data_root=self.base / "data",
+                    project_id="forge", repository_id="forge",
+                    operation_id="recover-mission3-r18-0004",
+                    expected_branch="forge/different-transaction",
+                    expected_head=self.head, backup_root=self.base / "backups",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
