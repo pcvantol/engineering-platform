@@ -44,10 +44,47 @@ REVIEWER_LABELS = {
     "documentation": "Documentation Reviewer",
     "finalization": "Finalization Reviewer",
 }
-MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION = "1.0"
+ADVISORY_REVIEW_OUTPUT_CONTRACT_VERSION = "1.0"
+MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION = "2.0"
 MANDATORY_FINDING_FIELDS = frozenset({
     "id", "observation", "category", "criterion", "severity", "confidence", "evidence_ref",
 })
+MANDATORY_COVERAGE_FIELDS = frozenset({"surface", "status", "evidence_ref"})
+MANDATORY_DISPOSITION_FIELDS = frozenset({"finding_id", "disposition", "evidence_ref"})
+MANDATORY_COVERAGE_SURFACES = {
+    "IMPLEMENTATION": {
+        "quality": (
+            "approved_criteria", "full_candidate_diff", "callers_and_consumers",
+            "service_lifecycle", "maintenance_recovery_cleanup", "persistence_concurrency",
+            "transport_schema_compatibility", "regression_validation",
+        ),
+        "security": (
+            "approved_criteria", "full_candidate_diff", "trust_authentication",
+            "data_integrity_concurrency", "maintenance_recovery_cleanup",
+            "failure_redaction", "availability_resource_bounds", "security_validation",
+        ),
+    },
+    "FINALIZATION": {
+        "quality": (
+            "delivery_role_scope", "full_candidate_diff", "record_consistency",
+            "lifecycle_state_claims", "regression_validation",
+        ),
+        "security": (
+            "delivery_role_scope", "full_candidate_diff", "authority_scope",
+            "sensitive_data", "lifecycle_state_claims", "security_validation",
+        ),
+    },
+    "RECONCILIATION": {
+        "quality": (
+            "delivery_role_scope", "full_candidate_diff", "record_consistency",
+            "lifecycle_state_claims", "regression_validation",
+        ),
+        "security": (
+            "delivery_role_scope", "full_candidate_diff", "authority_scope",
+            "sensitive_data", "lifecycle_state_claims", "security_validation",
+        ),
+    },
+}
 PRODUCT_MATCHERS = {
     "apple_platform": (("apps/apple/", "engineering-platform-app", "swiftui", "watchos", "macos", "ios"), "Apple platform capability"),
     "windows_platform": (("apps/windows/", "engineering-platform-windows", "maui", "windows packaging"), "Windows platform capability"),
@@ -77,13 +114,15 @@ class ReviewerResult:
     # In-process deterministic/test adapters construct this typed result only
     # after choosing the mandatory contract. Raw provider JSON is still
     # required to carry this field by ``CodexCliClient.review``.
-    contract_version: str | None = MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION
+    contract_version: str | None = ADVISORY_REVIEW_OUTPUT_CONTRACT_VERSION
     failed: bool = False
     usage: dict[str, object] = field(default_factory=dict)
     runtime_metadata: dict[str, object] = field(default_factory=dict)
     churn: dict[str, object] = field(default_factory=dict)
     duration_seconds: float | None = None
     usage_snapshots: tuple[dict[str, int], ...] = ()
+    coverage: tuple[dict[str, str], ...] = ()
+    finding_dispositions: tuple[dict[str, str], ...] = ()
 
 
 class ReviewerClient(Protocol):
@@ -164,6 +203,8 @@ def run_reviews(
                 result.churn,
                 result.duration_seconds,
                 result.usage_snapshots,
+                tuple(dict(item) for item in result.coverage if isinstance(item, dict)),
+                tuple(dict(item) for item in result.finding_dispositions if isinstance(item, dict)),
             )
         except Exception:  # Reviewer failure is advisory and cannot block the transaction.
             result = ReviewerResult(selection.reviewer, "Reviewer failed; primary review continues.", failed=True)
@@ -192,7 +233,8 @@ def mandatory_findings(result: ReviewerResult) -> tuple[dict[str, str], ...] | N
     """Return validated mandatory output, never advice-shaped pseudo-evidence."""
     if result.failed or result.contract_version != MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION:
         return None
-    if not isinstance(result.findings, tuple) or len(result.findings) > 64:
+    finding_limit = 12 if result.reviewer in {"quality", "security"} else 64
+    if not isinstance(result.findings, tuple) or len(result.findings) > finding_limit:
         return None
     normalized: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -208,6 +250,65 @@ def mandatory_findings(result: ReviewerResult) -> tuple[dict[str, str], ...] | N
         seen.add(finding["id"])
         normalized.append({key: redact_diagnostic(value, limit=240) for key, value in finding.items()})
     return tuple(normalized)
+
+
+def mandatory_coverage_surfaces(reviewer: str, delivery_role: str) -> tuple[str, ...]:
+    """Return the host-owned complete impact checklist for one assurance role."""
+    return MANDATORY_COVERAGE_SURFACES.get(delivery_role, {}).get(reviewer, ())
+
+
+def mandatory_assessment(
+    result: ReviewerResult,
+    *,
+    delivery_role: str,
+    prior_finding_ids: tuple[str, ...],
+) -> tuple[tuple[dict[str, str], ...], tuple[dict[str, str], ...], tuple[dict[str, str], ...]] | None:
+    """Validate complete impact coverage and explicit prior-finding closure.
+
+    A syntactically valid list of findings is insufficient for mandatory
+    assurance.  Each reviewer must cover every host-owned impact surface and
+    explicitly reassess every still-open finding previously raised by that
+    same independent role.
+    """
+    findings = mandatory_findings(result)
+    required_surfaces = mandatory_coverage_surfaces(result.reviewer, delivery_role)
+    if findings is None or not required_surfaces:
+        return None
+    coverage = result.coverage
+    dispositions = result.finding_dispositions
+    if (
+        not isinstance(coverage, tuple)
+        or len(coverage) != len(required_surfaces)
+        or any(not isinstance(item, dict) or set(item) != MANDATORY_COVERAGE_FIELDS for item in coverage)
+        or any(
+            item["surface"] not in required_surfaces
+            or item["status"] not in {"REVIEWED", "NOT_APPLICABLE"}
+            or not isinstance(item["evidence_ref"], str) or not item["evidence_ref"].strip()
+            or len(item["evidence_ref"]) > 240
+            for item in coverage
+        )
+        or {item["surface"] for item in coverage} != set(required_surfaces)
+    ):
+        return None
+    if (
+        not isinstance(dispositions, tuple)
+        or len(dispositions) != len(prior_finding_ids)
+        or any(not isinstance(item, dict) or set(item) != MANDATORY_DISPOSITION_FIELDS for item in dispositions)
+        or any(
+            item["finding_id"] not in prior_finding_ids
+            or item["disposition"] not in {"RESOLVED", "OPEN"}
+            or not isinstance(item["evidence_ref"], str) or not item["evidence_ref"].strip()
+            or len(item["evidence_ref"]) > 240
+            for item in dispositions
+        )
+        or {item["finding_id"] for item in dispositions} != set(prior_finding_ids)
+    ):
+        return None
+    return (
+        findings,
+        tuple({key: redact_diagnostic(value, limit=240) for key, value in item.items()} for item in coverage),
+        tuple({key: redact_diagnostic(value, limit=240) for key, value in item.items()} for item in dispositions),
+    )
 
 
 def records_for_storage(selections: tuple[ReviewerSelection, ...], results: tuple[ReviewerResult, ...]) -> tuple[dict[str, object], ...]:

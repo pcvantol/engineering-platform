@@ -1265,6 +1265,24 @@ def _format_assurance_reviews(state: TransactionState) -> tuple[str, ...]:
             f"  - Invocation ID: `{review.get('invocation_id', 'UNAVAILABLE')}`",
             f"  - Finding Count: `{len(findings)}`",
         ))
+        coverage = review.get("coverage", [])
+        if isinstance(coverage, list):
+            lines.append(f"  - Integral Coverage Count: `{len(coverage)}`")
+            for item in coverage:
+                if isinstance(item, dict):
+                    lines.append(
+                        f"    - `{item.get('surface', 'UNAVAILABLE')}`: "
+                        f"`{item.get('status', 'UNAVAILABLE')}` — {item.get('evidence_ref', 'UNAVAILABLE')}"
+                    )
+        dispositions = review.get("finding_dispositions", [])
+        if isinstance(dispositions, list):
+            lines.append(f"  - Prior Finding Reassessments: `{len(dispositions)}`")
+            for item in dispositions:
+                if isinstance(item, dict):
+                    lines.append(
+                        f"    - `{item.get('finding_id', 'UNAVAILABLE')}`: "
+                        f"`{item.get('disposition', 'UNAVAILABLE')}` — {item.get('evidence_ref', 'UNAVAILABLE')}"
+                    )
         for finding in findings:
             if not isinstance(finding, dict):
                 continue

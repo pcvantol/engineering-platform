@@ -40,6 +40,16 @@ hosted checks and finalization; a new SHA, phase, resume or PR does not reset
 it. The Console projects the same stored review identities and repair rounds
 for live and historical runs.
 
+Mandatory assurance contract `2.0` makes each wave integral. The host supplies
+a role-specific impact matrix and the same reviewer's complete still-open
+finding ledger. A valid result covers every required impact surface, explicitly
+reassesses every prior finding ID and reports all newly discovered findings.
+Missing coverage or dispositions is `UNRESOLVED`. Resolution is finding-specific
+and evidence-bound; a broad later PASS cannot erase earlier blockers. Repair
+receives the complete cross-review unresolved ledger and must reassess the
+whole branch against its base. See
+[Integral assurance and repair contract v2](INTEGRAL_ASSURANCE_REPAIR_V2.md).
+
 The immutable profile lists repository, remote, upstream, clean-worktree,
 branch, workspace authorization, host and capability qualification, providers,
 datastore, active-lease and Producer Contract requirements. Facts are observed

@@ -130,6 +130,16 @@ An open Finalization PR's repository handoff records say
 `FINALIZATION_PR_OPEN` and `FINALIZATION_PENDING`; only the host's terminal
 merge and cleanup readback may assert completed delivery.
 
+For new mandatory assurance, output contract `2.0` also requires complete
+host-owned impact coverage and an explicit disposition for every earlier open
+finding raised by the same reviewer. Missing coverage or a missing prior
+finding disposition is unresolved evidence. The host appends resolution
+evidence per finding; it never treats an undifferentiated later PASS as closure
+of the historical ledger. Any repair receives all still-open blockers and the
+complete role-specific impact matrix. The run-wide three-round ceiling remains
+the fail-closed safety boundary described in the
+[integral assurance contract](INTEGRAL_ASSURANCE_REPAIR_V2.md).
+
 Before an implementation pull request exists, local repository validation has
 its own independent, three-attempt repair budget. If the implementation agent
 returns `FAILED` only after the host has verified a clean transaction branch

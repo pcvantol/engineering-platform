@@ -458,13 +458,16 @@ class TransactionState:
             raise StateError("checkpoint assurance profile is invalid")
         review_fields = {"reviewer", "status", "candidate_sha", "profile_digest", "invocation_id", "findings"}
         current_review_fields = review_fields | {"contract_version", "started_at", "completed_at"}
+        integral_review_fields = current_review_fields | {"coverage", "finding_dispositions"}
         finding_fields = {"id", "fingerprint", "category", "criterion", "observation", "severity", "confidence", "blocking", "disposition"}
         current_finding_fields = finding_fields | {"evidence_ref"}
+        coverage_fields = {"surface", "status", "evidence_ref"}
+        finding_disposition_fields = {"finding_id", "disposition", "evidence_ref"}
         if (
             not isinstance(state.assurance_reviews, tuple)
             or len(state.assurance_reviews) > 16
             or any(
-                not isinstance(review, dict) or set(review) not in (review_fields, current_review_fields)
+                not isinstance(review, dict) or set(review) not in (review_fields, current_review_fields, integral_review_fields)
                 or review.get("reviewer") not in {"quality", "security"}
                 or review.get("status") not in {"PASS", "FAIL", "UNRESOLVED"}
                 or not isinstance(review.get("candidate_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", review["candidate_sha"])
@@ -485,6 +488,35 @@ class TransactionState:
                     review.get("contract_version") != "1.0"
                     or not isinstance(review.get("started_at"), str)
                     or not isinstance(review.get("completed_at"), str)
+                ))
+                or (set(review) == integral_review_fields and (
+                    review.get("contract_version") != "2.0"
+                    or not isinstance(review.get("started_at"), str)
+                    or not isinstance(review.get("completed_at"), str)
+                    or not isinstance(review.get("coverage"), list)
+                    or not 1 <= len(review["coverage"]) <= 16
+                    or any(
+                        not isinstance(item, dict) or set(item) != coverage_fields
+                        or item.get("status") not in {"REVIEWED", "NOT_APPLICABLE"}
+                        or any(
+                            not isinstance(value, str) or not value or len(value) > 240
+                            or value != redact_diagnostic(value, limit=240)
+                            for value in item.values()
+                        )
+                        for item in review["coverage"]
+                    )
+                    or not isinstance(review.get("finding_dispositions"), list)
+                    or len(review["finding_dispositions"]) > 64
+                    or any(
+                        not isinstance(item, dict) or set(item) != finding_disposition_fields
+                        or item.get("disposition") not in {"RESOLVED", "OPEN"}
+                        or any(
+                            not isinstance(value, str) or not value or len(value) > 240
+                            or value != redact_diagnostic(value, limit=240)
+                            for value in item.values()
+                        )
+                        for item in review["finding_dispositions"]
+                    )
                 ))
                 for review in state.assurance_reviews
             )

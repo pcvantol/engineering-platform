@@ -3679,7 +3679,9 @@ test.describe("Engineering Status browser smoke", () => {
             timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL_AGENT", duration_ms: 1000, outcome: "ACTIVE" }] },
             quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }],
             assurance_reviews: [
-              { reviewer: "quality", status: "PASS", findings: [] },
+              { reviewer: "quality", status: "PASS", findings: [],
+                coverage: [{ surface: "service_lifecycle", status: "REVIEWED", evidence_ref: "service.py" }],
+                finding_dispositions: [{ finding_id: "Q-001", disposition: "RESOLVED", evidence_ref: "test_service.py" }] },
               { reviewer: "security", status: "FAIL", findings: [{ observation: "Beveiligingsbevinding." }] },
             ] },
         ],
@@ -3701,6 +3703,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(modal.locator(".lifecycle-detail-modal__assurance-status--passed")).toHaveText("✓");
     await expect(modal.locator(".lifecycle-detail-modal__assurance-status--failed")).toHaveText("×");
+    await expect(modal).toContainText("Impactvlakken beoordeeld: 1 · Eerdere bevindingen herbeoordeeld: 1");
     await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
     await expect(modal.locator(".lifecycle-detail-modal__quality-evidence .lifecycle-detail-modal__phase-list span").first()).toHaveCSS("text-align", "start");
