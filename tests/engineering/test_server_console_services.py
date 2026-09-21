@@ -165,13 +165,13 @@ class DashboardStatusTest(unittest.TestCase):
             ("configuration.lease_timeout", "configuration.seconds_90"),
             ("configuration.github_retry_backoff", "configuration.github_retry_backoff_value"),
             ("configuration.timeout_policy", None),
-            ("configuration.timeout.specialist_review", "configuration.minutes_5"),
-            ("configuration.timeout.implementation", "configuration.minutes_15"),
-            ("configuration.timeout.local_repository_validation", "configuration.minutes_15"),
-            ("configuration.timeout.autonomous_quality_control", "configuration.minutes_10"),
-            ("configuration.timeout.repair", "configuration.minutes_15"),
-            ("configuration.timeout.finalization", "configuration.minutes_15"),
-            ("configuration.timeout.end_reconciliation", "configuration.minutes_10"),
+            ("configuration.timeout.specialist_review", "configuration.timeout_5_max"),
+            ("configuration.timeout.implementation", "configuration.timeout_15_idle_45_max"),
+            ("configuration.timeout.local_repository_validation", "configuration.timeout_15_idle_45_max"),
+            ("configuration.timeout.autonomous_quality_control", "configuration.timeout_10_idle_30_max"),
+            ("configuration.timeout.repair", "configuration.timeout_15_idle_45_max"),
+            ("configuration.timeout.finalization", "configuration.timeout_15_idle_45_max"),
+            ("configuration.timeout.end_reconciliation", "configuration.timeout_10_idle_30_max"),
         ):
             self.assertIn(f'data-i18n="{key}"', page)
             if value is not None:

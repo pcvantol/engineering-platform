@@ -333,6 +333,25 @@ class DeadlineFakeAgent(FakeAgent):
         raise CodexHandoffTimeout("test finalization hand-off timeout")
 
 
+class ProgressAwareDeadlineFakeAgent(DeadlineFakeAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.progress_callback: object | None = None
+        self.deadline_observations: list[bool] = []
+
+    def set_deadline_progress_callback(self, callback: object) -> None:
+        self.progress_callback = callback
+
+    def invoke(self, root: Path, prompt: str) -> AgentResult:
+        assert callable(self.deadline_callback)
+        assert callable(self.progress_callback)
+        self.deadline_observations.append(self.deadline_callback())
+        self.progress_callback()
+        self.deadline_observations.append(self.deadline_callback())
+        self.deadline_observations.append(self.deadline_callback())
+        raise CodexHandoffTimeout("test progress-aware timeout")
+
+
 class LeaseAwareDeadlineAgent(DeadlineFakeAgent):
     def __init__(self, run_id: str) -> None:
         super().__init__()
@@ -4843,6 +4862,32 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn(call(4321, signal.SIGTERM), killpg.call_args_list)
         self.assertFalse(process.terminated)
 
+    @patch("engineering_platform.execution_host.subprocess.Popen")
+    def test_codex_client_advances_deadline_only_for_concrete_progress(self, popen: object) -> None:
+        class Process:
+            pid = 1234
+            stdout = iter((
+                '{"type":"item.updated","item":{"type":"reasoning","text":"still thinking"}}\n',
+                '{"type":"item.started","item":{"type":"command_execution","id":"c1","command":"pytest"}}\n',
+                '{"type":"item.completed","item":{"type":"command_execution","id":"c1"}}\n',
+                '{"type":"item.updated","item":{"type":"file_change"}}\n',
+                '{"type":"item.completed","item":{"type":"web_search"}}\n',
+                '{"type":"item.completed","item":{"type":"mcp_tool_call"}}\n',
+                '{"type":"item.completed","item":{"type":"agent_message"}}\n',
+            ))
+
+            def wait(self) -> int:
+                return 0
+
+        popen.return_value = Process()
+        observations: list[str] = []
+        client = CodexCliClient()
+        client.set_deadline_progress_callback(lambda: observations.append("progress"))
+
+        client._run_invocation(("codex", "exec", "--json"), self.root)
+
+        self.assertEqual(observations, ["progress"] * 6)
+
     def test_live_status_retains_only_terminal_reviewers_after_capability_review(self) -> None:
         state = TransactionState(
             "genesis-context",
@@ -5967,8 +6012,29 @@ class LocalAgentRunnerTest(unittest.TestCase):
             runner._invoke_agent_with_timing(state, "bounded implementation")
 
         self.assertEqual(raised.exception.terminal_condition, "provider_invocation_timeout")
-        self.assertIn("15-minute", str(raised.exception))
+        self.assertIn("15 minutes without observable progress", str(raised.exception))
         self.assertIsNone(agent.deadline_callback)
+
+    def test_implementation_progress_resets_inactivity_but_not_absolute_maximum(self) -> None:
+        state = TransactionState(
+            "implementation-progress-timeout", "pcvantol/djconnect", str(self.prompt),
+            "EXECUTE_AGENT", branch="codex/implementation-progress-timeout", owner_authorized=True,
+        )
+        agent = ProgressAwareDeadlineFakeAgent()
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None,
+        )
+
+        with patch(
+            "engineering_platform.execution_host.time.monotonic",
+            side_effect=(0, 899, 899, 1000, 2700),
+        ):
+            with self.assertRaises(CodexInvocationError):
+                runner._invoke_agent_with_timing(state, "bounded implementation")
+
+        self.assertEqual(agent.deadline_observations, [False, False, True])
+        self.assertIsNone(agent.deadline_callback)
+        self.assertIsNone(agent.progress_callback)
 
     def test_finalization_pr_behind_main_enters_same_bounded_repair_loop(self) -> None:
         state = TransactionState(

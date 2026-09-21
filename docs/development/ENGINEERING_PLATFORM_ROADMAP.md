@@ -1,5 +1,14 @@
 # Engineering Platform Roadmap
 
+## Progress-aware provider deadlines V2
+
+`PROGRESS_AWARE_PROVIDER_DEADLINES_V2` replaces the single wall-clock deadline
+for primary provider actions with an immutable inactivity boundary plus an
+absolute maximum. Concrete command, workspace, tool, web and result progress
+may extend productive work; reasoning text cannot, and the hard maximum never
+resets. The Operations Console projects both limits. See
+[the owning design](../engineering/PROGRESS_AWARE_PROVIDER_DEADLINES_V2.md).
+
 ## Release and operational installation lifecycle V1 — active coordinated plan
 
 Repository evidence recorded on 2026-09-09 reads `origin/main` as
