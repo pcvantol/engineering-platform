@@ -1777,18 +1777,31 @@ class EngineeringRunner:
             command_callback(command_boundary)
         invocation_started = datetime.now(timezone.utc).isoformat()
         set_handoff_deadline = getattr(self.agent, "set_handoff_deadline_callback", None)
+        set_deadline_progress = getattr(self.agent, "set_deadline_progress_callback", None)
         deadline_started = time.monotonic()
+        deadline_last_progress = deadline_started
         timeout = agent_timeout(
             phase=state.phase, repair=repair, quality=quality,
             local_validation=local_validation,
         )
-        if callable(set_handoff_deadline):
-            # Every managed provider action has a host-owned maximum.  The
-            # client terminates the whole invocation process group when it
-            # expires, so an inherited stdout pipe cannot strand the worker.
-            set_handoff_deadline(
-                lambda: time.monotonic() - deadline_started >= timeout.seconds
+        def record_deadline_progress() -> None:
+            nonlocal deadline_last_progress
+            deadline_last_progress = time.monotonic()
+        def provider_deadline_expired() -> bool:
+            now = time.monotonic()
+            return (
+                now - deadline_started >= timeout.maximum_seconds
+                or now - deadline_last_progress >= timeout.seconds
             )
+        if callable(set_deadline_progress):
+            set_deadline_progress(record_deadline_progress)
+        if callable(set_handoff_deadline):
+            # Productive work may continue beyond the inactivity boundary,
+            # while the immutable absolute maximum still caps autonomous
+            # authority.  The client terminates the whole invocation process
+            # group when either boundary expires, so an inherited stdout pipe
+            # cannot strand the worker.
+            set_handoff_deadline(provider_deadline_expired)
         prior_validation_run_id = os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID")
         os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = state.run_id
         try:
@@ -1829,8 +1842,10 @@ class EngineeringRunner:
             if repair or state.transaction_kind == "FINALIZATION" or state.phase.upper() == "FINALIZE_AGENT":
                 raise
             raise CodexInvocationError(
-                f"Provider action exceeded the {timeout.seconds // 60}-minute host-owned deadline.",
-                "The provider invocation was stopped after its configured workflow deadline.",
+                "Provider action exceeded its progress-aware host-owned deadline "
+                f"({timeout.seconds // 60} minutes without observable progress or "
+                f"{timeout.maximum_seconds // 60} minutes total).",
+                "The provider invocation was stopped after its configured inactivity or absolute workflow boundary.",
                 next_action="inspect_codex_cli",
                 terminal_condition="provider_invocation_timeout",
             ) from error
@@ -1907,6 +1922,8 @@ class EngineeringRunner:
                 process_callback(None)
             if callable(set_handoff_deadline):
                 set_handoff_deadline(None)
+            if callable(set_deadline_progress):
+                set_deadline_progress(None)
         durable_recovery = self._recovery_state(state.run_id)
         replacement_id = (
             durable_recovery.get("replacement_invocation_id")

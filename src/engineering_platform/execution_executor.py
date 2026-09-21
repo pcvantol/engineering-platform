@@ -408,6 +408,7 @@ class CodexCliClient:
         self._command_callback: Callable[..., None] | None = None
         self._workspace_progress_callback: Callable[[dict[str, int]], None] | None = None
         self._handoff_deadline_callback: Callable[[], bool] | None = None
+        self._deadline_progress_callback: Callable[[], None] | None = None
         # A process boundary remains published until this client has observed
         # the owned session disappear.  A callback failure must not make an
         # otherwise live provider look as though it has already exited.
@@ -479,6 +480,15 @@ class CodexCliClient:
     def set_handoff_deadline_callback(self, callback: Callable[[], bool] | None) -> None:
         """Set a host-owned deadline check for an externally observable hand-off."""
         self._handoff_deadline_callback = callback
+
+    def set_deadline_progress_callback(self, callback: Callable[[], None] | None) -> None:
+        """Set the transient sink that advances a progress-aware deadline.
+
+        Only bounded provider events call this sink. Reasoning text is
+        intentionally excluded, so repeatedly emitting thoughts cannot keep
+        an invocation alive. The host still applies an absolute maximum.
+        """
+        self._deadline_progress_callback = callback
 
     def available(self) -> bool:
         return self.provider.command("--version").returncode == 0
@@ -855,6 +865,7 @@ class CodexCliClient:
             and self._runtime_metadata_callback is None
             and self._workspace_progress_callback is None
             and self._handoff_deadline_callback is None
+            and self._deadline_progress_callback is None
         ):
             return self.provider.invoke(root, command, environment=environment)
         process = self.provider.spawn_invocation(root, command, environment=environment)
@@ -902,6 +913,8 @@ class CodexCliClient:
                     self.last_execution_metadata.update(progress)
                     if progress != last_workspace_progress:
                         self._workspace_progress_callback(dict(self.last_execution_metadata))
+                        if self._deadline_progress_callback is not None:
+                            self._deadline_progress_callback()
                         last_workspace_progress = progress
                 observed_metadata = extract_codex_runtime_metadata(line)
                 if len(observed_metadata) > 1:
@@ -914,6 +927,17 @@ class CodexCliClient:
                 except json.JSONDecodeError:
                     activity = None
                     event = None
+                if (
+                    self._deadline_progress_callback is not None
+                    and isinstance(event, dict)
+                    and event.get("type") in {"item.started", "item.updated", "item.completed"}
+                    and isinstance(event.get("item"), dict)
+                    and event["item"].get("type") in {
+                        "command_execution", "file_change", "web_search",
+                        "mcp_tool_call", "agent_message",
+                    }
+                ):
+                    self._deadline_progress_callback()
                 if activity is not None and self._activity_callback is not None:
                     self._activity_callback(activity)
                 transient_action = project_codex_live_action_name(event)
