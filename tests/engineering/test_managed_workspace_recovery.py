@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -8,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from engineering_platform import managed_workspace_recovery
+from engineering_platform import managed_workspace_recovery, platform_admin, server
 from engineering_platform.local_repository_binding import LocalRepositoryBinding
 
 
@@ -125,6 +127,62 @@ class ManagedWorkspaceRecoveryTests(unittest.TestCase):
                     expected_branch="forge/different-transaction",
                     expected_head=self.head, backup_root=self.base / "backups",
                 )
+
+    def test_server_cli_dispatches_recovery_and_maps_refusals(self) -> None:
+        data_root = self.base / "server-data"
+        backup_root = self.base / "backups"
+        arguments = [
+            "recover-managed-workspace", "--data-root", str(data_root),
+            "--project-id", "forge", "--repository-id", "forge",
+            "--operation-id", "recover-mission3-r18-0005",
+            "--expected-branch", "forge/mission-0014-installed-health",
+            "--expected-head", self.head, "--backup-root", str(backup_root),
+        ]
+        with (
+            patch.object(server, "status", return_value={"running": False}),
+            patch.object(server, "initialize"),
+            patch.object(platform_admin, "require_installation_owner"),
+            patch.object(server.storage, "sqlite_connection") as connection_factory,
+            patch.object(managed_workspace_recovery, "recover",
+                         return_value={"result": "RECOVERED"}) as recover,
+        ):
+            connection = object()
+            connection_factory.return_value.__enter__.return_value = connection
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(arguments), 0)
+            recover.assert_called_once_with(
+                connection=connection, data_root=data_root, project_id="forge",
+                repository_id="forge", operation_id="recover-mission3-r18-0005",
+                expected_branch="forge/mission-0014-installed-health",
+                expected_head=self.head, backup_root=backup_root,
+            )
+
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main([
+                "recover-managed-workspace", "--data-root", str(data_root),
+            ]), 2)
+
+        with (
+            patch.object(server, "status", return_value={"running": True}),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(server.main(arguments), 2)
+
+        with (
+            patch.object(server, "status", return_value={"running": False}),
+            patch.object(server, "initialize"),
+            patch.object(platform_admin, "require_installation_owner"),
+            patch.object(server.storage, "sqlite_connection") as connection_factory,
+            patch.object(
+                managed_workspace_recovery, "recover",
+                side_effect=managed_workspace_recovery.ManagedWorkspaceRecoveryError(
+                    "MANAGED_WORKSPACE_RECOVERY_EXPECTATION_MISMATCH"
+                ),
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            connection_factory.return_value.__enter__.return_value = object()
+            self.assertEqual(server.main(arguments), 2)
 
 
 if __name__ == "__main__":
