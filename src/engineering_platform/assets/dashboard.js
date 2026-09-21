@@ -8021,11 +8021,13 @@ function promptHistoryReportReloadButton() {
   let button = $("promptHistoryReportReload");
   if (button) return button;
   button = document.createElement("button");
-  button.className = "dashboard-action dashboard-action--primary report-analysis-retry";
+  button.className = "dashboard-action report-view-modal__reload report-analysis-retry";
   button.id = "promptHistoryReportReload";
   button.type = "button";
   button.hidden = true;
-  button.textContent = t("history.retry_report_load");
+  button.textContent = "↻";
+  button.setAttribute("aria-label", t("history.retry_report_load"));
+  button.title = t("history.retry_report_load");
   button.addEventListener("click", () => { void reloadPromptHistoryReport(); });
   $("promptHistoryReportDownload").before(button);
   return button;

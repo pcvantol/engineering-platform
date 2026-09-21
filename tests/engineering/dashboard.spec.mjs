@@ -2117,7 +2117,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Visible words must come from t(). The remaining literals are deliberate
     // control glyphs, empty cleanup values, or the neutral empty-table mark.
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
-      "", "⧉", "↑", "i", "×", "↺", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄", "↗",
+      "", "⧉", "↑", "i", "×", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄", "↗",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
     // Dashboard feedback must remain inside the shared modal system.  A
@@ -10560,6 +10560,11 @@ test.describe("Engineering Status browser smoke", () => {
       .toContainText(DASHBOARD_MESSAGES.nl["history.report_unavailable"]);
     const retry = page.locator("#promptHistoryReportReload");
     await expect(retry).toBeVisible();
+    await expect(retry).toHaveText("↻");
+    await expect(retry).toHaveAttribute("aria-label", "Rapport opnieuw laden");
+    await expect(retry).toHaveAttribute("title", "Rapport opnieuw laden");
+    await expect(retry).toHaveCSS("width", "32px");
+    await expect(retry).toHaveCSS("height", "32px");
     await retry.click();
     await expect(page.locator("#promptHistoryReportContent")).toContainText("Ongewijzigd terminal bewijs.");
     await expect(retry).toBeHidden();
