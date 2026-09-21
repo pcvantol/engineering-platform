@@ -63,7 +63,11 @@ def main() -> int:
         state["state"] = "COMPLETED"
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
 
-    plan_digest = _digest(product + ":plan")
+    plan_version = ""
+    plan_version_path = root / "preview-plan-version"
+    if plan_version_path.exists():
+        plan_version = ":" + plan_version_path.read_text(encoding="utf-8").strip()
+    plan_digest = _digest(product + ":plan" + plan_version)
     backup_digest = _digest(product + ":backup")
     verification_digest = _digest(product + ":verification")
     target = {
@@ -85,13 +89,14 @@ def main() -> int:
     }
     if state["state"] in {"VERIFIED", "COMPLETED"} and product == "forge":
         details["verification_digest"] = verification_digest
+    preview_blocked = action == "preview" and (root / "preview-blocked").exists()
     envelope = {
         "contract_version": "operational-reset-v1",
         "product": product,
         "command": action,
         "operation_id": operation_id or state.get("operation_id"),
-        "state": state["state"],
-        "allowed": True,
+        "state": "BLOCKED" if preview_blocked else state["state"],
+        "allowed": not preview_blocked,
         "target": target,
         "profile": (
             "forge-operational-history-v1" if product == "forge"
@@ -110,7 +115,7 @@ def main() -> int:
             }
         ),
         "counts": {"missions": 0, "provider_invocations": 0, "submissions": 0},
-        "blockers": [],
+        "blockers": ["TARGET_WRITER_ACTIVE"] if preview_blocked else [],
         "integrity": {"quick_check": "ok", "foreign_key_errors": 0},
         "preserved_bindings_digest": _digest(product + ":bindings"),
         "details": details,

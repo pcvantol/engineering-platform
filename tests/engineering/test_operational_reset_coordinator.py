@@ -233,6 +233,32 @@ class OperationalResetCoordinatorTests(unittest.TestCase):
         for root in (self.forge_root, self.ep_root):
             self.assertEqual(["preview"], [item["action"] for item in self.command_log(root)])
 
+    def test_blocked_preview_can_refresh_same_receipt_before_maintenance(self) -> None:
+        (self.ep_root / "preview-blocked").parent.mkdir(parents=True, exist_ok=True)
+        (self.ep_root / "preview-blocked").touch()
+        first = self.coordinator.preview(self.config)
+        first_ep_plan = first["products"]["engineering-platform"]["plan_digest"]
+        self.assertEqual("BLOCKED", first["products"]["engineering-platform"]["state"])
+
+        (self.ep_root / "preview-blocked").unlink()
+        (self.ep_root / "preview-plan-version").write_text("quiesced", encoding="utf-8")
+        refreshed = self.coordinator.preview(self.config)
+
+        self.assertEqual("BOTH_PREVIEWED", refreshed["state"])
+        self.assertEqual("ALLOWED", refreshed["products"]["engineering-platform"]["state"])
+        self.assertNotEqual(
+            first_ep_plan, refreshed["products"]["engineering-platform"]["plan_digest"],
+        )
+        self.assertEqual(
+            ["preview", "preview"],
+            [item["action"] for item in self.command_log(self.ep_root)],
+        )
+        self.assertIn(
+            "both exact owning plans preview refreshed",
+            [item["event"] for item in self.store.load()["events"]],
+        )
+        self.assertEqual("BACKUPS_VERIFIED", self.coordinator.prepare()["state"])
+
     def test_target_identity_change_is_rejected_during_revalidation(self) -> None:
         self.coordinator.preview(self.config)
         self.coordinator.prepare()
