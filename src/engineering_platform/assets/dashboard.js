@@ -831,12 +831,12 @@ function reviewerPresentationState(status = {}) {
 }
 function activeReviewerAgents(items, executionStatus = {}) {
   const reviewActive = String(executionStatus?.current_phase || "").toUpperCase() === "CAPABILITY_REVIEW";
-  // A later phase may retain only a fully successful review as compact
-  // historical evidence. Running, failed or incomplete projections stay
-  // phase-scoped so they can never look like live reviewer work.
-  const completedReview = Array.isArray(items) && items.length > 0
-    && items.every((agent) => String(agent?.status || "").toLowerCase() === "completed");
-  const agents = (reviewActive || completedReview) && Array.isArray(items) ? items : [];
+  // A later phase may retain a wholly terminal review as compact historical
+  // evidence. Running or incomplete projections stay phase-scoped so they can
+  // never look like live reviewer work.
+  const terminalReview = Array.isArray(items) && items.length > 0
+    && items.every((agent) => ["completed", "failed"].includes(String(agent?.status || "").toLowerCase()));
+  const agents = (reviewActive || terminalReview) && Array.isArray(items) ? items : [];
   let card = $("activeReviewerAgents");
   if (!card) {
     card = document.createElement("section");
@@ -871,19 +871,23 @@ function activeReviewerAgents(items, executionStatus = {}) {
       indicator = document.createElement("span"), rawStatus = String(agent?.status || "").toLowerCase(),
       status = rawStatus === "running" && presentation !== "active" ? presentation : rawStatus;
     const isRunning = status === "running";
-    const isCompleted = ["completed", "uitgevoerd"].includes(status);
+    const isCompleted = ["completed", "uitgevoerd"].includes(status), isFailed = status === "failed";
     row.className = "reviewer-agent";
     header.className = "reviewer-agent__header";
     name.className = "reviewer-agent__name";
     meta.className = "reviewer-agent__meta";
     name.textContent = reviewerLabel(agent.reviewer);
     meta.textContent = `${reviewerCapabilityLabel(agent.capability || "ENGINEERING")} · ${reviewerStatusLabel(status || "selected")}`;
-    if (isRunning || isCompleted) {
-      indicator.className = `reviewer-agent__status reviewer-agent__status--${isRunning ? "running" : "completed"}`;
+    if (isRunning || isCompleted || isFailed) {
+      const tone = isRunning ? "running" : isFailed ? "failed" : "completed";
+      indicator.className = `reviewer-agent__status reviewer-agent__status--${tone}`;
       indicator.setAttribute("role", "status");
-      indicator.setAttribute("aria-label", isRunning ? t("ui.reviewer_status_running") : t("ui.reviewer_status_completed"));
+      indicator.setAttribute("aria-label", isRunning
+        ? t("ui.reviewer_status_running")
+        : isFailed ? reviewerStatusLabel("failed") : t("ui.reviewer_status_completed"));
       indicator.setAttribute("title", indicator.getAttribute("aria-label"));
       if (isCompleted) indicator.textContent = "✓";
+      if (isFailed) indicator.textContent = "×";
     }
     header.append(name, indicator);
     row.append(header, meta);
@@ -8543,19 +8547,41 @@ function promptDetailRecommendationHandoff(handoff) {
 }
 function promptDetailReviewersSection(reviewers, { wide = true } = {}) {
   if (!reviewers.length) return null;
-  const fields = reviewers.map((reviewer) =>
-    detailField(
-      reviewerLabel(reviewer.reviewer, t("detail.specialist_review")),
-      t("detail.capability") + ": " +
-        reviewerCapabilityLabel(reviewer.capability || "ENGINEERING") + " · " +
-        reviewerStatusLabel(reviewer.status || "completed") + " · " +
-        t("detail.accepted_recommendations") + ": " +
-        (Number(reviewer.accepted_recommendations) || 0) + "\n" +
-        t("detail.selected_because") + ": " +
+  const fields = reviewers.map((reviewer) => {
+    const rawStatus = String(reviewer.status || "completed").toLowerCase();
+    const failed = rawStatus === "failed", completed = ["completed", "uitgevoerd"].includes(rawStatus);
+    const field = document.createElement("article"), heading = document.createElement("h4"),
+      statusLabel = document.createElement("span"), statusRow = document.createElement("span"),
+      indicator = document.createElement("span"), statusText = document.createElement("span");
+    field.className = "field prompt-detail-reviewer";
+    heading.textContent = reviewerLabel(reviewer.reviewer, t("detail.specialist_review"));
+    statusLabel.className = "label";
+    statusLabel.textContent = t("detail.prompt_status");
+    statusRow.className = "prompt-detail-reviewer__status";
+    indicator.className = "prompt-detail-reviewer__status-icon prompt-detail-reviewer__status-icon--"
+      + (failed ? "failed" : completed ? "completed" : "neutral");
+    indicator.setAttribute("aria-hidden", "true");
+    indicator.textContent = failed ? "×" : completed ? "✓" : "•";
+    statusText.className = "prompt-detail-reviewer__status-text";
+    statusText.textContent = reviewerCapabilityLabel(reviewer.capability || "ENGINEERING")
+      + " · " + reviewerStatusLabel(rawStatus);
+    statusRow.append(indicator, statusText);
+    field.append(
+      heading,
+      statusLabel,
+      statusRow,
+      detailField(
+        t("detail.selected_because"),
         String(reviewer.selected_because || t("detail.not_recorded")),
-      true,
-    ),
-  );
+        true,
+      ),
+      detailField(
+        t("detail.accepted_recommendations"),
+        String(Number(reviewer.accepted_recommendations) || 0),
+      ),
+    );
+    return field;
+  });
   return promptDetailCard(t("detail.specialist_reviews"), fields, wide, "prompt-detail-card--reviewers");
 }
 function promptDetailAssuranceReviewsSection(reviews) {

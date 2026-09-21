@@ -4793,6 +4793,7 @@ test.describe("Engineering Status browser smoke", () => {
         }]),
         evidence: [{ kind: "VALIDATION", result: "Geslaagd; vereiste documenten zijn bijgewerkt." }],
         reviewers: [
+          { reviewer: "repository_governance", capability: "ENGINEERING", status: "failed", accepted_recommendations: 0, selected_because: "repository-governance objective" },
           { reviewer: "validation", capability: "ENGINEERING", status: "completed", accepted_recommendations: 2, selected_because: "validation-related objective" },
           { reviewer: "documentation", capability: "ENGINEERING", status: "completed", accepted_recommendations: 1, selected_because: "documentation-oriented objective" },
         ],
@@ -4838,6 +4839,12 @@ test.describe("Engineering Status browser smoke", () => {
     const stack = page.locator("#promptHistoryDetailContent .prompt-detail-provider-review-stack");
     const reviewersCard = stack.locator(".prompt-detail-card--reviewers");
     await expect(reviewersCard).toHaveCount(1);
+    const reviewerStatuses = reviewersCard.locator(".prompt-detail-reviewer__status");
+    await expect(reviewerStatuses).toHaveCount(3);
+    await expect(reviewerStatuses.nth(0).locator(".prompt-detail-reviewer__status-text")).toHaveText("Engineering · Mislukt");
+    await expect(reviewerStatuses.nth(0).locator(".prompt-detail-reviewer__status-icon--failed")).toHaveText("×");
+    await expect(reviewerStatuses.nth(1).locator(".prompt-detail-reviewer__status-text")).toHaveText("Engineering · Uitgevoerd");
+    await expect(reviewerStatuses.nth(1).locator(".prompt-detail-reviewer__status-icon--completed")).toHaveText("✓");
     const [stackBounds, reviewerBounds] = await Promise.all([
       stack.boundingBox(), reviewersCard.boundingBox(),
     ]);
@@ -7860,7 +7867,7 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
-  test("keeps a completed specialist review visible as historical run evidence", async ({ page }) => {
+  test("keeps terminal specialist reviews visible as historical run evidence", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: { status: { watcher_state: "WATCHER_IDLE" } },
@@ -7873,7 +7880,9 @@ test.describe("Engineering Status browser smoke", () => {
       { reviewer: "validation", capability: "engineering", status: "running" },
       { reviewer: "documentation", capability: "engineering", status: "running" },
     ];
-    const completedReviewers = runningReviewers.map((reviewer) => ({ ...reviewer, status: "completed" }));
+    const terminalReviewers = runningReviewers.map((reviewer, index) => ({
+      ...reviewer, status: index === 0 ? "failed" : "completed",
+    }));
     for (const current_phase of ["FINALIZE_AGENT", "RECONCILE_AGENT"]) {
       await page.evaluate(({ current_phase, reviewer_agents }) => r({
         watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase,
@@ -7891,9 +7900,10 @@ test.describe("Engineering Status browser smoke", () => {
           hidden: document.querySelector("#activeReviewerAgents")?.hidden,
           reviewers: document.querySelectorAll(".reviewer-agent").length,
           completed: document.querySelectorAll(".reviewer-agent__status--completed").length,
+          failed: document.querySelectorAll(".reviewer-agent__status--failed").length,
         };
-      }, { current_phase, reviewer_agents: completedReviewers });
-      expect(completedProjection).toEqual({ hidden: false, reviewers: 2, completed: 2 });
+      }, { current_phase, reviewer_agents: terminalReviewers });
+      expect(completedProjection).toEqual({ hidden: false, reviewers: 2, completed: 1, failed: 1 });
     }
   });
 

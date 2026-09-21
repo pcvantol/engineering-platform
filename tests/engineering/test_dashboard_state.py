@@ -133,12 +133,13 @@ class DashboardStateTest(unittest.TestCase):
         self.assertIsNone(payload.get("target_branch"))
         self.assertEqual(payload["workspace_preflight"], {})
 
-    def test_status_keeps_only_a_successful_review_as_historical_active_run_evidence(self) -> None:
+    def test_status_keeps_terminal_reviews_as_historical_active_run_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             status = root / ".engineering" / "status"
             status.mkdir(parents=True)
-            completed_reviewers = [
+            terminal_reviewers = [
+                {"reviewer": "repository_governance", "capability": "engineering", "status": "failed"},
                 {"reviewer": "validation", "capability": "engineering", "status": "completed"},
             ]
             (status / "status.json").write_text(json.dumps({}), encoding="utf-8")
@@ -146,7 +147,7 @@ class DashboardStateTest(unittest.TestCase):
                 json.dumps({
                     "run_id": "run-review-history",
                     "phase": "FINALIZE_AGENT",
-                    "reviewer_agents": completed_reviewers,
+                    "reviewer_agents": terminal_reviewers,
                 }),
                 encoding="utf-8",
             )
@@ -157,7 +158,7 @@ class DashboardStateTest(unittest.TestCase):
 
             payload = json.loads(dashboard_state.status(root))
 
-        self.assertEqual(payload["reviewer_agents"], completed_reviewers)
+        self.assertEqual(payload["reviewer_agents"], terminal_reviewers)
 
     def test_status_projects_only_the_persisted_execution_context_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
