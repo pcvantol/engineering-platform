@@ -622,6 +622,52 @@ class OperationalResetCoordinator:
         current["finished"] = envelope.get("state") == "COMPLETED"
 
     @staticmethod
+    def _refresh_preview_product(
+        receipt: dict[str, object], product: str, envelope: Mapping[str, object],
+    ) -> None:
+        """Replace only a pre-maintenance preview while retaining its audit trail."""
+        products = receipt["products"]
+        current = products[product]
+        target = dict(envelope["target"])
+        target_digest = _digest(target)
+        if current.get("target_digest") != target_digest:
+            raise ProductCommandError(product, "preview", "TARGET_CHANGED")
+        for field in (
+            "dataset_generation", "relevant_revision_digest", "preserved_bindings_digest",
+        ):
+            if current.get(field) != envelope.get(field):
+                raise ProductCommandError(product, "preview", field.upper() + "_CHANGED")
+        if (
+            current.get("backup_digest") is not None
+            or current.get("result_digest") is not None
+            or current.get("finished") is not False
+        ):
+            raise ProductCommandError(product, "preview", "PREVIEW_REFRESH_TOO_LATE")
+        request_digest = _find_digest(envelope, "request_digest")
+        current.update({
+            "state": envelope["state"],
+            "plan_digest": envelope["plan_digest"],
+            "request_digest": request_digest,
+            "last_receipt_digest": _digest(envelope),
+        })
+
+    @staticmethod
+    def _preview_refresh_allowed(receipt: Mapping[str, object]) -> bool:
+        milestones = receipt["milestones"]
+        if (
+            receipt.get("state") not in {"BOTH_PREVIEWED", "RECONCILIATION_REQUIRED"}
+            or milestones.get("previewed") is not True
+            or any(value for key, value in milestones.items() if key != "previewed")
+        ):
+            return False
+        products = receipt["products"]
+        return (
+            receipt.get("state") == "RECONCILIATION_REQUIRED"
+            or any(products[product].get("state") in {"BLOCKED", "REVIEW_REQUIRED"}
+                   for product in PRODUCTS)
+        )
+
+    @staticmethod
     def _product_stage(product: str, state: object) -> str:
         if state == "COMPLETED":
             return "finished"
@@ -672,18 +718,32 @@ class OperationalResetCoordinator:
                 self.store.save(receipt)
             elif receipt["configuration_digest"] != _digest(config.payload()):
                 raise CoordinatorError("coordinator ID already binds another request")
-            if receipt["state"] != "DISCOVERED":
+            refresh = self._preview_refresh_allowed(receipt)
+            if receipt["state"] != "DISCOVERED" and not refresh:
                 return self._readback(receipt)
             try:
                 for product in PRODUCTS:
                     envelope = self._invoke(config, receipt, product, "preview")
-                    self._save_observation(receipt, product, "preview", envelope)
+                    if refresh:
+                        self._refresh_preview_product(receipt, product, envelope)
+                        _event(
+                            receipt, str(receipt["state"]),
+                            f"{product} pre-maintenance preview refreshed",
+                            product=product, evidence=envelope,
+                        )
+                        self.store.save(receipt)
+                    else:
+                        self._save_observation(receipt, product, "preview", envelope)
             except ProductCommandError as error:
                 self._mark_failure(receipt, error)
                 raise
             milestones = receipt["milestones"]
             milestones["previewed"] = True
-            _event(receipt, "BOTH_PREVIEWED", "both exact owning plans previewed")
+            _event(
+                receipt, "BOTH_PREVIEWED",
+                "both exact owning plans preview refreshed" if refresh
+                else "both exact owning plans previewed",
+            )
             self.store.save(receipt)
             return self._readback(receipt)
 
