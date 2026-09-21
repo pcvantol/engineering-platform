@@ -12,7 +12,11 @@ import re
 import subprocess
 import time
 
-from .capability_review import MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION, ReviewerResult
+from .capability_review import (
+    MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+    ReviewerResult,
+    mandatory_coverage_surfaces,
+)
 from .execution_models import AgentResult, PullRequestEvidence
 from .validation_profile import control_launcher
 
@@ -254,9 +258,18 @@ class DeterministicQualificationAgent:
             branch=branch, commit_sha=sha, validation_evidence=tuple(outcomes),
         )
     def review(self, _root: Path, selection: object, _objective: str, evidence: object = None) -> ReviewerResult:
+        delivery_role = next(
+            (role for role in ("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION") if f"Delivery role: {role}" in _objective),
+            "IMPLEMENTATION",
+        )
+        reviewer = getattr(selection, "reviewer")
         return ReviewerResult(
-            getattr(selection, "reviewer"), "Deterministic read-only assurance passed.",
+            reviewer, "Deterministic read-only assurance passed.",
             findings=(), contract_version=MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+            coverage=tuple({
+                "surface": surface, "status": "REVIEWED", "evidence_ref": "deterministic qualification",
+            } for surface in mandatory_coverage_surfaces(reviewer, delivery_role)),
+            finding_dispositions=(),
         )
 
 

@@ -72,8 +72,10 @@ from engineering_platform.platform_version import (
     validate_compatibility,
 )
 from engineering_platform.capability_review import (
+    MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
     ReviewerResult,
     ReviewerSelection,
+    mandatory_coverage_surfaces,
     reconciled_recommendations,
     records_for_storage,
     run_reviews,
@@ -95,6 +97,31 @@ from engineering_platform.execution_lease import acquire as acquire_lease, histo
 from engineering_platform.execution_timing import complete_phase, phase_spans, start_phase
 from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
 from engineering_platform.storage import open_storage
+
+
+def mandatory_review_result(
+    reviewer: str, objective: str, *, findings: tuple[dict[str, str], ...] = (),
+    contribution: str = "No blocking finding.",
+) -> ReviewerResult:
+    """Return complete integral assurance evidence for host lifecycle tests."""
+    role = next(
+        (value for value in ("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION") if f"Delivery role: {value}" in objective),
+        "IMPLEMENTATION",
+    )
+    marker, end_marker = "Prior open findings: ", ". Report all concrete new findings"
+    prior: list[dict[str, object]] = []
+    if marker in objective and end_marker in objective:
+        prior = json.loads(objective.split(marker, 1)[1].split(end_marker, 1)[0])
+    return ReviewerResult(
+        reviewer, contribution, findings=findings,
+        contract_version=MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+        coverage=tuple({
+            "surface": surface, "status": "REVIEWED", "evidence_ref": "test evidence",
+        } for surface in mandatory_coverage_surfaces(reviewer, role)),
+        finding_dispositions=tuple({
+            "finding_id": str(item["id"]), "disposition": "RESOLVED", "evidence_ref": "test resolution",
+        } for item in prior),
+    )
 
 
 class FakeRepository:
@@ -223,9 +250,9 @@ class FakeAgent:
     def version(self) -> str:
         return "0.146.0"
 
-    def review(self, _: Path, selection: object, __: str, evidence: object = None) -> ReviewerResult:
+    def review(self, _: Path, selection: object, objective: str, evidence: object = None) -> ReviewerResult:
         """Default post-implementation assurance fixture: clean, read-only pass."""
-        return ReviewerResult(getattr(selection, "reviewer"), "No blocking finding.")
+        return mandatory_review_result(getattr(selection, "reviewer"), objective)
 
 
 class ReviewCapableFakeAgent(FakeAgent):
@@ -234,14 +261,14 @@ class ReviewCapableFakeAgent(FakeAgent):
         self.reviewer_evidence: list[object] = []
 
     def review(
-        self, _: Path, selection: object, __: str, evidence: object = None
+        self, _: Path, selection: object, objective: str, evidence: object = None
     ) -> ReviewerResult:
         self.reviewer_evidence.append(evidence)
-        return ReviewerResult(
-            getattr(selection, "reviewer"),
-            "Reviewer completed the bounded check.",
-            ("DISTINCTIVE_REVIEWER_RECOMMENDATION",),
+        result = mandatory_review_result(
+            getattr(selection, "reviewer"), objective,
+            contribution="Reviewer completed the bounded check.",
         )
+        return replace(result, recommendations=("DISTINCTIVE_REVIEWER_RECOMMENDATION",))
 
 
 class SequencedFakeAgent(FakeAgent):
@@ -3641,6 +3668,143 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertTrue(blocked.terminal)
         self.assertEqual(blocked.next_action, "mandatory_assurance_unresolved")
 
+    def test_mandatory_assurance_requires_complete_integral_impact_coverage(self) -> None:
+        class MissingCoverageReviewer(FakeAgent):
+            def review(self, _: Path, selection: object, __: str, evidence: object = None) -> ReviewerResult:
+                return ReviewerResult(
+                    getattr(selection, "reviewer"), "Incomplete impact review.",
+                    contract_version=MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+                )
+
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            MissingCoverageReviewer(AgentResult("COMPLETE")), lambda _: None,
+        )
+        state = TransactionState(
+            "missing-integral-coverage", "pcvantol/djconnect", str(self.prompt),
+            "EXECUTE_AGENT", branch="main",
+        )
+
+        blocked, _ = runner._run_quality_assurance(
+            state, AgentResult("COMPLETE", "main", commit_sha="a" * 40),
+        )
+
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "mandatory_assurance_unresolved")
+
+    def test_rereview_closes_each_prior_blocker_explicitly_with_integral_evidence(self) -> None:
+        objectives: list[str] = []
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        def capture(_root: Path, selection: object, objective: str, evidence: object = None) -> ReviewerResult:
+            objectives.append(objective)
+            return mandatory_review_result(getattr(selection, "reviewer"), objective)
+        agent.review = capture  # type: ignore[method-assign]
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None,
+        )
+        prior_finding_id = "integral-rereview:quality:1:Q-001"
+        prior_review = {
+            "reviewer": "quality", "status": "FAIL", "candidate_sha": "b" * 40,
+            "profile_digest": "sha256:" + "c" * 64, "invocation_id": "quality-prior",
+            "findings": [{
+                "id": prior_finding_id, "fingerprint": "d" * 32,
+                "category": "integration", "criterion": "Maintenance remains compatible",
+                "observation": "A lifecycle resource is not cleaned up.", "severity": "HIGH",
+                "confidence": "HIGH", "blocking": True, "disposition": "OPEN",
+                "evidence_ref": "service.py:10",
+            }],
+            "contract_version": "1.0", "started_at": "before", "completed_at": "before",
+        }
+        repair = {
+            "iteration": "1", "observed_at": "2026-09-21T12:00:00+00:00",
+            "failed_checks": "quality", "proposed_action": "repair blocker",
+            "agent_summary": "repaired", "commit_sha": "a" * 40,
+            "outcome": "submitted_for_recheck", "repair_id": "repair:integral-rereview:1",
+            "origin": "quality", "input_candidate_sha": "b" * 40,
+            "dispatch_id": "integral-rereview:repair:1",
+        }
+        state = TransactionState(
+            "integral-rereview", "pcvantol/djconnect", str(self.prompt),
+            "REPAIR_AGENT", branch="main", repair_iterations=1,
+            assurance_reviews=(prior_review,), repair_audit=(repair,),
+        )
+
+        reviewed, _ = runner._run_quality_assurance(
+            state, AgentResult("COMPLETE", "main", commit_sha="a" * 40),
+        )
+
+        self.assertFalse(reviewed.terminal)
+        self.assertEqual([record["status"] for record in reviewed.assurance_reviews[-2:]], ["PASS", "PASS"])
+        self.assertEqual(reviewed.assurance_resolutions[0]["finding_id"], prior_finding_id)
+        self.assertIn(prior_finding_id, objectives[0])
+        self.assertIn("maintenance_recovery_cleanup", objectives[0])
+
+    def test_rereview_keeps_an_explicitly_open_prior_blocker_in_the_ledger(self) -> None:
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        prior_finding_id = "integral-open:quality:1:Q-001"
+
+        def keep_quality_open(
+            _root: Path, selection: object, objective: str, evidence: object = None,
+        ) -> ReviewerResult:
+            result = mandatory_review_result(getattr(selection, "reviewer"), objective)
+            if getattr(selection, "reviewer") != "quality":
+                return result
+            return replace(
+                result,
+                finding_dispositions=tuple({
+                    **item,
+                    "disposition": "OPEN",
+                    "evidence_ref": "service.py:10 still leaks the lifecycle resource",
+                } for item in result.finding_dispositions),
+            )
+
+        agent.review = keep_quality_open  # type: ignore[method-assign]
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None,
+        )
+        prior_review = {
+            "reviewer": "quality", "status": "FAIL", "candidate_sha": "b" * 40,
+            "profile_digest": "sha256:" + "c" * 64, "invocation_id": "quality-prior",
+            "findings": [{
+                "id": prior_finding_id, "fingerprint": "d" * 32,
+                "category": "integration", "criterion": "Maintenance remains compatible",
+                "observation": "A lifecycle resource is not cleaned up.", "severity": "HIGH",
+                "confidence": "HIGH", "blocking": True, "disposition": "OPEN",
+                "evidence_ref": "service.py:10",
+            }],
+            "contract_version": "1.0", "started_at": "before", "completed_at": "before",
+        }
+        repair = {
+            "iteration": "1", "observed_at": "2026-09-21T12:00:00+00:00",
+            "failed_checks": "quality", "proposed_action": "repair blocker",
+            "agent_summary": "repaired", "commit_sha": "a" * 40,
+            "outcome": "submitted_for_recheck", "repair_id": "repair:integral-open:1",
+            "origin": "quality", "input_candidate_sha": "b" * 40,
+            "dispatch_id": "integral-open:repair:1",
+        }
+        state = TransactionState(
+            "integral-open", "pcvantol/djconnect", str(self.prompt),
+            "REPAIR_AGENT", branch="main", repair_iterations=1,
+            assurance_reviews=(prior_review,), repair_audit=(repair,),
+        )
+
+        blocked, _ = runner._run_quality_assurance(
+            state, AgentResult("COMPLETE", "main", commit_sha="a" * 40), allow_repair=False,
+        )
+
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "delivery_assurance_recovery_blocker")
+        self.assertEqual(blocked.assurance_resolutions, ())
+        self.assertEqual(blocked.assurance_reviews[-2]["status"], "FAIL")
+        self.assertEqual(
+            blocked.assurance_reviews[-2]["finding_dispositions"],
+            [{
+                "finding_id": prior_finding_id,
+                "disposition": "OPEN",
+                "evidence_ref": "service.py:10 still leaks the lifecycle resource",
+            }],
+        )
+
     def test_reserved_repair_revalidates_and_rereviews_before_returning_to_pr_evidence(self) -> None:
         """One repair consumes one durable round and cannot bypass assurance."""
         sha = "a" * 40
@@ -3661,6 +3825,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(len(advanced.repair_audit), 1)
         self.assertEqual(advanced.repair_audit[0]["repair_id"], "repair:repair-rereview:1")
         self.assertEqual([item["status"] for item in advanced.assurance_reviews], ["PASS", "PASS"])
+        self.assertIn("Integral repair method", agent.prompts[0])
+        self.assertIn("maintenance_recovery_cleanup", agent.prompts[0])
         self.assertIn("Local repository validation gate", agent.prompts[1])
         context = load_validation_context(self.root, "repair-rereview", currentness=1)
         assert context is not None
@@ -6143,7 +6309,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         objectives: list[str] = []
         def review_objective(_root: Path, selection: object, objective: str, evidence: object = None) -> ReviewerResult:
             objectives.append(objective)
-            return ReviewerResult(getattr(selection, "reviewer"), "No blocking finding.")
+            return mandatory_review_result(getattr(selection, "reviewer"), objective)
         agent.review = review_objective  # type: ignore[method-assign]
         runner = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None)
         initial = TransactionState("three-role-assurance", "pcvantol/forge-mission-qualification",
@@ -6294,8 +6460,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         # A recovered PR with a real blocking review cannot repair the
         # checkout on main while the review candidate lives in a clone.
         blocker_agent = FakeAgent(AgentResult("WAITING"))
-        blocker_agent.review = lambda _root, selection, _objective, evidence=None: ReviewerResult(  # type: ignore[method-assign]
-            getattr(selection, "reviewer"), "Found a bounded blocker.", findings=({
+        blocker_agent.review = lambda _root, selection, _objective, evidence=None: mandatory_review_result(  # type: ignore[method-assign]
+            getattr(selection, "reviewer"), _objective, contribution="Found a bounded blocker.", findings=({
                 "id": "recovery-blocker", "observation": "Required behavior is absent.",
                 "category": "behavior", "criterion": "Recovered delivery acceptance",
                 "severity": "HIGH", "confidence": "HIGH", "evidence_ref": "qualification.txt",

@@ -28,7 +28,8 @@ from .capability_review import (
     MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
     ReviewerResult,
     ReviewerSelection,
-    mandatory_findings,
+    mandatory_assessment,
+    mandatory_coverage_surfaces,
     records_for_storage,
     run_reviews,
     select_reviewers,
@@ -2368,6 +2369,26 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             ],
         }
 
+    @staticmethod
+    def _unresolved_assurance_findings(
+        state: TransactionState, *, reviewer: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Return the immutable blockers that have no explicit resolution evidence."""
+        resolved = {
+            item.get("finding_id") for item in state.assurance_resolutions
+            if item.get("disposition") == "RESOLVED"
+        }
+        return [
+            {**finding, "reviewer": review.get("reviewer")}
+            for review in state.assurance_reviews
+            if reviewer is None or review.get("reviewer") == reviewer
+            for finding in review.get("findings", [])
+            if isinstance(finding, dict)
+            and finding.get("blocking") is True
+            and finding.get("disposition") == "OPEN"
+            and finding.get("id") not in resolved
+        ]
+
     def _run_quality_assurance(
         self, state: TransactionState, implementation: AgentResult, *, assurance_root: Path | None = None,
         allow_repair: bool = True,
@@ -2485,12 +2506,22 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             for role in ("quality", "security")
         )
         records: list[dict[str, object]] = []
+        pending_resolutions: list[dict[str, str]] = []
         # Run sequentially: each is still a distinct sandboxed invocation, and
         # this avoids sharing mutable CLI telemetry between parallel calls.
         for selection in selections:
+            prior_findings = self._unresolved_assurance_findings(quality, reviewer=selection.reviewer)
+            prior_finding_ids = tuple(str(finding["id"]) for finding in prior_findings)
+            required_surfaces = mandatory_coverage_surfaces(selection.reviewer, role)
             assurance_objective = (
                 f"Mandatory {selection.reviewer} assurance. Profile {profile_version} ({profile_digest}); "
-                f"candidate {candidate.head_sha}. Report only concrete, bounded findings against this delivery role's applicable criteria and exact PR diff. "
+                f"candidate {candidate.head_sha}. This is an integral candidate review, not a review of only the latest repair. "
+                "Trace changed contracts, resources and state through callers, consumers, startup, shutdown, maintenance, recovery and cleanup before concluding. "
+                f"Return exactly one coverage record for each required surface: {json.dumps(required_surfaces)}. "
+                "Use NOT_APPLICABLE only with a concrete repository evidence reference. "
+                "Reassess every prior open finding raised by this same independent reviewer and return exactly one RESOLVED or OPEN disposition for each ID. "
+                f"Prior open findings: {json.dumps(prior_findings, sort_keys=True)}. "
+                "Report all concrete new findings found across the complete impact boundary in this wave; do not stop after the first blocker. "
                 + criteria
             )
             started_at = datetime.now(timezone.utc).isoformat()
@@ -2500,8 +2531,11 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 unchanged = self._inspect_assurance_candidate(candidate_root, state.execution_mode)
             except RunnerError:
                 unchanged = None
-            supplied_findings = mandatory_findings(result)
-            status = "UNRESOLVED" if supplied_findings is None or unchanged is None or not unchanged.clean or unchanged.head_sha != candidate.head_sha else "PASS"
+            assessment = mandatory_assessment(
+                result, delivery_role=role, prior_finding_ids=prior_finding_ids,
+            )
+            supplied_findings, coverage, finding_dispositions = assessment or ((), (), ())
+            status = "UNRESOLVED" if assessment is None or unchanged is None or not unchanged.clean or unchanged.head_sha != candidate.head_sha else "PASS"
             findings = [
                 {
                     "id": f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + len(records) + 1}:{item['id']}",
@@ -2514,14 +2548,33 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 }
                 for item in (supplied_findings or ())
             ]
-            if status == "PASS" and any(finding["blocking"] for finding in findings):
+            if status == "PASS" and (
+                any(finding["blocking"] for finding in findings)
+                or any(item["disposition"] == "OPEN" for item in finding_dispositions)
+            ):
                 status = "FAIL"
+            invocation_id = f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + len(records)}"
             records.append({
                 "reviewer": selection.reviewer, "status": status, "candidate_sha": candidate.head_sha,
-                "profile_digest": profile_digest, "invocation_id": f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + len(records)}",
+                "profile_digest": profile_digest, "invocation_id": invocation_id,
                 "findings": findings, "contract_version": MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+                "coverage": list(coverage), "finding_dispositions": list(finding_dispositions),
                 "started_at": started_at, "completed_at": completed_at,
             })
+            repair = quality.repair_audit[-1] if quality.repair_audit else None
+            if (
+                status != "UNRESOLVED" and repair is not None
+                and repair.get("outcome") == "submitted_for_recheck" and repair.get("repair_id")
+            ):
+                already_resolved = {
+                    item["finding_id"] for item in quality.assurance_resolutions
+                } | {item["finding_id"] for item in pending_resolutions}
+                pending_resolutions.extend({
+                    "finding_id": item["finding_id"], "disposition": "RESOLVED",
+                    "resolution_ref": f"{repair['repair_id']}|{invocation_id}|{item['evidence_ref']}",
+                    "candidate_sha": candidate.head_sha,
+                } for item in finding_dispositions
+                if item["disposition"] == "RESOLVED" and item["finding_id"] not in already_resolved)
         quality = replace(quality, assurance_reviews=quality.assurance_reviews + tuple(records))
         if delivery_scope is not None:
             try:
@@ -2536,33 +2589,19 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                     quality, "BLOCKED", "assurance_delivery_scope_changed",
                     "The PR base or exact candidate diff changed during independent assurance.",
                 ), implementation
-        # A later PASS does not erase an earlier blocker.  Only a completed
-        # reserved repair followed by this exact re-review can append the
-        # linked resolution evidence; the original finding remains immutable.
-        if all(record["status"] == "PASS" for record in records) and quality.repair_audit:
-            repair = quality.repair_audit[-1]
-            if repair.get("outcome") == "submitted_for_recheck" and repair.get("repair_id"):
-                resolved = {item["finding_id"] for item in quality.assurance_resolutions}
-                prior_blockers = [
-                    finding for review in quality.assurance_reviews[:-len(records)]
-                    for finding in review.get("findings", [])
-                    if isinstance(finding, dict) and finding.get("blocking") and finding.get("disposition") == "OPEN"
-                    and isinstance(finding.get("id"), str) and finding["id"] not in resolved
-                ]
-                if prior_blockers:
-                    review_refs = ",".join(str(record["invocation_id"]) for record in records)
-                    resolutions = tuple({
-                        "finding_id": str(finding["id"]), "disposition": "RESOLVED",
-                        "resolution_ref": f"{repair['repair_id']}|{review_refs}",
-                        "candidate_sha": candidate.head_sha,
-                    } for finding in prior_blockers)
-                    quality = replace(quality, assurance_resolutions=quality.assurance_resolutions + resolutions)
+        # Resolution is finding-specific. A broad PASS never erases earlier
+        # blockers; the owning independent reviewer must explicitly close each
+        # ID with evidence on the repaired candidate.
+        if pending_resolutions:
+            quality = replace(
+                quality,
+                assurance_resolutions=quality.assurance_resolutions + tuple(pending_resolutions),
+            )
         self.store.save(quality)
         unresolved = [record for record in records if record["status"] == "UNRESOLVED"]
         if unresolved:
             return self._save_terminal(quality, "BLOCKED", "mandatory_assurance_unresolved", "A required quality or security review was unavailable, malformed, or candidate-mismatched."), implementation
-        findings = [finding for record in records for finding in record["findings"]]
-        blockers = [finding for finding in findings if finding["blocking"] and finding["disposition"] == "OPEN"]
+        blockers = self._unresolved_assurance_findings(quality)
         if blockers:
             if not allow_repair:
                 return self._save_terminal(
@@ -2571,9 +2610,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 ), implementation
             if quality.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
                 return self._save_terminal(quality, "BLOCKED", "repair_budget_exhausted", "Mandatory assurance blockers remain after the run-wide repair budget was exhausted."), implementation
-            blocker_roles = sorted({str(record["reviewer"]) for record in records if any(
-                finding["blocking"] and finding["disposition"] == "OPEN" for finding in record["findings"]
-            )})
+            blocker_roles = sorted({str(finding["reviewer"]) for finding in blockers})
             summary = "; ".join(
                 f"{finding['id']}: {finding['criterion']} — {finding['observation']}"
                 for finding in blockers
@@ -4351,6 +4388,11 @@ First implementation pull-request publication gate:
         repair = replace(repair, repair_audit=repair.repair_audit[:-1] + (reservation,))
         self.store.save(repair)
         write_live_status(self.root, repair, repair.next_action)
+        impact_surfaces = sorted({
+            surface
+            for reviewer in ("quality", "security")
+            for surface in mandatory_coverage_surfaces(reviewer, repair.transaction_kind)
+        })
         try:
             result = self._invoke_agent_with_timing(
                 repair,
@@ -4359,7 +4401,14 @@ First implementation pull-request publication gate:
                     repair,
                     managed_target=self.root if repair.execution_mode == "MANAGED" else None,
                 )
-                + f"\n\nRepair objective: {objective}",
+                + (
+                    f"\n\nRepair objective: {objective}"
+                    "\n\nIntegral repair method: resolve every listed open finding as one coherent change. "
+                    "Reassess the complete branch against main; trace each changed contract, persistent resource "
+                    "and lifecycle state through callers, consumers, startup, shutdown, maintenance, recovery and cleanup. "
+                    f"Preserve or add regression evidence for these host-owned impact surfaces: {json.dumps(impact_surfaces)}. "
+                    "Do not stop after the first local fix, and do not weaken an acceptance criterion or existing workflow."
+                ),
                 repair=True,
             )
             repair = self._record_agent_execution_time(repair)

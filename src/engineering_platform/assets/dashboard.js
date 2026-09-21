@@ -2164,6 +2164,14 @@ function lifecycleAssuranceEvidence(step) {
     const summary = findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean).join("; ");
     const summaryElement = Object.assign(document.createElement("span"), { textContent: summary || t("lifecycle.assurance_no_findings") });
     item.append(summaryElement);
+    const coverage = Array.isArray(review.coverage) ? review.coverage : [];
+    const dispositions = Array.isArray(review.finding_dispositions) ? review.finding_dispositions : [];
+    if (coverage.length || dispositions.length) item.append(Object.assign(document.createElement("span"), {
+      className: "estimate-meta",
+      textContent: t("lifecycle.assurance_integral_evidence", {
+        coverage: coverage.length, dispositions: dispositions.length,
+      }),
+    }));
     if (summary) dynamicRows.push({ source: summary, element: summaryElement });
     list.append(item);
   }

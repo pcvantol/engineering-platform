@@ -18,9 +18,11 @@ from threading import Event, Thread
 from typing import Callable, Mapping
 
 from .capability_review import (
+    ADVISORY_REVIEW_OUTPUT_CONTRACT_VERSION,
     MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
     ReviewerResult,
     ReviewerSelection,
+    mandatory_coverage_surfaces,
     reviewer_prompt,
 )
 from .codex_observability import codex_final_message as _codex_final_message, extract_codex_runtime_metadata, extract_codex_usage
@@ -499,35 +501,75 @@ class CodexCliClient:
         self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["contract_version", "contribution", "recommendations", "findings"],
-            "properties": {
-                "contract_version": {"type": "string", "const": MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION},
-                "contribution": {"type": "string", "maxLength": 240},
-                "recommendations": {
-                    "type": "array",
-                    "maxItems": 64,
-                    "items": {"type": "string", "maxLength": 240},
+        mandatory = selection.reviewer in {"quality", "security"}
+        contract_version = (
+            MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION
+            if mandatory else ADVISORY_REVIEW_OUTPUT_CONTRACT_VERSION
+        )
+        required = ["contract_version", "contribution", "recommendations", "findings"]
+        properties: dict[str, object] = {
+            "contract_version": {"type": "string", "const": contract_version},
+            "contribution": {"type": "string", "maxLength": 240},
+            "recommendations": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {"type": "string", "maxLength": 240},
+            },
+            "findings": {
+                "type": "array", "maxItems": 12 if mandatory else 64,
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["id", "observation", "category", "criterion", "severity", "confidence", "evidence_ref"],
+                    "properties": {
+                        "id": {"type": "string", "maxLength": 240},
+                        "observation": {"type": "string", "maxLength": 240},
+                        "category": {"type": "string", "maxLength": 240},
+                        "criterion": {"type": "string", "maxLength": 240},
+                        "severity": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+                        "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                        "evidence_ref": {"type": "string", "maxLength": 240},
+                    },
                 },
-                "findings": {
-                    "type": "array", "maxItems": 64,
+            },
+        }
+        if mandatory:
+            required.extend(("coverage", "finding_dispositions"))
+            surfaces = sorted({
+                surface
+                for role in ("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION")
+                for surface in mandatory_coverage_surfaces(selection.reviewer, role)
+            })
+            properties.update({
+                "coverage": {
+                    "type": "array", "maxItems": 16,
                     "items": {
                         "type": "object", "additionalProperties": False,
-                        "required": ["id", "observation", "category", "criterion", "severity", "confidence", "evidence_ref"],
+                        "required": ["surface", "status", "evidence_ref"],
                         "properties": {
-                            "id": {"type": "string", "maxLength": 240},
-                            "observation": {"type": "string", "maxLength": 240},
-                            "category": {"type": "string", "maxLength": 240},
-                            "criterion": {"type": "string", "maxLength": 240},
-                            "severity": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
-                            "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                            "surface": {"type": "string", "enum": surfaces},
+                            "status": {"type": "string", "enum": ["REVIEWED", "NOT_APPLICABLE"]},
                             "evidence_ref": {"type": "string", "maxLength": 240},
                         },
                     },
                 },
-            },
+                "finding_dispositions": {
+                    "type": "array", "maxItems": 64,
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "required": ["finding_id", "disposition", "evidence_ref"],
+                        "properties": {
+                            "finding_id": {"type": "string", "maxLength": 240},
+                            "disposition": {"type": "string", "enum": ["RESOLVED", "OPEN"]},
+                            "evidence_ref": {"type": "string", "maxLength": 240},
+                        },
+                    },
+                },
+            })
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": required,
+            "properties": properties,
         }
         state_directory = root / ".engineering"
         state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -589,6 +631,8 @@ class CodexCliClient:
                 usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
                 churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
                 usage_snapshots=self.last_usage_snapshots,
+                coverage=tuple(dict(value) for value in raw.get("coverage", ())),
+                finding_dispositions=tuple(dict(value) for value in raw.get("finding_dispositions", ())),
             )
         except (IndexError, KeyError, TypeError, json.JSONDecodeError):
             return ReviewerResult(
