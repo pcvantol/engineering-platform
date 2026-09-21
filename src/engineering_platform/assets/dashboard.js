@@ -2147,9 +2147,20 @@ function lifecycleAssuranceEvidence(step) {
   for (const review of reviews) {
     if (!review || typeof review !== "object") continue;
     const findings = Array.isArray(review.findings) ? review.findings : [];
-    const item = document.createElement("li");
-    const role = String(review.reviewer || ""); const status = String(review.status || "UNRESOLVED");
-    item.append(Object.assign(document.createElement("strong"), { textContent: `${reviewerLabel(role, role)} · ${assuranceStatusLabel(status, status)}` }));
+    const item = document.createElement("li"), heading = document.createElement("strong"),
+      statusIcon = document.createElement("span"), status = String(review.status || "UNRESOLVED"),
+      normalizedStatus = status.toUpperCase();
+    const role = String(review.reviewer || "");
+    const passed = normalizedStatus === "PASS", failed = ["FAIL", "FAILED", "UNRESOLVED"].includes(normalizedStatus);
+    heading.className = "lifecycle-detail-modal__assurance-heading";
+    statusIcon.className = "lifecycle-detail-modal__assurance-status lifecycle-detail-modal__assurance-status--"
+      + (passed ? "passed" : failed ? "failed" : "neutral");
+    statusIcon.setAttribute("aria-hidden", "true");
+    statusIcon.textContent = passed ? "✓" : failed ? "×" : "•";
+    heading.append(statusIcon, Object.assign(document.createElement("span"), {
+      textContent: `${reviewerLabel(role, role)} · ${assuranceStatusLabel(status, status)}`,
+    }));
+    item.append(heading);
     const summary = findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean).join("; ");
     const summaryElement = Object.assign(document.createElement("span"), { textContent: summary || t("lifecycle.assurance_no_findings") });
     item.append(summaryElement);
@@ -2204,20 +2215,46 @@ function lifecycleCapabilityEvidence(step) {
   section.append(list);
   return section;
 }
-function lifecycleImplementationEvidence(step) {
-  const evidence = step?.implementation_evidence;
+function lifecyclePullRequestField(label, pullRequest, repository) {
+  const field = lifecycleDetailField(label, `#${pullRequest}`);
+  const repositoryIdentity = String(repository || "").trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repositoryIdentity)) return field;
+  const link = document.createElement("a");
+  link.className = "prompt-detail-pr-link";
+  link.href = `https://github.com/${repositoryIdentity.split("/").map(encodeURIComponent).join("/")}/pull/${pullRequest}`;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = `#${pullRequest} ↗`;
+  link.setAttribute("aria-label", `${label} #${pullRequest}`);
+  field.lastElementChild.replaceWith(link);
+  return field;
+}
+function lifecycleDeliveryEvidence(step) {
+  const evidence = step?.delivery_evidence || step?.implementation_evidence;
   if (!evidence || typeof evidence !== "object") return null;
+  const role = String(evidence.role || "implementation").toLowerCase();
+  const titles = {
+    implementation: "lifecycle.detail_implementation_evidence",
+    finalization: "lifecycle.detail_finalization_evidence",
+    reconciliation: "lifecycle.detail_reconciliation_evidence",
+  };
+  const pullRequestLabels = {
+    implementation: "detail.implementation_pull_request",
+    finalization: "detail.finalization_pull_request",
+    reconciliation: "detail.reconciliation_pull_request",
+  };
   const fields = [];
   if (evidence.branch) fields.push(lifecycleDetailField(t("workspace.current_branch"), String(evidence.branch)));
   if (evidence.candidate_sha) fields.push(lifecycleDetailField(t("detail.candidate_sha"), String(evidence.candidate_sha)));
   if (Number.isInteger(evidence.pull_request) && evidence.pull_request > 0) {
-    fields.push(lifecycleDetailField(t("detail.implementation_pull_request"), `#${evidence.pull_request}`));
+    const label = t(pullRequestLabels[role] || pullRequestLabels.implementation);
+    fields.push(lifecyclePullRequestField(label, evidence.pull_request, evidence.repository));
   }
   if (!fields.length) return null;
   const section = document.createElement("section");
   section.className = "lifecycle-detail-modal__implementation-evidence";
   section.append(
-    Object.assign(document.createElement("h3"), { textContent: t("lifecycle.detail_implementation_evidence") }),
+    Object.assign(document.createElement("h3"), { textContent: t(titles[role] || titles.implementation) }),
     Object.assign(document.createElement("div"), { className: "technical-grid" }),
   );
   section.lastElementChild.append(...fields);
@@ -2350,8 +2387,8 @@ function openLifecycleDetail(step, trigger, { presentationOnly = false } = {}) {
   if (capabilityEvidence) content.append(capabilityEvidence);
   const assuranceEvidence = lifecycleAssuranceEvidence(step);
   if (assuranceEvidence) content.append(assuranceEvidence);
-  const implementationEvidence = lifecycleImplementationEvidence(step);
-  if (implementationEvidence) content.append(implementationEvidence);
+  const deliveryEvidence = lifecycleDeliveryEvidence(step);
+  if (deliveryEvidence) content.append(deliveryEvidence);
   const repairEvidence = lifecycleRepairEvidence(step);
   if (repairEvidence) content.append(repairEvidence);
   if (!modal.open) modal.showModal();
@@ -2368,15 +2405,24 @@ function lifecycleStepWithEvidence(step, context = {}) {
       : Array.isArray(context.reviewers) ? context.reviewers : [];
     if (reviewers.length) enriched.reviewer_evidence = reviewers;
   }
-  if (id === "EXECUTE_AGENT") {
-    const candidate = String(context.implementation_candidate_sha || "").trim();
-    const branch = String(context.implementation_branch || "").trim();
-    const pullRequest = Number(context.implementation_pr);
+  const deliverySteps = {
+    EXECUTE_AGENT: { role: "implementation", candidate: "implementation_candidate_sha", branch: "implementation_branch", pullRequest: "implementation_pr" },
+    FINALIZE_AGENT: { role: "finalization", candidate: "finalization_candidate_sha", branch: "finalization_branch", pullRequest: "finalization_pr" },
+    RECONCILE_AGENT: { role: "reconciliation", candidate: "reconciliation_candidate_sha", branch: "reconciliation_branch", pullRequest: "reconciliation_pr" },
+  };
+  const delivery = deliverySteps[id];
+  if (delivery) {
+    const candidate = String(context[delivery.candidate] || "").trim();
+    const branch = String(context[delivery.branch] || "").trim();
+    const pullRequest = Number(context[delivery.pullRequest]);
+    const repository = String(context.github_repository || context.target_repository || "").trim();
     const evidence = {};
+    evidence.role = delivery.role;
     if (/^[0-9a-f]{40}$/.test(candidate)) evidence.candidate_sha = candidate;
     if (branch) evidence.branch = branch;
     if (Number.isInteger(pullRequest) && pullRequest > 0) evidence.pull_request = pullRequest;
-    if (Object.keys(evidence).length) enriched.implementation_evidence = evidence;
+    if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) evidence.repository = repository;
+    if (Object.keys(evidence).length > 1) enriched.delivery_evidence = evidence;
   }
   return enriched;
 }

@@ -3284,16 +3284,17 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
-      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "step-evidence",
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "step-evidence", github_repository: "pcvantol/forge",
       reviewer_agents: [
         { reviewer: "repository_governance", capability: "engineering", status: "completed", selected_because: "governance objective", contribution: "Repository policy checked.", accepted_recommendations: 2, rejected_recommendations: 1 },
         { reviewer: "validation", capability: "engineering", status: "completed" },
       ],
       implementation_branch: "implementation/mission-health",
-      implementation_candidate_sha: "a".repeat(40), implementation_pr: 173,
+      implementation_candidate_sha: "a".repeat(40), implementation_pr: 173, finalization_pr: 174,
       lifecycle: { available: true, run_id: "step-evidence", terminal_state: "ACTIVE", steps: [
         { id: "CAPABILITY_REVIEW", presentation_key: "lifecycle.step.capability_review", state: "COMPLETED" },
         { id: "EXECUTE_AGENT", presentation_key: "lifecycle.step.execute_agent", state: "COMPLETED" },
+        { id: "FINALIZE_AGENT", presentation_key: "lifecycle.step.finalize_agent", state: "COMPLETED" },
       ] },
     }, {}));
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
@@ -3311,6 +3312,12 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_implementation_evidence"]);
     await expect(modal).toContainText("implementation/mission-health");
     await expect(modal).toContainText("#173");
+    await expect(modal.locator("a.prompt-detail-pr-link")).toHaveAttribute("href", "https://github.com/pcvantol/forge/pull/173");
+    await page.locator("#lifecycleDetailClose").click();
+    await dispatchDashboardPointerClick(nodes.nth(2));
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_finalization_evidence"]);
+    await expect(modal.locator("a.prompt-detail-pr-link")).toHaveText("#174 ↗");
+    await expect(modal.locator("a.prompt-detail-pr-link")).toHaveAttribute("href", "https://github.com/pcvantol/forge/pull/174");
   });
 
   test("places a visual divider between repair rounds", async ({ page }) => {
@@ -3673,7 +3680,7 @@ test.describe("Engineering Status browser smoke", () => {
             quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }],
             assurance_reviews: [
               { reviewer: "quality", status: "PASS", findings: [] },
-              { reviewer: "security", status: "PASS", findings: [] },
+              { reviewer: "security", status: "FAIL", findings: [{ observation: "Beveiligingsbevinding." }] },
             ] },
         ],
       },
@@ -3692,11 +3699,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.quality"]);
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.security"]);
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
+    await expect(modal.locator(".lifecycle-detail-modal__assurance-status--passed")).toHaveText("✓");
+    await expect(modal.locator(".lifecycle-detail-modal__assurance-status--failed")).toHaveText("×");
     await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
     await expect(modal.locator(".lifecycle-detail-modal__quality-evidence .lifecycle-detail-modal__phase-list span").first()).toHaveCSS("text-align", "start");
     const securityReview = modal.locator(".lifecycle-detail-modal__assurance-evidence strong").filter({ hasText: "Beveiligingsreview" });
-    const reviewLines = await securityReview.evaluate((element) => {
+    const securityReviewLabel = securityReview.locator(":scope > span").last();
+    const reviewLines = await securityReviewLabel.evaluate((element) => {
       const range = document.createRange();
       range.selectNodeContents(element);
       return range.getClientRects().length;
@@ -3704,7 +3714,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(reviewLines).toBe(1);
     const [reviewHeadingBox, reviewBodyBox] = await Promise.all([
       securityReview.boundingBox(),
-      securityReview.locator("xpath=..").locator("span").boundingBox(),
+      securityReview.locator("xpath=..").locator(":scope > span").boundingBox(),
     ]);
     expect(reviewHeadingBox).not.toBeNull();
     expect(reviewBodyBox).not.toBeNull();
