@@ -1590,7 +1590,9 @@ class DashboardStatusTest(unittest.TestCase):
                         "- Reviewer: repository_governance",
                         "  - Capability: engineering",
                         "  - Selected because: repository-governance objective",
+                        "  - Initial observation: Governance checked.",
                         "  - Accepted recommendations: 2",
+                        "  - Rejected recommendations: 1",
                         "- Reviewer: validation",
                         "  - Capability: validation",
                         "  - Selected because: validation objective",
@@ -1613,19 +1615,23 @@ class DashboardStatusTest(unittest.TestCase):
                         "reviewer": "repository_governance",
                         "capability": "engineering",
                         "selected_because": "repository-governance objective",
+                        "contribution": "Governance checked.",
                         "accepted_recommendations": 2,
+                        "rejected_recommendations": 1,
                         "status": "Uitgevoerd",
                     },
                     {
                         "reviewer": "validation",
                         "capability": "validation",
                         "selected_because": "validation objective",
+                        "contribution": "Niet vastgelegd.",
                         "accepted_recommendations": 1,
+                        "rejected_recommendations": 0,
                         "status": "Uitgevoerd",
                     },
                 ],
             )
-            self.assertEqual(json.loads(_reviewer_agents_for_run(root, "inbox-other")), [{"reviewer": "other", "capability": "engineering", "selected_because": "Niet vastgelegd.", "accepted_recommendations": 0, "status": "Uitgevoerd"}])
+            self.assertEqual(json.loads(_reviewer_agents_for_run(root, "inbox-other")), [{"reviewer": "other", "capability": "engineering", "selected_because": "Niet vastgelegd.", "contribution": "Niet vastgelegd.", "accepted_recommendations": 0, "rejected_recommendations": 0, "status": "Uitgevoerd"}])
 
     def test_report_analysis_is_bound_to_the_requested_last_executed_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1755,14 +1761,22 @@ class DashboardStatusTest(unittest.TestCase):
         context = dashboard._checkpoint_pull_request_context({
             "execution_mode": "MANAGED", "repository": "pcvantol/djconnect",
             "implementation_pull_request": 949, "pull_request": 950,
+            "implementation_branch": "implementation/mission-health",
+            "implementation_head_sha": "a" * 40,
         })
         self.assertEqual(context["pull_requests"], [
             {"role": "implementation", "number": 949, "url": "https://github.com/pcvantol/djconnect/pull/949"},
             {"role": "bound", "number": 950, "url": "https://github.com/pcvantol/djconnect/pull/950"},
         ])
+        self.assertEqual(context["implementation_branch"], "implementation/mission-health")
+        self.assertEqual(context["implementation_candidate_sha"], "a" * 40)
         self.assertEqual(dashboard._checkpoint_pull_request_context({
             "execution_mode": "GENESIS", "repository": "pcvantol/djconnect", "pull_request": 950,
-        })["pull_requests"], [])
+            "genesis_commit_sha": "b" * 40,
+        }), {
+            "github_repository": "pcvantol/djconnect", "pull_requests": [],
+            "implementation_candidate_sha": "b" * 40,
+        })
 
     @patch("engineering_platform.server_console_services.GitHubProvider")
     @patch("engineering_platform.server_console_services.GitProvider")

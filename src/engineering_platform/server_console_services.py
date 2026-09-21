@@ -352,13 +352,33 @@ def _project_prompt_history_detail(
 
 
 def _checkpoint_pull_request_context(checkpoint: Mapping[str, object]) -> dict[str, object]:
-    """Project recorded PR roles, including a newly bound PR in its active phase."""
+    """Project recorded delivery evidence, including a newly bound active PR.
+
+    The lifecycle detail renderer needs the persisted implementation candidate
+    even before a pull request exists.  Keep that evidence beside the PR
+    projection so active and historical Console views use the same checkpoint
+    authority instead of inferring a candidate from the current checkout.
+    """
     repository = checkpoint.get("repository")
     if not isinstance(repository, str) or not re.fullmatch(
         r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository,
     ):
         repository = None
     context: dict[str, object] = {"github_repository": repository, "pull_requests": []}
+    implementation_branch = checkpoint.get("implementation_branch") or checkpoint.get("branch")
+    if (
+        isinstance(implementation_branch, str)
+        and 0 < len(implementation_branch) <= 255
+        and "\x00" not in implementation_branch
+    ):
+        context["implementation_branch"] = implementation_branch
+    candidate_sha = (
+        checkpoint.get("implementation_head_sha")
+        or checkpoint.get("genesis_commit_sha")
+        or checkpoint.get("last_verified_sha")
+    )
+    if isinstance(candidate_sha, str) and re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
+        context["implementation_candidate_sha"] = candidate_sha
     if checkpoint.get("execution_mode") not in (None, "MANAGED"):
         return context
     roles = (
@@ -1422,12 +1442,15 @@ def _reviewer_agents_for_run(root: Path, run_id: str | None) -> bytes:
             return " ".join(match.group(1).split())[:180]
 
         accepted = field("Accepted recommendations")
+        rejected = field("Rejected recommendations")
         records.append(
             {
                 "reviewer": " ".join(reviewer.group(1).split())[:80],
                 "capability": field("Capability") or "engineering",
                 "selected_because": field("Selected because") or "Niet vastgelegd.",
+                "contribution": field("Initial observation") or "Niet vastgelegd.",
                 "accepted_recommendations": int(accepted) if accepted and accepted.isdigit() else 0,
+                "rejected_recommendations": int(rejected) if rejected and rejected.isdigit() else 0,
                 "status": "Uitgevoerd",
             }
         )

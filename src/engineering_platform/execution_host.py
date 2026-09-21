@@ -3453,6 +3453,36 @@ First implementation pull-request publication gate:
                 observed_snapshots=reviewer.usage_snapshots,
             )
         self.reviewer_records = records_for_storage(selections, results)
+        # Publish the bounded advisory result before leaving CAPABILITY_REVIEW.
+        # The Console can then explain what each specialist contributed while
+        # the Mission continues; it must not wait for the terminal report.
+        self.reviewer_runtime = [
+            {
+                "reviewer": str(record.get("reviewer", ""))[:80],
+                "capability": str(record.get("capability", "engineering"))[:80],
+                "selected_because": redact_diagnostic(
+                    str(record.get("selected_because", "")), limit=180,
+                ),
+                "contribution": redact_diagnostic(
+                    str(record.get("contribution", "")), limit=240,
+                ),
+                "accepted_recommendations": max(
+                    0, int(record.get("accepted_recommendations", 0) or 0),
+                ),
+                "rejected_recommendations": max(
+                    0, int(record.get("rejected_recommendations", 0) or 0),
+                ),
+                "status": "failed" if record.get("failed") else "completed",
+            }
+            for record in self.reviewer_records[:12]
+        ]
+        update_phase_metadata(
+            self.root, capability_review,
+            {"reviewer_agents": self.reviewer_runtime},
+        )
+        write_live_status(
+            self.root, state, "Capability review completed", self.reviewer_runtime,
+        )
         # Reviewer reasoning is intentionally not merged into the primary
         # provider context.  Reviewers share the bounded factual snapshot, but
         # retain independent reasoning responsibility and advisory records.
