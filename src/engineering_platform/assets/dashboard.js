@@ -148,6 +148,24 @@ function reviewerCapabilityLabel(value, fallback = t("format.not_available")) {
   const raw = String(value || "").trim();
   return raw ? enumLabel(raw.toUpperCase(), raw) : fallback;
 }
+function reviewerStatusPresentation(reviewer) {
+  const rawStatus = String(reviewer?.status || "completed").toLowerCase();
+  const failed = rawStatus === "failed", completed = ["completed", "uitgevoerd"].includes(rawStatus);
+  const label = document.createElement("span"), row = document.createElement("span"),
+    indicator = document.createElement("span"), text = document.createElement("span");
+  label.className = "label";
+  label.textContent = t("detail.prompt_status");
+  row.className = "prompt-detail-reviewer__status";
+  indicator.className = "prompt-detail-reviewer__status-icon prompt-detail-reviewer__status-icon--"
+    + (failed ? "failed" : completed ? "completed" : "neutral");
+  indicator.setAttribute("aria-hidden", "true");
+  indicator.textContent = failed ? "×" : completed ? "✓" : "•";
+  text.className = "prompt-detail-reviewer__status-text";
+  text.textContent = reviewerCapabilityLabel(reviewer?.capability || "ENGINEERING")
+    + " · " + reviewerStatusLabel(rawStatus);
+  row.append(indicator, text);
+  return { label, row };
+}
 function driftPresentationValue(field, drift = {}) {
   const value = String(drift?.[field] || "").trim();
   if (!value) return t("format.not_available");
@@ -2192,10 +2210,9 @@ function lifecycleCapabilityEvidence(step) {
   list.className = "lifecycle-detail-modal__phase-list";
   for (const reviewer of reviewers) {
     if (!reviewer || typeof reviewer !== "object") continue;
-    const item = document.createElement("li");
+    const item = document.createElement("li"), heading = document.createElement("strong"),
+      status = reviewerStatusPresentation(reviewer);
     const details = [
-      reviewerCapabilityLabel(reviewer.capability || "ENGINEERING"),
-      reviewerStatusLabel(reviewer.status || "completed"),
       reviewer.selected_because
         ? t("detail.selected_because") + ": " + String(reviewer.selected_because)
         : null,
@@ -2209,14 +2226,11 @@ function lifecycleCapabilityEvidence(step) {
         ? t("detail.rejected_recommendations") + ": " + reviewer.rejected_recommendations
         : null,
     ].filter(Boolean);
-    item.append(
-      Object.assign(document.createElement("strong"), {
-        textContent: reviewerLabel(reviewer.reviewer, t("detail.specialist_review")),
-      }),
-      Object.assign(document.createElement("span"), {
-        textContent: details.join("\n"),
-      }),
-    );
+    heading.textContent = reviewerLabel(reviewer.reviewer, t("detail.specialist_review"));
+    item.append(heading, status.label, status.row);
+    if (details.length) item.append(Object.assign(document.createElement("span"), {
+      textContent: details.join("\n"),
+    }));
     list.append(item);
   }
   if (!list.childElementCount) return null;
@@ -8602,28 +8616,14 @@ function promptDetailRecommendationHandoff(handoff) {
 function promptDetailReviewersSection(reviewers, { wide = true } = {}) {
   if (!reviewers.length) return null;
   const fields = reviewers.map((reviewer) => {
-    const rawStatus = String(reviewer.status || "completed").toLowerCase();
-    const failed = rawStatus === "failed", completed = ["completed", "uitgevoerd"].includes(rawStatus);
     const field = document.createElement("article"), heading = document.createElement("h4"),
-      statusLabel = document.createElement("span"), statusRow = document.createElement("span"),
-      indicator = document.createElement("span"), statusText = document.createElement("span");
+      status = reviewerStatusPresentation(reviewer);
     field.className = "field prompt-detail-reviewer";
     heading.textContent = reviewerLabel(reviewer.reviewer, t("detail.specialist_review"));
-    statusLabel.className = "label";
-    statusLabel.textContent = t("detail.prompt_status");
-    statusRow.className = "prompt-detail-reviewer__status";
-    indicator.className = "prompt-detail-reviewer__status-icon prompt-detail-reviewer__status-icon--"
-      + (failed ? "failed" : completed ? "completed" : "neutral");
-    indicator.setAttribute("aria-hidden", "true");
-    indicator.textContent = failed ? "×" : completed ? "✓" : "•";
-    statusText.className = "prompt-detail-reviewer__status-text";
-    statusText.textContent = reviewerCapabilityLabel(reviewer.capability || "ENGINEERING")
-      + " · " + reviewerStatusLabel(rawStatus);
-    statusRow.append(indicator, statusText);
     field.append(
       heading,
-      statusLabel,
-      statusRow,
+      status.label,
+      status.row,
       detailField(
         t("detail.selected_because"),
         String(reviewer.selected_because || t("detail.not_recorded")),

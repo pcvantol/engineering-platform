@@ -3286,7 +3286,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "step-evidence", github_repository: "pcvantol/forge",
       reviewer_agents: [
-        { reviewer: "repository_governance", capability: "engineering", status: "completed", selected_because: "governance objective", contribution: "Repository policy checked.", accepted_recommendations: 2, rejected_recommendations: 1 },
+        { reviewer: "repository_governance", capability: "engineering", status: "failed", selected_because: "governance objective", contribution: "Repository policy checked.", accepted_recommendations: 2, rejected_recommendations: 1 },
         { reviewer: "validation", capability: "engineering", status: "completed" },
       ],
       implementation_branch: "implementation/mission-health",
@@ -3305,6 +3305,12 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.repository_governance"]);
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.validation"]);
     await expect(modal).toContainText("Repository policy checked.");
+    const reviewerStatuses = modal.locator(".lifecycle-detail-modal__reviewer-evidence .prompt-detail-reviewer__status");
+    await expect(reviewerStatuses).toHaveCount(2);
+    await expect(reviewerStatuses.nth(0).locator(".prompt-detail-reviewer__status-text")).toHaveText("Engineering · Mislukt");
+    await expect(reviewerStatuses.nth(0).locator(".prompt-detail-reviewer__status-icon--failed")).toHaveText("×");
+    await expect(reviewerStatuses.nth(1).locator(".prompt-detail-reviewer__status-text")).toHaveText("Engineering · Uitgevoerd");
+    await expect(reviewerStatuses.nth(1).locator(".prompt-detail-reviewer__status-icon--completed")).toHaveText("✓");
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["detail.accepted_recommendations"] + ": 2");
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["detail.rejected_recommendations"] + ": 1");
     await page.locator("#lifecycleDetailClose").click();
