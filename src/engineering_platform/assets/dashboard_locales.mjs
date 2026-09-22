@@ -4306,3 +4306,8 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.assurance_progress_active":"Rev
 Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.assurance_progress_active":"Prüfungen laufen: {completed} von {total} abgeschlossen · {reviewer} aktiv","lifecycle.assurance_progress_waiting":"Prüfungen laufen: {completed} von {total} abgeschlossen"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"lifecycle.assurance_progress_active":"Revues en cours : {completed} sur {total} terminées · {reviewer} active","lifecycle.assurance_progress_waiting":"Revues en cours : {completed} sur {total} terminées"});
 Object.assign(DASHBOARD_MESSAGES.es, {"lifecycle.assurance_progress_active":"Revisiones en curso: {completed} de {total} completadas · {reviewer} activa","lifecycle.assurance_progress_waiting":"Revisiones en curso: {completed} de {total} completadas"});
+Object.assign(DASHBOARD_MESSAGES.en, {"lifecycle.assurance_initial_wave":"Initial assessment","lifecycle.assurance_repair_wave":"Repair round {iteration}"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.assurance_initial_wave":"Initiële beoordeling","lifecycle.assurance_repair_wave":"Herstelronde {iteration}"});
+Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.assurance_initial_wave":"Erstbewertung","lifecycle.assurance_repair_wave":"Reparaturrunde {iteration}"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"lifecycle.assurance_initial_wave":"Évaluation initiale","lifecycle.assurance_repair_wave":"Cycle de correction {iteration}"});
+Object.assign(DASHBOARD_MESSAGES.es, {"lifecycle.assurance_initial_wave":"Evaluación inicial","lifecycle.assurance_repair_wave":"Ronda de reparación {iteration}"});

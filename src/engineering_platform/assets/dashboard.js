@@ -2206,8 +2206,21 @@ function lifecycleAssuranceEvidence(step) {
   }
   const list = document.createElement("ol"); list.className = "lifecycle-detail-modal__phase-list";
   const dynamicRows = [];
+  let currentCandidate = null, waveIndex = -1;
   for (const review of reviews) {
     if (!review || typeof review !== "object") continue;
+    const candidate = /^[0-9a-f]{40}$/.test(String(review.candidate_sha || ""))
+      ? String(review.candidate_sha) : "unbound";
+    if (candidate !== currentCandidate) {
+      currentCandidate = candidate;
+      waveIndex += 1;
+      list.append(Object.assign(document.createElement("li"), {
+        className: "lifecycle-detail-modal__assurance-wave-heading",
+        textContent: waveIndex === 0
+          ? t("lifecycle.assurance_initial_wave")
+          : t("lifecycle.assurance_repair_wave", { iteration: waveIndex }),
+      }));
+    }
     const findings = Array.isArray(review.findings) ? review.findings : [];
     const item = document.createElement("li"), heading = document.createElement("strong"),
       status = String(review.status || "UNRESOLVED"), statusPresentation = assuranceStatusPresentation(status);
@@ -6003,6 +6016,37 @@ function promptHistoryMarkdownCommitTimeline(entries) {
   });
   return items.length ? `## ${promptHistoryMarkdownText(t("detail.commit_timeline"))}\n\n${items.join("\n")}\n` : "";
 }
+function promptHistoryMarkdownRepairHistory(payload) {
+  const lifecycle = payload?.lifecycle && typeof payload.lifecycle === "object" ? payload.lifecycle : {};
+  const steps = Array.isArray(lifecycle.steps) ? lifecycle.steps : [];
+  const records = [], seen = new Set();
+  const audits = [
+    ...(Array.isArray(payload?.repair_audit) ? [payload.repair_audit] : []),
+    ...steps.map((step) => Array.isArray(step?.repair_audit) ? step.repair_audit : []),
+  ];
+  for (const audit of audits) {
+    for (const item of audit) {
+      if (!item || typeof item !== "object") continue;
+      const key = String(item.repair_id || [item.iteration, item.commit_sha, item.observed_at].join(":"));
+      if (seen.has(key)) continue;
+      seen.add(key); records.push(item);
+    }
+  }
+  if (!records.length) return "";
+  const rounds = records.map((item, index) => {
+    const iteration = String(item.iteration || index + 1);
+    const outcome = String(item.outcome || "").trim();
+    const table = promptHistoryMarkdownTable([
+      [t("detail.failed_checks"), item.failed_checks],
+      [t("detail.proposed_action"), item.proposed_action],
+      [t("detail.ai_repair_summary"), item.agent_summary],
+      [t("detail.commit"), item.commit_sha === "not_recorded" ? t("detail.not_recorded") : `\`${item.commit_sha}\``],
+      [t("detail.outcome"), t("lifecycle.repair_outcome." + outcome, {}, outcome || t("detail.not_recorded"))],
+    ]);
+    return `### ${promptHistoryMarkdownText(t("lifecycle.assurance_repair_wave", { iteration }))}\n\n${table}`;
+  });
+  return `## ${promptHistoryMarkdownText(t("detail.repair_history"))}\n\n${rounds.join("\n")}`;
+}
 function promptHistoryDetailMarkdown(payload, title) {
   const history = payload?.history && typeof payload.history === "object" ? payload.history : {};
   const execution = payload?.execution && typeof payload.execution === "object" ? payload.execution : {};
@@ -6069,6 +6113,7 @@ function promptHistoryDetailMarkdown(payload, title) {
     promptHistoryMarkdownSection(t("detail.git_commit"), Object.entries(payload?.commits || {})),
     promptHistoryMarkdownPullRequests(payload?.pull_requests),
     promptHistoryMarkdownCommitTimeline(payload?.commit_timeline),
+    promptHistoryMarkdownRepairHistory(payload),
     promptHistoryMarkdownList(t("detail.execution_evidence"), payload?.evidence),
   ].filter(Boolean);
   return [`# ${promptHistoryMarkdownText(history.title || title || promptHistoryDetailRunId)}`, "", t("history.details_description"), "", ...sections].join("\n").trimEnd() + "\n";
@@ -8695,7 +8740,21 @@ function promptDetailReviewersSection(reviewers, { wide = true } = {}) {
 }
 function promptDetailAssuranceReviewsSection(reviews) {
   if (!reviews.length) return null;
-  const fields = reviews.map((review) => {
+  const fields = [];
+  let currentCandidate = null, waveIndex = -1;
+  for (const review of reviews) {
+    const candidateKey = /^[0-9a-f]{40}$/.test(String(review?.candidate_sha || ""))
+      ? String(review.candidate_sha) : "unbound";
+    if (candidateKey !== currentCandidate) {
+      currentCandidate = candidateKey;
+      waveIndex += 1;
+      fields.push(Object.assign(document.createElement("h4"), {
+        className: "prompt-detail-assurance-wave-heading",
+        textContent: waveIndex === 0
+          ? t("lifecycle.assurance_initial_wave")
+          : t("lifecycle.assurance_repair_wave", { iteration: waveIndex }),
+      }));
+    }
     const findings = Array.isArray(review.findings) ? review.findings : [];
     const candidate = String(review.candidate_sha || "").trim();
     const field = detailField(
@@ -8715,8 +8774,8 @@ function promptDetailAssuranceReviewsSection(reviews) {
     for (const line of lines) content.append(Object.assign(document.createElement("span"), {
       className: "prompt-detail-assurance-review__line", textContent: line,
     }));
-    return field;
-  });
+    fields.push(field);
+  }
   return promptDetailCard(
     t("lifecycle.detail_assurance"), fields, true,
     "prompt-detail-card--assurance-reviews",
