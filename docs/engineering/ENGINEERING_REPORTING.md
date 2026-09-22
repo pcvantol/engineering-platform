@@ -260,6 +260,17 @@ report exceeds the advisory input budget, its beginning and terminal end are
 provided with an explicit omission marker; the full report remains immutable
 and authoritative.
 
+The advisory prompt preserves terminal lifecycle and evidence authority. It
+never describes a terminal `BLOCKED` or `FAILED` run as resumable, invents a
+retry or Mission, or treats an observed draft pull request as either absent or
+qualified delivery. It separates repository defects from Execution Host
+evidence-projection defects and delivery qualification gaps. A reviewer that
+did not receive candidate-bound validation evidence cannot turn recorded host
+validation from `PASS` into a product defect. For iterative assurance it uses
+the final review wave for open blockers and treats earlier findings and repair
+commits as progression evidence. Conflicting projections are reported as such
+rather than reconciled by assumption.
+
 The private Engineering Status dashboard exposes an **AI analysis** column in
 Prompt History next to the engineering report. View and download actions are
 available only for the matching verified CENTRAL artifact; an older local file
