@@ -1,5 +1,12 @@
 # macOS Project Agent service lifecycle (B6B)
 
+This per-user contract is unchanged by system-domain EP Server productization.
+The system provisioner does not install, stop, repair, remove or rewrite a
+Project Agent. Multiple OS users may each own an independent Agent, and every
+Agent retains its own provider installations and credentials. See
+[EP Server system-domain multi-instance runtime and provisioner v1](EP_SERVER_SYSTEM_MULTI_INSTANCE_V1.md)
+for the explicit ownership boundary.
+
 ## Installable role boundary
 
 Engineering Platform owns the **Project Agent** artifact and its macOS

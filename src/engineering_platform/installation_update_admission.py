@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import subprocess
 from typing import Mapping
+from typing import Callable
 
 from . import (
     installation_update_activation,
@@ -37,6 +38,9 @@ from .operational_installation_lock import OperationalInstallationLockError
 
 class InstallationUpdateAdmissionError(ValueError):
     """The exact prepared candidate cannot enter EP pre-cleanup execution."""
+
+
+ServiceInterpreterResolver = Callable[[Path], Path | None]
 
 
 @dataclass(frozen=True)
@@ -208,10 +212,15 @@ def _require_activated_service(
     candidate: PreparedUpdateCandidate,
     *,
     service_home: Path | None = None,
+    service_interpreter: ServiceInterpreterResolver | None = None,
 ) -> None:
     """Keep cleanup bound to the exact activated service and data root."""
     try:
-        selected = server_service.configured_interpreter(Path(plan.data_root), home=service_home)
+        selected = (
+            service_interpreter(Path(plan.data_root))
+            if service_interpreter is not None
+            else server_service.configured_interpreter(Path(plan.data_root), home=service_home)
+        )
     except server_service.ServerServiceError as error:
         raise InstallationUpdateAdmissionError(
             "activated service does not bind the admitted candidate"
@@ -338,6 +347,7 @@ def admitted_candidate(
     *,
     runner: object = subprocess.run,
     service_home: Path | None = None,
+    service_interpreter: ServiceInterpreterResolver | None = None,
 ) -> PreparedUpdateCandidate:
     """Reopen the one candidate already admitted for a resumable update.
 
@@ -397,7 +407,10 @@ def admitted_candidate(
         raise InstallationUpdateAdmissionError("execution admission does not bind the exact prepared candidate")
     if state in {"VERIFIED", "CLEANUP_PENDING", "COMPLETE"}:
         _require_retained_candidate_package(candidate, runner=runner)
-        _require_activated_service(plan, candidate, service_home=service_home)
+        _require_activated_service(
+            plan, candidate, service_home=service_home,
+            service_interpreter=service_interpreter,
+        )
     if admission.schema_version == 3:
         if plan.legacy_adoption is None:
             raise InstallationUpdateAdmissionError("execution admission legacy baseline is unavailable")
@@ -426,17 +439,26 @@ def admitted_candidate(
                 _require_pre_activation_provenance(plan, admission, snapshot)
             elif record != expected:
                 raise InstallationUpdateAdmissionError("activated installation does not bind the admitted legacy candidate")
-            elif server_service.configured_interpreter(Path(plan.data_root), home=service_home) != Path(candidate.interpreter):
+            elif (
+                service_interpreter(Path(plan.data_root)) if service_interpreter is not None
+                else server_service.configured_interpreter(Path(plan.data_root), home=service_home)
+            ) != Path(candidate.interpreter):
                 raise InstallationUpdateAdmissionError("activated service does not bind the admitted legacy candidate")
         elif state == "ACTIVATED":
             if record != expected:
                 raise InstallationUpdateAdmissionError("activated installation does not bind the admitted legacy candidate")
-            if server_service.configured_interpreter(Path(plan.data_root), home=service_home) != Path(candidate.interpreter):
+            if (
+                service_interpreter(Path(plan.data_root)) if service_interpreter is not None
+                else server_service.configured_interpreter(Path(plan.data_root), home=service_home)
+            ) != Path(candidate.interpreter):
                 raise InstallationUpdateAdmissionError("activated service does not bind the admitted legacy candidate")
         elif state in {"VERIFIED", "CLEANUP_PENDING", "COMPLETE"}:
             if record != expected and not _finalized_replacement(record, expected):
                 raise InstallationUpdateAdmissionError("activated installation does not bind the admitted legacy candidate")
-            if server_service.configured_interpreter(Path(plan.data_root), home=service_home) != Path(candidate.interpreter):
+            if (
+                service_interpreter(Path(plan.data_root)) if service_interpreter is not None
+                else server_service.configured_interpreter(Path(plan.data_root), home=service_home)
+            ) != Path(candidate.interpreter):
                 raise InstallationUpdateAdmissionError("activated service does not bind the admitted legacy candidate")
         else:
             raise InstallationUpdateAdmissionError("execution admission operation is invalid")

@@ -32,6 +32,10 @@ from .installation_update_plan import InstallationUpdatePlan
 
 
 MigrationRunner = Callable[..., subprocess.CompletedProcess[str]]
+ActivationAction = Callable[
+    [InstallationUpdatePlan, Path, Mapping[str, object] | None],
+    Mapping[str, object],
+]
 
 
 class InstallationUpdateCompositionError(ValueError):
@@ -52,6 +56,8 @@ class InstallationUpdateOperationalActions:
     quiesce: EvidenceAction
     verify: EvidenceAction
     quiesce_preflight: EvidenceAction | None = None
+    activate: ActivationAction | None = None
+    service_interpreter: Callable[[Path], Path | None] | None = None
 
 
 def _evidence(value: Mapping[str, object], step: str) -> dict[str, object]:
@@ -72,11 +78,13 @@ def _admitted_target(
     admission: ExecutionAdmission,
     runner: MigrationRunner,
     service_home: Path | None = None,
+    service_interpreter: Callable[[Path], Path | None] | None = None,
 ) -> Path:
     """Resolve only the durable OI-4c candidate launcher for this operation."""
     try:
         candidate = installation_update_admission.admitted_candidate(
             plan, admission, runner=runner, service_home=service_home,
+            service_interpreter=service_interpreter,
         )
     except installation_update_admission.InstallationUpdateAdmissionError as error:
         raise InstallationUpdateCompositionError("installation update execution admission is invalid") from error
@@ -158,9 +166,13 @@ def _bound_target(
     admission: ExecutionAdmission,
     runner: MigrationRunner,
     service_home: Path | None = None,
+    service_interpreter: Callable[[Path], Path | None] | None = None,
 ) -> Path:
     """Require a recovery attempt to keep the target proven at inventory."""
-    target = _admitted_target(plan, admission=admission, runner=runner, service_home=service_home)
+    target = _admitted_target(
+        plan, admission=admission, runner=runner, service_home=service_home,
+        service_interpreter=service_interpreter,
+    )
     try:
         events = status(Path(plan.data_root), plan.operation_id)["events"]
     except InstallationUpdateOperationError as error:
@@ -184,10 +196,12 @@ def _verify(
     action: EvidenceAction,
     runner: MigrationRunner,
     service_home: Path | None = None,
+    service_interpreter: Callable[[Path], Path | None] | None = None,
 ) -> Mapping[str, object]:
     """Keep verification bound to the runtime activated from the inventoried path."""
     expected = _bound_target(
         plan, admission=admission, runner=runner, service_home=service_home,
+        service_interpreter=service_interpreter,
     )
     try:
         record = operational_installation_record.load(Path(plan.data_root))
@@ -226,6 +240,7 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
     # repeats the same durable lookup while that executor owns the lock.
     admitted_target = _admitted_target(
         plan, admission=admission, runner=migration_runner, service_home=activation_home,
+        service_interpreter=actions.service_interpreter,
     )
     pre_activation_record = _admitted_pre_activation_record(admission)
     try:
@@ -246,6 +261,7 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
             _admitted_target(
                 bound_plan, admission=admission, runner=migration_runner,
                 service_home=activation_home,
+                service_interpreter=actions.service_interpreter,
             )
             return action(bound_plan)
         return invoke
@@ -255,6 +271,7 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
             _admitted_target(
                 bound_plan, admission=admission, runner=migration_runner,
                 service_home=activation_home,
+                service_interpreter=actions.service_interpreter,
             )
             _evidence(actions.quiesce(bound_plan), "retained quiescence")
             return action(bound_plan)
@@ -264,6 +281,7 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
         target = _bound_target(
             bound_plan, admission=admission, runner=migration_runner,
             service_home=activation_home,
+            service_interpreter=actions.service_interpreter,
         )
         _evidence(actions.quiesce(bound_plan), "retained quiescence")
         return installation_update_migration.migrate(
@@ -276,6 +294,7 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
             target=_admitted_target(
                 bound_plan, admission=admission, runner=migration_runner,
                 service_home=activation_home,
+                service_interpreter=actions.service_interpreter,
             ),
             admission=admission,
             action=actions.inventory,
@@ -284,16 +303,29 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
         quiesce=guarded(actions.quiesce),
         backup=after_quiescence(installation_update_backup.backup),
         migrate=migrate,
-        activate=lambda bound_plan: installation_update_activation.activate(
-            bound_plan,
-            interpreter=_bound_target(
-                bound_plan, admission=admission, runner=migration_runner,
-                service_home=activation_home,
-            ),
-            pre_activation_record=pre_activation_record,
-            home=activation_home,
-            runner=activation_runner,
-            package_runner=migration_runner,
+        activate=lambda bound_plan: (
+            actions.activate(
+                bound_plan,
+                _bound_target(
+                    bound_plan, admission=admission, runner=migration_runner,
+                    service_home=activation_home,
+                    service_interpreter=actions.service_interpreter,
+                ),
+                pre_activation_record,
+            )
+            if actions.activate is not None
+            else installation_update_activation.activate(
+                bound_plan,
+                interpreter=_bound_target(
+                    bound_plan, admission=admission, runner=migration_runner,
+                    service_home=activation_home,
+                    service_interpreter=actions.service_interpreter,
+                ),
+                pre_activation_record=pre_activation_record,
+                home=activation_home,
+                runner=activation_runner,
+                package_runner=migration_runner,
+            )
         ),
         verify=lambda bound_plan: _verify(
             bound_plan,
@@ -301,6 +333,7 @@ def compose(plan: InstallationUpdatePlan, *, admission: ExecutionAdmission,
             action=actions.verify,
             runner=migration_runner,
             service_home=activation_home,
+            service_interpreter=actions.service_interpreter,
         ),
         expected_activation=expected_activation,
         quiesce_preflight=(

@@ -130,7 +130,11 @@ def _paths(plan: InstallationUpdatePlan) -> _OperationPaths:
     # the staged filename itself PEP 427-compatible so isolated ``pip`` can
     # install it without relying on an original temporary filename.
     staged = download / f"engineering_platform-{plan.target_version}-py3-none-any.whl"
-    candidate = operation / _CANDIDATE_DIRECTORY
+    candidate = (
+        Path(plan.target_runtime_venv).expanduser().absolute()
+        if plan.target_runtime_venv is not None
+        else operation / _CANDIDATE_DIRECTORY
+    )
     paths = _OperationPaths(
         root=root,
         operation=operation,
@@ -145,11 +149,12 @@ def _paths(plan: InstallationUpdatePlan) -> _OperationPaths:
         ("update operation", paths.operation),
         ("operation download directory", paths.download),
         ("staged operation artifact", paths.staged_artifact),
-        ("candidate runtime", paths.candidate),
         ("operation pip cache", paths.pip_cache),
         ("candidate runtime marker", paths.marker),
     ):
         _contained(root, path, label)
+    if plan.target_runtime_venv is None:
+        _contained(root, paths.candidate, "candidate runtime")
     return paths
 
 
@@ -250,11 +255,51 @@ def _ensure_marker(plan: InstallationUpdatePlan, paths: _OperationPaths, staged:
         _read_marker(plan, paths, staged)
         return
     if paths.candidate.exists() or paths.candidate.is_symlink():
-        raise InstallationUpdatePreparationError("candidate runtime exists without operation identity")
+        if plan.target_runtime_venv is None:
+            raise InstallationUpdatePreparationError("candidate runtime exists without operation identity")
+        _read_runtime_slot_receipt(plan, paths)
     try:
         _write_marker(paths.marker, expected)
     except OSError as error:
         raise InstallationUpdatePreparationError("candidate runtime marker could not be retained") from error
+
+
+def _runtime_slot_receipt(plan: InstallationUpdatePlan, paths: _OperationPaths) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "version": plan.target_version,
+        "artifact_digest": plan.target_digest,
+        "source_revision": plan.target_source_revision,
+        "venv": str(paths.candidate),
+    }
+
+
+def _runtime_slot_receipt_path(paths: _OperationPaths) -> Path:
+    return paths.candidate.parent / "runtime-slot.json"
+
+
+def _read_runtime_slot_receipt(plan: InstallationUpdatePlan, paths: _OperationPaths) -> None:
+    path = _runtime_slot_receipt_path(paths)
+    if path.is_symlink() or not path.is_file():
+        raise InstallationUpdatePreparationError("shared runtime slot lacks exact artifact identity")
+    try:
+        observed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallationUpdatePreparationError("shared runtime slot identity is unreadable") from error
+    if observed != _runtime_slot_receipt(plan, paths):
+        raise InstallationUpdatePreparationError("shared runtime slot identity mismatch")
+
+
+def _ensure_runtime_slot_receipt(plan: InstallationUpdatePlan, paths: _OperationPaths) -> None:
+    if plan.target_runtime_venv is None:
+        return
+    path = _runtime_slot_receipt_path(paths)
+    expected = _runtime_slot_receipt(plan, paths)
+    if path.exists() or path.is_symlink():
+        _read_runtime_slot_receipt(plan, paths)
+        return
+    _write_marker(path, expected)
+    _read_runtime_slot_receipt(plan, paths)
 
 
 def _verified_candidate(
@@ -345,6 +390,10 @@ def staged_execution_plan(
             target_version=plan.target_version,
             target_digest=plan.target_digest,
             target_source_revision=plan.target_source_revision,
+            target_runtime_venv=(
+                None if plan.target_runtime_venv is None
+                else Path(plan.target_runtime_venv)
+            ),
         )
     except installation_update_plan.InstallationUpdatePlanError as error:
         raise InstallationUpdatePreparationError("staged candidate cannot be rebound to the registered installation") from error
@@ -352,6 +401,7 @@ def staged_execution_plan(
         "operation_id", "installation_id", "data_root", "current_version",
         "current_digest", "target_version", "target_digest",
         "target_source_revision", "cleanup_targets", "steps", "legacy_adoption",
+        "target_runtime_venv",
     )
     if any(getattr(rebound, field) != getattr(plan, field) for field in unchanged):
         raise InstallationUpdatePreparationError("registered installation changed before staged candidate binding")
@@ -517,6 +567,7 @@ def prepare_candidate(
         _ensure_marker(plan, paths, staged)
         _create_or_recover_venv(paths, builder=builder, runner=runner)
         package = _install_or_verify_candidate(plan, paths, staged=staged, runner=runner)
+        _ensure_runtime_slot_receipt(plan, paths)
         return PreparedUpdateCandidate(
             operation_id=plan.operation_id,
             installation_id=plan.installation_id,

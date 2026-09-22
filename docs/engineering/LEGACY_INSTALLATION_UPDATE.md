@@ -1,5 +1,10 @@
 # Legacy operational installation update
 
+This document covers only adoption/update of the historical per-user singleton.
+New system-domain instances reuse the same `installation_update_*` durable
+engine through EP-owned service and activation adapters; their current contract
+is [EP Server system-domain multi-instance runtime and provisioner v1](EP_SERVER_SYSTEM_MULTI_INSTANCE_V1.md).
+
 This maintenance route adopts one artifact-identified EP user-service runtime
 for one exact update. It does not reconstruct a historical source revision and
 does not create an operational installation record for the old release. The

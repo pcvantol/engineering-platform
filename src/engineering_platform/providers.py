@@ -347,6 +347,7 @@ class PrivateRemoteAccessProvider(Protocol):
 
 
 MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT = "EP_MANAGED_CODEX_CLI_PREFIX"
+MANAGED_GITHUB_CLI_EXECUTABLE_ENVIRONMENT = "EP_GITHUB_CLI_EXECUTABLE"
 
 
 def default_engineering_platform_codex_cli_prefix() -> Path:
@@ -378,6 +379,23 @@ def codex_cli_executable() -> str | None:
     if managed.is_file() and os.access(managed, os.X_OK):
         return str(managed)
     return None
+
+
+def github_cli_executable() -> str | None:
+    """Select an instance-owned gh executable when the service pins one.
+
+    User-owned Project Agents retain their ordinary user/PATH behavior.  A
+    system Server LaunchDaemon always receives the environment variable and
+    therefore fails closed instead of falling back when its owned executable
+    is missing or substituted.
+    """
+    configured = os.environ.get(MANAGED_GITHUB_CLI_EXECUTABLE_ENVIRONMENT)
+    if configured is not None:
+        candidate = Path(configured).expanduser()
+        if candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.absolute())
+        return None
+    return shutil.which("gh")
 
 
 class ProviderOutputLimitExceeded(RuntimeError):
@@ -576,7 +594,10 @@ class GitHubProvider:
         return ProviderStatus("github", "configured", qualified, remote.stdout.strip() if qualified else "GitHub origin unavailable")
 
     def github(self, *args: str) -> str:
-        completed = subprocess.run(("gh", *args), text=True, capture_output=True, check=False)
+        executable = github_cli_executable()
+        if executable is None:
+            raise RuntimeError("Engineering Platform GitHub CLI is unavailable")
+        completed = subprocess.run((executable, *args), text=True, capture_output=True, check=False)
         if completed.returncode:
             raise RuntimeError(completed.stderr.strip() or "GitHub provider command failed")
         return completed.stdout.strip()

@@ -1,13 +1,13 @@
-"""Pure topology and runtime-slot planning for the future EP provisioner.
+"""Pure topology and runtime-slot planning for the EP system provisioner.
 
-The system-domain EP provisioner will need one machine-scoped directory tree
+The system-domain EP provisioner uses one machine-scoped directory tree
 before it can safely create a venv, acquire a lock, retain recovery material or
 change the Server LaunchDaemon.  This module defines that tree and the exact,
 digest-pinned target slot without creating any directory, reading an installed
 runtime, acquiring a lock, or invoking a service command.
 
 It is deliberately not an installer.  In particular, an operation-scoped
-candidate is never a valid selected runtime here: a future mutator must build a
+candidate is never a valid selected runtime here: the mutator must build a
 target venv directly in its final slot because a venv must not be moved after
 its entry points have been created.
 """
@@ -15,6 +15,7 @@ its entry points have been created.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 import re
 from typing import Mapping
@@ -33,13 +34,48 @@ _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SLOT_ID = re.compile(r"^sha256-[0-9a-f]{64}$")
 _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 _ACCOUNT = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
+_INSTANCE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{7,127}$")
+_INSTANCE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}$")
 _PYTHON = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
 _MODES = frozenset({"INSTALL", "UPDATE"})
 _RECOVERY_RETENTION = "REQUIRED_UNTIL_EXPLICIT_RECOVERY_DISPOSITION"
 
 
 class SystemInstallationTopologyError(ValueError):
-    """A future EP provisioner has no closed, safe path topology."""
+    """The EP provisioner has no closed, safe path topology."""
+
+
+def validate_instance_id(value: object) -> str:
+    """Return one stable opaque instance identity safe on macOS filesystems.
+
+    Instance identifiers are deliberately not host names, display labels or
+    service labels.  Lower-case portable spelling also prevents two lexical
+    identities from aliasing on the usual case-insensitive system volume.
+    """
+    if not isinstance(value, str) or _INSTANCE_ID.fullmatch(value) is None:
+        raise SystemInstallationTopologyError("EP Server instance ID is invalid")
+    return value
+
+
+def validate_instance_label(value: object) -> str:
+    """Validate display-only metadata without turning it into authority."""
+    if not isinstance(value, str) or _INSTANCE_LABEL.fullmatch(value) is None:
+        raise SystemInstallationTopologyError("EP Server instance label is invalid")
+    return value
+
+
+def instance_service_label(instance_id: str) -> str:
+    """Derive a collision-resistant launchd label from the opaque identity."""
+    identity = validate_instance_id(instance_id)
+    suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    return f"com.engineeringplatform.server.instance-{suffix}"
+
+
+def instance_service_account(instance_id: str) -> str:
+    """Derive the default non-root account for one Server instance."""
+    identity = validate_instance_id(instance_id)
+    suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"_ep_{suffix}"
 
 
 def _directory(value: str | Path, *, label: str) -> Path:
@@ -238,8 +274,8 @@ def system_installation_topology(
 ) -> SystemInstallationTopology:
     """Derive the closed EP system tree from an explicit product root.
 
-    The root is intentionally an explicit future-provisioner input.  This
-    source increment does not bless an existing user root as machine-owned,
+    The root is intentionally an explicit provisioner input.  This pure
+    planning function does not bless an existing user root as machine-owned,
     create the account, or establish filesystem ownership.
     """
     root = _directory(system_root, label="EP system installation root")
@@ -260,6 +296,241 @@ def system_installation_topology(
         service_account=service_account,
     )
     return topology
+
+
+@dataclass(frozen=True)
+class SystemInstanceTopology:
+    """All mutable roots owned by exactly one system-domain Server instance.
+
+    ``product`` owns immutable digest slots and the artifact coordination lock.
+    Everything below ``root`` is instance-owned and may be quiesced, migrated,
+    repaired or removed without changing another instance.
+    """
+
+    product: SystemInstallationTopology
+    instance_id: str
+    display_label: str
+    root: Path
+    data_root: Path
+    operations_root: Path
+    recovery_root: Path
+    backups_root: Path
+    cache_root: Path
+    logs_root: Path
+    providers_root: Path
+    lifecycle_lock: Path
+    descriptor: Path
+    service_label: str
+    service_account: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.product, SystemInstallationTopology):
+            raise SystemInstallationTopologyError("EP Server instance topology is invalid")
+        identity = validate_instance_id(self.instance_id)
+        validate_instance_label(self.display_label)
+        expected_root = self.product.system_root / "instances" / identity
+        expected = {
+            "root": expected_root,
+            "data_root": expected_root / "data",
+            "operations_root": expected_root / "operations",
+            "recovery_root": expected_root / "recovery",
+            "backups_root": expected_root / "backups",
+            "cache_root": expected_root / "cache",
+            "logs_root": expected_root / "logs",
+            "providers_root": expected_root / "providers",
+            "lifecycle_lock": expected_root / "locks" / "lifecycle.lock",
+            "descriptor": expected_root / "instance.json",
+        }
+        if any(getattr(self, name) != value for name, value in expected.items()):
+            raise SystemInstallationTopologyError("EP Server instance topology is invalid")
+        if self.service_label != instance_service_label(identity):
+            raise SystemInstallationTopologyError("EP Server instance service label is invalid")
+        if (
+            not isinstance(self.service_account, str)
+            or self.service_account == "root"
+            or _ACCOUNT.fullmatch(self.service_account) is None
+        ):
+            raise SystemInstallationTopologyError("EP Server instance service account is invalid")
+        owned = (
+            self.data_root,
+            self.operations_root,
+            self.recovery_root,
+            self.backups_root,
+            self.cache_root,
+            self.logs_root,
+            self.providers_root,
+            self.lifecycle_lock.parent,
+        )
+        if len(set(owned)) != len(owned) or any(not _inside(expected_root, path) for path in owned):
+            raise SystemInstallationTopologyError("EP Server instance topology is invalid")
+        if _inside(expected_root, self.product.runtime_root):
+            raise SystemInstallationTopologyError("EP Server shared runtime topology is invalid")
+
+    @property
+    def artifact_lock(self) -> Path:
+        """The only product-wide lock; it coordinates immutable slot bytes."""
+        return self.product.system_root / "locks" / "artifacts.lock"
+
+    def operation_lock(self, operation_id: str) -> Path:
+        operation, _staging, _recovery = _instance_operation_paths(self, operation_id)
+        return operation / "operation.lock"
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "instance_id": self.instance_id,
+            "display_label": self.display_label,
+            "product_root": str(self.product.system_root),
+            "instance_root": str(self.root),
+            "data_root": str(self.data_root),
+            "operations_root": str(self.operations_root),
+            "recovery_root": str(self.recovery_root),
+            "backups_root": str(self.backups_root),
+            "cache_root": str(self.cache_root),
+            "logs_root": str(self.logs_root),
+            "providers_root": str(self.providers_root),
+            "lifecycle_lock": str(self.lifecycle_lock),
+            "artifact_lock": str(self.artifact_lock),
+            "descriptor": str(self.descriptor),
+            "service_label": self.service_label,
+            "service_account": self.service_account,
+        }
+
+
+def system_instance_topology(
+    product: SystemInstallationTopology,
+    *,
+    instance_id: str,
+    display_label: str,
+    service_account: str | None = None,
+) -> SystemInstanceTopology:
+    """Derive one closed instance tree without creating or inspecting it."""
+    if not isinstance(product, SystemInstallationTopology):
+        raise SystemInstallationTopologyError("EP Server product topology is invalid")
+    identity = validate_instance_id(instance_id)
+    validate_instance_label(display_label)
+    root = product.system_root / "instances" / identity
+    return SystemInstanceTopology(
+        product=product,
+        instance_id=identity,
+        display_label=display_label,
+        root=root,
+        data_root=root / "data",
+        operations_root=root / "operations",
+        recovery_root=root / "recovery",
+        backups_root=root / "backups",
+        cache_root=root / "cache",
+        logs_root=root / "logs",
+        providers_root=root / "providers",
+        lifecycle_lock=root / "locks" / "lifecycle.lock",
+        descriptor=root / "instance.json",
+        service_label=instance_service_label(identity),
+        service_account=service_account or instance_service_account(identity),
+    )
+
+
+def _instance_operation_paths(
+    topology: SystemInstanceTopology, operation_id: str,
+) -> tuple[Path, tuple[Path, ...], Path]:
+    if not isinstance(topology, SystemInstanceTopology):
+        raise SystemInstallationTopologyError("EP Server instance topology is invalid")
+    if not isinstance(operation_id, str) or _OPERATION.fullmatch(operation_id) is None:
+        raise SystemInstallationTopologyError("provisioning operation ID is invalid")
+    operation = topology.operations_root / operation_id
+    staging = tuple(operation / name for name in ("build", "download", "pip-cache"))
+    recovery = topology.recovery_root / operation_id
+    if (
+        not _inside(topology.operations_root, operation)
+        or not _inside(topology.recovery_root, recovery)
+        or any(not _inside(operation, path) for path in staging)
+    ):
+        raise SystemInstallationTopologyError("provisioning operation topology is invalid")
+    return operation, staging, recovery
+
+
+@dataclass(frozen=True)
+class InstanceProvisioningTransition:
+    """Pure, exact-instance install/update plan using shared runtime bytes."""
+
+    mode: str
+    operation_id: str
+    instance: SystemInstanceTopology
+    target: RuntimeSlot
+    current_interpreter: Path | None
+    operation_root: Path
+    staging_targets: tuple[Path, ...]
+    recovery_root: Path
+
+    def __post_init__(self) -> None:
+        if self.mode not in _MODES:
+            raise SystemInstallationTopologyError("instance provisioning transition is invalid")
+        if not isinstance(self.instance, SystemInstanceTopology):
+            raise SystemInstallationTopologyError("instance provisioning transition is invalid")
+        if self.target.topology != self.instance.product:
+            raise SystemInstallationTopologyError("instance provisioning transition is invalid")
+        operation, staging, recovery = _instance_operation_paths(self.instance, self.operation_id)
+        if (self.operation_root, self.staging_targets, self.recovery_root) != (operation, staging, recovery):
+            raise SystemInstallationTopologyError("instance provisioning transition is invalid")
+        if (self.mode == "INSTALL") != (self.current_interpreter is None):
+            raise SystemInstallationTopologyError("instance provisioning transition is invalid")
+        if self.current_interpreter is not None:
+            current = _current_runtime(self.instance.product, self.current_interpreter)
+            if current != self.current_interpreter or _inside(self.target.root, current):
+                raise SystemInstallationTopologyError("instance provisioning transition is invalid")
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "component": COMPONENT,
+            "mode": self.mode,
+            "operation_id": self.operation_id,
+            "instance": self.instance.payload(),
+            "target": self.target.payload(),
+            "current_interpreter": None if self.current_interpreter is None else str(self.current_interpreter),
+            "operation": {
+                "root": str(self.operation_root),
+                "lock": str(self.instance.operation_lock(self.operation_id)),
+                "staging_targets": [str(path) for path in self.staging_targets],
+            },
+            "recovery": {"root": str(self.recovery_root), "retention": _RECOVERY_RETENTION},
+            "activation": {
+                "instance_id": self.instance.instance_id,
+                "service_label": self.instance.service_label,
+                "interpreter": str(self.target.interpreter),
+                "data_root": str(self.instance.data_root),
+                "state": "NOT_EXECUTED",
+            },
+            "coordination": {
+                "instance_lifecycle_lock": str(self.instance.lifecycle_lock),
+                "shared_artifact_lock": str(self.instance.artifact_lock),
+                "other_instances_mutable_state": "OUT_OF_SCOPE",
+            },
+        }
+
+
+def plan_instance_install(
+    instance: SystemInstanceTopology, *, operation_id: str, release: ReleaseIdentity,
+) -> InstanceProvisioningTransition:
+    target = runtime_slot(instance.product, release)
+    operation, staging, recovery = _instance_operation_paths(instance, operation_id)
+    return InstanceProvisioningTransition(
+        "INSTALL", operation_id, instance, target, None, operation, staging, recovery,
+    )
+
+
+def plan_instance_update(
+    instance: SystemInstanceTopology,
+    *,
+    operation_id: str,
+    release: ReleaseIdentity,
+    current_interpreter: str | Path,
+) -> InstanceProvisioningTransition:
+    target = runtime_slot(instance.product, release)
+    current = _current_runtime(instance.product, current_interpreter)
+    operation, staging, recovery = _instance_operation_paths(instance, operation_id)
+    return InstanceProvisioningTransition(
+        "UPDATE", operation_id, instance, target, current, operation, staging, recovery,
+    )
 
 
 @dataclass(frozen=True)

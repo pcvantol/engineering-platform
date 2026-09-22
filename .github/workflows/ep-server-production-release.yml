@@ -81,12 +81,24 @@ jobs:
       - name: Build exact production distributions
         env:
           ENGINEERING_PLATFORM_RELEASE_MODE: production
+          VERSION: ${{ needs.release-context.outputs.version }}
         run: |
           python3 tools/qualification/build_platform_wheel.py --source-root . --version "${{ needs.release-context.outputs.version }}" --sdist
           test -z "$(git diff --name-only)"
           python3 -m twine check dist/*
           sha256sum dist/* > dist/SHA256SUMS
           python3 tools/qualification/production_wheel_qualification.py --source-root . --wheel "dist/engineering_platform-${{ needs.release-context.outputs.version }}-py3-none-any.whl" --version "${{ needs.release-context.outputs.version }}" --evidence dist/production-wheel-qualification.json
+          BASELINE_VERSION="$(python3 - <<'PY'
+          import os
+          major, minor, patch = map(int, os.environ['VERSION'].split('.'))
+          if patch == 0:
+              raise SystemExit('system multi-instance release qualification requires a published patch baseline')
+          print(f'{major}.{minor}.{patch - 1}')
+          PY
+          )"
+          mkdir dist-baseline
+          python3 -m pip download --disable-pip-version-check --no-cache-dir --no-deps --only-binary=:all: --index-url https://pypi.org/simple --dest dist-baseline "engineering-platform==$BASELINE_VERSION"
+          python3 tools/qualification/system_multi_instance_installed_artifact.py --wheel "dist/engineering_platform-${{ needs.release-context.outputs.version }}-py3-none-any.whl" --version "${{ needs.release-context.outputs.version }}" --baseline-wheel "dist-baseline/engineering_platform-$BASELINE_VERSION-py3-none-any.whl" --baseline-version "$BASELINE_VERSION" --evidence dist/system-multi-instance-installed-artifact.json
       - name: Run required source, API and installed-ingress qualification
         run: |
           python3 -m pip install "dist/engineering_platform-${{ needs.release-context.outputs.version }}-py3-none-any.whl"
@@ -439,6 +451,18 @@ jobs:
           cd "$RUNNER_TEMP"
           PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 "$RUNNER_TEMP/ep-registry-readback/bin/python" -I -c 'from importlib.metadata import version; from engineering_platform.platform_version import CURRENT_PLATFORM_VERSION; import engineering_platform; import pathlib; assert version("engineering-platform") == CURRENT_PLATFORM_VERSION == __import__("os").environ["VERSION"]; assert "/site-packages/engineering_platform/" in str(pathlib.Path(engineering_platform.__file__).resolve())'
           "$RUNNER_TEMP/ep-registry-readback/bin/engineering-platform-server" --help >/dev/null
+          cd "$GITHUB_WORKSPACE"
+          BASELINE_VERSION="$(python3 - <<'PY'
+          import os
+          major, minor, patch = map(int, os.environ['VERSION'].split('.'))
+          if patch == 0:
+              raise SystemExit('system multi-instance registry qualification requires a published patch baseline')
+          print(f'{major}.{minor}.{patch - 1}')
+          PY
+          )"
+          mkdir registry-readback-baseline
+          python3 -m pip download --disable-pip-version-check --no-cache-dir --no-deps --only-binary=:all: --index-url https://pypi.org/simple --dest registry-readback-baseline "engineering-platform==$BASELINE_VERSION"
+          python3 tools/qualification/system_multi_instance_installed_artifact.py --wheel "registry-readback/engineering_platform-$VERSION-py3-none-any.whl" --version "$VERSION" --baseline-wheel "registry-readback-baseline/engineering_platform-$BASELINE_VERSION-py3-none-any.whl" --baseline-version "$BASELINE_VERSION" --evidence "release-input/release-operation/system-multi-instance-registry-readback.json"
       - name: Persist immutable PyPI readback as PUBLISHED evidence
         env:
           GH_TOKEN: ${{ github.token }}
