@@ -1909,6 +1909,93 @@ class ClientContractTest(unittest.TestCase):
 
         self.assertEqual(provider.timeouts, [5 * 60, 10 * 60, 10 * 60])
 
+    def test_mandatory_reviewer_schema_is_exactly_bound_to_delivery_role_and_open_findings(self) -> None:
+        surfaces = mandatory_coverage_surfaces("quality", "IMPLEMENTATION")
+        finding_ids = ("run-1:quality:1:Q-001", "run-1:quality:1:Q-002")
+        response = {
+            "contract_version": MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+            "contribution": "Complete integral review.",
+            "recommendations": [],
+            "findings": [],
+            "coverage": {
+                surface: {"status": "REVIEWED", "evidence_ref": f"evidence:{surface}"}
+                for surface in reversed(surfaces)
+            },
+            "finding_dispositions": {
+                finding_id: {"disposition": "RESOLVED", "evidence_ref": f"evidence:{finding_id}"}
+                for finding_id in reversed(finding_ids)
+            },
+        }
+
+        class Provider:
+            def __init__(self) -> None:
+                self.schema: dict[str, object] | None = None
+
+            def invoke(self, _: Path, arguments: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                schema_path = Path(arguments[arguments.index("--output-schema") + 1])
+                self.schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                output = json.dumps({
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": json.dumps(response)},
+                })
+                return subprocess.CompletedProcess(arguments, 0, output, "")
+
+        provider = Provider()
+        selection = ReviewerSelection(
+            "quality",
+            "mandatory implementation assurance",
+            1.0,
+            required_coverage_surfaces=surfaces,
+            required_finding_ids=finding_ids,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            result = CodexCliClient(provider).review(Path(temporary), selection, "objective")  # type: ignore[arg-type]
+
+        self.assertFalse(result.failed)
+        self.assertEqual(tuple(item["surface"] for item in result.coverage), surfaces)
+        self.assertEqual(tuple(item["finding_id"] for item in result.finding_dispositions), finding_ids)
+        self.assertIsNotNone(provider.schema)
+        coverage_schema = provider.schema["properties"]["coverage"]  # type: ignore[index]
+        disposition_schema = provider.schema["properties"]["finding_dispositions"]  # type: ignore[index]
+        self.assertEqual(coverage_schema["required"], list(surfaces))
+        self.assertEqual(set(coverage_schema["properties"]), set(surfaces))
+        self.assertFalse(coverage_schema["additionalProperties"])
+        self.assertEqual(disposition_schema["required"], list(finding_ids))
+        self.assertEqual(set(disposition_schema["properties"]), set(finding_ids))
+        self.assertFalse(disposition_schema["additionalProperties"])
+
+    def test_mandatory_reviewer_adapter_rejects_schema_bypassing_incomplete_coverage(self) -> None:
+        surfaces = mandatory_coverage_surfaces("security", "IMPLEMENTATION")
+        response = {
+            "contract_version": MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+            "contribution": "Incomplete review.",
+            "recommendations": [],
+            "findings": [],
+            "coverage": {
+                surfaces[0]: {"status": "REVIEWED", "evidence_ref": "one file"},
+            },
+            "finding_dispositions": {},
+        }
+
+        class Provider:
+            def invoke(self, _: Path, arguments: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                output = json.dumps({
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": json.dumps(response)},
+                })
+                return subprocess.CompletedProcess(arguments, 0, output, "")
+
+        selection = ReviewerSelection(
+            "security",
+            "mandatory implementation assurance",
+            1.0,
+            required_coverage_surfaces=surfaces,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            result = CodexCliClient(Provider()).review(Path(temporary), selection, "objective")  # type: ignore[arg-type]
+        self.assertTrue(result.failed)
+        self.assertEqual(result.coverage, ())
+
     @unittest.skipUnless(
         os.environ.get("ENGINEERING_PLATFORM_QUALIFY_CODEX_RULE_ISOLATION") == "1",
         "requires the managed authenticated Codex CLI",
@@ -3713,9 +3800,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_rereview_closes_each_prior_blocker_explicitly_with_integral_evidence(self) -> None:
         objectives: list[str] = []
+        contracts: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         agent = FakeAgent(AgentResult("COMPLETE"))
         def capture(_root: Path, selection: object, objective: str, evidence: object = None) -> ReviewerResult:
             objectives.append(objective)
+            contracts.append((
+                getattr(selection, "reviewer"),
+                getattr(selection, "required_coverage_surfaces"),
+                getattr(selection, "required_finding_ids"),
+            ))
             return mandatory_review_result(getattr(selection, "reviewer"), objective)
         agent.review = capture  # type: ignore[method-assign]
         runner = EngineeringRunner(
@@ -3757,6 +3850,16 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(reviewed.assurance_resolutions[0]["finding_id"], prior_finding_id)
         self.assertIn(prior_finding_id, objectives[0])
         self.assertIn("maintenance_recovery_cleanup", objectives[0])
+        self.assertEqual(contracts[0], (
+            "quality",
+            mandatory_coverage_surfaces("quality", "IMPLEMENTATION"),
+            (prior_finding_id,),
+        ))
+        self.assertEqual(contracts[1], (
+            "security",
+            mandatory_coverage_surfaces("security", "IMPLEMENTATION"),
+            (),
+        ))
 
     def test_rereview_keeps_an_explicitly_open_prior_blocker_in_the_ledger(self) -> None:
         agent = FakeAgent(AgentResult("COMPLETE"))
