@@ -1,12 +1,11 @@
 """macOS system-domain LaunchDaemon contract for the EP Server.
 
 The installed EP Server is an operational product role, not a login-session
-helper.  This module owns the narrow *read-only* system-service foundation for
-that role: one fixed ``LaunchDaemon`` label, an explicit service account, an
-absolute installed interpreter and one normalized data root.  It deliberately
-does *not* write or bootstrap a daemon, select a wheel, create an account,
-migrate CENTRAL, or remove a legacy user service.  Those are separate,
-product-owned installation operations.
+helper. This module retains the legacy read-only singleton observer and owns
+the instance-specific service definitions/readback used by the EP system
+provisioner. Every new instance binds a derived ``LaunchDaemon`` label, an
+explicit service account, an absolute installed interpreter and one normalized
+data root. Privileged registration remains in the provisioner controller.
 
 The current inventory is deliberately evidence rather than a uniqueness
 assertion.  It inspects the system LaunchDaemon directory and caller-declared
@@ -18,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import errno
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -26,6 +26,7 @@ import re
 import stat
 from typing import Any, Callable, Iterable, Mapping
 from xml.parsers import expat
+
 
 
 LABEL = "com.engineeringplatform.server"
@@ -86,6 +87,34 @@ class SystemServerService:
     interpreter: Path
     service_account: str
     label: str = LABEL
+
+
+@dataclass(frozen=True)
+class InstanceSystemServicePaths:
+    """LaunchDaemon and log paths for one exact system Server instance."""
+
+    instance: system_installation_topology.SystemInstanceTopology
+    launch_daemons_dir: Path
+
+    @property
+    def plist_path(self) -> Path:
+        return self.launch_daemons_dir / f"{self.instance.service_label}.plist"
+
+    @property
+    def stderr_log(self) -> Path:
+        return self.instance.logs_root / "server-launchdaemon.err.log"
+
+
+@dataclass(frozen=True)
+class InstanceSystemServerService:
+    """Exact immutable runtime selected for one opaque instance identity."""
+
+    instance_id: str
+    data_root: Path
+    interpreter: Path
+    service_account: str
+    label: str
+    provider_environment: Mapping[str, str]
 
 
 AccountLookup = Callable[[str], Any]
@@ -216,6 +245,80 @@ def plist_payload(paths: SystemServicePaths, definition: SystemServerService) ->
     }
 
 
+def instance_default_paths(
+    instance: system_installation_topology.SystemInstanceTopology,
+    launch_daemons_dir: str | Path | None = None,
+) -> InstanceSystemServicePaths:
+    from . import system_installation_topology as topology_module
+
+    if not isinstance(instance, topology_module.SystemInstanceTopology):
+        raise SystemServerServiceError("EP Server instance topology is invalid.")
+    return InstanceSystemServicePaths(
+        instance,
+        _absolute_directory(
+            SYSTEM_LAUNCH_DAEMONS_DIRECTORY if launch_daemons_dir is None else launch_daemons_dir,
+            label="LaunchDaemon directory",
+        ),
+    )
+
+
+def instance_service_definition(
+    instance: system_installation_topology.SystemInstanceTopology,
+    *,
+    interpreter: str | Path,
+) -> InstanceSystemServerService:
+    """Bind one installed runtime and provider environment to one instance."""
+    from . import system_installation_topology as topology_module
+    from . import system_provider_context as provider_context_module
+
+    if not isinstance(instance, topology_module.SystemInstanceTopology):
+        raise SystemServerServiceError("EP Server instance topology is invalid.")
+    try:
+        environment = provider_context_module.server_environment(instance)
+    except provider_context_module.SystemProviderContextError as error:
+        raise SystemServerServiceError("EP Server provider context is invalid.") from error
+    return InstanceSystemServerService(
+        instance_id=instance.instance_id,
+        data_root=instance.data_root,
+        interpreter=installed_interpreter(interpreter),
+        service_account=instance.service_account,
+        label=instance.service_label,
+        provider_environment=environment,
+    )
+
+
+def instance_plist_payload(
+    paths: InstanceSystemServicePaths,
+    definition: InstanceSystemServerService,
+) -> dict[str, object]:
+    """Return the closed, cold-boot-safe LaunchDaemon payload for one instance."""
+    expected = instance_service_definition(paths.instance, interpreter=definition.interpreter)
+    if expected != definition:
+        raise SystemServerServiceError("EP Server instance service definition does not match its owned paths.")
+    return {
+        "Label": definition.label,
+        "ProgramArguments": [
+            str(definition.interpreter), "-m", "engineering_platform.server", "serve",
+            "--data-root", str(definition.data_root),
+            "--expected-instance-id", definition.instance_id,
+        ],
+        "WorkingDirectory": str(definition.data_root),
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "ProcessType": "Background",
+        "UserName": definition.service_account,
+        "EnvironmentVariables": {
+            **_ENVIRONMENT,
+            "HOME": str(paths.instance.root / "service-home"),
+            "EP_SERVER_DATA_ROOT": str(definition.data_root),
+            "EP_SERVER_INSTANCE_ID": definition.instance_id,
+            **dict(definition.provider_environment),
+        },
+        "StandardOutPath": "/dev/null",
+        "StandardErrorPath": str(paths.stderr_log),
+    }
+
+
 def _reference_from_payload(payload: Mapping[str, object], *, plist_path: Path, domain: str) -> dict[str, str] | None:
     """Extract only a strict EP Server invocation from an arbitrary plist.
 
@@ -224,11 +327,20 @@ def _reference_from_payload(payload: Mapping[str, object], *, plist_path: Path, 
     canonical system definition.
     """
     arguments = payload.get("ProgramArguments")
-    if not isinstance(arguments, list) or len(arguments) != 6 or not all(isinstance(value, str) for value in arguments):
+    if not isinstance(arguments, list) or len(arguments) not in {6, 8} or not all(isinstance(value, str) for value in arguments):
         return None
-    interpreter, module_flag, module_name, command, root_flag, raw_root = arguments
+    interpreter, module_flag, module_name, command, root_flag, raw_root, *instance_arguments = arguments
     if (module_flag, module_name, command, root_flag) != ("-m", "engineering_platform.server", "serve", "--data-root"):
         return None
+    instance_id: str | None = None
+    if instance_arguments:
+        if len(instance_arguments) != 2 or instance_arguments[0] != "--expected-instance-id":
+            return None
+        try:
+            from . import system_installation_topology as topology_module
+            instance_id = topology_module.validate_instance_id(instance_arguments[1])
+        except topology_module.SystemInstallationTopologyError:
+            return None
     try:
         runtime = installed_interpreter(interpreter)
         data_root = _normalized_data_root(raw_root)
@@ -247,6 +359,8 @@ def _reference_from_payload(payload: Mapping[str, object], *, plist_path: Path, 
     account = payload.get("UserName")
     if isinstance(account, str) and account:
         result["service_account"] = account
+    if instance_id is not None:
+        result["instance_id"] = instance_id
     return result
 
 
@@ -345,6 +459,222 @@ def _read_plist(directory: Path, filename: str) -> Mapping[str, object]:
         return _read_plist_from_descriptor(directory_descriptor, filename)
     finally:
         os.close(directory_descriptor)
+
+
+def configured_instance_service(
+    instance: system_installation_topology.SystemInstanceTopology,
+    *,
+    launch_daemons_dir: str | Path | None = None,
+    account_lookup: AccountLookup = pwd.getpwnam,
+) -> InstanceSystemServerService | None:
+    """Read one instance-specific LaunchDaemon without PATH or label discovery."""
+    paths = instance_default_paths(instance, launch_daemons_dir)
+    try:
+        payload = _read_plist(paths.launch_daemons_dir, paths.plist_path.name)
+    except FileNotFoundError:
+        return None
+    if set(payload) != _PLIST_FIELDS:
+        raise SystemServerServiceError("EP Server instance plist has unexpected fields.")
+    reference = _reference_from_payload(payload, plist_path=paths.plist_path, domain="SYSTEM")
+    if (
+        reference is None
+        or reference.get("instance_id") != instance.instance_id
+        or reference.get("label") != instance.service_label
+        or reference.get("data_root") != str(instance.data_root)
+        or reference.get("service_account") != instance.service_account
+    ):
+        raise SystemServerServiceError("EP Server instance plist does not bind the expected runtime.")
+    if (
+        payload.get("WorkingDirectory") != str(instance.data_root)
+        or payload.get("RunAtLoad") is not True
+        or payload.get("KeepAlive") != {"SuccessfulExit": False}
+        or payload.get("ProcessType") != "Background"
+        or payload.get("StandardOutPath") != "/dev/null"
+        or payload.get("StandardErrorPath") != str(paths.stderr_log)
+    ):
+        raise SystemServerServiceError("EP Server instance plist is invalid.")
+    _service_account(instance.service_account, account_lookup)
+    expected = instance_service_definition(instance, interpreter=reference["interpreter"])
+    expected_environment = {
+        **_ENVIRONMENT,
+        "HOME": str(instance.root / "service-home"),
+        "EP_SERVER_DATA_ROOT": str(instance.data_root),
+        "EP_SERVER_INSTANCE_ID": instance.instance_id,
+        **dict(expected.provider_environment),
+    }
+    if payload.get("EnvironmentVariables") != expected_environment:
+        raise SystemServerServiceError("EP Server instance plist has unexpected environment.")
+    return expected
+
+
+def instance_machine_inventory(
+    product: system_installation_topology.SystemInstallationTopology,
+    *,
+    launch_daemons_dir: str | Path | None = None,
+    account_lookup: AccountLookup = pwd.getpwnam,
+) -> Mapping[str, object]:
+    """Enumerate every declared EP instance and classify real collisions.
+
+    The product-owned ``instances`` directory is the instance declaration
+    authority.  LaunchDaemon enumeration proves service ownership.  Multiple
+    healthy instances are expected; only duplicate mutable identities or
+    missing/tampered service bindings are conflicts.
+    """
+    from . import system_installation_topology as topology_module
+
+    if not isinstance(product, topology_module.SystemInstallationTopology):
+        raise SystemServerServiceError("EP Server product topology is invalid.")
+    daemon_directory = _absolute_directory(
+        SYSTEM_LAUNCH_DAEMONS_DIRECTORY if launch_daemons_dir is None else launch_daemons_dir,
+        label="LaunchDaemon directory",
+    )
+    instances_root = product.system_root / "instances"
+    try:
+        children = sorted(
+            path for path in instances_root.iterdir()
+            if path.is_dir() and not path.is_symlink()
+        )
+    except FileNotFoundError:
+        children = []
+    except OSError as error:
+        raise SystemServerServiceError("EP Server instance inventory is unavailable.") from error
+    entries: list[dict[str, object]] = []
+    conflicts: list[dict[str, str]] = []
+    uniqueness: dict[str, dict[str, str]] = {
+        key: {} for key in (
+            "instance_id", "service_label", "service_account", "data_root", "endpoint",
+            "codex_home", "github_home", "lifecycle_lock",
+        )
+    }
+    for child in children:
+        descriptor_path = child / "instance.json"
+        try:
+            if not descriptor_path.exists():
+                bootstrap_path = child / "provider-bootstrap.json"
+                bootstrap = json.loads(bootstrap_path.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(bootstrap, dict)
+                    or set(bootstrap) != {
+                        "schema_version", "instance_id", "display_label", "service_account",
+                        "service_label", "state",
+                    }
+                    or bootstrap.get("schema_version") != 1
+                    or bootstrap.get("state") != "PROVIDER_BOOTSTRAP_PENDING"
+                ):
+                    raise ValueError
+                pending = topology_module.system_instance_topology(
+                    product,
+                    instance_id=str(bootstrap["instance_id"]),
+                    display_label=str(bootstrap["display_label"]),
+                    service_account=str(bootstrap["service_account"]),
+                )
+                if child != pending.root or bootstrap["service_label"] != pending.service_label:
+                    raise ValueError
+                entries.append({
+                    **bootstrap,
+                    "descriptor": str(bootstrap_path),
+                    "status": "PROVIDER_BOOTSTRAP_PENDING",
+                })
+                continue
+            descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+            if not isinstance(descriptor, dict):
+                raise ValueError
+            required = {
+                "schema_version", "instance_id", "display_label", "service_label",
+                "service_account", "data_root", "endpoint", "selected_runtime",
+                "provider_contexts", "lifecycle_lock", "desired_state",
+            }
+            if set(descriptor) != required or descriptor.get("schema_version") != 1:
+                raise ValueError
+            instance = topology_module.system_instance_topology(
+                product,
+                instance_id=str(descriptor["instance_id"]),
+                display_label=str(descriptor["display_label"]),
+                service_account=str(descriptor["service_account"]),
+            )
+            providers = descriptor["provider_contexts"]
+            selected = descriptor["selected_runtime"]
+            if (
+                child != instance.root
+                or descriptor["service_label"] != instance.service_label
+                or descriptor["data_root"] != str(instance.data_root)
+                or descriptor["lifecycle_lock"] != str(instance.lifecycle_lock)
+                or not isinstance(providers, dict)
+                or set(providers) != {"codex", "github"}
+                or not all(isinstance(providers[name], dict) for name in providers)
+                or any(
+                    set(providers[name]) != {"home", "executable", "executable_sha256"}
+                    or not all(
+                        isinstance(providers[name][field], str) and providers[name][field]
+                        for field in ("home", "executable", "executable_sha256")
+                    )
+                    or not Path(str(providers[name]["home"])).is_absolute()
+                    or not Path(str(providers[name]["executable"])).is_absolute()
+                    for name in providers
+                )
+                or not isinstance(selected, dict)
+                or set(selected) != {
+                    "version", "artifact_digest", "source_revision", "interpreter",
+                }
+                or not all(isinstance(selected[field], str) and selected[field] for field in selected)
+                or not Path(str(selected["interpreter"])).is_absolute()
+            ):
+                raise ValueError
+            service = configured_instance_service(
+                instance,
+                launch_daemons_dir=daemon_directory,
+                account_lookup=account_lookup,
+            )
+            status = "READY" if service is not None else "SERVICE_ABSENT"
+            if service is None and descriptor.get("desired_state") == "ACTIVE":
+                conflicts.append({"instance_id": instance.instance_id, "code": "EXPECTED_SERVICE_ABSENT"})
+            values = {
+                "instance_id": instance.instance_id,
+                "service_label": instance.service_label,
+                "service_account": instance.service_account,
+                "data_root": str(instance.data_root),
+                "endpoint": str(descriptor["endpoint"]),
+                "codex_home": str(providers["codex"].get("home")),
+                "github_home": str(providers["github"].get("home")),
+                "lifecycle_lock": str(instance.lifecycle_lock),
+            }
+            for kind, value in values.items():
+                prior = uniqueness[kind].get(value)
+                if prior is not None:
+                    conflicts.append({
+                        "instance_id": instance.instance_id,
+                        "code": f"DUPLICATE_{kind.upper()}",
+                        "conflicts_with": prior,
+                    })
+                else:
+                    uniqueness[kind][value] = instance.instance_id
+            entries.append({
+                **descriptor,
+                "descriptor": str(descriptor_path),
+                "plist": str(instance_default_paths(instance, daemon_directory).plist_path),
+                "status": status,
+            })
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError,
+                topology_module.SystemInstallationTopologyError,
+                SystemServerServiceError) as error:
+            conflicts.append({"instance_id": child.name, "code": "INVALID_OR_TAMPERED_INSTANCE"})
+            entries.append({
+                "instance_id": child.name,
+                "descriptor": str(descriptor_path),
+                "status": "INVALID",
+                "diagnostic": type(error).__name__,
+            })
+    return {
+        "schema_version": 1,
+        "product": "engineering-platform-server",
+        "product_root": str(product.system_root),
+        "cardinality": "MULTI_INSTANCE",
+        "instances": entries,
+        "conflicts": conflicts,
+        "state": "AMBIGUOUS" if conflicts else "OBSERVED",
+        "instance_count": len(entries),
+        "singleton_assumption": False,
+    }
 
 
 def _configured_definition(

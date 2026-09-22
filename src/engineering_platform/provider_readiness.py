@@ -6,16 +6,27 @@ retries authentication on behalf of an execution.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 
-from .providers import CodexCliProvider, LocalProcessProvider, codex_cli_executable
+from .providers import (
+    CodexCliProvider, LocalProcessProvider, codex_cli_executable,
+    github_cli_executable, MANAGED_GITHUB_CLI_EXECUTABLE_ENVIRONMENT,
+)
 
 
 _VERSION = re.compile(r"\b\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.]+)?\b")
 CODEX_READINESS_TIMEOUT_SECONDS = 2
+
+
+def _github_executable() -> str | None:
+    """Keep the legacy PATH observer while honoring a pinned system context."""
+    if MANAGED_GITHUB_CLI_EXECUTABLE_ENVIRONMENT in os.environ:
+        return github_cli_executable()
+    return shutil.which("gh")
 
 
 def _classify(result: subprocess.CompletedProcess[str] | None) -> str:
@@ -58,7 +69,7 @@ def runtime_details(root: Path) -> dict[str, dict[str, str]]:
         codex_version = _version(CodexCliProvider().command("--version", timeout=CODEX_READINESS_TIMEOUT_SECONDS)) if codex_path else ""
     except (OSError, subprocess.TimeoutExpired):
         codex_version = ""
-    github_path = shutil.which("gh") or ""
+    github_path = _github_executable() or ""
     try:
         github_version = _version(LocalProcessProvider().execute(root, (github_path, "--version"))) if github_path else ""
     except OSError:
@@ -98,7 +109,7 @@ def host_status(root: Path, *, require_github: bool = True) -> dict[str, dict[st
     }
     if not require_github:
         return result
-    github_path = shutil.which("gh")
+    github_path = _github_executable()
     if github_path is None:
         result["github"] = {"provider": "GITHUB", "state": "UNAVAILABLE"}
         return result
@@ -117,11 +128,12 @@ def status(root: Path, *, require_github: bool = True) -> dict[str, dict[str, st
     result = host_status(root, require_github=False)
     if not require_github:
         return result
-    if shutil.which("gh") is None:
+    github_path = _github_executable()
+    if github_path is None:
         result["github"] = {"provider": "GITHUB", "state": "UNAVAILABLE"}
         return result
     try:
-        github_result = LocalProcessProvider().execute(root, ("gh", "auth", "status", "--hostname", "github.com"))
+        github_result = LocalProcessProvider().execute(root, (github_path, "auth", "status", "--hostname", "github.com"))
     except OSError:
         github_result = None
     github_state = _classify(github_result)
@@ -130,8 +142,13 @@ def status(root: Path, *, require_github: bool = True) -> dict[str, dict[str, st
             # `gh repo view --json` uses GitHub's GraphQL quota. Readiness only
             # needs a cheap repository-access proof, so use the REST endpoint
             # and avoid turning an exhausted GraphQL quota into a login repair.
+            repository_executable = (
+                github_path
+                if MANAGED_GITHUB_CLI_EXECUTABLE_ENVIRONMENT in os.environ
+                else "gh"
+            )
             repository_result = LocalProcessProvider().execute(
-                root, ("gh", "api", "repos/{owner}/{repo}", "--jq", ".full_name")
+                root, (repository_executable, "api", "repos/{owner}/{repo}", "--jq", ".full_name")
             )
         except OSError:
             repository_result = None

@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
 from . import central_database
 from .platform_bootstrap import provision_runtime_workspace as provision_workspace
-from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
+from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix, github_cli_executable
 from .provider_readiness import runtime_details as provider_runtime_details, status as provider_readiness_status
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
@@ -1761,14 +1761,14 @@ def _start_provider_login(root: Path, provider: str) -> None:
     """Open one explicit interactive login in Terminal; no credential crosses EP."""
     commands = {
         "CODEX": (CodexCliProvider()._executable, "login", "--device-auth"),
-        "GITHUB": ("gh", "auth", "login", "--hostname", "github.com", "--web"),
+        "GITHUB": (github_cli_executable() or "", "auth", "login", "--hostname", "github.com", "--web"),
     }
     command = commands.get(provider)
     if command is None:
         raise ValueError("Unsupported provider login request.")
     if provider == "CODEX" and not CodexCliProvider().status().qualified:
         raise ValueError("Codex CLI is not installed.")
-    if provider == "GITHUB" and shutil.which("gh") is None:
+    if provider == "GITHUB" and github_cli_executable() is None:
         raise ValueError("GitHub CLI is not installed.")
     if sys.platform != "darwin":
         raise ValueError("Interactive provider login is supported from the local macOS dashboard only.")
@@ -1809,7 +1809,7 @@ def _install_provider(root: Path, provider: str) -> None:
             if brew is None:
                 raise ValueError("GitHub CLI installation requires Homebrew on this host.")
             completed = LocalProcessProvider().execute(root, (brew, "install", "gh"))
-            verification = LocalProcessProvider().execute(root, ("gh", "--version"))
+            verification = LocalProcessProvider().execute(root, (github_cli_executable() or "", "--version"))
             key = "github"
         else:
             raise ValueError("Unsupported provider installation request.")
@@ -1827,11 +1827,14 @@ def _logout_provider(root: Path, provider: str) -> None:
         completed = CodexCliProvider().command("logout")
     elif provider == "GITHUB":
         process = LocalProcessProvider()
-        account = process.execute(root, ("gh", "api", "user", "--jq", ".login"))
+        executable = github_cli_executable()
+        if executable is None:
+            raise ValueError("GitHub CLI is not installed.")
+        account = process.execute(root, (executable, "api", "user", "--jq", ".login"))
         username = account.stdout.strip()
         if account.returncode or not username or not re.fullmatch(r"[A-Za-z0-9-]+", username):
             raise ValueError("GitHub session cannot be safely identified for logout.")
-        completed = process.execute(root, ("gh", "auth", "logout", "--hostname", "github.com", "--user", username))
+        completed = process.execute(root, (executable, "auth", "logout", "--hostname", "github.com", "--user", username))
     else:
         raise ValueError("Unsupported provider logout request.")
     if completed.returncode:

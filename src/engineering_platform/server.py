@@ -127,6 +127,8 @@ from .providers import (
     MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT,
     LocalProcessProvider,
     default_engineering_platform_codex_cli_prefix,
+    engineering_platform_codex_cli_prefix,
+    github_cli_executable,
 )
 from .report_analysis import RETRYABLE_REPORT_ANALYSIS_STATUSES, analyze as analyze_terminal_report
 from .resources import package_path
@@ -483,14 +485,14 @@ def _start_provider_login(data_root: Path, provider: str) -> None:
     """Dispatch one explicit host-wide provider login from the Server."""
     commands = {
         "CODEX": (CodexCliProvider()._executable, "login", "--device-auth"),
-        "GITHUB": ("gh", "auth", "login", "--hostname", "github.com", "--web"),
+        "GITHUB": (github_cli_executable() or "", "auth", "login", "--hostname", "github.com", "--web"),
     }
     command = commands.get(provider)
     if command is None:
         raise ValueError("Unsupported provider login request.")
     if provider == "CODEX" and not CodexCliProvider().status().qualified:
         raise ValueError("Codex CLI is not installed.")
-    if provider == "GITHUB" and shutil.which("gh") is None:
+    if provider == "GITHUB" and github_cli_executable() is None:
         raise ValueError("GitHub CLI is not installed.")
     if sys.platform != "darwin":
         raise ValueError("Interactive provider login is supported from the local macOS Server only.")
@@ -511,11 +513,14 @@ def _logout_provider(data_root: Path, provider: str) -> None:
         completed = CodexCliProvider().command("logout")
     elif provider == "GITHUB":
         process = LocalProcessProvider()
-        account = process.execute(data_root, ("gh", "api", "user", "--jq", ".login"))
+        executable = github_cli_executable()
+        if executable is None:
+            raise ValueError("GitHub CLI is not installed.")
+        account = process.execute(data_root, (executable, "api", "user", "--jq", ".login"))
         username = account.stdout.strip()
         if account.returncode or not username or not re.fullmatch(r"[A-Za-z0-9-]+", username):
             raise ValueError("GitHub session cannot be safely identified for logout.")
-        completed = process.execute(data_root, ("gh", "auth", "logout", "--hostname", "github.com", "--user", username))
+        completed = process.execute(data_root, (executable, "auth", "logout", "--hostname", "github.com", "--user", username))
     else:
         raise ValueError("Unsupported provider logout request.")
     if completed.returncode:
@@ -566,7 +571,8 @@ def _install_provider(data_root: Path, provider: str) -> None:
             if brew is None:
                 raise ValueError("GitHub CLI installation requires Homebrew on this host.")
             completed = LocalProcessProvider().execute(data_root, (brew, "install", "gh"))
-            verification = LocalProcessProvider().execute(data_root, ("gh", "--version"))
+            executable = github_cli_executable()
+            verification = LocalProcessProvider().execute(data_root, (executable or "", "--version"))
             if completed.returncode or verification.returncode:
                 raise ValueError("Provider installation could not be verified.")
             key = "github"
@@ -2206,7 +2212,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
             raise ServerConfigurationError("EP Server initial bind configuration is invalid.")
         _write_json(config_path, asdict(ServerConfiguration(
             SERVER_CONFIGURATION_VERSION, bind_host, bind_port,
-            str(default_engineering_platform_codex_cli_prefix()),
+            str(engineering_platform_codex_cli_prefix()),
             _console_platform_version(),
         )))
     configuration = ServerConfiguration.load(data_root)
@@ -7334,7 +7340,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
-def serve(data_root: Path, *, development: development_profile.DevelopmentProfile | None = None) -> int:
+def serve(
+    data_root: Path,
+    *,
+    development: development_profile.DevelopmentProfile | None = None,
+    expected_instance_id: str | None = None,
+) -> int:
     if central_operational_reset.maintenance_active(data_root):
         raise ServerConfigurationError("EP_OPERATIONAL_MAINTENANCE_ACTIVE")
     relocation = installation_relocation.apply_pending(data_root)
@@ -7343,6 +7354,8 @@ def serve(data_root: Path, *, development: development_profile.DevelopmentProfil
     imported = central_data_transfer.apply_pending_import(data_root)
     data_root = data_root.resolve()
     identity = initialize(data_root)
+    if expected_instance_id is not None and identity.instance_id != expected_instance_id:
+        raise ServerConfigurationError("EP_SERVER_INSTANCE_ID_MISMATCH")
     if relocation is not None:
         _audit_platform_data_action(
             data_root,
@@ -7447,6 +7460,8 @@ def serve(data_root: Path, *, development: development_profile.DevelopmentProfil
         restart_after_shutdown = server.restart_after_shutdown  # type: ignore[attr-defined]
     if restart_after_shutdown:
         arguments = [sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(data_root)]
+        if expected_instance_id is not None:
+            arguments.extend(("--expected-instance-id", expected_instance_id))
         if development is not None:
             arguments.extend(development.server_arguments())
         os.execv(sys.executable, arguments)
@@ -8074,7 +8089,11 @@ def main(argv: list[str] | None = None) -> int:
                 )))
             result = start(args.data_root) if development is None else start(args.data_root, development=development)
         elif args.command == "serve":
-            return serve(args.data_root) if development is None else serve(args.data_root, development=development)
+            return serve(
+                args.data_root,
+                development=development,
+                expected_instance_id=args.expected_instance_id,
+            )
         elif args.command == "stop": result = stop(args.data_root)
         elif args.command == "status": result = status(args.data_root)
         elif args.command == "health": result = health(args.data_root)

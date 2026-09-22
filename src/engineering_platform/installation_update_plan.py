@@ -33,6 +33,7 @@ class InstallationUpdatePlan:
     cleanup_targets: tuple[str, ...]
     steps: tuple[str, ...]
     legacy_adoption: dict[str, object] | None = None
+    target_runtime_venv: str | None = None
 
     def payload(self) -> dict[str, object]:
         value = asdict(self)
@@ -41,6 +42,8 @@ class InstallationUpdatePlan:
         # non-empty legacy evidence is always explicit and immutable.
         if value["legacy_adoption"] is None:
             del value["legacy_adoption"]
+        if value["target_runtime_venv"] is None:
+            del value["target_runtime_venv"]
         return value
 
 
@@ -72,7 +75,8 @@ def verify_exact_artifact(plan: InstallationUpdatePlan) -> dict[str, str]:
 
 
 def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_version: str,
-            target_digest: str, target_source_revision: str) -> InstallationUpdatePlan:
+            target_digest: str, target_source_revision: str,
+            target_runtime_venv: Path | None = None) -> InstallationUpdatePlan:
     """Bind an update to one record and wheel without changing the machine.
 
     Callers must execute this returned, exact plan under the EP installation
@@ -121,6 +125,19 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
     if _digest(exact_artifact) != target_digest:
         raise InstallationUpdatePlanError("target artifact does not match the requested digest")
     operation_root = root / "operations" / operation_id
+    runtime_venv: str | None = None
+    if target_runtime_venv is not None:
+        candidate = Path(target_runtime_venv).expanduser()
+        slot = "sha256-" + target_digest.removeprefix("sha256:")
+        if (
+            not candidate.is_absolute()
+            or candidate.name != "venv"
+            or candidate.parent.name != slot
+            or candidate.parent.parent.name != "slots"
+            or candidate.parent.parent.parent.name != "runtimes"
+        ):
+            raise InstallationUpdatePlanError("target runtime slot is invalid")
+        runtime_venv = str(candidate.absolute())
     cleanup = tuple(str(path) for path in (
         operation_root / "build", operation_root / "download", operation_root / "pip-cache",
     ))
@@ -133,4 +150,5 @@ def prepare(data_root: Path, *, operation_id: str, artifact: Path, target_versio
         steps=("INSTALLATION_LOCK", "INVENTORY_AND_COMPATIBILITY", "EXACT_ARTIFACT",
                "QUIESCE", "BACKUP_AND_MIGRATION", "ACTIVATE", "VERIFY", "CLEANUP"),
         legacy_adoption=legacy,
+        target_runtime_venv=runtime_venv,
     )

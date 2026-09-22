@@ -20,6 +20,7 @@ engineering-platform = "engineering_platform.submission_cli:main"
 engineering-project-agent = "engineering_platform.project_agent:main"
 engineering-reconciliation-adopt = "engineering_platform.reconciliation_adoption:main"
 engineering-platform-maintenance = "engineering_platform.central_operational_reset:main"
+engineering-platform-system-provisioner = "engineering_platform.system_instance_provisioner:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

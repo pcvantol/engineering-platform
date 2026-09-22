@@ -1,5 +1,12 @@
 # Standalone runtime surfaces (B8C-0)
 
+The current system-domain runtime is multi-instance. Its authoritative
+topology, LaunchDaemon, provider and provisioner contract is
+[EP Server system-domain multi-instance runtime and provisioner v1](EP_SERVER_SYSTEM_MULTI_INSTANCE_V1.md).
+The single-label observer and per-user service material below remain legacy
+compatibility/diagnostic surfaces; they are not authority for a newly
+provisioned system instance.
+
 The Engineering Platform Server role is an installed artifact. It owns the
 CENTRAL database, loopback API, health/readiness endpoints, and the integrated
 Operations Console at the Server listener root. `engineering-platform-server`
@@ -30,8 +37,10 @@ upgrade the scope. Their paths are normalized as data paths while each venv
 launcher spelling stays a distinct runtime identity. Thus two venv launchers
 that share a base Python remain distinct candidate installations.
 
-The product invariant is `PER_PRODUCT_MAX_OPERATIONAL_RELEASE_INSTALLATIONS =
-1` with required scope `MACOS_MACHINE`. The current read-only observer covers
+The legacy observer invariant was `PER_PRODUCT_MAX_OPERATIONAL_RELEASE_INSTALLATIONS =
+1` with required scope `MACOS_MACHINE`. It applies only to adoption of the old
+singleton service label and must not reject multiple valid v1 instance
+descriptors. The legacy read-only observer covers
 the system LaunchDaemon surface, shared LaunchAgents and only caller-declared
 user LaunchAgent surfaces. It reports that bounded observation as `INCOMPLETE`
 rather than claiming Mac-wide uniqueness. No conflict in this bounded inventory
@@ -60,16 +69,15 @@ locator and qualification receipt remain with the qualified release evidence.
 
 ## System-domain Server service foundation
 
-The future operational Server supervisor is one product-owned macOS
-`LaunchDaemon`, in the `system` domain, rather than a per-user `LaunchAgent`.
-Its service definition binds the fixed label
-`com.engineeringplatform.server`, a normalized absolute EP data root, the
-structural installed-venv launcher identity, and an explicit non-root service
-account. It never selects an interpreter through `PATH`, runs the Server as
-`root`, or accepts an arbitrary command. Exact EP-package and artifact identity
-remain evidence that only the later provisioner may bind to this descriptor.
-That provisioner must never follow a service-account-owned runtime-log symlink
-while performing a privileged update.
+The operational supervisor is one product-owned macOS `LaunchDaemon` per
+instance, in the `system` domain, rather than a per-user `LaunchAgent`. Its
+service definition binds a deterministic collision-resistant instance label,
+opaque instance ID, normalized absolute data root, exact final-slot venv
+launcher and explicit non-root instance account. It never selects an
+interpreter through `PATH`, runs the Server as `root`, or accepts an arbitrary
+command. The EP-owned provisioner alone binds exact package/artifact identity
+to this descriptor and never follows a service-account-owned runtime-log
+symlink while performing a privileged update.
 
 The source-level definition and observer reject relative/PATH-like runtime
 identity, a non-venv launcher, root as the service account, changed plist
@@ -136,12 +144,11 @@ selected runtime. A future mutator must build the target venv directly in its
 final slot, under the machine lock, rather than moving an operation-scoped venv
 after activation preparation.
 
-This is source-only topology and transition evidence. It does not acquire the
-lock, write a record or plist, create an account or venv, copy an artifact,
-backup/migrate/restore CENTRAL, stop a legacy service, launch a daemon, or
-claim `INSTALLATION_VERIFIED`, rollback, cleanup completion or Mac-wide
-uniqueness. Privileged filesystem mutation remains a subsequent
-descriptor-anchored provisioner increment.
+The system provisioner now consumes this topology for exact-instance mutation;
+the pure topology functions themselves still create nothing. Live service
+account creation and production-host installation remain Forge Platform
+composition responsibilities, while EP exclusively owns its plist, runtime,
+CENTRAL migration, verification, cleanup, recovery and receipts.
 
 ## Operational update recovery boundary
 

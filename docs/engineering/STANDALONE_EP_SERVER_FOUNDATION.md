@@ -45,16 +45,14 @@ that owned LaunchAgent and preserves CENTRAL and installation identity.
 
 ### System-domain migration boundary
 
-The production-target supervisor is a separate EP-owned system-domain
-LaunchDaemon contract. It is intentionally not an alias for `service-install`:
-the latter is a legacy per-user lifecycle and cannot establish machine-wide
-uniqueness. This increment defines and reads the future fixed label, exact
-installed interpreter, absolute data-root argument and non-root service
-account; it accepts neither `PATH` selection nor arbitrary commands. It does
-not expose a privileged mutation API. A later EP provisioner must require root
-authorization and use descriptor-anchored filesystem operations only after it
-has durably bound machine-scope inventory, legacy-service quiescence, exact
-artifact, backup/migration and postflight evidence.
+The production supervisor is the EP-owned, system-domain, multi-instance
+LaunchDaemon contract in
+[EP Server system-domain multi-instance runtime and provisioner v1](EP_SERVER_SYSTEM_MULTI_INSTANCE_V1.md).
+It is intentionally not an alias for `service-install`: the latter remains a
+legacy per-user lifecycle. Each production instance binds a derived service
+label, exact final-slot interpreter, absolute instance data root, opaque
+instance ID, non-root service account and instance-owned provider environment;
+it accepts neither `PATH` runtime selection nor arbitrary commands.
 
 The read-only `system-service-inventory` command reports system, shared-user
 and explicitly declared user-service references, conflicts and inaccessible
@@ -64,11 +62,13 @@ provides durable coverage evidence. No source-only contract changes the
 current Mac, removes a LaunchAgent, creates an account, migrates CENTRAL or
 claims a single operational installation.
 
-Before that mutator exists, the EP-owned `system_installation_topology` source
-contract derives one explicit system product tree, machine-lock location,
-digest-pinned final runtime slot and protected recovery boundary. It creates no
-path and does not select a runtime: an operation-scoped candidate remains
-non-operational and cannot become the final slot by being moved later.
+The EP-owned `system_installation_topology` derives one explicit product tree,
+shared digest-pinned immutable slots, and disjoint mutable roots and lifecycle
+locks for every opaque instance. The `engineering-platform-system-provisioner`
+owns create/status/update/repair/remove/resume mutation under exact artifact,
+provider, backup/migration and postflight evidence. An operation-scoped
+candidate remains non-operational; a system update builds directly in its
+final immutable digest slot.
 
 The existing Execution Host remains unchanged and retains its current execution
 authority. The server does not read a source checkout, `.engineering`, or any

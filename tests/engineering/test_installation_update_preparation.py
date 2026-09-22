@@ -192,6 +192,45 @@ class InstallationUpdatePreparationTests(unittest.TestCase):
             self.assertEqual(pip_command[-1], str(staged))
             self.assertEqual(pip_kwargs["env"]["PIP_CACHE_DIR"], str(operation / "pip-cache"))
 
+    def test_system_plan_builds_directly_in_exact_final_slot_and_resumes_it(self) -> None:
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "instance" / "data"
+            wheel = base / "qualified.whl"
+            wheel.write_bytes(b"system final slot bytes")
+            initial = self._plan(root, wheel)
+            final_venv = (
+                base / "product" / "runtimes" / "slots"
+                / ("sha256-" + initial.target_digest.removeprefix("sha256:")) / "venv"
+            ).absolute()
+            plan = replace(initial, target_runtime_venv=str(final_venv))
+            runner = CandidateRunner(target_version=plan.target_version)
+
+            prepared = prepare_candidate(
+                plan,
+                venv_builder=self._builder(base),
+                runner=runner,
+            )
+
+            self.assertEqual(Path(prepared.candidate_venv), final_venv)
+            self.assertNotIn(str(final_venv), plan.cleanup_targets)
+            self.assertEqual(
+                json.loads((final_venv.parent / "runtime-slot.json").read_text(encoding="utf-8")),
+                {
+                    "schema_version": 1,
+                    "version": plan.target_version,
+                    "artifact_digest": plan.target_digest,
+                    "source_revision": plan.target_source_revision,
+                    "venv": str(final_venv),
+                },
+            )
+            wheel.unlink()
+            self.assertEqual(
+                prepare_candidate(plan, venv_builder=self._builder(base), runner=runner),
+                prepared,
+            )
+            self.assertEqual(staged_execution_plan(plan, candidate=prepared, runner=runner).target_runtime_venv, str(final_venv))
+
     def test_real_candidate_venv_installs_the_staged_wheel_without_an_index(self) -> None:
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
