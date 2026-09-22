@@ -2394,9 +2394,25 @@ test.describe("Engineering Status browser smoke", () => {
           dismissed: true,
           dismissed_at: "2026-08-27T14:08:24.218289+00:00",
           blocking_reason: "The verified blocking reason belongs to this run.",
+          producer_submission_contract_version: "1.0",
+          submission_id: "submission-modal",
+          execution_context_version: "1.3",
+          engineering_action_id: "action-modal",
+          correlation_id: "correlation-modal",
+          execution_activity_summary: {
+            activity: { provider_invocations_total: 3, reviewer_codex_commands_total: 2, host_validation_commands_total: 4, overall_activity_total: 9 },
+            terminal_delivery_diff: { transaction_baseline_sha: "c".repeat(40), terminal_target_sha: "d".repeat(40), total_unique_changed_paths: 2, renamed: [], per_pr_changed_file_counts: "PR #948: 2" },
+          },
         },
         execution: { seconds: 42, total_seconds: 61 },
         evidence: ["Execution Host: Engineering Platform"],
+        reviewers: [{ reviewer: "validation", capability: "ENGINEERING", status: "completed", selected_because: "Validation objective", accepted_recommendations: 2 }],
+        assurance_reviews: [{ reviewer: "quality", status: "FAIL", candidate_sha: "e".repeat(40), findings: [{ observation: "Timeout is not end-to-end bounded." }] }],
+        recommendation_handoff: {
+          artifact_path: "forge/recommendation.json", projection_status: "COMPLETE", missing_fields: [],
+          recommendation: { title: "Mission Aurora", status: "RECOMMENDED", mission_origin: "PORTFOLIO_INTELLIGENCE", business_value: "High", confidence: "0.91", dependencies: ["DEC-7"], summary: "Highest value", decision_evidence: "DEC-7" },
+          alternatives: [{ rank: 2, title: "Mission Borealis", ordering_reason: "Lower value" }],
+        },
         pull_requests: [
           { role: "implementation", number: 948, url: "https://github.com/pcvantol/djconnect/pull/948", commit_count: 2, check_count: 1, changed_file_count: 5 },
           { role: "finalization", number: 949, url: "https://github.com/pcvantol/djconnect/pull/949", commit_count: 1, check_count: 3, changed_file_count: 2 },
@@ -2410,8 +2426,22 @@ test.describe("Engineering Status browser smoke", () => {
           description: "finalization_commit_verified",
         }],
         lifecycle: {
+          available: true,
+          run_id: "inbox-modal",
+          terminal_state: "BLOCKED",
           steps: [{
+            id: "QUALITY_CONTROL_AGENT",
+            presentation_key: "lifecycle.step.quality_control_agent",
+            state: "COMPLETED",
+            repair_rounds: { used: 1, maximum: 3 },
+            quality_evidence: [{ activity: "validation", result: "Validated the bounded snapshot." }],
+          }, {
             id: "REPAIR_AGENT",
+            presentation_key: "lifecycle.step.repair_agent",
+            state: "COMPLETED",
+            iteration_count: 1,
+            timing: { started_at: "2026-08-04T08:00:10Z", finished_at: "2026-08-04T08:00:20Z", spans: [{ phase: "REPAIR", duration_ms: 10000, outcome: "COMPLETED" }] },
+            delivery_evidence: { role: "implementation", branch: "codex/repair", candidate_sha: "b".repeat(40), changed_paths: ["src/service.py", "tests/test_service.py"] },
             repair_audit: [{
               repair_id: "repair:inbox-modal:1",
               iteration: "1",
@@ -2487,6 +2517,18 @@ test.describe("Engineering Status browser smoke", () => {
     expect(markdownContent).toContain("Bound the complete snapshot operation.");
     expect(markdownContent).toContain("Applied the bounded snapshot repair.");
     expect(markdownContent).toContain("`" + "b".repeat(40) + "`");
+    expect(markdownContent).toContain("## Uitvoeringsstroom");
+    expect(markdownContent).toContain("src/service.py");
+    expect(markdownContent).toContain("## Specialistische agentreviews");
+    expect(markdownContent).toContain("Validation objective");
+    expect(markdownContent).toContain("## Kwaliteits- en beveiligingscontrole");
+    expect(markdownContent).toContain("Herstelrondes: 1/3");
+    expect(markdownContent).toContain("Timeout is not end-to-end bounded.");
+    expect(markdownContent).toContain("Validated the bounded snapshot.");
+    expect(markdownContent).toContain("## Forge missieaanbeveling-overdracht");
+    expect(markdownContent).toContain("Mission Aurora");
+    expect(markdownContent).toContain("submission-modal");
+    expect(markdownContent).toContain("PR #948: 2");
     expect(markdownContent).not.toContain("```json");
     const jsonDownload = page.waitForEvent("download");
     await json.click();
@@ -2494,6 +2536,10 @@ test.describe("Engineering Status browser smoke", () => {
     expect(downloadedJson.suggestedFilename()).toBe("execution-details-inbox-modal.json");
     const jsonContent = JSON.parse(readFileSync(await downloadedJson.path(), "utf8"));
     expect(jsonContent.history.run_id).toBe("inbox-modal");
+    expect(jsonContent.reviewers[0].selected_because).toBe("Validation objective");
+    expect(jsonContent.assurance_reviews[0].findings[0].observation).toBe("Timeout is not end-to-end bounded.");
+    expect(jsonContent.lifecycle.steps[1].delivery_evidence.changed_paths).toEqual(["src/service.py", "tests/test_service.py"]);
+    expect(jsonContent.recommendation_handoff.recommendation.title).toBe("Mission Aurora");
     expect(jsonContent.pull_requests).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "implementation", number: 948 }),
       expect.objectContaining({ role: "finalization", number: 949 }),

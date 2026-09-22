@@ -6016,6 +6016,113 @@ function promptHistoryMarkdownCommitTimeline(entries) {
   });
   return items.length ? `## ${promptHistoryMarkdownText(t("detail.commit_timeline"))}\n\n${items.join("\n")}\n` : "";
 }
+function promptHistoryMarkdownReviewers(reviewers) {
+  if (!Array.isArray(reviewers) || !reviewers.length) return "";
+  const sections = reviewers.filter((reviewer) => reviewer && typeof reviewer === "object").map((reviewer) => {
+    const status = `${reviewerCapabilityLabel(reviewer.capability || "ENGINEERING")} · ${reviewerStatusLabel(reviewer.status || "completed")}`;
+    return `### ${promptHistoryMarkdownText(reviewerLabel(reviewer.reviewer, t("detail.specialist_review")))}\n\n${promptHistoryMarkdownTable([
+      [t("detail.prompt_status"), status],
+      [t("detail.selected_because"), reviewer.selected_because || t("detail.not_recorded")],
+      [t("detail.initial_observation"), reviewer.contribution],
+      [t("detail.accepted_recommendations"), Number(reviewer.accepted_recommendations) || 0],
+      [t("detail.rejected_recommendations"), Number.isInteger(reviewer.rejected_recommendations) ? reviewer.rejected_recommendations : null],
+    ])}`;
+  });
+  return sections.length ? `## ${promptHistoryMarkdownText(t("detail.specialist_reviews"))}\n\n${sections.join("\n")}` : "";
+}
+function promptHistoryMarkdownAssuranceReviews(payload) {
+  const lifecycleReviews = Array.isArray(payload?.lifecycle?.steps)
+    ? payload.lifecycle.steps.find((step) => step?.id === "QUALITY_CONTROL_AGENT")?.assurance_reviews
+    : null;
+  const reviews = Array.isArray(payload?.assurance_reviews) ? payload.assurance_reviews
+    : (Array.isArray(lifecycleReviews) ? lifecycleReviews : []);
+  if (!reviews.length) return "";
+  const qualityStep = Array.isArray(payload?.lifecycle?.steps)
+    ? payload.lifecycle.steps.find((step) => step?.id === "QUALITY_CONTROL_AGENT") : null;
+  const rounds = qualityStep?.repair_rounds || {};
+  const sections = Number.isFinite(Number(rounds.used))
+    ? [t("lifecycle.repair_rounds", { used: rounds.used, maximum: rounds.maximum || 3 }) + "\n"] : [];
+  let currentCandidate = null, waveIndex = -1;
+  for (const review of reviews) {
+    if (!review || typeof review !== "object") continue;
+    const candidate = String(review.candidate_sha || "").trim();
+    const candidateKey = /^[0-9a-f]{40}$/.test(candidate) ? candidate : "unbound";
+    if (candidateKey !== currentCandidate) {
+      currentCandidate = candidateKey; waveIndex += 1;
+      sections.push(`### ${promptHistoryMarkdownText(waveIndex === 0
+        ? t("lifecycle.assurance_initial_wave")
+        : t("lifecycle.assurance_repair_wave", { iteration: waveIndex }))}`);
+    }
+    const findings = Array.isArray(review.findings)
+      ? review.findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean)
+      : [];
+    const coverage = Array.isArray(review.coverage) ? review.coverage : [];
+    const dispositions = Array.isArray(review.finding_dispositions) ? review.finding_dispositions : [];
+    sections.push(`#### ${promptHistoryMarkdownText(reviewerLabel(review.reviewer, t("detail.specialist_review")))}\n\n${promptHistoryMarkdownTable([
+      [t("detail.prompt_status"), assuranceStatusLabel(review.status || "UNRESOLVED")],
+      [t("detail.candidate_sha"), candidate],
+      [t("detail.recorded_evidence"), findings.length ? findings.join("\n") : t("lifecycle.assurance_no_findings")],
+      [t("detail.audit_evidence"), coverage.length || dispositions.length ? t("lifecycle.assurance_integral_evidence", { coverage: coverage.length, dispositions: dispositions.length }) : null],
+    ])}`);
+  }
+  return sections.length ? `## ${promptHistoryMarkdownText(t("lifecycle.detail_assurance"))}\n\n${sections.join("\n")}` : "";
+}
+function promptHistoryMarkdownLifecycle(lifecycle) {
+  if (!lifecycle || lifecycle.available !== true || !Array.isArray(lifecycle.steps)) return "";
+  const steps = lifecycle.steps.filter((step) => step && typeof step === "object").map((step) => {
+    const timing = step.timing && typeof step.timing === "object" ? step.timing : {};
+    const spans = Array.isArray(timing.spans) ? timing.spans : [];
+    const phaseTiming = lifecyclePhaseTiming(spans).map((span) => [
+      t("lifecycle.phase." + String(span.phase || "").toLowerCase(), {}, span.phase),
+      `${Number.isFinite(Number(span.duration_ms)) ? durationText(Number(span.duration_ms) / 1000) : t("format.unavailable")} · ${lifecycleStateLabel(span.outcome)}`,
+    ]);
+    const delivery = step.delivery_evidence || step.implementation_evidence || {};
+    const qualityEvidence = Array.isArray(step.quality_evidence) ? step.quality_evidence : [];
+    const fields = [
+      [t("lifecycle.detail_state"), lifecycleStateLabel(step.state)],
+      [t("lifecycle.detail_started_at"), timing.started_at || step.started_at],
+      [t("lifecycle.detail_finished_at"), timing.finished_at],
+      [t("lifecycle.detail_iterations"), step.iteration_count],
+      [t("workspace.current_branch"), delivery.branch],
+      [t("detail.candidate_sha"), delivery.candidate_sha],
+      [t("detail.changed_files"), Array.isArray(delivery.changed_paths) ? delivery.changed_paths.join("\n") : null],
+      ...qualityEvidence.map((item) => [
+        t("lifecycle.detail_quality_evidence") + " — " + t("lifecycle.quality_evidence." + String(item?.activity || "").toLowerCase(), {}, item?.activity),
+        item?.result,
+      ]),
+      ...phaseTiming,
+    ];
+    return `### ${promptHistoryMarkdownText(lifecycleLabel(step))}\n\n${promptHistoryMarkdownTable(fields)}`;
+  });
+  return steps.length ? `## ${promptHistoryMarkdownText(t("lifecycle.title"))}\n\n${steps.join("\n")}` : "";
+}
+function promptHistoryMarkdownRecovery(recovery) {
+  if (recovery?.kind !== "status_reconciliation" || !recovery.run_id) return "";
+  return promptHistoryMarkdownSection(t("status_reconciliation.title"), [
+    [t("detail.run_id"), recovery.run_id],
+    [t("detail.recorded_evidence"), t("status_reconciliation.description")],
+  ]);
+}
+function promptHistoryMarkdownRecommendationHandoff(handoff) {
+  if (!handoff || typeof handoff !== "object") return "";
+  const recommendation = handoff.recommendation || {};
+  const alternatives = Array.isArray(handoff.alternatives)
+    ? handoff.alternatives.map((item) => [item.rank, item.title, item.ordering_reason].filter(Boolean).join(" · "))
+    : [];
+  return promptHistoryMarkdownSection(t("detail.recommendation_handoff"), [
+    [t("detail.projection_incomplete"), handoff.projection_status === "INCOMPLETE" ? (handoff.missing_fields || []).join("\n") : null],
+    [t("detail.recommendation_status"), recommendation.status],
+    [t("detail.recommended_next_mission"), recommendation.title],
+    [t("detail.mission_origin"), recommendation.mission_origin],
+    [t("detail.business_value"), recommendation.business_value],
+    [t("detail.confidence"), recommendation.confidence],
+    [t("detail.dependencies"), Array.isArray(recommendation.dependencies) ? recommendation.dependencies.join("\n") : null],
+    [t("detail.evidence"), recommendation.summary],
+    [t("detail.decision_evidence"), recommendation.decision_evidence],
+    [t("detail.artefact_path"), handoff.artifact_path],
+    [t("detail.alternatives"), alternatives.join("\n")],
+  ]);
+}
 function promptHistoryMarkdownRepairHistory(payload) {
   const lifecycle = payload?.lifecycle && typeof payload.lifecycle === "object" ? payload.lifecycle : {};
   const steps = Array.isArray(lifecycle.steps) ? lifecycle.steps : [];
@@ -6057,12 +6164,16 @@ function promptHistoryDetailMarkdown(payload, title) {
   const activity = history.execution_activity_summary && typeof history.execution_activity_summary === "object"
     ? history.execution_activity_summary : null;
   const timestamp = Date.parse(String(history.executed_at || ""));
+  const contextKeysProjectedExplicitly = new Set([
+    "mission_id", "engineering_action_id", "correlation_id", "context_version",
+  ]);
   const sections = [
     promptHistoryMarkdownSection(t("detail.execution"), [
       [t("detail.prompt_title"), history.title || title],
       [t("detail.run_id"), history.run_id || promptHistoryDetailRunId],
       [t("detail.prompt_status"), promptHistoryStatus(history.status)],
       [t("detail.executed_at"), Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : history.executed_at],
+      [t("detail.dismissed_at"), history.dismissed_at],
       [t("detail.execution_mode"), history.execution_mode],
       [t("detail.operator_handling"), operatorHandlingLabel(history)],
       ...(promptHistoryIsBlocked(history.status)
@@ -6077,6 +6188,12 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.producer"), history.producer_id],
       [t("detail.producer_type"), history.producer_type ? producerTypeLabel(history.producer_type) : null],
       [t("detail.producer_version"), history.producer_version],
+      [t("detail.producer_submission_contract"), history.producer_submission_contract_version],
+      [t("detail.submission_id"), history.submission_id],
+      [t("execution_context.version"), history.execution_context_version || context.context_version],
+      [t("detail.mission_id"), context.mission_id || history.mission_id],
+      [t("detail.engineering_action_id"), history.engineering_action_id || context.engineering_action_id],
+      [t("detail.correlation_id"), history.correlation_id || context.correlation_id],
       [t("detail.target_repository"), history.target_repository],
       [t("detail.target_branch"), history.target_branch],
       [t("detail.target_checkout"), history.target_checkout_path],
@@ -6085,7 +6202,7 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.files_created"), metadata.created],
       [t("detail.files_deleted"), metadata.deleted],
       ...Object.entries(context)
-        .filter(([key]) => !["execution_phase", "dispatcher_state"].includes(key))
+        .filter(([key]) => !["execution_phase", "dispatcher_state"].includes(key) && !contextKeysProjectedExplicitly.has(key))
         .map(([key, value]) => [promptHistoryMarkdownLabel(key), value]),
     ]),
     promptHistoryMarkdownSection(t("detail.runtime"), [
@@ -6109,11 +6226,17 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.delivery_target"), activity.terminal_delivery_diff?.terminal_target_sha],
       [t("detail.delivery_paths"), activity.terminal_delivery_diff?.total_unique_changed_paths],
       [t("detail.delivery_renamed"), activity.terminal_delivery_diff?.renamed?.length],
+      [t("detail.delivery_pr_scope"), executionActivityDisplayValue(activity.terminal_delivery_diff?.per_pr_changed_file_counts)],
     ] : [[t("detail.activity_unavailable"), t("detail.activity_unavailable")]]),
     promptHistoryMarkdownSection(t("detail.git_commit"), Object.entries(payload?.commits || {})),
     promptHistoryMarkdownPullRequests(payload?.pull_requests),
     promptHistoryMarkdownCommitTimeline(payload?.commit_timeline),
+    promptHistoryMarkdownLifecycle(payload?.lifecycle),
     promptHistoryMarkdownRepairHistory(payload),
+    promptHistoryMarkdownReviewers(payload?.reviewers),
+    promptHistoryMarkdownAssuranceReviews(payload),
+    promptHistoryMarkdownRecovery(payload?.lifecycle?.recovery),
+    promptHistoryMarkdownRecommendationHandoff(payload?.recommendation_handoff),
     promptHistoryMarkdownList(t("detail.execution_evidence"), payload?.evidence),
   ].filter(Boolean);
   return [`# ${promptHistoryMarkdownText(history.title || title || promptHistoryDetailRunId)}`, "", t("history.details_description"), "", ...sections].join("\n").trimEnd() + "\n";
