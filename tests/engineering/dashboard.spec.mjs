@@ -4818,7 +4818,8 @@ test.describe("Engineering Status browser smoke", () => {
         ],
         assurance_reviews: [
           { reviewer: "quality", status: "PASS", candidate_sha: "b".repeat(40), findings: [] },
-          { reviewer: "security", status: "PASS", candidate_sha: "b".repeat(40), findings: [{ severity: "MEDIUM", disposition: "NON_BLOCKING", observation: "Freshness edge case recorded." }] },
+          { reviewer: "security", status: "FAIL", candidate_sha: "b".repeat(40), findings: [{ severity: "MEDIUM", disposition: "NON_BLOCKING", observation: "Freshness edge case recorded." }] },
+          { reviewer: "quality", status: "UNRESOLVED", candidate_sha: "b".repeat(40), findings: [] },
         ],
       });
       document.querySelector("#promptHistoryDetailModal").showModal();
@@ -4878,6 +4879,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(assuranceCard).toContainText(DASHBOARD_MESSAGES.nl["reviewer.security"]);
     await expect(assuranceCard).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(assuranceCard).toContainText("Freshness edge case recorded.");
+    const assuranceStatuses = assuranceCard.locator(".assurance-review-status");
+    await expect(assuranceStatuses).toHaveCount(3);
+    await expect(assuranceStatuses.nth(0).locator(".assurance-review-status__icon--passed")).toHaveText("✓");
+    await expect(assuranceStatuses.nth(0).locator(".assurance-review-status__text")).toHaveText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
+    await expect(assuranceStatuses.nth(1).locator(".assurance-review-status__icon--failed")).toHaveText("×");
+    await expect(assuranceStatuses.nth(1).locator(".assurance-review-status__text")).toHaveText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.fail"]);
+    await expect(assuranceStatuses.nth(2).locator(".assurance-review-status__icon--failed")).toHaveText("×");
+    await expect(assuranceStatuses.nth(2).locator(".assurance-review-status__text")).toHaveText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.unresolved"]);
     await expect(assuranceCard).toContainText("b".repeat(40));
     for (const selector of [
       ".prompt-detail-card--evidence",
