@@ -86,10 +86,38 @@ required control must have one current terminal receipt with `EXECUTED`,
 Quality/Security passes cannot replace that evidence.
 
 This is only the minimal first-canary product-capability closure. It creates no
-submission, configuration, grant, installation, release or canary run. PR #175
-remains `OPEN_DRAFT_PARKED_NOT_QUALIFIED`; its candidate-adoption,
-publication-recovery and remaining scope are
-`PARKED_NON_BLOCKER_FOR_FIRST_CANARY` and were not changed or qualified here.
+submission, configuration, grant, installation, release or canary run.
+
+PR #175 was closed without merge on 2026-09-22 after its old source baseline
+had been superseded. That closure does not imply that every capability proposed
+in the draft reached current main. The strict current-control validation subset
+was independently delivered and qualified in PR #178. The still-relevant
+candidate-adoption, duplicate-safe first-publication recovery and exact
+committed-source qualification-build semantics are now explicit future work in
+the [Managed publication recovery V1 roadmap](MANAGED_PUBLICATION_RECOVERY_V1_ROADMAP.md)
+and its
+[documentary DAG](MANAGED_PUBLICATION_RECOVERY_V1_DAG.json). Historical #175
+source/tests remain forensic evidence only and are not current qualification.
+
+## Managed publication recovery V1 — future backlog
+
+`EP_MANAGED_PUBLICATION_RECOVERY_V1` is PLANNED future work, separate from the
+active EP Server system/multi-instance productization lane. It reconstructs
+only the residual #175 semantics that remain absent or incomplete on current
+main:
+
+- `MPR-ADOPT`: typed exact existing-candidate adoption without implementation
+  replay, followed by current validation and independent Q/S;
+- `MPR-PUBREC`: pre-create/readback-first, crash/timeout-safe first-PR
+  publication reconciliation with no duplicate PR;
+- `MPR-QBUILD`: build qualification artifacts from an isolated
+  materialization of exact committed `HEAD`, excluding mutable checkout
+  residue;
+- `MPR-Q`: integrated source + installed-artifact qualification.
+
+The lane is `NO_BUMP` documentation until explicitly selected. It does not
+reopen #175, reserve version 2.3.3, alter the current LANE_2 assignment, mutate
+CENTRAL/runtime/credentials, or authorize a real GitHub publication.
 
 ## Subagent orchestration and efficiency — retained audit and planned lane
 
@@ -106,8 +134,9 @@ selection/fan-out, shared telemetry, mandatory-review accounting, unnecessary
 provider turns, utility semantics, event deduplication and role specialization.
 Start with `SA-CTX`/`SA-ISO`, then `SA-OBS`; validation, selection, findings-consumer
 and role lanes follow their exact DAG edges. All runtime work is PLANNED.
-`SA-PUB` additionally requires qualified evidence from the separately owned
-post-assurance publication contract; this lane does not close that repair.
+`SA-PUB` additionally requires qualified `MPR-Q` evidence from the
+separately owned Managed publication recovery backlog; this lane does not
+reimplement or close that work.
 
 The full family is not a new first-canary gate. A concrete context/assurance defect
 on the selected canary path still requires a scoped safety assessment/fix.
