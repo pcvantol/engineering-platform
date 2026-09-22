@@ -20,9 +20,11 @@
       "kind": "external_evidence_gate",
       "status": "REQUIRED_EVIDENCE_UNVERIFIED",
       "depends_on": [],
-      "owning_work": "EP_MANAGED_POST_ASSURANCE_PUBLICATION_CLOSURE_V1",
-      "requirement": "Read back qualification of the existing post-assurance publication contract for the exact source/artifact before SA-PUB activation; this documentary graph does not implement or close that work.",
-      "evidence": []
+      "owning_work": "EP_MANAGED_PUBLICATION_RECOVERY_V1",
+      "requirement": "Require qualified MPR-Q evidence from the current-main Managed publication recovery contract before SA-PUB activation; closed unmerged PR #175 is historical design evidence only.",
+      "evidence": [],
+      "roadmap": "MANAGED_PUBLICATION_RECOVERY_V1_ROADMAP.md",
+      "qualification_milestone": "MPR-Q"
     }
   ],
   "nodes": [
