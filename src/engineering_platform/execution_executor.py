@@ -22,7 +22,6 @@ from .capability_review import (
     MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
     ReviewerResult,
     ReviewerSelection,
-    mandatory_coverage_surfaces,
     reviewer_prompt,
 )
 from .codex_observability import codex_final_message as _codex_final_message, extract_codex_runtime_metadata, extract_codex_usage
@@ -544,34 +543,39 @@ class CodexCliClient:
         }
         if mandatory:
             required.extend(("coverage", "finding_dispositions"))
-            surfaces = sorted({
-                surface
-                for role in ("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION")
-                for surface in mandatory_coverage_surfaces(selection.reviewer, role)
-            })
+            surfaces = selection.required_coverage_surfaces
+            prior_finding_ids = selection.required_finding_ids
             properties.update({
                 "coverage": {
-                    "type": "array", "maxItems": 16,
-                    "items": {
-                        "type": "object", "additionalProperties": False,
-                        "required": ["surface", "status", "evidence_ref"],
-                        "properties": {
-                            "surface": {"type": "string", "enum": surfaces},
-                            "status": {"type": "string", "enum": ["REVIEWED", "NOT_APPLICABLE"]},
-                            "evidence_ref": {"type": "string", "maxLength": 240},
-                        },
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": list(surfaces),
+                    "properties": {
+                        surface: {
+                            "type": "object", "additionalProperties": False,
+                            "required": ["status", "evidence_ref"],
+                            "properties": {
+                                "status": {"type": "string", "enum": ["REVIEWED", "NOT_APPLICABLE"]},
+                                "evidence_ref": {"type": "string", "maxLength": 240},
+                            },
+                        }
+                        for surface in surfaces
                     },
                 },
                 "finding_dispositions": {
-                    "type": "array", "maxItems": 64,
-                    "items": {
-                        "type": "object", "additionalProperties": False,
-                        "required": ["finding_id", "disposition", "evidence_ref"],
-                        "properties": {
-                            "finding_id": {"type": "string", "maxLength": 240},
-                            "disposition": {"type": "string", "enum": ["RESOLVED", "OPEN"]},
-                            "evidence_ref": {"type": "string", "maxLength": 240},
-                        },
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": list(prior_finding_ids),
+                    "properties": {
+                        finding_id: {
+                            "type": "object", "additionalProperties": False,
+                            "required": ["disposition", "evidence_ref"],
+                            "properties": {
+                                "disposition": {"type": "string", "enum": ["RESOLVED", "OPEN"]},
+                                "evidence_ref": {"type": "string", "maxLength": 240},
+                            },
+                        }
+                        for finding_id in prior_finding_ids
                     },
                 },
             })
@@ -632,6 +636,23 @@ class CodexCliClient:
             )
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
+            raw_coverage = raw.get("coverage", {})
+            raw_dispositions = raw.get("finding_dispositions", {})
+            if mandatory and (
+                not isinstance(raw_coverage, dict)
+                or set(raw_coverage) != set(selection.required_coverage_surfaces)
+                or not isinstance(raw_dispositions, dict)
+                or set(raw_dispositions) != set(selection.required_finding_ids)
+            ):
+                raise TypeError("mandatory assurance response does not match the host-owned contract")
+            coverage = tuple(
+                {"surface": surface, **dict(raw_coverage[surface])}
+                for surface in selection.required_coverage_surfaces
+            ) if mandatory else ()
+            finding_dispositions = tuple(
+                {"finding_id": finding_id, **dict(raw_dispositions[finding_id])}
+                for finding_id in selection.required_finding_ids
+            ) if mandatory else ()
             return ReviewerResult(
                 selection.reviewer,
                 str(raw["contribution"]),
@@ -641,8 +662,8 @@ class CodexCliClient:
                 usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
                 churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
                 usage_snapshots=self.last_usage_snapshots,
-                coverage=tuple(dict(value) for value in raw.get("coverage", ())),
-                finding_dispositions=tuple(dict(value) for value in raw.get("finding_dispositions", ())),
+                coverage=coverage,
+                finding_dispositions=finding_dispositions,
             )
         except (IndexError, KeyError, TypeError, json.JSONDecodeError):
             return ReviewerResult(

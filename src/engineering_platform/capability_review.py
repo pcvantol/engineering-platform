@@ -45,7 +45,7 @@ REVIEWER_LABELS = {
     "finalization": "Finalization Reviewer",
 }
 ADVISORY_REVIEW_OUTPUT_CONTRACT_VERSION = "1.0"
-MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION = "2.0"
+MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION = "3.0"
 MANDATORY_FINDING_FIELDS = frozenset({
     "id", "observation", "category", "criterion", "severity", "confidence", "evidence_ref",
 })
@@ -103,6 +103,13 @@ class ReviewerSelection:
     selected_because: str
     confidence: float
     capability: str = "engineering"
+    # Mandatory assurance is selected by the host for one immutable delivery
+    # role and one exact set of still-open findings.  Carry that host-owned
+    # contract across the provider boundary so the structured-output schema
+    # cannot admit a broader, incomplete response that the deterministic
+    # validator must subsequently reject.
+    required_coverage_surfaces: tuple[str, ...] = ()
+    required_finding_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

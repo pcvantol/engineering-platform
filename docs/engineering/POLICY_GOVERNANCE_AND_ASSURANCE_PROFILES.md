@@ -149,6 +149,13 @@ mutating work. Reviewers are technically read-only and cannot self-approve a
 repair. Their recommendations are not themselves authorization. Missing,
 malformed, incomplete or candidate-mismatched mandatory review is UNRESOLVED.
 
+The host binds each provider invocation to the exact delivery role, complete
+required coverage-surface set and exact still-open finding IDs. The structured
+provider schema exposes only those keys, requires every one and rejects extra
+keys. Provider output is then normalized into the append-only review record and
+validated again by the host. A broad schema whose valid outputs can still omit
+host-required evidence is not a valid mandatory-assurance interface.
+
 Effective profiles select applicable criteria, reviewer roles, tool controls,
 evidence requirements and finding dispositions. Mechanical formatting, import
 sorting, indentation, linting and analyzers use the repository-native pinned
