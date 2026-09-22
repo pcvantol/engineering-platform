@@ -2394,9 +2394,25 @@ test.describe("Engineering Status browser smoke", () => {
           dismissed: true,
           dismissed_at: "2026-08-27T14:08:24.218289+00:00",
           blocking_reason: "The verified blocking reason belongs to this run.",
+          producer_submission_contract_version: "1.0",
+          submission_id: "submission-modal",
+          execution_context_version: "1.3",
+          engineering_action_id: "action-modal",
+          correlation_id: "correlation-modal",
+          execution_activity_summary: {
+            activity: { provider_invocations_total: 3, reviewer_codex_commands_total: 2, host_validation_commands_total: 4, overall_activity_total: 9 },
+            terminal_delivery_diff: { transaction_baseline_sha: "c".repeat(40), terminal_target_sha: "d".repeat(40), total_unique_changed_paths: 2, renamed: [], per_pr_changed_file_counts: "PR #948: 2" },
+          },
         },
         execution: { seconds: 42, total_seconds: 61 },
         evidence: ["Execution Host: Engineering Platform"],
+        reviewers: [{ reviewer: "validation", capability: "ENGINEERING", status: "completed", selected_because: "Validation objective", accepted_recommendations: 2 }],
+        assurance_reviews: [{ reviewer: "quality", status: "FAIL", candidate_sha: "e".repeat(40), findings: [{ observation: "Timeout is not end-to-end bounded." }] }],
+        recommendation_handoff: {
+          artifact_path: "forge/recommendation.json", projection_status: "COMPLETE", missing_fields: [],
+          recommendation: { title: "Mission Aurora", status: "RECOMMENDED", mission_origin: "PORTFOLIO_INTELLIGENCE", business_value: "High", confidence: "0.91", dependencies: ["DEC-7"], summary: "Highest value", decision_evidence: "DEC-7" },
+          alternatives: [{ rank: 2, title: "Mission Borealis", ordering_reason: "Lower value" }],
+        },
         pull_requests: [
           { role: "implementation", number: 948, url: "https://github.com/pcvantol/djconnect/pull/948", commit_count: 2, check_count: 1, changed_file_count: 5 },
           { role: "finalization", number: 949, url: "https://github.com/pcvantol/djconnect/pull/949", commit_count: 1, check_count: 3, changed_file_count: 2 },
@@ -2409,6 +2425,34 @@ test.describe("Engineering Status browser smoke", () => {
           commit_sha: "a".repeat(40),
           description: "finalization_commit_verified",
         }],
+        lifecycle: {
+          available: true,
+          run_id: "inbox-modal",
+          terminal_state: "BLOCKED",
+          steps: [{
+            id: "QUALITY_CONTROL_AGENT",
+            presentation_key: "lifecycle.step.quality_control_agent",
+            state: "COMPLETED",
+            repair_rounds: { used: 1, maximum: 3 },
+            quality_evidence: [{ activity: "validation", result: "Validated the bounded snapshot." }],
+          }, {
+            id: "REPAIR_AGENT",
+            presentation_key: "lifecycle.step.repair_agent",
+            state: "COMPLETED",
+            iteration_count: 1,
+            timing: { started_at: "2026-08-04T08:00:10Z", finished_at: "2026-08-04T08:00:20Z", spans: [{ phase: "REPAIR", duration_ms: 10000, outcome: "COMPLETED" }] },
+            delivery_evidence: { role: "implementation", branch: "codex/repair", candidate_sha: "b".repeat(40), changed_paths: ["src/service.py", "tests/test_service.py"] },
+            repair_audit: [{
+              repair_id: "repair:inbox-modal:1",
+              iteration: "1",
+              failed_checks: "Quality finding Q-001",
+              proposed_action: "Bound the complete snapshot operation.",
+              agent_summary: "Applied the bounded snapshot repair.",
+              commit_sha: "b".repeat(40),
+              outcome: "submitted_for_recheck",
+            }],
+          }],
+        },
       },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -2467,6 +2511,24 @@ test.describe("Engineering Status browser smoke", () => {
     expect(markdownContent).toContain("## Geverifieerde commit-tijdlijn");
     expect(markdownContent).toContain("`" + "a".repeat(40) + "`");
     expect(markdownContent).toContain("Finalisatiecommit geverifieerd");
+    expect(markdownContent).toContain("## Herstelhistorie");
+    expect(markdownContent).toContain("### Herstelronde 1");
+    expect(markdownContent).toContain("Quality finding Q-001");
+    expect(markdownContent).toContain("Bound the complete snapshot operation.");
+    expect(markdownContent).toContain("Applied the bounded snapshot repair.");
+    expect(markdownContent).toContain("`" + "b".repeat(40) + "`");
+    expect(markdownContent).toContain("## Uitvoeringsstroom");
+    expect(markdownContent).toContain("src/service.py");
+    expect(markdownContent).toContain("## Specialistische agentreviews");
+    expect(markdownContent).toContain("Validation objective");
+    expect(markdownContent).toContain("## Kwaliteits- en beveiligingscontrole");
+    expect(markdownContent).toContain("Herstelrondes: 1/3");
+    expect(markdownContent).toContain("Timeout is not end-to-end bounded.");
+    expect(markdownContent).toContain("Validated the bounded snapshot.");
+    expect(markdownContent).toContain("## Forge missieaanbeveling-overdracht");
+    expect(markdownContent).toContain("Mission Aurora");
+    expect(markdownContent).toContain("submission-modal");
+    expect(markdownContent).toContain("PR #948: 2");
     expect(markdownContent).not.toContain("```json");
     const jsonDownload = page.waitForEvent("download");
     await json.click();
@@ -2474,6 +2536,10 @@ test.describe("Engineering Status browser smoke", () => {
     expect(downloadedJson.suggestedFilename()).toBe("execution-details-inbox-modal.json");
     const jsonContent = JSON.parse(readFileSync(await downloadedJson.path(), "utf8"));
     expect(jsonContent.history.run_id).toBe("inbox-modal");
+    expect(jsonContent.reviewers[0].selected_because).toBe("Validation objective");
+    expect(jsonContent.assurance_reviews[0].findings[0].observation).toBe("Timeout is not end-to-end bounded.");
+    expect(jsonContent.lifecycle.steps[1].delivery_evidence.changed_paths).toEqual(["src/service.py", "tests/test_service.py"]);
+    expect(jsonContent.recommendation_handoff.recommendation.title).toBe("Mission Aurora");
     expect(jsonContent.pull_requests).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "implementation", number: 948 }),
       expect.objectContaining({ role: "finalization", number: 949 }),
@@ -3290,6 +3356,7 @@ test.describe("Engineering Status browser smoke", () => {
         { reviewer: "validation", capability: "engineering", status: "completed" },
       ],
       implementation_branch: "implementation/mission-health",
+      implementation_changed_paths: ["forge/installed_health.py", "tests/test_operations_health.py"],
       implementation_candidate_sha: "a".repeat(40), implementation_pr: 173, finalization_pr: 174,
       lifecycle: { available: true, run_id: "step-evidence", terminal_state: "ACTIVE", steps: [
         { id: "CAPABILITY_REVIEW", presentation_key: "lifecycle.step.capability_review", state: "COMPLETED" },
@@ -3317,6 +3384,10 @@ test.describe("Engineering Status browser smoke", () => {
     await dispatchDashboardPointerClick(nodes.nth(1));
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_implementation_evidence"]);
     await expect(modal).toContainText("implementation/mission-health");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["detail.changed_files"]);
+    await expect(modal.locator(".lifecycle-detail-modal__changed-paths li")).toHaveText([
+      "forge/installed_health.py", "tests/test_operations_health.py",
+    ]);
     await expect(modal).toContainText("#173");
     await expect(modal.locator("a.prompt-detail-pr-link")).toHaveAttribute("href", "https://github.com/pcvantol/forge/pull/173");
     await page.locator("#lifecycleDetailClose").click();
@@ -3684,11 +3755,18 @@ test.describe("Engineering Status browser smoke", () => {
           { id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
             timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL_AGENT", duration_ms: 1000, outcome: "ACTIVE" }] },
             quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }],
+            assurance_review_progress: [
+              { reviewer: "quality", status: "COMPLETED" },
+              { reviewer: "security", status: "ACTIVE" },
+            ],
             assurance_reviews: [
-              { reviewer: "quality", status: "PASS", findings: [],
+              { reviewer: "quality", status: "PASS", candidate_sha: "b".repeat(40), findings: [],
                 coverage: [{ surface: "service_lifecycle", status: "REVIEWED", evidence_ref: "service.py" }],
                 finding_dispositions: [{ finding_id: "Q-001", disposition: "RESOLVED", evidence_ref: "test_service.py" }] },
-              { reviewer: "security", status: "FAIL", findings: [{ observation: "Beveiligingsbevinding." }] },
+              { reviewer: "security", status: "FAIL", candidate_sha: "b".repeat(40), findings: [{ observation: "Beveiligingsbevinding." }] },
+              { reviewer: "quality", status: "UNRESOLVED", candidate_sha: "c".repeat(40), findings: [] },
+              { reviewer: "security", status: "UNRESOLVED", candidate_sha: "d".repeat(40), findings: [] },
+              { reviewer: "quality", status: "UNRESOLVED", candidate_sha: "e".repeat(40), findings: [] },
             ] },
         ],
       },
@@ -3708,12 +3786,19 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["reviewer.security"]);
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(modal.locator(".lifecycle-detail-modal__assurance-status--passed")).toHaveText("✓");
-    await expect(modal.locator(".lifecycle-detail-modal__assurance-status--failed")).toHaveText("×");
+    await expect(modal.locator(".lifecycle-detail-modal__assurance-status--failed").first()).toHaveText("×");
+    await expect(modal.locator(".lifecycle-detail-modal__assurance-progress")).toContainText(
+      "Reviews bezig: 1 van 2 afgerond · Beveiligingsreview actief",
+    );
+    await expect(modal.locator(".lifecycle-detail-modal__assurance-progress .reviewer-agent__status--running")).toHaveCount(1);
+    await expect(modal.locator(".lifecycle-detail-modal__assurance-wave-heading")).toHaveText([
+      "Initiële beoordeling", "Herstelronde 1", "Herstelronde 2", "Herstelronde 3",
+    ]);
     await expect(modal).toContainText("Impactvlakken beoordeeld: 1 · Eerdere bevindingen herbeoordeeld: 1");
     await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
     await expect(modal.locator(".lifecycle-detail-modal__quality-evidence .lifecycle-detail-modal__phase-list span").first()).toHaveCSS("text-align", "start");
-    const securityReview = modal.locator(".lifecycle-detail-modal__assurance-evidence strong").filter({ hasText: "Beveiligingsreview" });
+    const securityReview = modal.locator(".lifecycle-detail-modal__assurance-evidence strong").filter({ hasText: "Beveiligingsreview" }).first();
     const securityReviewLabel = securityReview.locator(":scope > span").last();
     const reviewLines = await securityReviewLabel.evaluate((element) => {
       const range = document.createRange();
@@ -4819,7 +4904,9 @@ test.describe("Engineering Status browser smoke", () => {
         assurance_reviews: [
           { reviewer: "quality", status: "PASS", candidate_sha: "b".repeat(40), findings: [] },
           { reviewer: "security", status: "FAIL", candidate_sha: "b".repeat(40), findings: [{ severity: "MEDIUM", disposition: "NON_BLOCKING", observation: "Freshness edge case recorded." }] },
-          { reviewer: "quality", status: "UNRESOLVED", candidate_sha: "b".repeat(40), findings: [] },
+          { reviewer: "quality", status: "UNRESOLVED", candidate_sha: "c".repeat(40), findings: [] },
+          { reviewer: "security", status: "PASS", candidate_sha: "d".repeat(40), findings: [] },
+          { reviewer: "quality", status: "PASS", candidate_sha: "e".repeat(40), findings: [] },
         ],
       });
       document.querySelector("#promptHistoryDetailModal").showModal();
@@ -4880,13 +4967,16 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(assuranceCard).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(assuranceCard).toContainText("Freshness edge case recorded.");
     const assuranceStatuses = assuranceCard.locator(".assurance-review-status");
-    await expect(assuranceStatuses).toHaveCount(3);
+    await expect(assuranceStatuses).toHaveCount(5);
     await expect(assuranceStatuses.nth(0).locator(".assurance-review-status__icon--passed")).toHaveText("✓");
     await expect(assuranceStatuses.nth(0).locator(".assurance-review-status__text")).toHaveText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(assuranceStatuses.nth(1).locator(".assurance-review-status__icon--failed")).toHaveText("×");
     await expect(assuranceStatuses.nth(1).locator(".assurance-review-status__text")).toHaveText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.fail"]);
     await expect(assuranceStatuses.nth(2).locator(".assurance-review-status__icon--failed")).toHaveText("×");
     await expect(assuranceStatuses.nth(2).locator(".assurance-review-status__text")).toHaveText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.unresolved"]);
+    await expect(assuranceCard.locator(".prompt-detail-assurance-wave-heading")).toHaveText([
+      "Initiële beoordeling", "Herstelronde 1", "Herstelronde 2", "Herstelronde 3",
+    ]);
     await expect(assuranceCard).toContainText("b".repeat(40));
     for (const selector of [
       ".prompt-detail-card--evidence",
@@ -8176,11 +8266,12 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
-  test("does not mistake a nine-minute active phase for whole-run time remaining", async ({ page }) => {
+  test("localizes active phases without mistaking them for whole-run time remaining", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const [phase, label] of [
+      ["CAPABILITY_REVIEW", "Specialistenreview"],
       ["REPAIR_AGENT", "Herstel"],
       ["FINALIZATION_REPAIR_AGENT", "Herstel van finalisatiecontrole"],
     ]) {

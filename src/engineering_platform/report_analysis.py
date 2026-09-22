@@ -188,7 +188,18 @@ def analyze(
             root, run_id, "report_unavailable", "Engineeringrapport was niet beschikbaar voor analyse.",
             output_directory=output_directory,
         )
-    prompt = """Analyseer uitsluitend het onderstaande Engineeringrapport. Voer geen commando's uit, wijzig geen bestanden, doe geen netwerkverzoeken en doe geen aannames buiten het rapport. Het resultaat is adviserend: repositorybewijs, commits, validatie en het terminale checkpoint zijn altijd leidend. Geef compacte, feitelijke Nederlandse tekst voor samenvatting, bevindingen, issues, risico's, volgende stappen en advies aan de Product Architect. Herhaal geen geheimen, promptinhoud of ruwe loguitvoer.\n\nENGINEERINGRAPPORT:\n""" + _bounded_report_context(report_text)
+    prompt = """Analyseer uitsluitend het onderstaande Engineeringrapport. Gebruik geen tools en neem niets aan buiten het rapport. De analyse is adviserend; checkpoint, repositorybewijs, commits en validatie zijn leidend.
+
+Volg deze regels:
+- Een terminale BLOCKED of FAILED uitvoering is onveranderlijk en kan nooit als dezelfde run worden hervat. Noem een nieuwe, expliciet gekoppelde retry-uitvoering alleen wanneer het rapport daar aantoonbaar toestemming of een mechanisme voor bevat; verzin geen resume-mechanisme, nieuwe Mission of scope-uitbreiding.
+- Onderscheid productdefecten, Execution-Host- of bewijsprojectiefouten en deliveryhiaten. Schrijf ontbrekend reviewer-inputbewijs niet toe aan productcode en adviseer geen testherhaling wanneer kandidaatgebonden hostvalidatie al PASS is; herstel dan bewijsroutering of -binding.
+- Houd een waargenomen of draft pull request, checkpointbinding en gekwalificeerde levering gescheiden. Ontken een waargenomen PR niet.
+- Gebruik uitsluitend de laatste review-wave voor open blockers; eerdere waves en herstelcommits tonen voortgang. Benoem concrete oorzaken en voeg onafhankelijke bevindingen niet samen.
+- Benoem tegenstrijdig bewijs als projectie- of autoriteitsverschil. Vul niets in en laat advies geen PASS-validatie of terminaal checkpoint overschrijven.
+- Onderscheid 'niet uitgevoerd', 'niet vastgelegd', 'niet beschikbaar' en 'niet gekwalificeerd'. Noem ontbrekende cleanup- of deliveryvelden geen mislukking wanneer gezaghebbend bewijs een schone toestand meldt.
+- Verklaar bij meerdere herstelrondes welke blockers opgelost, nieuw of door ontbrekende reviewer-evidence niet in productcode oplosbaar waren. Adviseer niet alleen om het herstelbudget te verhogen.
+
+Geef compacte Nederlandse tekst voor alle schemavelden. Herhaal geen geheimen, prompts of ruwe logs.\n\nENGINEERINGRAPPORT:\n""" + _bounded_report_context(report_text)
     schema_path: Path | None = None
     try:
         state_directory = root / ".engineering"

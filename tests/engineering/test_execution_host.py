@@ -2467,6 +2467,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(agent.roots, [self.root])
         self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
         self.assertEqual(state.assurance_profile["candidate_sha"], "a" * 40)
+        self.assertEqual(state.assurance_review_progress, (
+            {"reviewer": "quality", "status": "COMPLETED"},
+            {"reviewer": "security", "status": "COMPLETED"},
+        ))
         self.assertEqual(repository.synchronize_calls, [self.root])
 
     def test_exact_requested_revision_prepares_old_clean_workspace_before_provider(self) -> None:
@@ -7593,6 +7597,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "run_id": "inbox-context",
             "run_stable": {"repository": "pcvantol/djconnect", "execution_mode": "MANAGED"},
             "mutable": {"branch": "main", "head_sha": "a" * 40, "worktree": "clean", "main_contains_head": True},
+            "candidate_bound_validation": {"status": "UNAVAILABLE"},
             "boundary_sensitive": {
                 "freshness_boundary": "post_synchronization_pre_reviewer_wave",
                 "invalidated_by": ["repository_mutation", "validation", "pull_request_mutation", "merge", "finalization", "repository_cleanup"],
@@ -7603,6 +7608,30 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("one reviewer invocation", prompt["invocation_read_reuse"])
         self.assertIn("another reviewer", prompt["invocation_read_reuse"])
         self.assertIn("whenever freshness is uncertain", prompt["invocation_read_reuse"])
+
+    def test_reviewer_prompt_receives_candidate_bound_host_validation_receipts(self) -> None:
+        selection = select_reviewers("validation", self.prompt, "IMPLEMENTATION", {})[0]
+        assessment = {
+            "candidate_sha": "a" * 40,
+            "profile_digest": "sha256:" + "b" * 64,
+            "currentness": 2,
+            "controls": [{
+                "validation_id": "repository_suite", "control_identity": "suite-v1",
+                "command_id": "command-1", "exit_code": 0, "result": "PASS",
+            }],
+        }
+        evidence = ReviewerEvidence.from_repository(
+            "inbox-context", "MANAGED",
+            RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True),
+            validation_assessment=assessment,
+        )
+
+        prompt = json.loads(reviewer_prompt(selection, "objective", evidence))
+
+        self.assertEqual(
+            prompt["run_scoped_repository_evidence"]["candidate_bound_validation"],
+            assessment,
+        )
 
     def test_parallel_reviewers_share_facts_but_not_reasoning(self) -> None:
         selections = select_reviewers("governance documentation validation", self.prompt, "IMPLEMENTATION", {})

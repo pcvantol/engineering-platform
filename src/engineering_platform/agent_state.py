@@ -134,13 +134,16 @@ class TransactionState:
     implementation_branch: str | None = None
     implementation_pull_request: int | None = None
     implementation_head_sha: str | None = None
+    implementation_changed_paths: tuple[str, ...] = ()
     implementation_merge_commit: str | None = None
     finalization_branch: str | None = None
     finalization_pull_request: int | None = None
     finalization_head_sha: str | None = None
+    finalization_changed_paths: tuple[str, ...] = ()
     finalization_merge_commit: str | None = None
     reconciliation_pull_request: int | None = None
     reconciliation_head_sha: str | None = None
+    reconciliation_changed_paths: tuple[str, ...] = ()
     reconciliation_merge_commit: str | None = None
     delivery_control_validation_required: bool = False
     merge_delegation_id: str | None = None
@@ -155,6 +158,9 @@ class TransactionState:
     # observations; a later review appends a new record instead of changing an
     # earlier finding into a pass.
     assurance_profile: dict[str, str] | None = None
+    # Live, bounded progress for the current two-reviewer assurance wave. The
+    # immutable review records remain in ``assurance_reviews``.
+    assurance_review_progress: tuple[dict[str, str], ...] = ()
     assurance_reviews: tuple[dict[str, object], ...] = ()
     assurance_resolutions: tuple[dict[str, str], ...] = ()
     repair_iterations: int = 0
@@ -188,11 +194,11 @@ class TransactionState:
             "allowed_baseline_revision": None,
             "action_intent": "MUTATING_DELIVERY",
             "implementation_branch": None, "implementation_pull_request": None,
-            "implementation_head_sha": None, "implementation_merge_commit": None,
+            "implementation_head_sha": None, "implementation_changed_paths": (), "implementation_merge_commit": None,
             "finalization_branch": None, "finalization_pull_request": None,
-            "finalization_head_sha": None, "finalization_merge_commit": None,
+            "finalization_head_sha": None, "finalization_changed_paths": (), "finalization_merge_commit": None,
             "reconciliation_pull_request": None,
-            "reconciliation_head_sha": None,
+            "reconciliation_head_sha": None, "reconciliation_changed_paths": (),
             "reconciliation_merge_commit": None,
             "delivery_control_validation_required": False,
             "merge_delegation_id": None,
@@ -203,6 +209,7 @@ class TransactionState:
             "validation_evidence": (),
             "quality_evidence": (),
             "assurance_profile": None,
+            "assurance_review_progress": (),
             "assurance_reviews": (),
             "assurance_resolutions": (),
             "repair_iterations": 0,
@@ -227,8 +234,13 @@ class TransactionState:
             raw = {**raw, "validation_evidence": tuple(raw["validation_evidence"])}
         if isinstance(raw.get("quality_evidence"), list):
             raw = {**raw, "quality_evidence": tuple(raw["quality_evidence"])}
+        for field in ("implementation_changed_paths", "finalization_changed_paths", "reconciliation_changed_paths"):
+            if isinstance(raw.get(field), list):
+                raw = {**raw, field: tuple(raw[field])}
         if isinstance(raw.get("assurance_reviews"), list):
             raw = {**raw, "assurance_reviews": tuple(raw["assurance_reviews"])}
+        if isinstance(raw.get("assurance_review_progress"), list):
+            raw = {**raw, "assurance_review_progress": tuple(raw["assurance_review_progress"])}
         if isinstance(raw.get("assurance_resolutions"), list):
             raw = {**raw, "assurance_resolutions": tuple(raw["assurance_resolutions"])}
         if isinstance(raw.get("repair_audit"), list):
@@ -311,14 +323,26 @@ class TransactionState:
         optional_pr_fields = (state.implementation_pull_request, state.finalization_pull_request, state.reconciliation_pull_request)
         if any(value is not None and (not isinstance(value, int) or value < 1) for value in optional_pr_fields):
             raise StateError("checkpoint lifecycle pull request is invalid")
+        for paths in (state.implementation_changed_paths, state.finalization_changed_paths, state.reconciliation_changed_paths):
+            if (
+                not isinstance(paths, tuple)
+                or len(paths) > 4096
+                or any(
+                    not isinstance(path, str) or not path or len(path) > 4096
+                    or path.startswith("/") or ".." in Path(path).parts or "\x00" in path
+                    for path in paths
+                )
+            ):
+                raise StateError("checkpoint changed paths are invalid")
         if not isinstance(state.repair_iterations, int) or state.repair_iterations < 0:
             raise StateError("checkpoint repair iteration count is invalid")
         audit_fields = {"iteration", "observed_at", "failed_checks", "proposed_action", "agent_summary", "commit_sha", "outcome"}
-        if not isinstance(state.local_validation_iterations, int) or not 0 <= state.local_validation_iterations <= 3:
+        # Initial validation plus at most three run-wide repair candidates.
+        if not isinstance(state.local_validation_iterations, int) or not 0 <= state.local_validation_iterations <= 4:
             raise StateError("checkpoint local validation iteration count is invalid")
         if (
             not isinstance(state.local_validation_audit, tuple)
-            or len(state.local_validation_audit) > 3
+            or len(state.local_validation_audit) > 4
             or any(
                 not isinstance(item, dict) or set(item) != audit_fields
                 or not all(isinstance(value, str) and value and len(value) <= MAX_DIAGNOSTIC_LENGTH and value == redact_diagnostic(value) for value in item.values())
@@ -456,6 +480,22 @@ class TransactionState:
             )
         ):
             raise StateError("checkpoint assurance profile is invalid")
+        progress_fields = {"reviewer", "status"}
+        if (
+            not isinstance(state.assurance_review_progress, tuple)
+            or len(state.assurance_review_progress) > 2
+            or any(
+                not isinstance(item, dict)
+                or set(item) != progress_fields
+                or item.get("reviewer") not in {"quality", "security"}
+                or item.get("status") not in {"PENDING", "ACTIVE", "COMPLETED"}
+                for item in state.assurance_review_progress
+            )
+            or len({item["reviewer"] for item in state.assurance_review_progress})
+            != len(state.assurance_review_progress)
+            or sum(item["status"] == "ACTIVE" for item in state.assurance_review_progress) > 1
+        ):
+            raise StateError("checkpoint assurance review progress is invalid")
         review_fields = {"reviewer", "status", "candidate_sha", "profile_digest", "invocation_id", "findings"}
         current_review_fields = review_fields | {"contract_version", "started_at", "completed_at"}
         integral_review_fields = current_review_fields | {"coverage", "finding_dispositions"}

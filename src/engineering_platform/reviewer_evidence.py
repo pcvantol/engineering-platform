@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 from .execution_models import RepositoryEvidence
 
@@ -24,11 +25,13 @@ class ReviewerEvidence:
     head_sha: str
     worktree: str
     main_contains_head: bool
+    validation_assessment: Mapping[str, object] | None = None
     freshness_boundary: str = "post_synchronization_pre_reviewer_wave"
 
     @classmethod
     def from_repository(
-        cls, run_id: str, execution_mode: str, evidence: RepositoryEvidence
+        cls, run_id: str, execution_mode: str, evidence: RepositoryEvidence,
+        *, validation_assessment: Mapping[str, object] | None = None,
     ) -> "ReviewerEvidence":
         return cls(
             run_id=run_id,
@@ -38,6 +41,7 @@ class ReviewerEvidence:
             head_sha=evidence.head_sha,
             worktree="clean" if evidence.clean else "dirty",
             main_contains_head=evidence.main_contains_head,
+            validation_assessment=validation_assessment,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -56,6 +60,10 @@ class ReviewerEvidence:
                 "worktree": self.worktree,
                 "main_contains_head": self.main_contains_head,
             },
+            "candidate_bound_validation": (
+                dict(self.validation_assessment)
+                if self.validation_assessment is not None else {"status": "UNAVAILABLE"}
+            ),
             "boundary_sensitive": {
                 "freshness_boundary": self.freshness_boundary,
                 "invalidated_by": (

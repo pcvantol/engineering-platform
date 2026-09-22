@@ -110,6 +110,24 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(by_id["LOCAL_REPOSITORY_VALIDATION"]["iteration_count"], 2)
         self.assertEqual(by_id["LOCAL_REPOSITORY_VALIDATION"]["repair_audit"], list(audit))
 
+    def test_local_validation_projects_every_candidate_pass(self) -> None:
+        audit = tuple({
+            "iteration": str(iteration), "observed_at": f"2026-08-26T08:1{iteration}:00+00:00",
+            "failed_checks": f"Candidate {iteration} assessment", "proposed_action": "FULL suite.",
+            "agent_summary": f"Candidate {iteration} validated.", "commit_sha": str(iteration) * 40,
+            "outcome": "validated",
+        } for iteration in range(1, 4))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._state(
+                root, "LOCAL_REPOSITORY_VALIDATION", branch="codex/local-validation",
+                local_validation_iterations=3, local_validation_audit=audit,
+            )
+            value = projection(root, "inbox-flow")
+        validation = next(step for step in value["steps"] if step["id"] == "LOCAL_REPOSITORY_VALIDATION")
+        self.assertEqual(validation["iteration_count"], 3)
+        self.assertEqual(validation["repair_audit"], list(audit))
+
     def test_assurance_projects_two_pinned_reviews_and_one_run_wide_counter(self) -> None:
         profile = {"version": "validation-profile@1", "digest": "sha256:" + "a" * 64, "candidate_sha": "b" * 40}
         finding = {"id": "security-1", "fingerprint": "f" * 32, "category": "SECURITY", "criterion": "post_implementation_assurance", "observation": "Missing project isolation test.", "severity": "HIGH", "confidence": "MEDIUM", "blocking": True, "disposition": "OPEN"}
@@ -119,11 +137,20 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self._state(root, "QUALITY_CONTROL_AGENT", repair_iterations=2, assurance_profile=profile, assurance_reviews=reviews)
+            progress = (
+                {"reviewer": "quality", "status": "COMPLETED"},
+                {"reviewer": "security", "status": "ACTIVE"},
+            )
+            self._state(
+                root, "QUALITY_CONTROL_AGENT", repair_iterations=2,
+                assurance_profile=profile, assurance_review_progress=progress,
+                assurance_reviews=reviews,
+            )
             value = projection(root, "inbox-flow")
         quality = next(step for step in value["steps"] if step["id"] == "QUALITY_CONTROL_AGENT")
         self.assertEqual(quality["repair_rounds"], {"used": 2, "maximum": 3})
         self.assertEqual(quality["assurance_reviews"], list(reviews))
+        self.assertEqual(quality["assurance_review_progress"], list(progress))
         self.assertEqual(value["repair_rounds"], {"used": 2, "maximum": 3})
 
     def test_genesis_has_its_own_canonical_path(self) -> None:

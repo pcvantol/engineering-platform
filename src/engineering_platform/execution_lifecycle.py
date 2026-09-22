@@ -400,6 +400,9 @@ def projection(
             evidence = checkpoint.get("quality_evidence")
             if isinstance(evidence, (list, tuple)) and evidence:
                 step["quality_evidence"] = list(evidence)
+            progress = checkpoint.get("assurance_review_progress")
+            if isinstance(progress, (list, tuple)) and progress:
+                step["assurance_review_progress"] = list(progress)
             reviews = checkpoint.get("assurance_reviews")
             if isinstance(reviews, (list, tuple)) and reviews:
                 step["assurance_reviews"] = list(reviews)
