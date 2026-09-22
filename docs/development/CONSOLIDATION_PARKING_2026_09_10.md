@@ -4,6 +4,26 @@ Increment: `FOUR_REPO_CONSOLIDATION_PARKING_2026_09_10`, reconciled 2026-09-10.
 Scoped record under [EP roadmap](ENGINEERING_PLATFORM_ROADMAP.md).
 [Documentary DAG](CONSOLIDATION_PARKING_2026_09_10_DAG.json).
 
+## 2026-09-22 reconciliation
+
+This file is a historical 2026-09-10 parking record. Statements below that say
+to keep PR #175 open/draft describe the authority and observed state on that
+date; they are not current instructions.
+
+PR #175 was closed without merge on 2026-09-22 after later EP main/releases had
+superseded its old source baseline. The historical head remains forensic
+evidence, not a candidate to reopen or cherry-pick. PR #178 separately delivered
+the strict current-control validation subset. The residual candidate-adoption,
+duplicate-safe first-publication recovery and committed-source qualification
+build semantics are now normalized as explicit PLANNED future work under
+[Managed publication recovery V1](MANAGED_PUBLICATION_RECOVERY_V1_ROADMAP.md)
+and
+[its DAG](MANAGED_PUBLICATION_RECOVERY_V1_DAG.json).
+
+This reconciliation changes no runtime, CENTRAL, credential, repair budget,
+release or active LANE_2 assignment. The remainder of this document is retained
+as the time-scoped historical parking evidence.
+
 ## Current disposition
 
 Physical local repository cleanup is complete; retained remote product/source
