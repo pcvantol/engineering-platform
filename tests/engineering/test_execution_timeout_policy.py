@@ -31,6 +31,13 @@ class ExecutionTimeoutPolicyTests(unittest.TestCase):
         self.assertEqual(REPAIR.seconds, 15 * 60)
         self.assertEqual(FINALIZATION.seconds, 15 * 60)
         self.assertEqual(END_RECONCILIATION.seconds, 10 * 60)
+        self.assertEqual(SPECIALIST_REVIEW.maximum_seconds, 5 * 60)
+        self.assertEqual(IMPLEMENTATION.maximum_seconds, 45 * 60)
+        self.assertEqual(LOCAL_REPOSITORY_VALIDATION.maximum_seconds, 45 * 60)
+        self.assertEqual(AUTONOMOUS_QUALITY_CONTROL.maximum_seconds, 30 * 60)
+        self.assertEqual(REPAIR.maximum_seconds, 45 * 60)
+        self.assertEqual(FINALIZATION.maximum_seconds, 45 * 60)
+        self.assertEqual(END_RECONCILIATION.maximum_seconds, 30 * 60)
 
     def test_primary_timeout_selection_is_phase_and_action_specific(self) -> None:
         self.assertIs(agent_timeout(phase="EXECUTE_AGENT"), IMPLEMENTATION)

@@ -886,6 +886,8 @@ html:not([data-theme="light"]) .dashboard-modal-shell{--modal-header-surface:col
 .dashboard-action--download:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
 .dashboard-action--copy{background:#34283f!important;border-color:#d0a4ff!important;color:#eadcff!important}
 .dashboard-action--copy:hover:not(:disabled){background:#d0a4ff!important;border-color:#d0a4ff!important;color:#17151a!important}
+.report-view-modal__reload{background:#3b281b!important;border-color:#f0b66a!important;color:#fff0dc!important;font-size:21px!important}
+.report-view-modal__reload:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
 .dashboard-action--destructive{background:#3a2028!important;border-color:#ff718f!important;color:#ffd9e1!important}
 .dashboard-action--destructive:hover:not(:disabled){background:#ff718f!important;border-color:#ff718f!important;color:#23131a!important}
 .operator-merge-wait{grid-column:1/-1}.operator-merge-wait__actions{align-items:stretch;display:flex;flex-wrap:wrap;gap:10px}.operator-merge-wait__actions .dashboard-action{border-radius:10px;flex:1 1 15rem;font:700 15px/1.25 system-ui;height:auto;justify-content:center;min-height:40px;min-width:0;padding:8px 14px;text-align:center;text-decoration:none;width:auto}.operator-merge-wait__actions .dashboard-action--primary{background:#3b281b!important;border-color:#f0b66a!important;color:#fff0dc!important}.operator-merge-wait__actions .dashboard-action--primary:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
@@ -900,6 +902,7 @@ html[data-theme="light"] .operator-merge-wait__actions .dashboard-action--primar
 .operator-merge-wait__actions .dashboard-action--destructive::before,#operatorMergeWaitModal .dashboard-modal-shell__action--destructive::before{text-shadow:.35px 0 currentColor,-.35px 0 currentColor}
 html[data-theme="light"] .dashboard-action--copy{background:#fff7ff!important;border-color:#b99ae5!important;color:#68498a!important}
 html[data-theme="light"] .dashboard-action--copy:hover:not(:disabled){background:#d0a4ff!important;border-color:#d0a4ff!important;color:#17151a!important}
+html[data-theme="light"] .report-view-modal__reload{background:#fff8ef!important;border-color:#d68b23!important;color:#643a13!important}
 html[data-theme="light"] .dashboard-action--destructive{background:#fff1f4!important;border-color:#ff718f!important;color:#b32649!important}
 
 /* Keep late modal-family rules from drifting the shared title scale. */
