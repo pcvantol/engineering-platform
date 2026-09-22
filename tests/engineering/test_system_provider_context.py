@@ -85,6 +85,37 @@ class SystemProviderContextTests(unittest.TestCase):
             with self.assertRaisesRegex(providers.SystemProviderContextError, "unavailable"):
                 providers.executable_digest(context.executable)
 
+    def test_readback_without_auth_and_invalid_contexts_fail_closed(self) -> None:
+        with TemporaryDirectory() as temporary:
+            product = Path(temporary) / "EP"
+            first = self._instance(product, "ep-production-0001")
+            context = providers.provider_context(first, "codex")
+            digest = self._executable(context)
+            providers.record_context(
+                context,
+                executable_sha256=digest,
+                version="1.2.3",
+                auth_reference="codex:auth:production",
+                auth_bootstrap_receipt="codex:receipt:production",
+            )
+            context.auth_receipt.unlink()
+            self.assertEqual(
+                providers.readback(context, authentication_required=False)["authentication"],
+                {"state": "NOT_REQUIRED", "reference": None},
+            )
+            with self.assertRaisesRegex(providers.SystemProviderContextError, "unsupported"):
+                providers.provider_context(first, "gitlab")
+            with self.assertRaisesRegex(providers.SystemProviderContextError, "duplicate"):
+                providers.assert_distinct(first, first)
+            second = topology.system_instance_topology(
+                topology.system_installation_topology(product),
+                instance_id="ep-development-0001",
+                display_label="ep development 0001",
+                service_account=first.service_account,
+            )
+            with self.assertRaisesRegex(providers.SystemProviderContextError, "service identity"):
+                providers.assert_distinct(first, second)
+
 
 if __name__ == "__main__":
     unittest.main()
