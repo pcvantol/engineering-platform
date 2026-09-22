@@ -490,7 +490,7 @@ class TransactionState:
                     or not isinstance(review.get("completed_at"), str)
                 ))
                 or (set(review) == integral_review_fields and (
-                    review.get("contract_version") != "2.0"
+                    review.get("contract_version") not in {"2.0", "3.0"}
                     or not isinstance(review.get("started_at"), str)
                     or not isinstance(review.get("completed_at"), str)
                     or not isinstance(review.get("coverage"), list)

@@ -2530,6 +2530,11 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             prior_findings = self._unresolved_assurance_findings(quality, reviewer=selection.reviewer)
             prior_finding_ids = tuple(str(finding["id"]) for finding in prior_findings)
             required_surfaces = mandatory_coverage_surfaces(selection.reviewer, role)
+            contracted_selection = replace(
+                selection,
+                required_coverage_surfaces=required_surfaces,
+                required_finding_ids=prior_finding_ids,
+            )
             assurance_objective = (
                 f"Mandatory {selection.reviewer} assurance. Profile {profile_version} ({profile_digest}); "
                 f"candidate {candidate.head_sha}. This is an integral candidate review, not a review of only the latest repair. "
@@ -2542,7 +2547,13 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 + criteria
             )
             started_at = datetime.now(timezone.utc).isoformat()
-            result = run_reviews(assurance_root or self.root, (selection,), assurance_objective, self.agent if hasattr(self.agent, "review") else None, evidence=evidence)[0]
+            result = run_reviews(
+                assurance_root or self.root,
+                (contracted_selection,),
+                assurance_objective,
+                self.agent if hasattr(self.agent, "review") else None,
+                evidence=evidence,
+            )[0]
             completed_at = datetime.now(timezone.utc).isoformat()
             try:
                 unchanged = self._inspect_assurance_candidate(candidate_root, state.execution_mode)

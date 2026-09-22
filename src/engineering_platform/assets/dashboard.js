@@ -144,6 +144,32 @@ function assuranceStatusLabel(value, fallback = t("format.not_available")) {
   if (!raw) return fallback;
   return t(`lifecycle.assurance_status.${reviewerKey(raw)}`, {}, raw);
 }
+function assuranceStatusPresentation(value) {
+  const status = String(value || "UNRESOLVED").toUpperCase();
+  const passed = status === "PASS", failed = ["FAIL", "FAILED", "UNRESOLVED"].includes(status);
+  return {
+    glyph: passed ? "✓" : failed ? "×" : "•",
+    label: assuranceStatusLabel(status, status),
+    tone: passed ? "passed" : failed ? "failed" : "neutral",
+  };
+}
+function assuranceStatusIcon(presentation) {
+  const icon = document.createElement("span");
+  icon.className = "assurance-review-status__icon assurance-review-status__icon--" + presentation.tone
+    + " lifecycle-detail-modal__assurance-status lifecycle-detail-modal__assurance-status--" + presentation.tone;
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = presentation.glyph;
+  return icon;
+}
+function assuranceStatusRow(value) {
+  const presentation = assuranceStatusPresentation(value), row = document.createElement("span"),
+    text = document.createElement("span");
+  row.className = "assurance-review-status";
+  text.className = "assurance-review-status__text";
+  text.textContent = presentation.label;
+  row.append(assuranceStatusIcon(presentation), text);
+  return row;
+}
 function reviewerCapabilityLabel(value, fallback = t("format.not_available")) {
   const raw = String(value || "").trim();
   return raw ? enumLabel(raw.toUpperCase(), raw) : fallback;
@@ -2166,17 +2192,11 @@ function lifecycleAssuranceEvidence(step) {
     if (!review || typeof review !== "object") continue;
     const findings = Array.isArray(review.findings) ? review.findings : [];
     const item = document.createElement("li"), heading = document.createElement("strong"),
-      statusIcon = document.createElement("span"), status = String(review.status || "UNRESOLVED"),
-      normalizedStatus = status.toUpperCase();
+      status = String(review.status || "UNRESOLVED"), statusPresentation = assuranceStatusPresentation(status);
     const role = String(review.reviewer || "");
-    const passed = normalizedStatus === "PASS", failed = ["FAIL", "FAILED", "UNRESOLVED"].includes(normalizedStatus);
     heading.className = "lifecycle-detail-modal__assurance-heading";
-    statusIcon.className = "lifecycle-detail-modal__assurance-status lifecycle-detail-modal__assurance-status--"
-      + (passed ? "passed" : failed ? "failed" : "neutral");
-    statusIcon.setAttribute("aria-hidden", "true");
-    statusIcon.textContent = passed ? "✓" : failed ? "×" : "•";
-    heading.append(statusIcon, Object.assign(document.createElement("span"), {
-      textContent: `${reviewerLabel(role, role)} · ${assuranceStatusLabel(status, status)}`,
+    heading.append(assuranceStatusIcon(statusPresentation), Object.assign(document.createElement("span"), {
+      textContent: `${reviewerLabel(role, role)} · ${statusPresentation.label}`,
     }));
     item.append(heading);
     const summary = findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean).join("; ");
@@ -8645,18 +8665,24 @@ function promptDetailAssuranceReviewsSection(reviews) {
   const fields = reviews.map((review) => {
     const findings = Array.isArray(review.findings) ? review.findings : [];
     const candidate = String(review.candidate_sha || "").trim();
+    const field = detailField(
+      reviewerLabel(review.reviewer, t("detail.specialist_review")),
+      "",
+      true,
+    );
+    const content = field.lastElementChild;
+    content.className = "prompt-detail-assurance-review__content";
+    content.replaceChildren(assuranceStatusRow(review.status || "UNRESOLVED"));
     const lines = [
-      assuranceStatusLabel(review.status || "UNRESOLVED"),
       candidate ? t("detail.candidate_sha") + ": " + candidate : null,
       ...(findings.length
         ? findings.map((finding) => String(finding?.observation || "").trim()).filter(Boolean)
         : [t("lifecycle.assurance_no_findings")]),
     ].filter(Boolean);
-    return detailField(
-      reviewerLabel(review.reviewer, t("detail.specialist_review")),
-      lines.join("\n"),
-      true,
-    );
+    for (const line of lines) content.append(Object.assign(document.createElement("span"), {
+      className: "prompt-detail-assurance-review__line", textContent: line,
+    }));
+    return field;
   });
   return promptDetailCard(
     t("lifecycle.detail_assurance"), fields, true,
