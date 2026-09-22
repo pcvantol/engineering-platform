@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "increment": "EP_MANAGED_PUBLICATION_RECOVERY_V1",
+  "documentary_only": true,
+  "execution_authority": false,
+  "automatic_dispatch": false,
+  "version_change": "NO_BUMP",
+  "source_repository": "pcvantol/engineering-platform",
+  "historical_source": {
+    "pull_request": 175,
+    "disposition": "CLOSED_UNMERGED_HISTORICAL_EVIDENCE",
+    "head": "9ac3bd24e6842b4a1f2da356791261c9524f4893",
+    "note": "Do not reopen, merge or cherry-pick as the implementation route."
+  },
+  "already_delivered": {
+    "strict_current_validation": {
+      "pull_request": 178,
+      "status": "QUALIFIED_ON_MAIN",
+      "note": "Current validation receipts and independent Q/S ordering are predecessors, not residual work."
+    }
+  },
+  "nodes": [
+    {
+      "id": "MPR-0",
+      "kind": "documentation",
+      "status": "DOCUMENTED",
+      "depends_on": [],
+      "delivery": "Reconcile closed PR #175 residual scope against current main",
+      "acceptance": "Historical draft stays unmerged; delivered #178 scope is not duplicated; residual work is explicitly owned."
+    },
+    {
+      "id": "MPR-ADOPT",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "MPR-0"
+      ],
+      "delivery": "Typed exact existing-candidate adoption into the Managed lifecycle",
+      "acceptance": "Explicit branch+SHA+authority; no implementation replay; current validation and independent Q/S on the exact candidate; repair lineage/budget preserved; stale or mutated candidate fails closed."
+    },
+    {
+      "id": "MPR-PUBREC",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "MPR-0"
+      ],
+      "delivery": "Deterministic duplicate-safe first-PR publication recovery",
+      "acceptance": "Pre-create and uncertain-result GitHub readback; exact open draft/base/head reconciliation; mismatch/ambiguity blocks; crash/timeout resume never creates a duplicate or replays implementation."
+    },
+    {
+      "id": "MPR-QBUILD",
+      "kind": "implementation",
+      "status": "PLANNED",
+      "depends_on": [
+        "MPR-0"
+      ],
+      "delivery": "Build qualification artifacts from exact committed source",
+      "acceptance": "Dirty tracked source fails; isolated committed HEAD materialization drives wheel/sdist and installed qualification; ignored/untracked checkout residue cannot affect qualified bytes."
+    },
+    {
+      "id": "MPR-Q",
+      "kind": "qualification",
+      "status": "PLANNED",
+      "depends_on": [
+        "MPR-ADOPT",
+        "MPR-PUBREC",
+        "MPR-QBUILD"
+      ],
+      "delivery": "Integrated source and installed-artifact qualification",
+      "acceptance": "Current-main evidence proves adoption, publication recovery/idempotence and committed-source build hardening; historical #175 evidence is not promoted."
+    }
+  ]
+}
