@@ -56,11 +56,14 @@ SA-OBS -> SA-SEL
 ```
 
 `SA-PUBLICATION-CONTRACT` is an external evidence gate owned by EP, not another
-implementation node. It refers to `EP_MANAGED_POST_ASSURANCE_PUBLICATION_CLOSURE_V1`.
-Its qualification is REQUIRED_EVIDENCE_UNVERIFIED in this graph. Before `SA-PUB`
-activation, verify the actual owning publication contract and exact qualified
-source/artifact. A local candidate, a handoff, or this documentation is not proof.
-Do not reimplement the existing repair as part of this design.
+implementation node. Its current owning future-work lane is
+`EP_MANAGED_PUBLICATION_RECOVERY_V1`; the qualification milestone is
+`MPR-Q`. Its qualification is REQUIRED_EVIDENCE_UNVERIFIED in this graph.
+Before `SA-PUB` activation, verify the exact qualified current-main
+source/artifact and `MPR-Q` evidence. Closed, unmerged PR #175 is historical
+design evidence only. A local candidate, handoff, old PR workflow or this
+documentation is not proof. See
+[Managed publication recovery V1](MANAGED_PUBLICATION_RECOVERY_V1_ROADMAP.md).
 
 ## SA-ROLE task/model design refinement — 2026-09-12
 
