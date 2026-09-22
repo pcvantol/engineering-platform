@@ -3421,6 +3421,16 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"state.QUALITY_CONTROL_AGENT":"Autonome kw
 Object.assign(DASHBOARD_MESSAGES.de, {"state.QUALITY_CONTROL_AGENT":"Autonome Qualitätskontrolle","lifecycle.step.quality_control_agent":"Autonome Qualitätskontrolle"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"state.QUALITY_CONTROL_AGENT":"Contrôle qualité autonome","lifecycle.step.quality_control_agent":"Contrôle qualité autonome"});
 Object.assign(DASHBOARD_MESSAGES.es, {"state.QUALITY_CONTROL_AGENT":"Control de calidad autónomo","lifecycle.step.quality_control_agent":"Control de calidad autónomo"});
+Object.assign(DASHBOARD_MESSAGES.en, {"state.CAPABILITY_REVIEW":"Specialist review"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"state.CAPABILITY_REVIEW":"Specialistenreview"});
+Object.assign(DASHBOARD_MESSAGES.de, {"state.CAPABILITY_REVIEW":"Fachprüfung"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"state.CAPABILITY_REVIEW":"Revue spécialisée"});
+Object.assign(DASHBOARD_MESSAGES.es, {"state.CAPABILITY_REVIEW":"Revisión especializada"});
+Object.assign(DASHBOARD_MESSAGES.en, {"detail.changed_files":"Changed files"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"detail.changed_files":"Gewijzigde bestanden"});
+Object.assign(DASHBOARD_MESSAGES.de, {"detail.changed_files":"Geänderte Dateien"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"detail.changed_files":"Fichiers modifiés"});
+Object.assign(DASHBOARD_MESSAGES.es, {"detail.changed_files":"Archivos modificados"});
 
 Object.assign(DASHBOARD_MESSAGES.en, {"provider_usage.speed.fast":"Fast","provider_usage.speed.normal_default":"Normal (default)","provider_usage.speed.other":"Other","provider_usage.speed.unknown":"Unknown","provider_usage.authority.authoritative":"Provider-observed","provider_usage.authority.derived":"Derived","provider_usage.authority.unavailable":"Not available"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"provider_usage.speed.fast":"Snel","provider_usage.speed.normal_default":"Normaal (standaard)","provider_usage.speed.other":"Anders","provider_usage.speed.unknown":"Onbekend","provider_usage.authority.authoritative":"Door provider waargenomen","provider_usage.authority.derived":"Afgeleid","provider_usage.authority.unavailable":"Niet beschikbaar"});
@@ -4291,3 +4301,8 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.timeout_policy_description"
 Object.assign(DASHBOARD_MESSAGES.de, {"configuration.timeout_policy_description":"Fortschrittsabhängige Hostgrenzen pro Provider-Aktion. Konkreter Ausführungsfortschritt setzt die Inaktivitätsgrenze zurück; das absolute Maximum gilt immer.","configuration.timeout_5_max":"maximal 5 Min.","configuration.timeout_10_idle_30_max":"10 Min. ohne Fortschritt · maximal 30 Min.","configuration.timeout_15_idle_45_max":"15 Min. ohne Fortschritt · maximal 45 Min."});
 Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.timeout_policy_description":"Limites hôte sensibles à la progression pour chaque action fournisseur. Une progression concrète réinitialise la limite d’inactivité ; le maximum absolu reste applicable.","configuration.timeout_5_max":"5 min maximum","configuration.timeout_10_idle_30_max":"10 min sans progression · 30 min maximum","configuration.timeout_15_idle_45_max":"15 min sans progression · 45 min maximum"});
 Object.assign(DASHBOARD_MESSAGES.es, {"configuration.timeout_policy_description":"Límites del host sensibles al progreso para cada acción del proveedor. El progreso concreto restablece el límite de inactividad; el máximo absoluto siempre se aplica.","configuration.timeout_5_max":"máximo 5 min","configuration.timeout_10_idle_30_max":"10 min sin progreso · máximo 30 min","configuration.timeout_15_idle_45_max":"15 min sin progreso · máximo 45 min"});
+Object.assign(DASHBOARD_MESSAGES.en, {"lifecycle.assurance_progress_active":"Reviews in progress: {completed} of {total} completed · {reviewer} active","lifecycle.assurance_progress_waiting":"Reviews in progress: {completed} of {total} completed"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.assurance_progress_active":"Reviews bezig: {completed} van {total} afgerond · {reviewer} actief","lifecycle.assurance_progress_waiting":"Reviews bezig: {completed} van {total} afgerond"});
+Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.assurance_progress_active":"Prüfungen laufen: {completed} von {total} abgeschlossen · {reviewer} aktiv","lifecycle.assurance_progress_waiting":"Prüfungen laufen: {completed} von {total} abgeschlossen"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"lifecycle.assurance_progress_active":"Revues en cours : {completed} sur {total} terminées · {reviewer} active","lifecycle.assurance_progress_waiting":"Revues en cours : {completed} sur {total} terminées"});
+Object.assign(DASHBOARD_MESSAGES.es, {"lifecycle.assurance_progress_active":"Revisiones en curso: {completed} de {total} completadas · {reviewer} activa","lifecycle.assurance_progress_waiting":"Revisiones en curso: {completed} de {total} completadas"});

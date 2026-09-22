@@ -2178,7 +2178,8 @@ function lifecycleQualityEvidence(step) {
 }
 function lifecycleAssuranceEvidence(step) {
   const reviews = Array.isArray(step?.assurance_reviews) ? step.assurance_reviews : [];
-  if (!reviews.length) return null;
+  const progress = Array.isArray(step?.assurance_review_progress) ? step.assurance_review_progress : [];
+  if (!reviews.length && !progress.length) return null;
   const section = document.createElement("section");
   section.className = "lifecycle-detail-modal__quality-evidence lifecycle-detail-modal__assurance-evidence";
   const rounds = step?.repair_rounds || {};
@@ -2186,6 +2187,23 @@ function lifecycleAssuranceEvidence(step) {
   if (Number.isFinite(Number(rounds.used))) section.append(Object.assign(document.createElement("p"), {
     className: "estimate-meta", textContent: t("lifecycle.repair_rounds", { used: rounds.used, maximum: rounds.maximum || 3 }),
   }));
+  const completedReviewers = progress.filter((item) => String(item?.status || "").toUpperCase() === "COMPLETED").length;
+  const activeReviewer = progress.find((item) => String(item?.status || "").toUpperCase() === "ACTIVE");
+  if (progress.length && completedReviewers < progress.length) {
+    const row = document.createElement("p"), indicator = document.createElement("span"), text = document.createElement("span");
+    row.className = "lifecycle-detail-modal__assurance-progress";
+    indicator.className = "reviewer-agent__status reviewer-agent__status--running";
+    indicator.setAttribute("aria-label", t("ui.reviewer_status_running"));
+    text.textContent = activeReviewer
+      ? t("lifecycle.assurance_progress_active", {
+          completed: completedReviewers,
+          total: progress.length,
+          reviewer: reviewerLabel(activeReviewer.reviewer),
+        })
+      : t("lifecycle.assurance_progress_waiting", { completed: completedReviewers, total: progress.length });
+    row.append(indicator, text);
+    section.append(row);
+  }
   const list = document.createElement("ol"); list.className = "lifecycle-detail-modal__phase-list";
   const dynamicRows = [];
   for (const review of reviews) {
@@ -2291,6 +2309,16 @@ function lifecycleDeliveryEvidence(step) {
   if (Number.isInteger(evidence.pull_request) && evidence.pull_request > 0) {
     const label = t(pullRequestLabels[role] || pullRequestLabels.implementation);
     fields.push(lifecyclePullRequestField(label, evidence.pull_request, evidence.repository));
+  }
+  if (Array.isArray(evidence.changed_paths) && evidence.changed_paths.length) {
+    const field = lifecycleDetailField(t("detail.changed_files"), "");
+    const list = document.createElement("ul");
+    list.className = "lifecycle-detail-modal__changed-paths";
+    for (const path of evidence.changed_paths) {
+      list.append(Object.assign(document.createElement("li"), { textContent: String(path) }));
+    }
+    field.lastElementChild.replaceWith(list);
+    fields.push(field);
   }
   if (!fields.length) return null;
   const section = document.createElement("section");
@@ -2448,9 +2476,9 @@ function lifecycleStepWithEvidence(step, context = {}) {
     if (reviewers.length) enriched.reviewer_evidence = reviewers;
   }
   const deliverySteps = {
-    EXECUTE_AGENT: { role: "implementation", candidate: "implementation_candidate_sha", branch: "implementation_branch", pullRequest: "implementation_pr" },
-    FINALIZE_AGENT: { role: "finalization", candidate: "finalization_candidate_sha", branch: "finalization_branch", pullRequest: "finalization_pr" },
-    RECONCILE_AGENT: { role: "reconciliation", candidate: "reconciliation_candidate_sha", branch: "reconciliation_branch", pullRequest: "reconciliation_pr" },
+    EXECUTE_AGENT: { role: "implementation", candidate: "implementation_candidate_sha", branch: "implementation_branch", pullRequest: "implementation_pr", changedPaths: "implementation_changed_paths" },
+    FINALIZE_AGENT: { role: "finalization", candidate: "finalization_candidate_sha", branch: "finalization_branch", pullRequest: "finalization_pr", changedPaths: "finalization_changed_paths" },
+    RECONCILE_AGENT: { role: "reconciliation", candidate: "reconciliation_candidate_sha", branch: "reconciliation_branch", pullRequest: "reconciliation_pr", changedPaths: "reconciliation_changed_paths" },
   };
   const delivery = deliverySteps[id];
   if (delivery) {
@@ -2462,6 +2490,11 @@ function lifecycleStepWithEvidence(step, context = {}) {
     evidence.role = delivery.role;
     if (/^[0-9a-f]{40}$/.test(candidate)) evidence.candidate_sha = candidate;
     if (branch) evidence.branch = branch;
+    if (Array.isArray(context[delivery.changedPaths])) {
+      evidence.changed_paths = context[delivery.changedPaths]
+        .map((path) => String(path || "").trim())
+        .filter((path) => path && !path.startsWith("/") && !path.split("/").includes(".."));
+    }
     if (Number.isInteger(pullRequest) && pullRequest > 0) evidence.pull_request = pullRequest;
     if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) evidence.repository = repository;
     if (Object.keys(evidence).length > 1) enriched.delivery_evidence = evidence;

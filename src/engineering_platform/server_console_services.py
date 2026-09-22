@@ -379,6 +379,14 @@ def _checkpoint_pull_request_context(checkpoint: Mapping[str, object]) -> dict[s
     )
     if isinstance(candidate_sha, str) and re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
         context["implementation_candidate_sha"] = candidate_sha
+    for role in ("implementation", "finalization", "reconciliation"):
+        paths = checkpoint.get(f"{role}_changed_paths")
+        if isinstance(paths, (list, tuple)) and all(
+            isinstance(path, str) and path and len(path) <= 4096
+            and not path.startswith("/") and ".." not in Path(path).parts and "\x00" not in path
+            for path in paths
+        ):
+            context[f"{role}_changed_paths"] = list(paths)
     if checkpoint.get("execution_mode") not in (None, "MANAGED"):
         return context
     roles = (

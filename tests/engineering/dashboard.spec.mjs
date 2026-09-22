@@ -3290,6 +3290,7 @@ test.describe("Engineering Status browser smoke", () => {
         { reviewer: "validation", capability: "engineering", status: "completed" },
       ],
       implementation_branch: "implementation/mission-health",
+      implementation_changed_paths: ["forge/installed_health.py", "tests/test_operations_health.py"],
       implementation_candidate_sha: "a".repeat(40), implementation_pr: 173, finalization_pr: 174,
       lifecycle: { available: true, run_id: "step-evidence", terminal_state: "ACTIVE", steps: [
         { id: "CAPABILITY_REVIEW", presentation_key: "lifecycle.step.capability_review", state: "COMPLETED" },
@@ -3317,6 +3318,10 @@ test.describe("Engineering Status browser smoke", () => {
     await dispatchDashboardPointerClick(nodes.nth(1));
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_implementation_evidence"]);
     await expect(modal).toContainText("implementation/mission-health");
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["detail.changed_files"]);
+    await expect(modal.locator(".lifecycle-detail-modal__changed-paths li")).toHaveText([
+      "forge/installed_health.py", "tests/test_operations_health.py",
+    ]);
     await expect(modal).toContainText("#173");
     await expect(modal.locator("a.prompt-detail-pr-link")).toHaveAttribute("href", "https://github.com/pcvantol/forge/pull/173");
     await page.locator("#lifecycleDetailClose").click();
@@ -3684,6 +3689,10 @@ test.describe("Engineering Status browser smoke", () => {
           { id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
             timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL_AGENT", duration_ms: 1000, outcome: "ACTIVE" }] },
             quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }],
+            assurance_review_progress: [
+              { reviewer: "quality", status: "COMPLETED" },
+              { reviewer: "security", status: "ACTIVE" },
+            ],
             assurance_reviews: [
               { reviewer: "quality", status: "PASS", findings: [],
                 coverage: [{ surface: "service_lifecycle", status: "REVIEWED", evidence_ref: "service.py" }],
@@ -3709,6 +3718,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.assurance_status.pass"]);
     await expect(modal.locator(".lifecycle-detail-modal__assurance-status--passed")).toHaveText("✓");
     await expect(modal.locator(".lifecycle-detail-modal__assurance-status--failed")).toHaveText("×");
+    await expect(modal.locator(".lifecycle-detail-modal__assurance-progress")).toContainText(
+      "Reviews bezig: 1 van 2 afgerond · Beveiligingsreview actief",
+    );
+    await expect(modal.locator(".lifecycle-detail-modal__assurance-progress .reviewer-agent__status--running")).toHaveCount(1);
     await expect(modal).toContainText("Impactvlakken beoordeeld: 1 · Eerdere bevindingen herbeoordeeld: 1");
     await expect(modal).not.toContainText("QUALITY_CONTROL_AGENT");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
@@ -8176,11 +8189,12 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
-  test("does not mistake a nine-minute active phase for whole-run time remaining", async ({ page }) => {
+  test("localizes active phases without mistaking them for whole-run time remaining", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const [phase, label] of [
+      ["CAPABILITY_REVIEW", "Specialistenreview"],
       ["REPAIR_AGENT", "Herstel"],
       ["FINALIZATION_REPAIR_AGENT", "Herstel van finalisatiecontrole"],
     ]) {

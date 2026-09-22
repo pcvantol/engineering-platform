@@ -1379,14 +1379,22 @@ class EngineeringRunner:
 
     def _record_local_validation_audit(self, state: TransactionState, *, result: AgentResult | None, outcome: str, profile: ValidationProfile) -> TransactionState:
         """Append one bounded local-validation iteration without sharing PR repair budget."""
-        return replace(state, local_validation_audit=state.local_validation_audit + (self._audit_record(
+        record = self._audit_record(
             iteration=state.local_validation_iterations,
             failed_checks=(result.diagnostic if result else None) or "Local repository validation did not return a passing result.",
             proposed_action=f"{profile.tier}: {'; '.join(profile.commands)}",
             result=result,
             outcome=outcome,
             empty_summary="Agent invocation did not return a validation summary.",
-        ),))
+        )
+        candidate_sha = {
+            "IMPLEMENTATION": state.implementation_head_sha,
+            "FINALIZATION": state.finalization_head_sha,
+            "RECONCILIATION": state.reconciliation_head_sha,
+        }.get(state.transaction_kind)
+        if record["commit_sha"] == "not_recorded" and isinstance(candidate_sha, str):
+            record["commit_sha"] = candidate_sha
+        return replace(state, local_validation_audit=state.local_validation_audit + (record,))
 
     def _validation_pr_expectation(
         self, state: TransactionState, candidate: RepositoryEvidence,
@@ -2170,16 +2178,24 @@ class EngineeringRunner:
             state, phase="LOCAL_REPOSITORY_VALIDATION", branch=branch,
             implementation_head_sha=candidate.head_sha,
             next_action="run_local_repository_validation",
-            local_validation_iterations=state.local_validation_iterations if resuming_validation else 0,
-            local_validation_audit=state.local_validation_audit if resuming_validation else (),
+            # Validation evidence is append-only across repair candidates. A
+            # provider resume keeps the current pass identity; a new candidate
+            # receives the next run-wide pass number.
+            local_validation_iterations=(
+                state.local_validation_iterations
+                if resuming_validation else len(state.local_validation_audit) + 1
+            ),
+            local_validation_audit=state.local_validation_audit,
         )
         # The first validation is a measurement, never a corrective provider
         # turn.  A failed measurement is routed through ``_repair`` by the
         # caller, where it consumes the single run-wide repair budget.
         for iteration in (1,):
             try:
-                profile = classify(changed_paths(self.root, "main"))
+                candidate_changed_paths = changed_paths(self.root, "main")
+                profile = classify(candidate_changed_paths)
             except OSError:
+                candidate_changed_paths = ()
                 profile = classify(())
             try:
                 existing_context = load_validation_context(
@@ -2221,7 +2237,15 @@ class EngineeringRunner:
                 validation = self._execute_required_validation_controls(validation)
                 if validation.terminal:
                     return validation, implementation
-            validation = replace(validation, local_validation_iterations=iteration)
+            changed_paths_field = {
+                "IMPLEMENTATION": "implementation_changed_paths",
+                "FINALIZATION": "finalization_changed_paths",
+                "RECONCILIATION": "reconciliation_changed_paths",
+            }[validation.transaction_kind]
+            validation = replace(
+                validation,
+                **{changed_paths_field: candidate_changed_paths},
+            )
             self.store.save(validation)
             write_live_status(self.root, validation, validation.next_action)
             try:
@@ -2417,12 +2441,17 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         provider's read-only sandbox; only ``_repair`` can subsequently
         mutate the bounded branch.
         """
+        assurance_roles = ("quality", "security")
         quality = replace(
             state,
             phase="QUALITY_CONTROL_AGENT",
             branch=implementation.branch or state.branch,
             pull_request=implementation.pull_request or state.pull_request,
             next_action="quality_and_security_review",
+            assurance_review_progress=tuple(
+                {"reviewer": reviewer, "status": "PENDING"}
+                for reviewer in assurance_roles
+            ),
         )
         candidate_root = assurance_root or self.root
         try:
@@ -2517,16 +2546,34 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         quality = replace(quality, assurance_profile=assurance_profile)
         self.store.save(quality)
         write_live_status(self.root, quality, quality.next_action)
-        evidence = ReviewerEvidence.from_repository(quality.run_id, quality.execution_mode, candidate)
+        validation_assessment = self._validation_assessment_evidence(validation_context)
+        evidence = ReviewerEvidence.from_repository(
+            quality.run_id,
+            quality.execution_mode,
+            candidate,
+            validation_assessment=validation_assessment,
+        )
         selections = tuple(
             ReviewerSelection(role, f"mandatory post-implementation {role} assurance", 1.0)
-            for role in ("quality", "security")
+            for role in assurance_roles
         )
         records: list[dict[str, object]] = []
         pending_resolutions: list[dict[str, str]] = []
         # Run sequentially: each is still a distinct sandboxed invocation, and
         # this avoids sharing mutable CLI telemetry between parallel calls.
         for selection in selections:
+            quality = replace(quality, assurance_review_progress=tuple(
+                {
+                    "reviewer": item["reviewer"],
+                    "status": (
+                        "ACTIVE" if item["reviewer"] == selection.reviewer
+                        else item["status"]
+                    ),
+                }
+                for item in quality.assurance_review_progress
+            ))
+            self.store.save(quality)
+            write_live_status(self.root, quality, quality.next_action)
             prior_findings = self._unresolved_assurance_findings(quality, reviewer=selection.reviewer)
             prior_finding_ids = tuple(str(finding["id"]) for finding in prior_findings)
             required_surfaces = mandatory_coverage_surfaces(selection.reviewer, role)
@@ -2589,6 +2636,18 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 "coverage": list(coverage), "finding_dispositions": list(finding_dispositions),
                 "started_at": started_at, "completed_at": completed_at,
             })
+            quality = replace(quality, assurance_review_progress=tuple(
+                {
+                    "reviewer": item["reviewer"],
+                    "status": (
+                        "COMPLETED" if item["reviewer"] == selection.reviewer
+                        else item["status"]
+                    ),
+                }
+                for item in quality.assurance_review_progress
+            ))
+            self.store.save(quality)
+            write_live_status(self.root, quality, quality.next_action)
             repair = quality.repair_audit[-1] if quality.repair_audit else None
             if (
                 status != "UNRESOLVED" and repair is not None

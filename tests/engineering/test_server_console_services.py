@@ -1763,6 +1763,7 @@ class DashboardStatusTest(unittest.TestCase):
             "implementation_pull_request": 949, "pull_request": 950,
             "implementation_branch": "implementation/mission-health",
             "implementation_head_sha": "a" * 40,
+            "implementation_changed_paths": ["forge/installed_health.py", "tests/test_operations_health.py"],
         })
         self.assertEqual(context["pull_requests"], [
             {"role": "implementation", "number": 949, "url": "https://github.com/pcvantol/djconnect/pull/949"},
@@ -1770,6 +1771,9 @@ class DashboardStatusTest(unittest.TestCase):
         ])
         self.assertEqual(context["implementation_branch"], "implementation/mission-health")
         self.assertEqual(context["implementation_candidate_sha"], "a" * 40)
+        self.assertEqual(context["implementation_changed_paths"], [
+            "forge/installed_health.py", "tests/test_operations_health.py",
+        ])
         self.assertEqual(dashboard._checkpoint_pull_request_context({
             "execution_mode": "GENESIS", "repository": "pcvantol/djconnect", "pull_request": 950,
             "genesis_commit_sha": "b" * 40,
