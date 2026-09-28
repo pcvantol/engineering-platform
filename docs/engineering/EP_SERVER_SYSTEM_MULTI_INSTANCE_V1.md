@@ -236,6 +236,8 @@ shared_immutable_runtime_slots = PRESERVED
 provider_auth_state = PRESERVED_REQUIRES_REVERIFICATION
 ```
 
+
+Filesystem ownership admission is fail-closed before preservation evidence can be issued. The exact instance root and every traversed mutable directory/file must not be group- or world-writable; regular files must have exactly one hardlink. Symbolic links, special entries, foreign/unsafe topology and entry replacement during content hashing remain invalid. The same shared tree admission is re-run for RESTORE and explicit PURGE preparation/recovery, so a consumer cannot compensate for unsafe ownership with installer-side filesystem heuristics.
 ### PURGE
 
 `purge` is the explicit permanent lifecycle projection. It delegates the
