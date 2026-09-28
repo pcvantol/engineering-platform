@@ -602,9 +602,16 @@ class SystemInstanceProvisioner:
             shutil.rmtree(instance.root)
             return {"contract": CONTRACT, "result": "COMPLETE", "instance_id": instance_id, "receipt": receipt}
 
+    def _instance_lifecycle(self) -> system_instance_lifecycle.SystemInstanceLifecycle:
+        return system_instance_lifecycle.SystemInstanceLifecycle(
+            self.product,
+            self.controller,
+            lambda instance: self._configured_interpreter(instance, instance.data_root),
+        )
+
     def preserve(self, instance_id: str, operation_id: str, *, confirm_instance_id: str) -> Mapping[str, object]:
         instance, descriptor = self._instance_from_descriptor(instance_id)
-        lifecycle = system_instance_lifecycle.SystemInstanceLifecycle(self.product, self.controller)
+        lifecycle = self._instance_lifecycle()
         receipt = lifecycle.preserve(
             instance, descriptor, operation_id, confirm_instance_id=confirm_instance_id,
         )
@@ -624,7 +631,7 @@ class SystemInstanceProvisioner:
         release: ReleaseRequest,
     ) -> Mapping[str, object]:
         instance, descriptor = self._instance_from_descriptor(instance_id)
-        lifecycle = system_instance_lifecycle.SystemInstanceLifecycle(self.product, self.controller)
+        lifecycle = self._instance_lifecycle()
         receipt = lifecycle.restore(
             instance,
             descriptor,
@@ -644,7 +651,7 @@ class SystemInstanceProvisioner:
         removed = self.remove(
             instance_id, operation_id, confirm_instance_id=confirm_instance_id,
         )
-        lifecycle = system_instance_lifecycle.SystemInstanceLifecycle(self.product, self.controller)
+        lifecycle = self._instance_lifecycle()
         receipt = lifecycle.record_purge(instance_id, operation_id, removed["receipt"])
         return {
             "contract": system_instance_lifecycle.CONTRACT,
@@ -654,7 +661,7 @@ class SystemInstanceProvisioner:
         }
 
     def lifecycle_status(self, instance_id: str, operation_id: str) -> Mapping[str, object]:
-        lifecycle = system_instance_lifecycle.SystemInstanceLifecycle(self.product, self.controller)
+        lifecycle = self._instance_lifecycle()
         return lifecycle.status(instance_id, operation_id)
 
     def _provider_readback(self, instance: system_installation_topology.SystemInstanceTopology) -> dict[str, object]:
