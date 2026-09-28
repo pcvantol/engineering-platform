@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 from typing import Callable, Mapping, Protocol
 
@@ -409,17 +410,94 @@ class SystemInstanceLifecycle:
                 "release": release_identity,
             })
 
+    def prepare_purge(
+        self,
+        instance: system_installation_topology.SystemInstanceTopology,
+        descriptor: Mapping[str, object],
+        operation_id: str,
+        *,
+        confirm_instance_id: str,
+    ) -> Mapping[str, object]:
+        if confirm_instance_id != instance.instance_id:
+            raise SystemInstanceLifecycleError("EP purge confirmation mismatch")
+        request = {
+            "instance_id": instance.instance_id,
+            "descriptor_digest": _json_digest(dict(descriptor)),
+        }
+        root, state = self._state(instance.instance_id, operation_id, "PURGE", request)
+        if state.get("phase") == "COMPLETE":
+            return state
+        with _Lock(instance.lifecycle_lock):
+            self.controller.remove(instance)
+            if self.controller.loaded(instance) or self.service_interpreter(instance) is not None:
+                raise SystemInstanceLifecycleError("EP purge service was not fully removed")
+            tree_digest = _tree_digest(instance.root)
+            if state.get("phase") == "PURGE_READY":
+                if state.get("mutable_instance_data_digest") != tree_digest:
+                    raise SystemInstanceLifecycleError("EP purge target changed after preparation")
+                return state
+            return self._save(
+                root,
+                state,
+                "PURGE_READY",
+                mutable_instance_data_digest=tree_digest,
+                descriptor_digest=request["descriptor_digest"],
+            )
+
+    def resume_purge_target(
+        self,
+        instance: system_installation_topology.SystemInstanceTopology,
+        descriptor: Mapping[str, object],
+        operation_id: str,
+    ) -> None:
+        root = self._operation_root(instance.instance_id, operation_id)
+        state = _read_json(root / "state.json")
+        if (
+            state.get("contract") != CONTRACT
+            or state.get("operation") != "PURGE"
+            or state.get("phase") != "PURGE_READY"
+            or state.get("instance_id") != instance.instance_id
+            or state.get("descriptor_digest") != _json_digest(dict(descriptor))
+        ):
+            raise SystemInstanceLifecycleError("EP purge recovery evidence is invalid")
+        with _Lock(instance.lifecycle_lock):
+            self.controller.remove(instance)
+            if self.controller.loaded(instance) or self.service_interpreter(instance) is not None:
+                raise SystemInstanceLifecycleError("EP purge recovery service was not fully removed")
+            if _tree_digest(instance.root) != state.get("mutable_instance_data_digest"):
+                raise SystemInstanceLifecycleError("EP purge recovery target changed after preparation")
+            expected = self.product.system_root / "instances" / instance.instance_id
+            if (
+                instance.root != expected
+                or instance.root.is_symlink()
+                or not instance.root.is_relative_to(self.product.system_root / "instances")
+            ):
+                raise SystemInstanceLifecycleError("EP purge recovery target is invalid")
+            shutil.rmtree(instance.root)
+
     def record_purge(
         self,
         instance_id: str,
         operation_id: str,
         remove_receipt: Mapping[str, object],
     ) -> Mapping[str, object]:
-        request = {
-            "instance_id": instance_id,
-            "legacy_remove_receipt_sha256": remove_receipt.get("receipt_sha256"),
-        }
-        root, state = self._state(instance_id, operation_id, "PURGE", request)
+        root = self._operation_root(instance_id, operation_id)
+        state_path = root / "state.json"
+        if state_path.exists():
+            state = _read_json(state_path)
+            if (
+                state.get("contract") != CONTRACT
+                or state.get("operation") != "PURGE"
+                or state.get("instance_id") != instance_id
+                or state.get("phase") not in {"PURGE_READY", "COMPLETE"}
+            ):
+                raise SystemInstanceLifecycleError("EP purge operation evidence is invalid")
+        else:
+            request = {
+                "instance_id": instance_id,
+                "adopted_terminal_remove_receipt_sha256": remove_receipt.get("receipt_sha256"),
+            }
+            root, state = self._state(instance_id, operation_id, "PURGE", request)
         if state.get("phase") == "COMPLETE":
             return self._terminal(root, state)
         instance_root = self.product.system_root / "instances" / instance_id
