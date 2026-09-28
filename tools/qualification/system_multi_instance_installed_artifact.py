@@ -118,6 +118,43 @@ if not controller.loaded(bravo) or controller.loaded(alpha):
 controller.start(alpha)
 bravo_before = bravo.descriptor.read_bytes()
 
+# The released security gap must be closed by the installed artifact itself:
+# reject a foreign hardlink and a permissive instance root before any lifecycle
+# mutation can remove the service or demote provider evidence.
+foreign = product_root.parent / "foreign-owned-lifecycle-file"
+foreign.write_text("foreign", encoding="utf-8")
+os.link(foreign, alpha.data_root / "foreign-hardlink")
+try:
+    engine.preserve(
+        alpha.instance_id,
+        "preserve-alpha-hardlink-negative",
+        confirm_instance_id=alpha.instance_id,
+    )
+except Exception as error:
+    if "non-exclusive hardlink" not in str(error):
+        raise
+else:
+    raise SystemExit("installed lifecycle accepted a foreign hardlink")
+if not controller.loaded(alpha):
+    raise SystemExit("hardlink rejection mutated the selected service")
+(alpha.data_root / "foreign-hardlink").unlink()
+
+alpha.root.chmod(0o777)
+try:
+    engine.preserve(
+        alpha.instance_id,
+        "preserve-alpha-permissive-negative",
+        confirm_instance_id=alpha.instance_id,
+    )
+except Exception as error:
+    if "group/world-writable" not in str(error):
+        raise
+else:
+    raise SystemExit("installed lifecycle accepted a world-writable instance root")
+if not controller.loaded(alpha):
+    raise SystemExit("permission rejection mutated the selected service")
+alpha.root.chmod(0o755)
+
 # Preserve only alpha through the installed product lifecycle.
 preserved = engine.preserve(
     alpha.instance_id,
@@ -214,6 +251,8 @@ print(json.dumps({
     "inventory_count":2,
     "stop_restart_isolation":"PASS",
     "update_isolation":"PASS",
+    "ownership_hardlink_negative":"PASS",
+    "ownership_permissions_negative":"PASS",
     "baseline_version":baseline_version,
     "updated_version":version,
     "preserve":"PASS",
