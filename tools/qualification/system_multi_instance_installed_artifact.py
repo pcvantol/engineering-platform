@@ -40,7 +40,11 @@ class Controller:
         services.instance_default_paths(instance, launch_root).plist_path.unlink(missing_ok=True)
         return {"result":"REMOVED"}
 
-accounts = {"ep-installed-alpha":"_ep_alpha", "ep-installed-bravo":"_ep_bravo"}
+accounts = {
+    "ep-installed-alpha":"_ep_alpha",
+    "ep-installed-bravo":"_ep_bravo",
+    "ep-installed-security":"_ep_security",
+}
 controller = Controller()
 engine = provisioner.SystemInstanceProvisioner(
     product_root, controller=controller, launch_daemons_dir=launch_root,
@@ -117,6 +121,50 @@ if not controller.loaded(bravo) or controller.loaded(alpha):
     raise SystemExit("cross-instance quiescence")
 controller.start(alpha)
 bravo_before = bravo.descriptor.read_bytes()
+
+# Prove exact installed-wheel filesystem ownership negatives on an isolated third instance.
+security = bootstrap("ep-installed-security", "Installed security")
+engine.create(provisioner.InstanceRequest(
+    "install-security-0001", security.instance_id, security.display_label,
+    security.service_account, 18767, release,
+))
+foreign = product_root.parent / "foreign-hardlink-source"
+foreign.write_text("foreign", encoding="utf-8")
+linked = security.data_root / "foreign-hardlink"
+os.link(foreign, linked)
+try:
+    engine.preserve(
+        security.instance_id,
+        "preserve-security-hardlink",
+        confirm_instance_id=security.instance_id,
+    )
+except Exception as error:
+    if "hardlinked" not in str(error):
+        raise SystemExit("installed lifecycle rejected foreign hardlink for an unexpected reason") from error
+else:
+    raise SystemExit("installed lifecycle accepted a foreign hardlink")
+if foreign.read_text(encoding="utf-8") != "foreign" or not security.root.is_dir():
+    raise SystemExit("hardlink rejection mutated external or selected instance state")
+linked.unlink()
+
+security.root.chmod(0o777)
+try:
+    engine.preserve(
+        security.instance_id,
+        "preserve-security-permissive-root",
+        confirm_instance_id=security.instance_id,
+    )
+except Exception as error:
+    if "group/world writable" not in str(error):
+        raise SystemExit("installed lifecycle rejected permissive root for an unexpected reason") from error
+else:
+    raise SystemExit("installed lifecycle accepted a group/world writable root")
+security.root.chmod(0o755)
+engine.remove(
+    security.instance_id,
+    "remove-security-legacy-0001",
+    confirm_instance_id=security.instance_id,
+)
 
 # Preserve only alpha through the installed product lifecycle.
 preserved = engine.preserve(
@@ -220,6 +268,8 @@ print(json.dumps({
     "restore_requires_provider_reverification":"PASS",
     "purge":"PASS",
     "legacy_remove_backward_compatibility":"PASS",
+    "filesystem_ownership_hardlink":"PASS",
+    "filesystem_ownership_permissions":"PASS",
     "sibling_non_interference":"PASS",
     "project_agent_scope":"UNTOUCHED_USER_OWNED",
 }, sort_keys=True))
