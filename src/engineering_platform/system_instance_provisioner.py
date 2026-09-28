@@ -648,11 +648,26 @@ class SystemInstanceProvisioner:
         }
 
     def purge(self, instance_id: str, operation_id: str, *, confirm_instance_id: str) -> Mapping[str, object]:
-        removed = self.remove(
-            instance_id, operation_id, confirm_instance_id=confirm_instance_id,
-        )
+        if confirm_instance_id != instance_id:
+            raise SystemInstanceProvisionerError("EP instance purge confirmation mismatch")
         lifecycle = self._instance_lifecycle()
-        receipt = lifecycle.record_purge(instance_id, operation_id, removed["receipt"])
+        prior_remove = self._terminal_receipt(instance_id, operation_id, "REMOVE")
+        instance_root = self.product.system_root / "instances" / system_installation_topology.validate_instance_id(instance_id)
+        if prior_remove is None:
+            instance, descriptor = self._instance_from_descriptor(instance_id)
+            lifecycle.prepare_purge(
+                instance, descriptor, operation_id, confirm_instance_id=confirm_instance_id,
+            )
+            removed = self.remove(
+                instance_id, operation_id, confirm_instance_id=confirm_instance_id,
+            )
+            remove_receipt = removed["receipt"]
+        else:
+            remove_receipt = prior_remove
+            if instance_root.exists() or instance_root.is_symlink():
+                instance, descriptor = self._instance_from_descriptor(instance_id)
+                lifecycle.resume_purge_target(instance, descriptor, operation_id)
+        receipt = lifecycle.record_purge(instance_id, operation_id, remove_receipt)
         return {
             "contract": system_instance_lifecycle.CONTRACT,
             "result": "COMPLETE",
