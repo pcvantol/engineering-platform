@@ -37,6 +37,9 @@ class ServiceController(Protocol):
 RuntimeInstaller = Callable[
     [object], system_installation_topology.RuntimeSlot
 ]
+ServiceInterpreter = Callable[
+    [system_installation_topology.SystemInstanceTopology], Path | None
+]
 
 
 class _Lock:
@@ -149,6 +152,8 @@ def _mark_provider_auth_preserved(
 ) -> list[str]:
     providers: list[str] = []
     for context in system_provider_context.provider_contexts(instance):
+        if context.auth_receipt.is_symlink() or context.descriptor.is_symlink():
+            raise SystemInstanceLifecycleError("EP provider lifecycle evidence contains a symbolic link")
         auth = _read_json(context.auth_receipt)
         if (
             auth.get("provider") != context.provider
@@ -167,12 +172,15 @@ class SystemInstanceLifecycle:
         self,
         product: system_installation_topology.SystemInstallationTopology,
         controller: ServiceController,
+        service_interpreter: ServiceInterpreter,
     ) -> None:
         self.product = product
         self.controller = controller
+        self.service_interpreter = service_interpreter
 
     def _root(self, instance_id: str) -> Path:
-        return self.product.system_root / "instance-lifecycle-v1" / instance_id
+        identity = system_installation_topology.validate_instance_id(instance_id)
+        return self.product.system_root / "instance-lifecycle-v1" / identity
 
     def _operation_root(self, instance_id: str, operation_id: str) -> Path:
         if _OPERATION.fullmatch(operation_id) is None:
@@ -305,10 +313,9 @@ class SystemInstanceLifecycle:
                 raise SystemInstanceLifecycleError("EP preserved instance changed after terminal preserve")
             return receipt
         with _Lock(instance.lifecycle_lock):
-            if self.controller.loaded(instance):
-                self.controller.remove(instance)
-            else:
-                self.controller.remove(instance)
+            self.controller.remove(instance)
+            if self.controller.loaded(instance) or self.service_interpreter(instance) is not None:
+                raise SystemInstanceLifecycleError("EP preserved service was not fully removed")
             providers = _mark_provider_auth_preserved(instance)
             tree_digest = _tree_digest(instance.root)
             state = self._save(
@@ -368,14 +375,24 @@ class SystemInstanceLifecycle:
             slot = runtime_installer(release)
             if str(slot.interpreter) != selected.get("interpreter"):
                 raise SystemInstanceLifecycleError("EP restored runtime slot does not match preserved interpreter")
-            service = self.controller.register(instance, slot.interpreter)
             state = self._save(
                 root,
                 state,
                 "VERIFIED",
                 mutable_instance_data_digest=current_digest,
-                service=dict(service),
+                expected_service_interpreter=str(slot.interpreter),
             )
+            configured = self.service_interpreter(instance)
+            if configured is None:
+                service = self.controller.register(instance, slot.interpreter)
+            elif state.get("phase") == "VERIFIED" and configured == slot.interpreter:
+                service = {
+                    "result": "REGISTERED",
+                    "label": instance.service_label,
+                    "replayed": True,
+                }
+            else:
+                raise SystemInstanceLifecycleError("EP restore found a foreign service definition")
             return self._receipt(root, state, {
                 "lifecycle_state": "RESTORED_REQUIRES_PROVIDER_REVERIFICATION",
                 "instance_identity": "PRESERVED",
