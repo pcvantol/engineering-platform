@@ -101,6 +101,14 @@ def _regular_digest(path: Path) -> str:
     details = path.lstat()
     if path.is_symlink() or not stat.S_ISREG(details.st_mode):
         raise SystemInstanceLifecycleError(f"EP preserved instance contains unsafe entry: {path}")
+    if stat.S_IMODE(details.st_mode) & 0o022:
+        raise SystemInstanceLifecycleError(
+            f"EP preserved instance contains a group/world writable entry: {path}"
+        )
+    if details.st_nlink != 1:
+        raise SystemInstanceLifecycleError(
+            f"EP preserved instance contains a non-exclusive hardlinked file: {path}"
+        )
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while True:
@@ -108,6 +116,17 @@ def _regular_digest(path: Path) -> str:
             if not payload:
                 break
             digest.update(payload)
+    after = path.lstat()
+    if (
+        after.st_dev != details.st_dev
+        or after.st_ino != details.st_ino
+        or after.st_mode != details.st_mode
+        or after.st_nlink != details.st_nlink
+        or after.st_size != details.st_size
+    ):
+        raise SystemInstanceLifecycleError(
+            f"EP preserved instance entry changed during lifecycle admission: {path}"
+        )
     return "sha256:" + digest.hexdigest()
 
 
@@ -118,6 +137,8 @@ def _tree_digest(root: Path, *, ignored_roots: tuple[Path, ...] = ()) -> str:
         raise SystemInstanceLifecycleError("EP preserved instance root is unavailable") from error
     if root.is_symlink() or not stat.S_ISDIR(details.st_mode):
         raise SystemInstanceLifecycleError("EP preserved instance root is unsafe")
+    if stat.S_IMODE(details.st_mode) & 0o022:
+        raise SystemInstanceLifecycleError("EP preserved instance root is group/world writable")
     ignored: tuple[tuple[str, ...], ...] = tuple(
         path.relative_to(root).parts for path in ignored_roots
     )
@@ -137,6 +158,10 @@ def _tree_digest(root: Path, *, ignored_roots: tuple[Path, ...] = ()) -> str:
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
                 raise SystemInstanceLifecycleError(f"EP preserved instance contains unsafe entry: {path}")
+            if stat.S_IMODE(info.st_mode) & 0o022:
+                raise SystemInstanceLifecycleError(
+                    f"EP preserved instance contains a group/world writable entry: {path}"
+                )
             entries.append({
                 "path": str(path.relative_to(root)),
                 "kind": "DIRECTORY",
@@ -149,6 +174,14 @@ def _tree_digest(root: Path, *, ignored_roots: tuple[Path, ...] = ()) -> str:
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
                 raise SystemInstanceLifecycleError(f"EP preserved instance contains unsafe entry: {path}")
+            if stat.S_IMODE(info.st_mode) & 0o022:
+                raise SystemInstanceLifecycleError(
+                    f"EP preserved instance contains a group/world writable entry: {path}"
+                )
+            if info.st_nlink != 1:
+                raise SystemInstanceLifecycleError(
+                    f"EP preserved instance contains a non-exclusive hardlinked file: {path}"
+                )
             entries.append({
                 "path": str(path.relative_to(root)),
                 "kind": "FILE",
