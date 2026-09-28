@@ -212,6 +212,13 @@ New exact-instance commands are `preserve`, `purge`, `restore`, and
 
 ### PRESERVE
 
+Before any service or provider-state mutation, EP proves exclusive ownership of
+the exact mutable instance tree. The selected instance root and every traversed
+directory/regular file must not be group/world writable; regular files must
+have exactly one hardlink. Symbolic links, special entries and foreign/unsafe
+tree shapes continue to fail closed. This same ownership admission is reused by
+RESTORE validation and explicit PURGE preparation/recovery.
+
 EP removes/quiesces the exact product-owned LaunchDaemon but does not remove the
 instance root. It retains the opaque instance ID, descriptor, CENTRAL/data,
 configuration, logs/cache/recovery/backups and provider contexts under the same

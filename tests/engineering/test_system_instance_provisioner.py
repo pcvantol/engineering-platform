@@ -616,6 +616,102 @@ class SystemInstanceProvisionerTests(unittest.TestCase):
         self.assertEqual(repaired["result"], "COMPLETE")
         self.assertTrue(self.controller.loaded(instance))
 
+    def test_lifecycle_rejects_hardlinks_and_permissive_entries_before_mutation(self) -> None:
+        lifecycle = provisioner_module.system_instance_lifecycle
+
+        cases = (
+            ("hardlink", "non-exclusive hardlink"),
+            ("root-mode", "group/world-writable"),
+            ("file-mode", "group/world-writable"),
+            ("directory-mode", "group/world-writable"),
+        )
+        for case, message in cases:
+            with self.subTest(case=case):
+                identity = "ep-production-0001"
+                self._create(identity, "EP production", 8765)
+                instance = self._instance(identity, "EP production")
+                service_path = system_server_service.instance_default_paths(
+                    instance, self.launch_daemons
+                ).plist_path
+                codex = system_provider_context.provider_context(instance, "codex")
+                auth_before = codex.auth_receipt.read_bytes()
+
+                if case == "hardlink":
+                    outside = self.base / "foreign-hardlink-source"
+                    outside.write_text("foreign", encoding="utf-8")
+                    os.link(outside, instance.data_root / "foreign-hardlink")
+                elif case == "root-mode":
+                    instance.root.chmod(0o777)
+                elif case == "file-mode":
+                    target = instance.data_root / "unsafe-file"
+                    target.write_text("unsafe", encoding="utf-8")
+                    target.chmod(0o666)
+                else:
+                    target = instance.data_root / "unsafe-directory"
+                    target.mkdir()
+                    target.chmod(0o777)
+
+                with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, message):
+                    self.provisioner.preserve(
+                        instance.instance_id,
+                        f"preserve-unsafe-{case}",
+                        confirm_instance_id=instance.instance_id,
+                    )
+
+                self.assertTrue(self.controller.loaded(instance))
+                self.assertTrue(service_path.is_file())
+                self.assertEqual(codex.auth_receipt.read_bytes(), auth_before)
+
+                # Reset this isolated subtest instance for the next case.
+                self.controller.remove(instance)
+                import shutil
+                shutil.rmtree(instance.root)
+                lifecycle_root = (
+                    self.provisioner.product.system_root
+                    / "instance-lifecycle-v1"
+                    / instance.instance_id
+                )
+                shutil.rmtree(lifecycle_root, ignore_errors=True)
+                receipt_root = (
+                    self.provisioner.product.system_root
+                    / "receipts"
+                    / instance.instance_id
+                )
+                shutil.rmtree(receipt_root, ignore_errors=True)
+
+    def test_restore_and_purge_reject_ownership_drift(self) -> None:
+        lifecycle = provisioner_module.system_instance_lifecycle
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-ownership-0001",
+            confirm_instance_id=instance.instance_id,
+        )
+
+        outside = self.base / "foreign-after-preserve"
+        outside.write_text("foreign", encoding="utf-8")
+        os.link(outside, instance.data_root / "foreign-hardlink")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "non-exclusive hardlink"):
+            self.provisioner.restore(
+                instance.instance_id,
+                "restore-unsafe-hardlink",
+                preserve_operation_id="preserve-ownership-0001",
+                release=self.release,
+            )
+        (instance.data_root / "foreign-hardlink").unlink()
+
+        instance.root.chmod(0o777)
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "group/world-writable"):
+            self.provisioner.purge(
+                instance.instance_id,
+                "purge-unsafe-mode",
+                confirm_instance_id=instance.instance_id,
+            )
+        self.assertTrue(instance.root.is_dir())
+        self.assertFalse(self.controller.loaded(instance))
+        instance.root.chmod(0o755)
+
     def test_restore_rejects_tampered_data_and_wrong_release(self) -> None:
         self._create("ep-production-0001", "EP production", 8765)
         instance = self._instance("ep-production-0001", "EP production")
