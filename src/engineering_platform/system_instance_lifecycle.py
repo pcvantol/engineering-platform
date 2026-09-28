@@ -111,16 +111,27 @@ def _regular_digest(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _tree_digest(root: Path) -> str:
+def _tree_digest(root: Path, *, ignored_roots: tuple[Path, ...] = ()) -> str:
     try:
         details = root.lstat()
     except OSError as error:
         raise SystemInstanceLifecycleError("EP preserved instance root is unavailable") from error
     if root.is_symlink() or not stat.S_ISDIR(details.st_mode):
         raise SystemInstanceLifecycleError("EP preserved instance root is unsafe")
+    ignored: tuple[tuple[str, ...], ...] = tuple(
+        path.relative_to(root).parts for path in ignored_roots
+    )
+    if any(not parts for parts in ignored):
+        raise SystemInstanceLifecycleError("EP lifecycle digest cannot ignore the instance root")
+
+    def ignored_path(path: Path) -> bool:
+        parts = path.relative_to(root).parts
+        return any(parts[:len(prefix)] == prefix for prefix in ignored)
+
     entries: list[dict[str, object]] = []
     for directory, names, files in os.walk(root, topdown=True, followlinks=False):
         parent = Path(directory)
+        names[:] = [name for name in names if not ignored_path(parent / name)]
         for name in sorted(names):
             path = parent / name
             info = path.lstat()
@@ -133,6 +144,8 @@ def _tree_digest(root: Path) -> str:
             })
         for name in sorted(files):
             path = parent / name
+            if ignored_path(path):
+                continue
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
                 raise SystemInstanceLifecycleError(f"EP preserved instance contains unsafe entry: {path}")
@@ -431,7 +444,10 @@ class SystemInstanceLifecycle:
             self.controller.remove(instance)
             if self.controller.loaded(instance) or self.service_interpreter(instance) is not None:
                 raise SystemInstanceLifecycleError("EP purge service was not fully removed")
-            tree_digest = _tree_digest(instance.root)
+            tree_digest = _tree_digest(
+                instance.root,
+                ignored_roots=(instance.operations_root / operation_id,),
+            )
             if state.get("phase") == "PURGE_READY":
                 if state.get("mutable_instance_data_digest") != tree_digest:
                     raise SystemInstanceLifecycleError("EP purge target changed after preparation")
@@ -464,7 +480,10 @@ class SystemInstanceLifecycle:
             self.controller.remove(instance)
             if self.controller.loaded(instance) or self.service_interpreter(instance) is not None:
                 raise SystemInstanceLifecycleError("EP purge recovery service was not fully removed")
-            if _tree_digest(instance.root) != state.get("mutable_instance_data_digest"):
+            if _tree_digest(
+                instance.root,
+                ignored_roots=(instance.operations_root / operation_id,),
+            ) != state.get("mutable_instance_data_digest"):
                 raise SystemInstanceLifecycleError("EP purge recovery target changed after preparation")
             expected = self.product.system_root / "instances" / instance.instance_id
             if (
