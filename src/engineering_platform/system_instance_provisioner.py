@@ -37,6 +37,7 @@ from . import (
     operational_installation,
     operational_installation_record,
     system_installation_topology,
+    system_instance_lifecycle,
     system_provider_context,
     system_server_service,
 )
@@ -601,6 +602,83 @@ class SystemInstanceProvisioner:
             shutil.rmtree(instance.root)
             return {"contract": CONTRACT, "result": "COMPLETE", "instance_id": instance_id, "receipt": receipt}
 
+    def _instance_lifecycle(self) -> system_instance_lifecycle.SystemInstanceLifecycle:
+        return system_instance_lifecycle.SystemInstanceLifecycle(
+            self.product,
+            self.controller,
+            lambda instance: self._configured_interpreter(instance, instance.data_root),
+        )
+
+    def preserve(self, instance_id: str, operation_id: str, *, confirm_instance_id: str) -> Mapping[str, object]:
+        instance, descriptor = self._instance_from_descriptor(instance_id)
+        lifecycle = self._instance_lifecycle()
+        receipt = lifecycle.preserve(
+            instance, descriptor, operation_id, confirm_instance_id=confirm_instance_id,
+        )
+        return {
+            "contract": system_instance_lifecycle.CONTRACT,
+            "result": "COMPLETE",
+            "instance_id": instance_id,
+            "receipt": receipt,
+        }
+
+    def restore(
+        self,
+        instance_id: str,
+        operation_id: str,
+        *,
+        preserve_operation_id: str,
+        release: ReleaseRequest,
+    ) -> Mapping[str, object]:
+        instance, descriptor = self._instance_from_descriptor(instance_id)
+        lifecycle = self._instance_lifecycle()
+        receipt = lifecycle.restore(
+            instance,
+            descriptor,
+            operation_id,
+            preserve_operation_id,
+            release,
+            self._install_slot,
+        )
+        return {
+            "contract": system_instance_lifecycle.CONTRACT,
+            "result": "COMPLETE",
+            "instance_id": instance_id,
+            "receipt": receipt,
+        }
+
+    def purge(self, instance_id: str, operation_id: str, *, confirm_instance_id: str) -> Mapping[str, object]:
+        if confirm_instance_id != instance_id:
+            raise SystemInstanceProvisionerError("EP instance purge confirmation mismatch")
+        lifecycle = self._instance_lifecycle()
+        prior_remove = self._terminal_receipt(instance_id, operation_id, "REMOVE")
+        instance_root = self.product.system_root / "instances" / system_installation_topology.validate_instance_id(instance_id)
+        if prior_remove is None:
+            instance, descriptor = self._instance_from_descriptor(instance_id)
+            lifecycle.prepare_purge(
+                instance, descriptor, operation_id, confirm_instance_id=confirm_instance_id,
+            )
+            removed = self.remove(
+                instance_id, operation_id, confirm_instance_id=confirm_instance_id,
+            )
+            remove_receipt = removed["receipt"]
+        else:
+            remove_receipt = prior_remove
+            if instance_root.exists() or instance_root.is_symlink():
+                instance, descriptor = self._instance_from_descriptor(instance_id)
+                lifecycle.resume_purge_target(instance, descriptor, operation_id)
+        receipt = lifecycle.record_purge(instance_id, operation_id, remove_receipt)
+        return {
+            "contract": system_instance_lifecycle.CONTRACT,
+            "result": "COMPLETE",
+            "instance_id": instance_id,
+            "receipt": receipt,
+        }
+
+    def lifecycle_status(self, instance_id: str, operation_id: str) -> Mapping[str, object]:
+        lifecycle = self._instance_lifecycle()
+        return lifecycle.status(instance_id, operation_id)
+
     def _provider_readback(self, instance: system_installation_topology.SystemInstanceTopology) -> dict[str, object]:
         values = {
             context.provider: system_provider_context.readback(context)
@@ -953,13 +1031,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-system-provisioner")
     parser.add_argument("command", choices=(
         "inventory", "create", "status", "update-assess", "update-execute",
-        "update-resume", "update-status", "repair", "remove", "provider-register",
+        "update-resume", "update-status", "repair", "remove", "preserve", "purge",
+        "restore", "lifecycle-status", "provider-register",
     ))
     parser.add_argument("--product-root", type=Path, required=True)
     parser.add_argument("--launch-daemons-dir", type=Path)
     parser.add_argument("--operation-id")
     parser.add_argument("--instance-id")
     parser.add_argument("--confirm-instance-id")
+    parser.add_argument("--preserve-operation-id")
     parser.add_argument("--display-label")
     parser.add_argument("--service-account")
     parser.add_argument("--bind-port", type=int)
@@ -1008,6 +1088,28 @@ def main(argv: list[str] | None = None) -> int:
                 str(args.instance_id or ""), str(args.operation_id or ""),
                 confirm_instance_id=str(args.confirm_instance_id or ""),
             )
+        elif args.command == "preserve":
+            result = provisioner.preserve(
+                str(args.instance_id or ""), str(args.operation_id or ""),
+                confirm_instance_id=str(args.confirm_instance_id or ""),
+            )
+        elif args.command == "purge":
+            result = provisioner.purge(
+                str(args.instance_id or ""), str(args.operation_id or ""),
+                confirm_instance_id=str(args.confirm_instance_id or ""),
+            )
+        elif args.command == "restore":
+            if not args.preserve_operation_id:
+                raise SystemInstanceProvisionerError("restore preserve operation ID is required")
+            result = provisioner.restore(
+                str(args.instance_id or ""), str(args.operation_id or ""),
+                preserve_operation_id=args.preserve_operation_id,
+                release=_release(args),
+            )
+        elif args.command == "lifecycle-status":
+            result = provisioner.lifecycle_status(
+                str(args.instance_id or ""), str(args.operation_id or ""),
+            )
         else:
             required = (
                 args.instance_id, args.display_label, args.service_account, args.provider,
@@ -1032,6 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
         SystemInstanceProvisionerError,
         system_installation_topology.SystemInstallationTopologyError,
         system_provider_context.SystemProviderContextError,
+        system_instance_lifecycle.SystemInstanceLifecycleError,
         system_server_service.SystemServerServiceError,
         installation_update_operation.InstallationUpdateOperationError,
         installation_update_plan.InstallationUpdatePlanError,

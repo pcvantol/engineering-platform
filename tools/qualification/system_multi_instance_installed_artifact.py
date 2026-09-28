@@ -111,15 +111,100 @@ if bravo_after["installation"]["version"] != baseline_version:
 if bravo.descriptor.read_bytes() != bravo_before_update or not bravo_after["ready"]:
     raise SystemExit("cross-instance update leakage")
 
-# Stop/start one service without changing the other, then remove only alpha.
+# Stop/start one service without changing the other.
 controller.quiesce(alpha)
 if not controller.loaded(bravo) or controller.loaded(alpha):
     raise SystemExit("cross-instance quiescence")
 controller.start(alpha)
 bravo_before = bravo.descriptor.read_bytes()
-engine.remove(alpha.instance_id, "remove-alpha-0001", confirm_instance_id=alpha.instance_id)
+
+# Preserve only alpha through the installed product lifecycle.
+preserved = engine.preserve(
+    alpha.instance_id,
+    "preserve-alpha-0001",
+    confirm_instance_id=alpha.instance_id,
+)
+preserved_evidence = preserved["receipt"]["evidence"]
+if (
+    preserved_evidence.get("lifecycle_state") != "UNINSTALLED_DATA_PRESERVED"
+    or preserved_evidence.get("instance_identity") != "PRESERVED"
+    or preserved_evidence.get("mutable_instance_data") != "PRESERVED"
+    or preserved_evidence.get("restorable") is not True
+    or preserved_evidence.get("provider_auth_state") != "PRESERVED_REQUIRES_REVERIFICATION"
+    or controller.loaded(alpha)
+    or not alpha.root.is_dir()
+):
+    raise SystemExit("installed preserve semantics failed")
+for context in providers.provider_contexts(alpha):
+    try:
+        providers.readback(context)
+    except providers.SystemProviderContextError:
+        pass
+    else:
+        raise SystemExit("preserved provider authentication remained READY")
 if not bravo.root.is_dir() or bravo.descriptor.read_bytes() != bravo_before or not engine.status(bravo.instance_id)["ready"]:
-    raise SystemExit("cross-instance remove leakage")
+    raise SystemExit("cross-instance preserve leakage")
+
+# Restore the same alpha identity from the exact preserved release evidence.
+restored = engine.restore(
+    alpha.instance_id,
+    "restore-alpha-0001",
+    preserve_operation_id="preserve-alpha-0001",
+    release=release,
+)
+restore_evidence = restored["receipt"]["evidence"]
+if (
+    restore_evidence.get("lifecycle_state") != "RESTORED_REQUIRES_PROVIDER_REVERIFICATION"
+    or restore_evidence.get("instance_identity") != "PRESERVED"
+    or restore_evidence.get("ready") is not False
+    or controller.loaded(alpha)
+):
+    raise SystemExit("installed restore semantics failed")
+
+# Re-establish provider evidence through the ordinary product-owned route, then
+# qualify the restored service through normal repair. Restore itself never
+# promotes preserved authentication evidence to READY.
+for context in providers.provider_contexts(alpha):
+    engine.provider_register(
+        instance_id=alpha.instance_id,
+        display_label=alpha.display_label,
+        service_account=alpha.service_account,
+        provider=context.provider,
+        executable_sha256=providers.executable_digest(context.executable),
+        version="qualification-1",
+        auth_reference=f"{context.provider}:auth:{alpha.instance_id}",
+        auth_bootstrap_receipt=f"{context.provider}:receipt:{alpha.instance_id}",
+    )
+repaired = engine.repair(alpha.instance_id, "repair-alpha-after-restore")
+if repaired["result"] != "COMPLETE" or not controller.loaded(alpha) or not engine.status(alpha.instance_id)["ready"]:
+    raise SystemExit("restored instance did not require and pass normal provider re-verification")
+if bravo.descriptor.read_bytes() != bravo_before or not engine.status(bravo.instance_id)["ready"]:
+    raise SystemExit("cross-instance restore leakage")
+
+# Explicit PURGE is permanent but must preserve the sibling.
+purged = engine.purge(
+    alpha.instance_id,
+    "purge-alpha-0001",
+    confirm_instance_id=alpha.instance_id,
+)
+purge_evidence = purged["receipt"]["evidence"]
+if (
+    purge_evidence.get("lifecycle_state") != "PURGED"
+    or purge_evidence.get("restorable") is not False
+    or alpha.root.exists()
+):
+    raise SystemExit("installed explicit purge semantics failed")
+if not bravo.root.is_dir() or bravo.descriptor.read_bytes() != bravo_before or not engine.status(bravo.instance_id)["ready"]:
+    raise SystemExit("cross-instance purge leakage")
+
+# The legacy destructive remove remains separately usable and unchanged.
+removed = engine.remove(
+    bravo.instance_id,
+    "remove-bravo-legacy-0001",
+    confirm_instance_id=bravo.instance_id,
+)
+if removed["result"] != "COMPLETE" or bravo.root.exists():
+    raise SystemExit("legacy destructive remove compatibility failed")
 
 print(json.dumps({
     "result":"PASS",
@@ -131,7 +216,11 @@ print(json.dumps({
     "update_isolation":"PASS",
     "baseline_version":baseline_version,
     "updated_version":version,
-    "remove_isolation":"PASS",
+    "preserve":"PASS",
+    "restore_requires_provider_reverification":"PASS",
+    "purge":"PASS",
+    "legacy_remove_backward_compatibility":"PASS",
+    "sibling_non_interference":"PASS",
     "project_agent_scope":"UNTOUCHED_USER_OWNED",
 }, sort_keys=True))
 '''

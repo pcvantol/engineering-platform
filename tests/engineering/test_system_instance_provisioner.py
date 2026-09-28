@@ -556,5 +556,419 @@ class SystemInstanceProvisionerTests(unittest.TestCase):
             self.assertEqual(provisioner_module.main(["create", *common]), 2)
 
 
+    def test_preserve_restore_and_provider_reverification_are_product_owned(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        marker = instance.data_root / "preserved.json"
+        marker.write_text('{"keep":true}\n', encoding="utf-8")
+
+        preserved = self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-production-0001",
+            confirm_instance_id=instance.instance_id,
+        )
+        evidence = preserved["receipt"]["evidence"]
+        self.assertEqual(evidence["lifecycle_state"], "UNINSTALLED_DATA_PRESERVED")
+        self.assertEqual(evidence["instance_identity"], "PRESERVED")
+        self.assertEqual(evidence["mutable_instance_data"], "PRESERVED")
+        self.assertTrue(evidence["restorable"])
+        self.assertEqual(evidence["service_state"], "REMOVED_OR_INACTIVE")
+        self.assertEqual(
+            evidence["provider_auth_state"], "PRESERVED_REQUIRES_REVERIFICATION",
+        )
+        self.assertTrue(instance.root.is_dir())
+        self.assertFalse(self.controller.loaded(instance))
+        self.assertFalse(
+            system_server_service.instance_default_paths(instance, self.launch_daemons).plist_path.exists()
+        )
+        for context in system_provider_context.provider_contexts(instance):
+            auth = json.loads(context.auth_receipt.read_text(encoding="utf-8"))
+            self.assertEqual(auth["state"], "PRESERVED_REQUIRES_REVERIFICATION")
+            with self.assertRaises(system_provider_context.SystemProviderContextError):
+                system_provider_context.readback(context)
+
+        restored = self.provisioner.restore(
+            instance.instance_id,
+            "restore-production-0001",
+            preserve_operation_id="preserve-production-0001",
+            release=self.release,
+        )
+        restore_evidence = restored["receipt"]["evidence"]
+        self.assertEqual(
+            restore_evidence["lifecycle_state"],
+            "RESTORED_REQUIRES_PROVIDER_REVERIFICATION",
+        )
+        self.assertEqual(restore_evidence["service_state"], "REGISTERED_INACTIVE")
+        self.assertFalse(restore_evidence["ready"])
+        self.assertFalse(self.controller.loaded(instance))
+        self.assertTrue(
+            system_server_service.instance_default_paths(instance, self.launch_daemons).plist_path.is_file()
+        )
+        self.assertEqual(marker.read_text(encoding="utf-8"), '{"keep":true}\n')
+
+        self._providers("ep-production-0001", "EP production")
+        with patch.object(
+            provisioner_module.operational_installation,
+            "package_identity",
+            return_value={"version": self.release.version},
+        ):
+            repaired = self.provisioner.repair(instance.instance_id, "repair-restored-0001")
+        self.assertEqual(repaired["result"], "COMPLETE")
+        self.assertTrue(self.controller.loaded(instance))
+
+    def test_restore_rejects_tampered_data_and_wrong_release(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-production-0001",
+            confirm_instance_id=instance.instance_id,
+        )
+        (instance.data_root / "tamper").write_text("changed", encoding="utf-8")
+        with self.assertRaisesRegex(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycleError,
+            "no longer matches",
+        ):
+            self.provisioner.restore(
+                instance.instance_id,
+                "restore-tampered-0001",
+                preserve_operation_id="preserve-production-0001",
+                release=self.release,
+            )
+        (instance.data_root / "tamper").unlink()
+
+        other_wheel = self.base / "engineering_platform-2.3.103-py3-none-any.whl"
+        other_wheel.write_bytes(b"different-release")
+        other = provisioner_module.ReleaseRequest(
+            "2.3.103",
+            other_wheel,
+            "sha256:" + hashlib.sha256(other_wheel.read_bytes()).hexdigest(),
+            "b" * 40,
+        )
+        with self.assertRaisesRegex(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycleError,
+            "does not match preserved runtime identity",
+        ):
+            self.provisioner.restore(
+                instance.instance_id,
+                "restore-wrong-release-0001",
+                preserve_operation_id="preserve-production-0001",
+                release=other,
+            )
+
+    def test_restore_rejects_foreign_service_before_first_restore_attempt(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-production-0001",
+            confirm_instance_id=instance.instance_id,
+        )
+        record = operational_installation_record.load(instance.data_root)
+        self.controller.register(instance, Path(str(record["interpreter"])))
+        with self.assertRaisesRegex(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycleError,
+            "foreign service definition",
+        ):
+            self.provisioner.restore(
+                instance.instance_id,
+                "restore-foreign-service",
+                preserve_operation_id="preserve-production-0001",
+                release=self.release,
+            )
+
+    def test_lifecycle_status_rejects_foreign_instance_path(self) -> None:
+        with self.assertRaises(
+            topology.SystemInstallationTopologyError,
+        ):
+            self.provisioner.lifecycle_status("../foreign", "restore-foreign")
+
+    def test_purge_is_permanent_and_sibling_instance_is_untouched(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        self._create("ep-development-0001", "EP development", 8766)
+        first = self._instance("ep-production-0001", "EP production")
+        second = self._instance("ep-development-0001", "EP development")
+        second_descriptor = second.descriptor.read_bytes()
+        second_record = operational_installation_record.load(second.data_root)
+
+        self.provisioner.preserve(
+            first.instance_id,
+            "preserve-production-0001",
+            confirm_instance_id=first.instance_id,
+        )
+        purged = self.provisioner.purge(
+            first.instance_id,
+            "purge-production-0001",
+            confirm_instance_id=first.instance_id,
+        )
+        evidence = purged["receipt"]["evidence"]
+        self.assertEqual(evidence["lifecycle_state"], "PURGED")
+        self.assertFalse(evidence["restorable"])
+        self.assertFalse(first.root.exists())
+        self.assertEqual(second.descriptor.read_bytes(), second_descriptor)
+        self.assertEqual(operational_installation_record.load(second.data_root), second_record)
+
+        with self.assertRaisesRegex(
+            (provisioner_module.SystemInstanceProvisionerError, FileNotFoundError),
+            "descriptor|unavailable",
+        ):
+            self.provisioner.restore(
+                first.instance_id,
+                "restore-after-purge-0001",
+                preserve_operation_id="preserve-production-0001",
+                release=self.release,
+            )
+        status = self.provisioner.lifecycle_status(first.instance_id, "purge-production-0001")
+        self.assertEqual(status["state"], "COMPLETE")
+        self.assertEqual(status["lifecycle_state"], "PURGED")
+
+    def test_preserve_and_restore_resume_after_lost_terminal_response(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        original_receipt = provisioner_module.system_instance_lifecycle.SystemInstanceLifecycle._receipt
+
+        with patch.object(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycle,
+            "_receipt",
+            side_effect=InterruptedError("lost preserve response"),
+        ):
+            with self.assertRaises(InterruptedError):
+                self.provisioner.preserve(
+                    instance.instance_id,
+                    "preserve-lost-response",
+                    confirm_instance_id=instance.instance_id,
+                )
+        preserved = self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-lost-response",
+            confirm_instance_id=instance.instance_id,
+        )
+        self.assertEqual(preserved["receipt"]["state"], "COMPLETE")
+
+        with patch.object(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycle,
+            "_receipt",
+            side_effect=InterruptedError("lost restore response"),
+        ):
+            with self.assertRaises(InterruptedError):
+                self.provisioner.restore(
+                    instance.instance_id,
+                    "restore-lost-response",
+                    preserve_operation_id="preserve-lost-response",
+                    release=self.release,
+                )
+        restored = self.provisioner.restore(
+            instance.instance_id,
+            "restore-lost-response",
+            preserve_operation_id="preserve-lost-response",
+            release=self.release,
+        )
+        self.assertEqual(restored["receipt"]["state"], "COMPLETE")
+        self.assertIsNotNone(original_receipt)
+
+    def test_purge_recovers_if_legacy_remove_receipt_precedes_rmtree(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        with patch.object(
+            provisioner_module.shutil,
+            "rmtree",
+            side_effect=OSError("simulated crash after legacy remove receipt"),
+        ):
+            with self.assertRaisesRegex(OSError, "simulated crash"):
+                self.provisioner.purge(
+                    instance.instance_id,
+                    "purge-rmtree-interrupt",
+                    confirm_instance_id=instance.instance_id,
+                )
+        self.assertTrue(instance.root.is_dir())
+        legacy = self.provisioner._terminal_receipt(
+            instance.instance_id, "purge-rmtree-interrupt", "REMOVE",
+        )
+        self.assertIsNotNone(legacy)
+
+        purged = self.provisioner.purge(
+            instance.instance_id,
+            "purge-rmtree-interrupt",
+            confirm_instance_id=instance.instance_id,
+        )
+        self.assertFalse(instance.root.exists())
+        self.assertEqual(purged["receipt"]["evidence"]["lifecycle_state"], "PURGED")
+        self.assertEqual(
+            self.provisioner.purge(
+                instance.instance_id,
+                "purge-rmtree-interrupt",
+                confirm_instance_id=instance.instance_id,
+            ),
+            purged,
+        )
+
+    def test_purge_recovers_after_remove_completed_before_lifecycle_projection(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        with patch.object(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycle,
+            "record_purge",
+            side_effect=InterruptedError("lost purge projection"),
+        ):
+            with self.assertRaises(InterruptedError):
+                self.provisioner.purge(
+                    instance.instance_id,
+                    "purge-lost-response",
+                    confirm_instance_id=instance.instance_id,
+                )
+        self.assertFalse(instance.root.exists())
+        purged = self.provisioner.purge(
+            instance.instance_id,
+            "purge-lost-response",
+            confirm_instance_id=instance.instance_id,
+        )
+        self.assertEqual(purged["receipt"]["evidence"]["lifecycle_state"], "PURGED")
+
+    def test_lifecycle_helpers_reject_malformed_and_unsafe_evidence(self) -> None:
+        lifecycle = provisioner_module.system_instance_lifecycle
+        malformed = self.base / "malformed.json"
+        malformed.write_text("not-json", encoding="utf-8")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "unavailable"):
+            lifecycle._read_json(malformed)
+        malformed.write_text("[]", encoding="utf-8")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "invalid"):
+            lifecycle._read_json(malformed)
+
+        missing = self.base / "missing-tree"
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "unavailable"):
+            lifecycle._tree_digest(missing)
+        regular = self.base / "regular-root"
+        regular.write_text("not-a-directory", encoding="utf-8")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "unsafe"):
+            lifecycle._tree_digest(regular)
+
+        tree = self.base / "unsafe-tree"
+        tree.mkdir()
+        (tree / "safe").write_text("safe", encoding="utf-8")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "cannot ignore"):
+            lifecycle._tree_digest(tree, ignored_roots=(tree,))
+        (tree / "unsafe-link").symlink_to(tree / "safe")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "unsafe entry"):
+            lifecycle._tree_digest(tree)
+
+        lock = self.base / "lifecycle.lock"
+        with lifecycle._Lock(lock):
+            with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "another operation"):
+                with lifecycle._Lock(lock):
+                    self.fail("a second lifecycle lock unexpectedly succeeded")
+
+    def test_lifecycle_operation_identity_and_terminal_evidence_fail_closed(self) -> None:
+        lifecycle = provisioner_module.system_instance_lifecycle
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        engine = self.provisioner._instance_lifecycle()
+        descriptor = json.loads(instance.descriptor.read_text(encoding="utf-8"))
+
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "operation ID"):
+            engine.status(instance.instance_id, "bad operation")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "confirmation mismatch"):
+            engine.preserve(
+                instance, descriptor, "preserve-confirmation", confirm_instance_id="ep-development-0001"
+            )
+
+        preserved = self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-negative-0001",
+            confirm_instance_id=instance.instance_id,
+        )
+        self.assertEqual(
+            self.provisioner.preserve(
+                instance.instance_id,
+                "preserve-negative-0001",
+                confirm_instance_id=instance.instance_id,
+            ),
+            preserved,
+        )
+        state_path = engine._operation_root(instance.instance_id, "preserve-negative-0001") / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["request_digest"] = "sha256:" + "0" * 64
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "operation identity conflict"):
+            engine.preserve(
+                instance, descriptor, "preserve-negative-0001", confirm_instance_id=instance.instance_id
+            )
+
+    def test_lifecycle_provider_and_service_drift_fail_closed(self) -> None:
+        lifecycle = provisioner_module.system_instance_lifecycle
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        descriptor = json.loads(instance.descriptor.read_text(encoding="utf-8"))
+        engine = self.provisioner._instance_lifecycle()
+
+        codex = system_provider_context.provider_context(instance, "codex")
+        auth = json.loads(codex.auth_receipt.read_text(encoding="utf-8"))
+        auth["state"] = "FOREIGN"
+        codex.auth_receipt.write_text(json.dumps(auth), encoding="utf-8")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "cannot be preserved"):
+            engine.preserve(
+                instance, descriptor, "preserve-bad-auth", confirm_instance_id=instance.instance_id
+            )
+
+        auth["state"] = "READY"
+        codex.auth_receipt.write_text(json.dumps(auth), encoding="utf-8")
+        self.controller.loaded_instances.add(instance.instance_id)
+        original_remove = self.controller.remove
+        with patch.object(self.controller, "remove", return_value={"result": "REMOVED"}):
+            with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "not fully removed"):
+                engine.preserve(
+                    instance, descriptor, "preserve-loaded", confirm_instance_id=instance.instance_id
+                )
+        self.controller.remove = original_remove
+
+    def test_lifecycle_tombstone_and_restore_replay_paths(self) -> None:
+        lifecycle = provisioner_module.system_instance_lifecycle
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        descriptor = json.loads(instance.descriptor.read_text(encoding="utf-8"))
+        preserved = self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-replay-0001",
+            confirm_instance_id=instance.instance_id,
+        )
+        restored = self.provisioner.restore(
+            instance.instance_id,
+            "restore-replay-0001",
+            preserve_operation_id="preserve-replay-0001",
+            release=self.release,
+        )
+        self.assertEqual(
+            self.provisioner.restore(
+                instance.instance_id,
+                "restore-replay-0001",
+                preserve_operation_id="preserve-replay-0001",
+                release=self.release,
+            ),
+            restored,
+        )
+
+        engine = self.provisioner._instance_lifecycle()
+        tombstone = engine._root(instance.instance_id) / "purged.json"
+        tombstone.parent.mkdir(parents=True, exist_ok=True)
+        tombstone.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "permanently purged"):
+            engine.preserve(
+                instance, descriptor, "preserve-after-purge", confirm_instance_id=instance.instance_id
+            )
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "cannot be restored"):
+            engine.restore(
+                instance,
+                descriptor,
+                "restore-after-purge",
+                "preserve-replay-0001",
+                self.release,
+                self.provisioner._install_slot,
+            )
+        self.assertEqual(
+            preserved["receipt"]["evidence"]["provider_auth_state"],
+            "PRESERVED_REQUIRES_REVERIFICATION",
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()
