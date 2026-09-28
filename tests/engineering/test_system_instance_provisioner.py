@@ -766,6 +766,42 @@ class SystemInstanceProvisionerTests(unittest.TestCase):
         self.assertEqual(restored["receipt"]["state"], "COMPLETE")
         self.assertIsNotNone(original_receipt)
 
+    def test_purge_recovers_if_legacy_remove_receipt_precedes_rmtree(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        with patch.object(
+            provisioner_module.shutil,
+            "rmtree",
+            side_effect=OSError("simulated crash after legacy remove receipt"),
+        ):
+            with self.assertRaisesRegex(OSError, "simulated crash"):
+                self.provisioner.purge(
+                    instance.instance_id,
+                    "purge-rmtree-interrupt",
+                    confirm_instance_id=instance.instance_id,
+                )
+        self.assertTrue(instance.root.is_dir())
+        legacy = self.provisioner._terminal_receipt(
+            instance.instance_id, "purge-rmtree-interrupt", "REMOVE",
+        )
+        self.assertIsNotNone(legacy)
+
+        purged = self.provisioner.purge(
+            instance.instance_id,
+            "purge-rmtree-interrupt",
+            confirm_instance_id=instance.instance_id,
+        )
+        self.assertFalse(instance.root.exists())
+        self.assertEqual(purged["receipt"]["evidence"]["lifecycle_state"], "PURGED")
+        self.assertEqual(
+            self.provisioner.purge(
+                instance.instance_id,
+                "purge-rmtree-interrupt",
+                confirm_instance_id=instance.instance_id,
+            ),
+            purged,
+        )
+
     def test_purge_recovers_after_remove_completed_before_lifecycle_projection(self) -> None:
         self._create("ep-production-0001", "EP production", 8765)
         instance = self._instance("ep-production-0001", "EP production")
