@@ -857,6 +857,96 @@ class SystemInstanceProvisionerTests(unittest.TestCase):
                 with lifecycle._Lock(lock):
                     self.fail("a second lifecycle lock unexpectedly succeeded")
 
+    def test_lifecycle_tree_ownership_rejects_hardlinks_and_permissive_modes(self) -> None:
+        lifecycle = provisioner_module.system_instance_lifecycle
+        tree = self.base / "ownership-tree"
+        tree.mkdir(mode=0o700)
+        safe = tree / "safe"
+        safe.write_text("safe", encoding="utf-8")
+        safe.chmod(0o600)
+        self.assertTrue(lifecycle._tree_digest(tree).startswith("sha256:"))
+
+        foreign = self.base / "foreign-hardlink-source"
+        foreign.write_text("foreign", encoding="utf-8")
+        linked = tree / "linked"
+        os.link(foreign, linked)
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "hardlinked"):
+            lifecycle._tree_digest(tree)
+        linked.unlink()
+
+        for target in (tree, safe):
+            original = target.stat().st_mode & 0o777
+            target.chmod(original | 0o020)
+            with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "group/world writable"):
+                lifecycle._tree_digest(tree)
+            target.chmod(original)
+
+        directory = tree / "mutable-dir"
+        directory.mkdir(mode=0o700)
+        directory.chmod(0o777)
+        with self.assertRaisesRegex(lifecycle.SystemInstanceLifecycleError, "group/world writable"):
+            lifecycle._tree_digest(tree)
+
+    def test_preserve_restore_and_purge_reject_unsafe_tree_ownership(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+
+        foreign = self.base / "foreign-owned"
+        foreign.write_text("foreign", encoding="utf-8")
+        linked = instance.data_root / "foreign-hardlink"
+        os.link(foreign, linked)
+        with self.assertRaisesRegex(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycleError,
+            "hardlinked",
+        ):
+            self.provisioner.preserve(
+                instance.instance_id,
+                "preserve-hardlink-0001",
+                confirm_instance_id=instance.instance_id,
+            )
+        self.assertTrue(instance.root.is_dir())
+        self.assertEqual(foreign.read_text(encoding="utf-8"), "foreign")
+        linked.unlink()
+
+        preserved = self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-safe-0001",
+            confirm_instance_id=instance.instance_id,
+        )
+        self.assertEqual(
+            preserved["receipt"]["evidence"]["lifecycle_state"],
+            "UNINSTALLED_DATA_PRESERVED",
+        )
+
+        marker = instance.data_root / "server.json"
+        original_mode = marker.stat().st_mode & 0o777
+        marker.chmod(original_mode | 0o002)
+        with self.assertRaisesRegex(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycleError,
+            "group/world writable",
+        ):
+            self.provisioner.restore(
+                instance.instance_id,
+                "restore-mode-drift-0001",
+                preserve_operation_id="preserve-safe-0001",
+                release=self.release,
+            )
+        marker.chmod(original_mode)
+
+        mutable = instance.data_root / "purge-hardlink"
+        os.link(foreign, mutable)
+        with self.assertRaisesRegex(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycleError,
+            "hardlinked",
+        ):
+            self.provisioner.purge(
+                instance.instance_id,
+                "purge-hardlink-0001",
+                confirm_instance_id=instance.instance_id,
+            )
+        self.assertTrue(instance.root.is_dir())
+        self.assertEqual(foreign.read_text(encoding="utf-8"), "foreign")
+
     def test_lifecycle_operation_identity_and_terminal_evidence_fail_closed(self) -> None:
         lifecycle = provisioner_module.system_instance_lifecycle
         self._create("ep-production-0001", "EP production", 8765)
