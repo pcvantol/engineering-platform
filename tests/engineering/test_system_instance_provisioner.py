@@ -656,6 +656,33 @@ class SystemInstanceProvisionerTests(unittest.TestCase):
                 release=other,
             )
 
+    def test_restore_rejects_foreign_service_before_first_restore_attempt(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        self.provisioner.preserve(
+            instance.instance_id,
+            "preserve-production-0001",
+            confirm_instance_id=instance.instance_id,
+        )
+        record = operational_installation_record.load(instance.data_root)
+        self.controller.register(instance, Path(str(record["interpreter"])))
+        with self.assertRaisesRegex(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycleError,
+            "foreign service definition",
+        ):
+            self.provisioner.restore(
+                instance.instance_id,
+                "restore-foreign-service",
+                preserve_operation_id="preserve-production-0001",
+                release=self.release,
+            )
+
+    def test_lifecycle_status_rejects_foreign_instance_path(self) -> None:
+        with self.assertRaises(
+            topology.SystemInstallationTopologyError,
+        ):
+            self.provisioner.lifecycle_status("../foreign", "restore-foreign")
+
     def test_purge_is_permanent_and_sibling_instance_is_untouched(self) -> None:
         self._create("ep-production-0001", "EP production", 8765)
         self._create("ep-development-0001", "EP development", 8766)
