@@ -375,6 +375,7 @@ class SystemInstanceLifecycle:
             slot = runtime_installer(release)
             if str(slot.interpreter) != selected.get("interpreter"):
                 raise SystemInstanceLifecycleError("EP restored runtime slot does not match preserved interpreter")
+            replaying_verified = state.get("phase") == "VERIFIED"
             state = self._save(
                 root,
                 state,
@@ -385,7 +386,7 @@ class SystemInstanceLifecycle:
             configured = self.service_interpreter(instance)
             if configured is None:
                 service = self.controller.register(instance, slot.interpreter)
-            elif state.get("phase") == "VERIFIED" and configured == slot.interpreter:
+            elif replaying_verified and configured == slot.interpreter:
                 service = {
                     "result": "REGISTERED",
                     "label": instance.service_label,
