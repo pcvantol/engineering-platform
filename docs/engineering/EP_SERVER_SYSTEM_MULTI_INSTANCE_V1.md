@@ -193,3 +193,95 @@ Mac service-account creation, privileged LaunchDaemon installation, provider
 login/fan-out, real reboot and Forge/EP pairing acceptance remain deferred to
 the authorized Forge Platform joint installer qualification. No production
 Mac, production credential, Mission, reset or T0 is affected.
+
+
+## Product-owned preserve / purge / restore lifecycle
+
+**Assignment:** `L2-PRODUCT-PRESERVE-PURGE-RESTORE-V1-20260928`
+
+**Extension contract:** `engineering-platform.system-instance-lifecycle/v1`
+
+This contract is additive to `engineering-platform.system-provisioner/v1`.
+The existing `remove` operation remains destructive and backwards compatible:
+it removes the exact instance service and mutable instance root and preserves
+shared immutable runtime slots. Existing remove receipts are never reinterpreted
+as preserve receipts.
+
+New exact-instance commands are `preserve`, `purge`, `restore`, and
+`lifecycle-status`.
+
+### PRESERVE
+
+EP removes/quiesces the exact product-owned LaunchDaemon but does not remove the
+instance root. It retains the opaque instance ID, descriptor, CENTRAL/data,
+configuration, logs/cache/recovery/backups and provider contexts under the same
+product ownership. Every provider authentication receipt is deliberately moved
+from `READY` to `PRESERVED_REQUIRES_REVERIFICATION`; credential references
+and bootstrap receipt references remain product-owned bytes but are not treated
+as current authentication proof.
+
+The instance root is link-free and content-hashed after service removal and
+provider-state demotion. Durable lifecycle evidence is stored under the EP
+product root, outside the preserved instance tree.
+
+Terminal semantics include:
+
+```text
+lifecycle_state = UNINSTALLED_DATA_PRESERVED
+instance_identity = PRESERVED
+mutable_instance_data = PRESERVED
+restorable = true
+service_state = REMOVED_OR_INACTIVE
+shared_immutable_runtime_slots = PRESERVED
+provider_auth_state = PRESERVED_REQUIRES_REVERIFICATION
+```
+
+### PURGE
+
+`purge` is the explicit permanent lifecycle projection. It delegates the
+actual destructive instance removal to the existing qualified `remove`
+operation, then commits a product-owned purge tombstone outside the removed
+instance root. A lost response between destructive remove and purge projection
+is recovered with the same operation ID.
+
+Terminal purge has `lifecycle_state = PURGED`, removed mutable instance data,
+a retired instance identity and `restorable = false`. Shared immutable runtime
+slots remain subject to the existing product cleanup contract. A prior preserve
+receipt never authorizes restore after the purge tombstone exists.
+
+### RESTORE
+
+Restore names one exact preserve operation and accepts only the exact preserved
+release identity. It fails closed on absent/tampered/foreign lifecycle evidence,
+changed instance-tree bytes, changed instance identity, changed selected
+artifact/source/version, a purge tombstone, unsafe links or a foreign runtime
+slot.
+
+After evidence validation, EP may recreate the exact immutable runtime slot from
+the supplied exact artifact and re-register the same instance LaunchDaemon.
+Restore deliberately **does not start the service** and **does not promote
+preserved provider state**. Its terminal state is:
+
+```text
+lifecycle_state = RESTORED_REQUIRES_PROVIDER_REVERIFICATION
+instance_identity = PRESERVED
+mutable_instance_data = PRESERVED
+service_state = REGISTERED_INACTIVE
+provider_auth_state = PRESERVED_REQUIRES_REVERIFICATION
+ready = false
+```
+
+The normal product-owned provider registration/bootstrap path must independently
+re-establish current provider evidence before `repair` can start and qualify
+the restored service. Forge Platform may consume these receipts; it may not
+edit provider state, recreate service/data roots itself or infer restore from
+filesystem presence.
+
+### Qualification
+
+The protected product qualification covers same-instance preserve/restore,
+exact-release restore, provider-state demotion and re-verification, byte-level
+tamper rejection, explicit permanent purge, sibling-instance non-interference,
+lost-response recovery for preserve/restore/purge, receipt replay and existing
+destructive `remove` compatibility. Qualification uses isolated product
+fixtures only; no production Server/CENTRAL/credential mutation is authorized.
