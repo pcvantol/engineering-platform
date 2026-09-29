@@ -227,18 +227,20 @@ def qualify(wheel: Path, expected_digest: str, source: str, version: str,
         if observed is None or child.returncode != -signal.SIGKILL:
             return {"result": "NOT_HIT", "observed": observed,
                     "exit_kind": "OTHER", "child_error": stderr[-200:]}
-        process_table = subprocess.run(
-            ("/bin/ps", "-axo", "pid=,pgid="), text=True,
-            capture_output=True, check=False,
-        )
         descendants = 0
-        if process_table.returncode == 0:
-            for line in process_table.stdout.splitlines():
-                fields = line.split()
-                if len(fields) == 2 and fields[1].isdigit() and int(fields[1]) == child.pid:
-                    descendants += 1
-        else:
-            return {"result": "UNPROVEN", "reason": "DESCENDANT_READBACK_UNAVAILABLE"}
+        for _ in range(100):
+            process_table = subprocess.run(
+                ("/bin/ps", "-axo", "pid=,pgid=,state="), text=True,
+                capture_output=True, check=False,
+            )
+            if process_table.returncode:
+                return {"result": "UNPROVEN", "reason": "DESCENDANT_READBACK_UNAVAILABLE"}
+            descendants = sum(1 for line in process_table.stdout.splitlines()
+                              if len(line.split()) == 3 and line.split()[1] == str(child.pid)
+                              and not line.split()[2].startswith("Z"))
+            if not descendants:
+                break
+            time.sleep(0.05)
         if descendants:
             return {"result": "UNPROVEN", "reason": "OWNED_DESCENDANT_SURVIVED",
                     "owned_descendants_alive": descendants}

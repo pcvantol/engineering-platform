@@ -166,12 +166,18 @@ def qualify(wheel: Path, expected_digest: str, version: str, source: str,
             time.sleep(0)
         _, stderr = child.communicate(timeout=30)
         after = read_state(state_path)
-        process_table = subprocess.run(("/bin/ps", "-axo", "pid=,pgid="),
-                                       capture_output=True, text=True, check=False)
-        if process_table.returncode:
-            return {"result": "UNPROVEN", "reason": "descendant readback unavailable"}
-        descendants = sum(1 for line in process_table.stdout.splitlines()
-                          if len(line.split()) == 2 and line.split()[1] == str(child.pid))
+        descendants = 0
+        for _ in range(100):
+            process_table = subprocess.run(("/bin/ps", "-axo", "pid=,pgid=,state="),
+                                           capture_output=True, text=True, check=False)
+            if process_table.returncode:
+                return {"result": "UNPROVEN", "reason": "descendant readback unavailable"}
+            descendants = sum(1 for line in process_table.stdout.splitlines()
+                              if len(line.split()) == 3 and line.split()[1] == str(child.pid)
+                              and not line.split()[2].startswith("Z"))
+            if not descendants:
+                break
+            time.sleep(0.05)
         result: dict[str, object] = {
             "operation": operation, "boundary": boundary, "version": version,
             "wheel_sha256": expected_digest, "source_checkout_import": False,
