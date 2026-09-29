@@ -665,8 +665,7 @@ class SystemInstanceProvisioner:
         else:
             remove_receipt = prior_remove
             if instance_root.exists() or instance_root.is_symlink():
-                instance, descriptor = self._instance_from_descriptor(instance_id)
-                lifecycle.resume_purge_target(instance, descriptor, operation_id)
+                lifecycle.resume_purge_target(instance_id, operation_id, remove_receipt)
         receipt = lifecycle.record_purge(instance_id, operation_id, remove_receipt)
         return {
             "contract": system_instance_lifecycle.CONTRACT,

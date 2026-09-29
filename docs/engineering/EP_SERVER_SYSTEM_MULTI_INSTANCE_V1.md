@@ -292,3 +292,32 @@ tamper rejection, explicit permanent purge, sibling-instance non-interference,
 lost-response recovery for preserve/restore/purge, receipt replay and existing
 destructive `remove` compatibility. Qualification uses isolated product
 fixtures only; no production Server/CENTRAL/credential mutation is authorized.
+
+### Abrupt process-stop qualification (revision 26)
+
+The historical 2.3.104 installed-wheel qualification above covered controlled
+interruption and lost responses. The separate LANE_2 revision-26 qualification
+found a real SIGKILL gap in `PURGE`: the legacy `REMOVE` receipt is published
+before recursive deletion. If the process dies after deleting `instance.json`
+but before the instance root and lifecycle tombstone are removed, the normal
+same-operation `purge` retry cannot reopen the descriptor. The exact published
+2.3.104 wheel reproduces this failure under Python 3.14; it remains historical
+`GAP_PROVEN` evidence and is not relabeled.
+
+The bounded recovery correction retains the prepared root's device/inode and
+minimal topology outside the mutable instance tree. After a terminal exact
+`REMOVE` receipt, recovery admits only that same root, rejects a replacement
+root or changed surviving descriptor, checks the remaining tree for unsafe
+entries, and finishes the original deletion before publishing the purge
+tombstone and lifecycle receipt. The existing lifecycle request and receipt
+identities remain unchanged. The reproducible installed-wheel SIGKILL harness
+is `tools/qualification/system_instance_purge_sigkill.py`; it reports durable
+`PURGE_READY`, physical partial deletion, exact mutator signal exit, surviving
+descendants, same-operation recovery, terminal replay and sibling byte identity.
+
+Source tests and a locally built candidate-wheel SIGKILL run have passed this
+specific partial-deletion cell. The new protected source, any required normal
+release and requalification against its published bytes are still required
+before this process-crash subset may be called qualified. Other revision-26
+PRESERVE/RESTORE/PURGE crash cells remain separately open; no physical reboot,
+power-loss, production service or installer acceptance is inferred.

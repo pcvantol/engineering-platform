@@ -477,40 +477,78 @@ class SystemInstanceLifecycle:
                 "PURGE_READY",
                 mutable_instance_data_digest=tree_digest,
                 descriptor_digest=request["descriptor_digest"],
+                # REMOVE publishes its receipt before deleting this tree.  A
+                # process kill can erase instance.json before rmtree finishes.
+                # Retain only the topology and root identity needed to resume
+                # that exact deletion without adopting a replacement root.
+                display_label=instance.display_label,
+                service_account=instance.service_account,
+                root_device=instance.root.stat(follow_symlinks=False).st_dev,
+                root_inode=instance.root.stat(follow_symlinks=False).st_ino,
             )
 
     def resume_purge_target(
         self,
-        instance: system_installation_topology.SystemInstanceTopology,
-        descriptor: Mapping[str, object],
+        instance_id: str,
         operation_id: str,
+        remove_receipt: Mapping[str, object],
     ) -> None:
-        root = self._operation_root(instance.instance_id, operation_id)
+        root = self._operation_root(instance_id, operation_id)
         state = _read_json(root / "state.json")
         if (
             state.get("contract") != CONTRACT
             or state.get("operation") != "PURGE"
             or state.get("phase") != "PURGE_READY"
-            or state.get("instance_id") != instance.instance_id
-            or state.get("descriptor_digest") != _json_digest(dict(descriptor))
+            or state.get("instance_id") != instance_id
+            or state.get("request") != {
+                "instance_id": instance_id,
+                "descriptor_digest": state.get("descriptor_digest"),
+            }
+            or state.get("request_digest") != _json_digest(state["request"])
+            or remove_receipt.get("operation") != "REMOVE"
+            or remove_receipt.get("operation_id") != operation_id
+            or remove_receipt.get("instance_id") != instance_id
+            or not isinstance(remove_receipt.get("evidence"), Mapping)
+            or remove_receipt["evidence"].get("removed_descriptor_digest") != state.get("descriptor_digest")
         ):
             raise SystemInstanceLifecycleError("EP purge recovery evidence is invalid")
-        with _Lock(instance.lifecycle_lock):
+        try:
+            instance = system_installation_topology.system_instance_topology(
+                self.product,
+                instance_id=instance_id,
+                display_label=state["display_label"],
+                service_account=state["service_account"],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SystemInstanceLifecycleError("EP purge recovery topology is invalid") from error
+        expected = self.product.system_root / "instances" / instance.instance_id
+        if (
+            instance.root != expected
+            or instance.root.is_symlink()
+            or not instance.root.is_relative_to(self.product.system_root / "instances")
+        ):
+            raise SystemInstanceLifecycleError("EP purge recovery target is invalid")
+
+        def verify_original_root() -> None:
+            details = instance.root.stat(follow_symlinks=False)
+            if (details.st_dev, details.st_ino) != (state.get("root_device"), state.get("root_inode")):
+                raise SystemInstanceLifecycleError("EP purge recovery target was replaced")
+
+        # Check before opening the instance-owned lock, which may recreate a
+        # lock directory already erased by the interrupted deletion.
+        verify_original_root()
+        with _Lock(root / "purge-recovery.lock"), _Lock(instance.lifecycle_lock):
+            verify_original_root()
             self.controller.remove(instance)
             if self.controller.loaded(instance) or self.service_interpreter(instance) is not None:
                 raise SystemInstanceLifecycleError("EP purge recovery service was not fully removed")
-            if _tree_digest(
-                instance.root,
-                ignored_roots=(instance.operations_root / operation_id,),
-            ) != state.get("mutable_instance_data_digest"):
-                raise SystemInstanceLifecycleError("EP purge recovery target changed after preparation")
-            expected = self.product.system_root / "instances" / instance.instance_id
-            if (
-                instance.root != expected
-                or instance.root.is_symlink()
-                or not instance.root.is_relative_to(self.product.system_root / "instances")
-            ):
-                raise SystemInstanceLifecycleError("EP purge recovery target is invalid")
+            # The exact root survives until rmtree's final step.  Its contents
+            # may be a strict subset after SIGKILL, so the original whole-tree
+            # digest cannot be required here.  Reject unsafe remaining entries.
+            _tree_digest(instance.root, ignored_roots=(instance.operations_root / operation_id,))
+            if instance.descriptor.exists():
+                if _json_digest(_read_json(instance.descriptor)) != state.get("descriptor_digest"):
+                    raise SystemInstanceLifecycleError("EP purge recovery descriptor changed")
             shutil.rmtree(instance.root)
 
     def record_purge(
