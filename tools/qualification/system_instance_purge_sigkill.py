@@ -41,7 +41,7 @@ def _tree_digest(root: Path) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(rows).encode()).hexdigest()
 
 
-def _child(mode: str, root: Path, wheel: Path, source: str, files: int) -> None:
+def _child(mode: str, root: Path, wheel: Path, source: str, version: str, files: int) -> None:
     import engineering_platform
     from engineering_platform import system_instance_provisioner as provisioner
     from engineering_platform import system_installation_topology as topology
@@ -84,7 +84,7 @@ def _child(mode: str, root: Path, wheel: Path, source: str, files: int) -> None:
             "interpreter": str(interpreter), "identity_aware": True,
         },
     )
-    release = provisioner.ReleaseRequest("2.3.104", wheel, _digest_file(wheel), source)
+    release = provisioner.ReleaseRequest(version, wheel, _digest_file(wheel), source)
 
     if mode == "setup":
         for identity, port in ((ALPHA, 18765), (BRAVO, 18766)):
@@ -120,17 +120,18 @@ def _child(mode: str, root: Path, wheel: Path, source: str, files: int) -> None:
 
 
 def _run_child(python: Path, script: Path, mode: str, root: Path, wheel: Path,
-               source: str, files: int) -> subprocess.CompletedProcess[str]:
+               source: str, version: str, files: int) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         (str(python), "-I", str(script), "--internal", mode, str(root), str(wheel),
-         source, str(files)),
+         source, version, str(files)),
         cwd=root, env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PYTHONNOUSERSITE": "1",
                        "PYTHONSAFEPATH": "1"},
         text=True, capture_output=True, check=False,
     )
 
 
-def qualify(wheel: Path, expected_digest: str, source: str, files: int) -> dict[str, object]:
+def qualify(wheel: Path, expected_digest: str, source: str, version: str,
+            files: int) -> dict[str, object]:
     wheel = wheel.resolve(strict=True)
     if _digest_file(wheel) != expected_digest:
         raise RuntimeError("selected EP wheel digest does not match the declared candidate")
@@ -152,7 +153,7 @@ def qualify(wheel: Path, expected_digest: str, source: str, files: int) -> dict[
         )
         if installed.returncode:
             raise RuntimeError("exact EP wheel installation failed")
-        setup = _run_child(python, script, "setup", root, wheel, source, files)
+        setup = _run_child(python, script, "setup", root, wheel, source, version, files)
         if setup.returncode or setup.stdout.strip() != "SETUP_COMPLETE":
             raise RuntimeError("disposable EP two-instance setup failed: " + setup.stderr[-300:])
 
@@ -162,7 +163,7 @@ def qualify(wheel: Path, expected_digest: str, source: str, files: int) -> dict[
         sentinel = product / "instances" / ALPHA / "crash-sentinel"
         state_path = product / "instance-lifecycle-v1" / ALPHA / "operations" / OPERATION / "state.json"
         command = (str(python), "-I", str(script), "--internal", "purge", str(root),
-                   str(wheel), source, str(files))
+                   str(wheel), source, version, str(files))
         child = subprocess.Popen(
             command, cwd=root, env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                                     "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"},
@@ -208,13 +209,14 @@ def qualify(wheel: Path, expected_digest: str, source: str, files: int) -> dict[
                     "files_after_kill": after_kill}
         if _tree_digest(sibling) != sibling_before:
             return {"result": "FAIL", "reason": "SIBLING_CHANGED_AFTER_KILL"}
-        resumed = _run_child(python, script, "purge", root, wheel, source, files)
+        resumed = _run_child(python, script, "purge", root, wheel, source, version, files)
         tombstone = product / "instance-lifecycle-v1" / ALPHA / "purged.json"
         selected = product / "instances" / ALPHA
         sibling_after = _tree_digest(sibling)
         result: dict[str, object] = {
             "result": "PASS" if resumed.returncode == 0 else "GAP_PROVEN",
             "wheel_sha256": expected_digest,
+            "version": version,
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             "source_checkout_import": False,
             "mutation_phase": observed["phase"],
@@ -231,7 +233,7 @@ def qualify(wheel: Path, expected_digest: str, source: str, files: int) -> dict[
         if resumed.returncode == 0:
             receipt = json.loads(resumed.stdout)
             result["lifecycle_state"] = receipt["receipt"]["evidence"]["lifecycle_state"]
-            again = _run_child(python, script, "purge", root, wheel, source, files)
+            again = _run_child(python, script, "purge", root, wheel, source, version, files)
             result["terminal_replay_identical"] = (
                 again.returncode == 0 and json.loads(again.stdout) == receipt
             )
@@ -249,18 +251,20 @@ def main() -> int:
     parser.add_argument("--wheel", type=Path)
     parser.add_argument("--wheel-sha256")
     parser.add_argument("--source-revision")
+    parser.add_argument("--version")
     parser.add_argument("--files", type=int, default=20000)
     parser.add_argument("--evidence", type=Path)
-    parser.add_argument("--internal", nargs=5, metavar=("MODE", "ROOT", "WHEEL", "SOURCE", "FILES"))
+    parser.add_argument("--internal", nargs=6, metavar=("MODE", "ROOT", "WHEEL", "SOURCE", "VERSION", "FILES"))
     args = parser.parse_args()
     if args.internal is not None:
-        mode, root, wheel, source, files = args.internal
-        _child(mode, Path(root), Path(wheel), source, int(files))
+        mode, root, wheel, source, version, files = args.internal
+        _child(mode, Path(root), Path(wheel), source, version, int(files))
         return 0
     if (args.wheel is None or args.wheel_sha256 is None or args.source_revision is None
+            or args.version is None
             or args.evidence is None or not 1000 <= args.files <= 50000):
         parser.error("exact wheel, digest, source, evidence and bounded file count are required")
-    result = qualify(args.wheel, args.wheel_sha256, args.source_revision, args.files)
+    result = qualify(args.wheel, args.wheel_sha256, args.source_revision, args.version, args.files)
     args.evidence.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
     return 0 if result["result"] == "PASS" else 1
