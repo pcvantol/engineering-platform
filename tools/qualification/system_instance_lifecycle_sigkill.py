@@ -8,6 +8,7 @@ its disposable root.  Unobserved boundaries remain NOT_HIT.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -123,6 +124,14 @@ def qualify(wheel: Path, expected_digest: str, version: str, source: str,
         product = root / "product"
         selected = product / "instances" / ALPHA
         sibling = product / "instances" / BRAVO
+        lifecycle_lock = selected / "locks" / "lifecycle.lock"
+        lifecycle_lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with lifecycle_lock.open("a+b") as lock_stream:
+            fcntl.flock(lock_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            live_conflict_rejected = run_child(command("conflict-" + operation), root).returncode != 0
+            fcntl.flock(lock_stream, fcntl.LOCK_UN)
+        if not live_conflict_rejected:
+            raise RuntimeError("normal provisioner accepted a competing live lock owner")
         sibling_before = tree_digest(sibling)
         op_id = OPERATIONS[operation]
         operation_root = product / "instance-lifecycle-v1" / ALPHA / "operations" / op_id
@@ -164,6 +173,7 @@ def qualify(wheel: Path, expected_digest: str, version: str, source: str,
             "observed": observed, "phase_after_kill": after.get("phase"),
             "signal_exit": "SIGKILL" if child.returncode == -signal.SIGKILL else "OTHER",
             "owned_descendants_alive": descendants,
+            "live_conflict_rejected": live_conflict_rejected,
             "remove_receipt_after_kill": remove_receipt.exists(),
             "lifecycle_receipt_after_kill": receipt_path.exists(),
             "tombstone_after_kill": tombstone.exists(),
@@ -181,6 +191,9 @@ def qualify(wheel: Path, expected_digest: str, version: str, source: str,
         if boundary == "PARTIAL_DELETE" and not 0 < result["files_after_kill"] < files:
             result.update(result="UNPROVEN", reason="partial physical deletion not retained")
             return result
+        changed_request_rejected = run_child(command("changed-" + operation), root).returncode != 0
+        foreign_operation_rejected = run_child(command("foreign-operation-" + operation), root).returncode != 0
+        foreign_instance_rejected = run_child(command("foreign-instance-" + operation), root).returncode != 0
         resumed = run_child(command(operation), root)
         if resumed.returncode:
             result.update(result="GAP_PROVEN", resume_error_class=resumed.stderr.splitlines()[-1].split(":", 1)[0])
@@ -193,13 +206,24 @@ def qualify(wheel: Path, expected_digest: str, version: str, source: str,
         evidence = terminal["receipt"]["evidence"]
         provider_states = auth_states(selected) if selected.exists() else {"codex": "ABSENT", "github": "ABSENT"}
         expect_purged = operation == "purge"
-        okay = (identical and tree_digest(sibling) == sibling_before
+        restore_after_purge_rejected = (
+            run_child(command("restore-after-purge"), root).returncode != 0
+            if expect_purged else None
+        )
+        okay = (identical and changed_request_rejected and foreign_operation_rejected
+                and foreign_instance_rejected and live_conflict_rejected
+                and (not expect_purged or restore_after_purge_rejected)
+                and tree_digest(sibling) == sibling_before
                 and selected.exists() != expect_purged and tombstone.exists() == expect_purged
                 and ((evidence.get("lifecycle_state") == "PURGED" and evidence.get("restorable") is False)
                      if expect_purged else all(value == "PRESERVED_REQUIRES_REVERIFICATION" for value in provider_states.values()))
                 and (operation != "restore" or evidence.get("service_state") == "REGISTERED_INACTIVE"
                      and evidence.get("ready") is False))
         result.update(result="PASS" if okay else "FAIL", terminal_replay_identical=identical,
+                      changed_request_rejected=changed_request_rejected,
+                      foreign_operation_status_rejected=foreign_operation_rejected,
+                      foreign_instance_status_rejected=foreign_instance_rejected,
+                      restore_after_purge_rejected=restore_after_purge_rejected,
                       sibling_byte_identical=tree_digest(sibling) == sibling_before,
                       selected_root_final_exists=selected.exists(), tombstone_final_exists=tombstone.exists(),
                       provider_states_final=provider_states,

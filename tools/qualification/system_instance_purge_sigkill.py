@@ -124,6 +124,31 @@ def _child(mode: str, root: Path, wheel: Path, source: str, version: str, files:
             release=release,
         )
         print(json.dumps(result, sort_keys=True), flush=True)
+    elif mode == "conflict-preserve":
+        engine.preserve(ALPHA, "conflict-preflight", confirm_instance_id=ALPHA)
+    elif mode == "conflict-restore":
+        engine.restore(ALPHA, "conflict-preflight", preserve_operation_id="preserve-crash-alpha",
+                       release=release)
+    elif mode == "conflict-purge":
+        engine.purge(ALPHA, "conflict-preflight", confirm_instance_id=ALPHA)
+    elif mode == "changed-preserve":
+        engine.preserve(ALPHA, "preserve-crash-alpha", confirm_instance_id=BRAVO)
+    elif mode == "changed-restore":
+        changed = provisioner.ReleaseRequest(version, wheel, _digest_file(wheel), "0" * 40)
+        engine.restore(ALPHA, "restore-crash-alpha", preserve_operation_id="preserve-crash-alpha",
+                       release=changed)
+    elif mode == "changed-purge":
+        engine.purge(ALPHA, OPERATION, confirm_instance_id=BRAVO)
+    elif mode.startswith("foreign-operation-"):
+        engine.lifecycle_status(ALPHA, "foreign-operation-no-evidence")
+    elif mode.startswith("foreign-instance-"):
+        operation = mode.removeprefix("foreign-instance-")
+        operation_id = {"preserve": "preserve-crash-alpha", "restore": "restore-crash-alpha",
+                        "purge": OPERATION}[operation]
+        engine.lifecycle_status(BRAVO, operation_id)
+    elif mode == "restore-after-purge":
+        engine.restore(ALPHA, "restore-after-purge", preserve_operation_id="preserve-crash-alpha",
+                       release=release)
     else:
         raise RuntimeError("invalid child mode")
 

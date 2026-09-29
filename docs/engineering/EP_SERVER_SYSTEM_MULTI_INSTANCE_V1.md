@@ -326,7 +326,10 @@ operation to the expected terminal status with identical replay and unchanged
 sibling bytes. The separate partial physical deletion cell remains
 `GAP_PROVEN` on published 2.3.104 and passed only with the local correction
 candidate. A missed short phase is recorded as `NOT_HIT`, never promoted to a
-hit based on timing.
+hit based on timing. The reusable harness also checks a held live lifecycle
+lock, changed request, foreign operation/instance status, OS-released lock
+reacquisition through normal retry, provider demotion, inactive restore,
+terminal replay and restore rejection after purge.
 
 Source tests and a locally built candidate-wheel SIGKILL run have passed this
 specific partial-deletion cell. The new protected source, any required normal
