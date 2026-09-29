@@ -356,3 +356,9 @@ foreign-operation/instance, provider-demotion and restore-after-purge controls
 remained enforced by the reusable harness. This qualifies the EP-owned
 process-crash subset with a filesystem-only service adapter. It does not
 qualify a physical reboot, power loss, production service or installer.
+
+The separate [macOS non-root 2.3.105 qualification](EP_SERVER_MACOS_NONROOT_2_3_105.md)
+records a real foreground Server/API under UID 20000, scoped disposable
+authentication, filesystem and provider-negative cases, and normal restart.
+Its EP-owned preserve/restore continuation retains a distinct service-adapter
+boundary and is not inferred from the process-crash results above.

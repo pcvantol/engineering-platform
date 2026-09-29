@@ -20,6 +20,21 @@ partial-deletion SIGKILL recovery and all 15 EP lifecycle crash cells. This
 EP-owned subset is `PROCESS_CRASH_QUALIFIED`; the note creates no new node,
 does not change broader OI-2 status or claim installer/reboot acceptance.
 
+## EP Server native macOS non-root runtime — 2026-09-29
+
+The released 2.3.105 wheel has [bounded native foreground evidence](../engineering/EP_SERVER_MACOS_NONROOT_2_3_105.md)
+under a separate UID 20000 on macOS arm64/Python 3.14.7. Its real Server/API
+readback bound the expected instance and published wheel digest; authenticated
+disposable consumer scope, wrong-identity rejection, filesystem denial,
+same-UID A/B separation, a synthetic cross-UID denial, missing-provider
+UNAVAILABLE state and normal restart passed. This narrows the missing
+runtime/readiness portion of OI-2 and OI-5 without changing their parent
+statuses. System service registration, reboot and live provider login remain
+outside this native qualification. The EP-owned preserve/restore continuation
+is still under diagnosis after a non-root runtime-slot installation failure.
+No machine-readable DAG in this repository contains OI-2 or OI-5 IDs; no new
+DAG node or parallel backlog is created.
+
 ## Release and operational installation lifecycle V1 — active coordinated plan
 
 Repository evidence recorded on 2026-09-09 reads `origin/main` as
