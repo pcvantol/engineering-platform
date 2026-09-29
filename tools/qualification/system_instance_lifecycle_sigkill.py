@@ -155,13 +155,18 @@ def qualify(wheel: Path, expected_digest: str, version: str, source: str,
             observed = observed_boundary(boundary, state.get("phase"), receipt_path,
                                          remove_receipt, tombstone, detached_sentinel, files)
             if observed is not None and child.poll() is None:
-                os.kill(child.pid, signal.SIGKILL)
+                try:
+                    if os.getpgid(child.pid) != child.pid:
+                        raise RuntimeError("EP child is not its owned process-group leader")
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    observed = None
                 break
             observed = None
             time.sleep(0)
         _, stderr = child.communicate(timeout=30)
         after = read_state(state_path)
-        process_table = subprocess.run(("/bin/ps", "-axo", "pid=,ppid="),
+        process_table = subprocess.run(("/bin/ps", "-axo", "pid=,pgid="),
                                        capture_output=True, text=True, check=False)
         if process_table.returncode:
             return {"result": "UNPROVEN", "reason": "descendant readback unavailable"}

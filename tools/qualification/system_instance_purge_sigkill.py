@@ -215,7 +215,12 @@ def qualify(wheel: Path, expected_digest: str, source: str, version: str,
                 if 0 < remaining < files and child.poll() is None:
                     observed = {"phase": "PURGE_READY", "files_before": files,
                                 "files_at_signal": remaining}
-                    os.kill(child.pid, signal.SIGKILL)
+                    try:
+                        if os.getpgid(child.pid) != child.pid:
+                            raise RuntimeError("EP child is not its owned process-group leader")
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        observed = None
                     break
             time.sleep(0.001)
         stdout, stderr = child.communicate(timeout=15)
@@ -223,7 +228,7 @@ def qualify(wheel: Path, expected_digest: str, source: str, version: str,
             return {"result": "NOT_HIT", "observed": observed,
                     "exit_kind": "OTHER", "child_error": stderr[-200:]}
         process_table = subprocess.run(
-            ("/bin/ps", "-axo", "pid=,ppid="), text=True,
+            ("/bin/ps", "-axo", "pid=,pgid="), text=True,
             capture_output=True, check=False,
         )
         descendants = 0
