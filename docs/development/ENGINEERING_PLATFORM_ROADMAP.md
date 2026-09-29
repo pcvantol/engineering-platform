@@ -35,9 +35,12 @@ passed an adapted native preserve/restore rerun under UID 20000 with a real
 initial foreground Server and a filesystem-only service adapter. Preserve
 retained identity/data; restore stayed inactive and required provider
 reverification. The released provisioner had inherited an inaccessible caller
-working directory during the first attempt; a source correction binds its venv
-and pip children to the account-owned slot. The published 2.3.105 wheel remains
-unchanged. Neither rerun claims launchd, reboot or live provider authentication.
+working directory during the first attempt. The correction is now in the
+[published 2.3.106 release](../engineering/EP_SERVER_MACOS_NONROOT_2_3_106.md),
+which binds its venv and pip children to the account-owned slot; native
+published-wheel requalification of 2.3.106 is still pending. The 2.3.105
+wheel remains unchanged. Neither 2.3.105 rerun claims launchd, reboot or live
+provider authentication.
 No machine-readable DAG in this repository contains OI-2 or OI-5 IDs; no new
 DAG node or parallel backlog is created.
 
