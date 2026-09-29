@@ -24,3 +24,8 @@ invokes the EP-owned provisioner. It does not construct a plist, runtime,
 provider context, migration or cleanup plan. A real fresh-Mac cold boot and
 provider-login fan-out remain joint installer acceptance; source qualification
 does not claim that live-host result.
+
+The [2.3.105 native macOS non-root evidence](EP_SERVER_MACOS_NONROOT_2_3_105.md)
+qualifies a supervised foreground Server and its real API under a separate
+test UID. It does not imply this deployment target's LaunchDaemon, cold boot,
+provider login or joint installer acceptance.
