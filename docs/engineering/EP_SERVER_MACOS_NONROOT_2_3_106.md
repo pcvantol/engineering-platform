@@ -34,10 +34,45 @@ directory to its venv/pip children. Under a real non-root UID, pip failed at
 The 2.3.106 source binds both child working directories to the account-owned
 runtime slot. The published wheel contains both `cwd=slot.root` call sites.
 
-Native foreground/API and adapted lifecycle requalification of these
-**published 2.3.106 bytes** is pending. The lifecycle rerun must start from
-an intentionally inaccessible, assignment-owned `0700` directory and prove
-that the non-root process cannot call `os.getcwd()` there before the product
-creates its runtime slot. No checkout import, `Requires-Python` bypass,
-mocked health response, macOS service installation, reboot or live provider
-authentication is acceptable as positive evidence.
+## Native published-wheel requalification
+
+Both local rerunners used the exact PyPI wheel digest above in a new
+noneditable Python 3.14.7 venv outside the checkout. The foreground/API runner
+(SHA-256 `073ff8bfd8b38c52d6140bde782027a28e5c29ad6ba0dd6098b41ffe84bb1b9e`)
+returned `PASS_WITH_DECLARED_LIMITS` under actual UID/GID 20000. Live process
+inventory showed that UID/GID and the macOS Python 3.14 executable running
+`-I -m engineering_platform.server serve`; real HTTP 200 health returned the
+expected disposable instance, version 2.3.106 and `OBSERVED` exact PyPI wheel
+digest. The installed package resolved from site-packages rather than source.
+
+The product-created scoped API consumer authenticated exact instance and
+consumer readback. Missing bearer, wrong scope and wrong expected instance
+were rejected. Two disposable live instances retained distinct identities;
+normal exact-child stop/start retained the instance, release and scoped API
+identity. Missing Codex/GitHub evidence stayed `UNAVAILABLE`, not `READY`.
+The test UID could not mutate the installed package or a synthetic file owned
+by another UID; a nonwritable own data parent was rejected. Product config
+selected the test account's private HOME, not the interactive user's HOME or
+PATH. The cross-UID case used a synthetic `0600` fixture, not another EP
+Server. The exact test Server children were stopped.
+
+The adapted lifecycle runner (SHA-256
+`2c31ba689e73b4e1866bb7bbc8972e7c34cf41c05ec030b5f5d022f299299f93`)
+started from an assignment-owned directory with mode `0700` that was
+inaccessible to UID 20000. Before product work it required `os.getcwd()` to
+raise `PermissionError`; an accessible inherited cwd would have failed the
+test. Despite that negative precondition, the published wheel installed the
+exact runtime slot and started a real initial foreground Server. Product
+preserve returned `UNINSTALLED_DATA_PRESERVED`, retained identity/data and
+stopped the child. Both deliberately failing synthetic provider readbacks
+were rejected. Restore returned
+`RESTORED_REQUIRES_PROVIDER_REVERIFICATION`, `ready=false` and service not
+loaded, with no automatic provider-auth promotion. Its result was
+`PASS_ADAPTED_LIFECYCLE_WITH_REAL_INITIAL_SERVER` under UID/GID 20000.
+
+The service adapter wrote only to the disposable testroot; it did not install
+a LaunchDaemon or LaunchAgent. No physical reboot or live provider login was
+performed. These results do not establish full installer acceptance. An
+independent post-run process/listener check found no test-UID process or
+EP/Python TCP listener; the tokenless test account was retained safely for
+the bounded assignment cleanup/readback.
