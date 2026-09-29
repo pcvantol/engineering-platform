@@ -81,6 +81,13 @@ The actual pip traceback showed `PermissionError` at `os.getcwd()` because
 the released provisioner inherited its caller's inaccessible working
 directory. The pending source correction runs both venv creation and wheel
 installation from the account-owned runtime slot. The exact 2.3.105 wheel is
-not changed; its native lifecycle qualification must use an accessible
-disposable working directory. Preserve/restore is not claimed PASS from the
-interactive-UID development dry run.
+unchanged; its lifecycle rerun used an accessible disposable working directory.
+
+That rerun executed the released wheel under UID/GID 20000 with a real initial
+foreground Server and a filesystem-only service adapter. Product preserve
+reported `UNINSTALLED_DATA_PRESERVED`; the server was stopped and the original
+identity and data stayed intact. Both deliberately failing synthetic provider
+records were rejected after preserve. Product restore reported
+`RESTORED_REQUIRES_PROVIDER_REVERIFICATION`, `ready=false`, and did not load
+the service or generate fresh provider authentication. This is an adapted
+lifecycle PASS, not a macOS system-service or live-provider-login PASS.

@@ -31,10 +31,13 @@ UNAVAILABLE state and normal restart passed. This narrows the missing
 runtime/readiness portion of OI-2 and OI-5 without changing their parent
 statuses. System service registration, reboot and live provider login remain
 outside this native qualification. The EP-owned preserve/restore continuation
-is pending a native rerun: the released provisioner inherited an inaccessible
-caller working directory during runtime-slot installation. A source correction
-binds its venv and pip children to the account-owned slot; the published
-2.3.105 wheel remains unchanged.
+passed an adapted native preserve/restore rerun under UID 20000 with a real
+initial foreground Server and a filesystem-only service adapter. Preserve
+retained identity/data; restore stayed inactive and required provider
+reverification. The released provisioner had inherited an inaccessible caller
+working directory during the first attempt; a source correction binds its venv
+and pip children to the account-owned slot. The published 2.3.105 wheel remains
+unchanged. Neither rerun claims launchd, reboot or live provider authentication.
 No machine-readable DAG in this repository contains OI-2 or OI-5 IDs; no new
 DAG node or parallel backlog is created.
 
