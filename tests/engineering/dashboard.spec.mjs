@@ -8490,12 +8490,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(banner).toHaveCSS("position", "relative");
     await expect(banner).toHaveCSS("background-color", "rgb(91, 29, 39)");
     await expect(page.locator(".dashboard-sticky-header")).toHaveCSS("padding-bottom", "7px");
-    const layout = await page.evaluate(() => {
+    const layout = await page.evaluate(async () => {
       const region = document.querySelector(".dashboard-scroll-region");
       const titleBar = document.querySelector(".dashboard-titlebar");
       const banner = document.querySelector("#codexUsageLimitBanner");
       document.querySelector("#engineering-dashboard-content").style.minHeight = "2600px";
       region.scrollTop = 180;
+      // Let Chromium apply the banner's :has() margin rule after the scroll update.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       return {
         regionTop: Math.round(region.getBoundingClientRect().top),
         titleTop: Math.round(titleBar.getBoundingClientRect().top),
