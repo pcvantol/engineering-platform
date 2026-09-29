@@ -73,6 +73,13 @@ synthetic records serve only to exercise preserve/restore state transitions;
 they do not qualify a provider login. The controller starts a real initial
 foreground Server and the product's own live health verifier checks it.
 
+Both repository harnesses were rerun under the admitted UID/GID 20000 with
+the unchanged published wheel. The foreground/API harness returned
+`PASS_WITH_DECLARED_LIMITS`, including independent live process and HTTP
+readback, scoped authentication, HOME isolation and exact-child stop. The
+lifecycle harness returned `PASS_ADAPTED_LIFECYCLE_WITH_REAL_INITIAL_SERVER`;
+its service and provider limits remain as described below.
+
 ## Lifecycle boundary
 
 The first native lifecycle attempt under UID 20000 stopped during the
