@@ -115,6 +115,15 @@ def _child(mode: str, root: Path, wheel: Path, source: str, version: str, files:
     elif mode == "purge":
         result = engine.purge(ALPHA, OPERATION, confirm_instance_id=ALPHA)
         print(json.dumps(result, sort_keys=True), flush=True)
+    elif mode == "preserve":
+        result = engine.preserve(ALPHA, "preserve-crash-alpha", confirm_instance_id=ALPHA)
+        print(json.dumps(result, sort_keys=True), flush=True)
+    elif mode == "restore":
+        result = engine.restore(
+            ALPHA, "restore-crash-alpha", preserve_operation_id="preserve-crash-alpha",
+            release=release,
+        )
+        print(json.dumps(result, sort_keys=True), flush=True)
     else:
         raise RuntimeError("invalid child mode")
 

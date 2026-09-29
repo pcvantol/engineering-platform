@@ -315,9 +315,23 @@ is `tools/qualification/system_instance_purge_sigkill.py`; it reports durable
 `PURGE_READY`, physical partial deletion, exact mutator signal exit, surviving
 descendants, same-operation recovery, terminal replay and sibling byte identity.
 
+`tools/qualification/system_instance_lifecycle_sigkill.py` exercises the
+product-owned process-stop matrix through the installed provisioner using two
+disposable instances and a filesystem-only service adapter. Its 2.3.104
+published-wheel runs observed `PREPARED`, `VERIFIED`, receipt-before-`COMPLETE`
+and `COMPLETE` for PRESERVE and RESTORE. They observed `PREPARED`, `PURGE_READY`,
+terminal REMOVE receipt, tombstone-before-receipt, lifecycle receipt-before-
+`COMPLETE` and `COMPLETE` for PURGE. Each of these cells resumed the same
+operation to the expected terminal status with identical replay and unchanged
+sibling bytes. The separate partial physical deletion cell remains
+`GAP_PROVEN` on published 2.3.104 and passed only with the local correction
+candidate. A missed short phase is recorded as `NOT_HIT`, never promoted to a
+hit based on timing.
+
 Source tests and a locally built candidate-wheel SIGKILL run have passed this
 specific partial-deletion cell. The new protected source, any required normal
 release and requalification against its published bytes are still required
-before this process-crash subset may be called qualified. Other revision-26
-PRESERVE/RESTORE/PURGE crash cells remain separately open; no physical reboot,
-power-loss, production service or installer acceptance is inferred.
+before this process-crash subset may be called qualified. The remaining
+conflict, foreign-request and published-fixed-wheel checks must complete
+before the entire revision-26 subset can be called qualified. No physical
+reboot, power-loss, production service or installer acceptance is inferred.
