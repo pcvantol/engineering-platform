@@ -86,9 +86,11 @@ The first native lifecycle attempt under UID 20000 stopped during the
 product-owned immutable runtime-slot installation, before preserve/restore.
 The actual pip traceback showed `PermissionError` at `os.getcwd()` because
 the released provisioner inherited its caller's inaccessible working
-directory. The pending source correction runs both venv creation and wheel
-installation from the account-owned runtime slot. The exact 2.3.105 wheel is
-unchanged; its lifecycle rerun used an accessible disposable working directory.
+directory. The correction released in
+[2.3.106](EP_SERVER_MACOS_NONROOT_2_3_106.md) runs both venv creation and
+wheel installation from the account-owned runtime slot. The exact 2.3.105
+wheel is unchanged; its lifecycle rerun used an accessible disposable working
+directory.
 
 That rerun executed the released wheel under UID/GID 20000 with a real initial
 foreground Server and a filesystem-only service adapter. Product preserve
