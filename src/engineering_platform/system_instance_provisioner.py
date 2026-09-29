@@ -706,6 +706,7 @@ class SystemInstanceProvisioner:
                 result = subprocess.run(
                     (sys.executable, "-I", "-m", "venv", str(slot.venv)),
                     text=True, capture_output=True, check=False,
+                    cwd=slot.root,
                     env={"PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"},
                 )
                 if result.returncode:
@@ -717,6 +718,7 @@ class SystemInstanceProvisioner:
                         str(release.artifact),
                     ),
                     text=True, capture_output=True, check=False,
+                    cwd=slot.root,
                     env={"PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1", "PIP_CONFIG_FILE": os.devnull},
                 )
                 if result.returncode:

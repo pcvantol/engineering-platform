@@ -410,11 +410,13 @@ class SystemInstanceProvisionerTests(unittest.TestCase):
         )
         completed = SimpleNamespace(returncode=0, stdout="", stderr="")
         with (
-            patch.object(provisioner_module.subprocess, "run", return_value=completed),
+            patch.object(provisioner_module.subprocess, "run", return_value=completed) as run,
             patch.object(provisioner_module.operational_installation, "package_identity", return_value={"version": self.release.version}),
         ):
             slot = concrete._install_slot(self.release)
             self.assertEqual(concrete._install_slot(self.release), slot)
+        self.assertEqual(run.call_count, 2)
+        self.assertTrue(all(call.kwargs["cwd"] == slot.root for call in run.call_args_list))
 
         instance = self._instance("ep-production-0001", "EP production")
         interpreter = self.base / "python"

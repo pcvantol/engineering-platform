@@ -77,6 +77,10 @@ foreground Server and the product's own live health verifier checks it.
 
 The first native lifecycle attempt under UID 20000 stopped during the
 product-owned immutable runtime-slot installation, before preserve/restore.
-The underlying package installer error is under diagnosis in the same
-assignment; preserve/restore is not claimed PASS from the interactive-UID
-development dry-run.
+The actual pip traceback showed `PermissionError` at `os.getcwd()` because
+the released provisioner inherited its caller's inaccessible working
+directory. The pending source correction runs both venv creation and wheel
+installation from the account-owned runtime slot. The exact 2.3.105 wheel is
+not changed; its native lifecycle qualification must use an accessible
+disposable working directory. Preserve/restore is not claimed PASS from the
+interactive-UID development dry run.

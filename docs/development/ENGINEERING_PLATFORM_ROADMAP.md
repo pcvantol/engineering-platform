@@ -31,7 +31,10 @@ UNAVAILABLE state and normal restart passed. This narrows the missing
 runtime/readiness portion of OI-2 and OI-5 without changing their parent
 statuses. System service registration, reboot and live provider login remain
 outside this native qualification. The EP-owned preserve/restore continuation
-is still under diagnosis after a non-root runtime-slot installation failure.
+is pending a native rerun: the released provisioner inherited an inaccessible
+caller working directory during runtime-slot installation. A source correction
+binds its venv and pip children to the account-owned slot; the published
+2.3.105 wheel remains unchanged.
 No machine-readable DAG in this repository contains OI-2 or OI-5 IDs; no new
 DAG node or parallel backlog is created.
 

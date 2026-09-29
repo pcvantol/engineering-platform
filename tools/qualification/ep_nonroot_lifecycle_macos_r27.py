@@ -134,6 +134,9 @@ def main():
     require(sys.version_info[:2] == (3, 14), "Wrong Python version")
     require(hashlib.sha256(WHEEL.read_bytes()).hexdigest() == DIGEST[7:],
             "Wrong published wheel digest")
+    # The released provisioner inherits its caller's working directory for
+    # pip. Keep this qualification inside the admitted account's private home.
+    os.chdir(HOME)
     work = Path(tempfile.mkdtemp(prefix="ep-r27-lifecycle-", dir=HOME))
     product_root = work / "product"
     launch_root = work / "launch-standin-only"
