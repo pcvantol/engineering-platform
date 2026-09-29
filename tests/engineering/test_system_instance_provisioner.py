@@ -898,6 +898,66 @@ class SystemInstanceProvisionerTests(unittest.TestCase):
             purged,
         )
 
+    def test_purge_recovers_when_process_dies_during_partial_tree_deletion(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        self._create("ep-development-0001", "EP development", 8766)
+        instance = self._instance("ep-production-0001", "EP production")
+        sibling = self._instance("ep-development-0001", "EP development")
+        sibling_before = sibling.descriptor.read_bytes()
+        (instance.root / "data-sentinel").write_text("erase me", encoding="utf-8")
+
+        def partial_delete(_root: Path) -> None:
+            instance.descriptor.unlink()
+            (instance.root / "data-sentinel").unlink()
+            raise OSError("simulated abrupt stop after partial deletion")
+
+        with patch.object(provisioner_module.shutil, "rmtree", side_effect=partial_delete):
+            with self.assertRaisesRegex(OSError, "partial deletion"):
+                self.provisioner.purge(
+                    instance.instance_id, "purge-partial-delete",
+                    confirm_instance_id=instance.instance_id,
+                )
+        self.assertTrue(instance.root.exists())
+        self.assertFalse(instance.descriptor.exists())
+        self.assertIsNotNone(self.provisioner._terminal_receipt(
+            instance.instance_id, "purge-partial-delete", "REMOVE",
+        ))
+
+        receipt = self.provisioner.purge(
+            instance.instance_id, "purge-partial-delete",
+            confirm_instance_id=instance.instance_id,
+        )
+        self.assertEqual(receipt["receipt"]["evidence"]["lifecycle_state"], "PURGED")
+        self.assertFalse(instance.root.exists())
+        self.assertEqual(sibling.descriptor.read_bytes(), sibling_before)
+        self.assertEqual(self.provisioner.purge(
+            instance.instance_id, "purge-partial-delete",
+            confirm_instance_id=instance.instance_id,
+        ), receipt)
+
+    def test_purge_recovery_rejects_replaced_instance_root(self) -> None:
+        self._create("ep-production-0001", "EP production", 8765)
+        instance = self._instance("ep-production-0001", "EP production")
+        with patch.object(provisioner_module.shutil, "rmtree", side_effect=OSError("stop before deletion")):
+            with self.assertRaisesRegex(OSError, "stop before deletion"):
+                self.provisioner.purge(
+                    instance.instance_id, "purge-replaced-root",
+                    confirm_instance_id=instance.instance_id,
+                )
+        original = instance.root.with_name("original-instance-root")
+        instance.root.rename(original)
+        instance.root.mkdir()
+        with self.assertRaisesRegex(
+            provisioner_module.system_instance_lifecycle.SystemInstanceLifecycleError,
+            "replaced",
+        ):
+            self.provisioner.purge(
+                instance.instance_id, "purge-replaced-root",
+                confirm_instance_id=instance.instance_id,
+            )
+        self.assertTrue(instance.root.exists())
+        self.assertTrue(original.exists())
+
     def test_purge_recovers_after_remove_completed_before_lifecycle_projection(self) -> None:
         self._create("ep-production-0001", "EP production", 8765)
         instance = self._instance("ep-production-0001", "EP production")

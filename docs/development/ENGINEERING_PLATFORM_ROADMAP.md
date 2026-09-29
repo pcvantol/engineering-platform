@@ -9,6 +9,16 @@ may extend productive work; reasoning text cannot, and the hard maximum never
 resets. The Operations Console projects both limits. See
 [the owning design](../engineering/PROGRESS_AWARE_PROVIDER_DEADLINES_V2.md).
 
+## EP Server system-instance process-crash qualification — 2026-09-29
+
+The bounded process-crash subset of the existing OI-2 system-instance
+lifecycle is tracked in [EP Server system/multi-instance lifecycle](../engineering/EP_SERVER_SYSTEM_MULTI_INSTANCE_V1.md#abrupt-process-stop-qualification-revision-26)
+and canonical LANE_2 register `pcvantol/forge#142` revision 26. The public
+2.3.104 wheel has a reproduced partial-`PURGE` crash gap. Source and locally
+built candidate qualification are in progress; this note creates no new node,
+does not change broader OI-2 status and claims no published fix or installer
+acceptance.
+
 ## Release and operational installation lifecycle V1 — active coordinated plan
 
 Repository evidence recorded on 2026-09-09 reads `origin/main` as

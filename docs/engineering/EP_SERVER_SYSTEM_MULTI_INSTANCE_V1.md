@@ -292,3 +292,49 @@ tamper rejection, explicit permanent purge, sibling-instance non-interference,
 lost-response recovery for preserve/restore/purge, receipt replay and existing
 destructive `remove` compatibility. Qualification uses isolated product
 fixtures only; no production Server/CENTRAL/credential mutation is authorized.
+
+### Abrupt process-stop qualification (revision 26)
+
+The historical 2.3.104 installed-wheel qualification above covered controlled
+interruption and lost responses. The separate LANE_2 revision-26 qualification
+found a real SIGKILL gap in `PURGE`: the legacy `REMOVE` receipt is published
+before recursive deletion. If the process dies after deleting `instance.json`
+but before the instance root and lifecycle tombstone are removed, the normal
+same-operation `purge` retry cannot reopen the descriptor. The exact published
+2.3.104 wheel reproduces this failure under Python 3.14; it remains historical
+`GAP_PROVEN` evidence and is not relabeled.
+
+The bounded recovery correction retains the prepared root's device/inode and
+minimal topology outside the mutable instance tree. After a terminal exact
+`REMOVE` receipt, recovery admits only that same root, rejects a replacement
+root or changed surviving descriptor, checks the remaining tree for unsafe
+entries, and finishes the original deletion before publishing the purge
+tombstone and lifecycle receipt. The existing lifecycle request and receipt
+identities remain unchanged. The reproducible installed-wheel SIGKILL harness
+is `tools/qualification/system_instance_purge_sigkill.py`; it reports durable
+`PURGE_READY`, physical partial deletion, exact mutator signal exit, surviving
+descendants, same-operation recovery, terminal replay and sibling byte identity.
+
+`tools/qualification/system_instance_lifecycle_sigkill.py` exercises the
+product-owned process-stop matrix through the installed provisioner using two
+disposable instances and a filesystem-only service adapter. Its 2.3.104
+published-wheel runs observed `PREPARED`, `VERIFIED`, receipt-before-`COMPLETE`
+and `COMPLETE` for PRESERVE and RESTORE. They observed `PREPARED`, `PURGE_READY`,
+terminal REMOVE receipt, tombstone-before-receipt, lifecycle receipt-before-
+`COMPLETE` and `COMPLETE` for PURGE. Each of these cells resumed the same
+operation to the expected terminal status with identical replay and unchanged
+sibling bytes. The separate partial physical deletion cell remains
+`GAP_PROVEN` on published 2.3.104 and passed only with the local correction
+candidate. A missed short phase is recorded as `NOT_HIT`, never promoted to a
+hit based on timing. The reusable harness also checks a held live lifecycle
+lock, changed request, foreign operation/instance status, OS-released lock
+reacquisition through normal retry, provider demotion, inactive restore,
+terminal replay and restore rejection after purge.
+
+Source tests and a locally built candidate-wheel SIGKILL run have passed this
+specific partial-deletion cell. The new protected source, any required normal
+release and requalification against its published bytes are still required
+before this process-crash subset may be called qualified. The remaining
+conflict, foreign-request and published-fixed-wheel checks must complete
+before the entire revision-26 subset can be called qualified. No physical
+reboot, power-loss, production service or installer acceptance is inferred.
