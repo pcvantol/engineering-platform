@@ -324,17 +324,35 @@ terminal REMOVE receipt, tombstone-before-receipt, lifecycle receipt-before-
 `COMPLETE` and `COMPLETE` for PURGE. Each of these cells resumed the same
 operation to the expected terminal status with identical replay and unchanged
 sibling bytes. The separate partial physical deletion cell remains
-`GAP_PROVEN` on published 2.3.104 and passed only with the local correction
-candidate. A missed short phase is recorded as `NOT_HIT`, never promoted to a
-hit based on timing. The reusable harness also checks a held live lifecycle
+`GAP_PROVEN` on published 2.3.104; it is not retroactively changed. A missed
+short phase is recorded as `NOT_HIT`, never promoted to a hit based on timing.
+The reusable harness also checks a held live lifecycle
 lock, changed request, foreign operation/instance status, OS-released lock
 reacquisition through normal retry, provider demotion, inactive restore,
 terminal replay and restore rejection after purge.
 
-Source tests and a locally built candidate-wheel SIGKILL run have passed this
-specific partial-deletion cell. The new protected source, any required normal
-release and requalification against its published bytes are still required
-before this process-crash subset may be called qualified. The remaining
-conflict, foreign-request and published-fixed-wheel checks must complete
-before the entire revision-26 subset can be called qualified. No physical
-reboot, power-loss, production service or installer acceptance is inferred.
+The correction and harness were protected-merged through
+[PR #322](https://github.com/pcvantol/engineering-platform/pull/322) at
+`2bf2cfbe06dceda2446902601ff6de33810c549f`. The normal patch preparation
+[PR #323](https://github.com/pcvantol/engineering-platform/pull/323) merged
+at `ad44263f6ec87ea018cda11f053fa12521ae9d79`. The exact-main production
+release workflow completed [Engineering Platform 2.3.105](https://github.com/pcvantol/engineering-platform/releases/tag/engineering-platform-v2.3.105)
+with a public wheel SHA-256 of
+`22dd1e49c263b55dc9eee396810a09fc43509984fe685f3c00d26289d55e8adc`
+and `RELEASE_COMPLETE` receipt SHA-256 of
+`0b3ebeaef44c1af7808e4bdccf88bedf555e3a94e4ba5b30e1f26fab04eda1fb`.
+The downloaded wheel digest agrees with the receipt's PyPI readback.
+
+On Python 3.14, the published 2.3.105 wheel passed the real partial-`PURGE`
+deletion SIGKILL cell: the selected root had 19,864 of 20,000 disposable
+files still present after death, the exact mutator exited by `SIGKILL`, no
+owned descendant survived, and same-operation retry reached `PURGED` without
+recreating the selected root. The tombstone exists, terminal replay is
+identical and the sibling is byte-identical. The same published wheel passed
+all 15 lifecycle cells (four PRESERVE, four RESTORE, seven PURGE), each with
+phase/effect observation, confirmed exact-child `SIGKILL`, unchanged request,
+terminal replay and sibling isolation. Live-lock, changed-request,
+foreign-operation/instance, provider-demotion and restore-after-purge controls
+remained enforced by the reusable harness. This qualifies the EP-owned
+process-crash subset with a filesystem-only service adapter. It does not
+qualify a physical reboot, power loss, production service or installer.
