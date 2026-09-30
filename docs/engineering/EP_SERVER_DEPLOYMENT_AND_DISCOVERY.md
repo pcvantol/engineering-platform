@@ -3,6 +3,8 @@
 **Status:** Canonical deployed-runtime architecture. The system-domain
 multi-instance implementation and installed-artifact qualification are defined
 by [EP Server system-domain multi-instance runtime and provisioner v1](EP_SERVER_SYSTEM_MULTI_INSTANCE_V1.md).
+The existing same-project replacement-consumer route is qualified in
+[EP replacement-consumer conformance V1](EP_REPLACEMENT_CONSUMER_CONFORMANCE_V1.md).
 
 EP Server remains the sole CENTRAL execution/admission, queue, evidence and finalization authority. It is a headless installed service with an EP-owned central runtime-storage root outside Git/source checkouts: its SQL CENTRAL store plus product-owned files, artifacts, logs, backups and cache. Its versioned HTTP ingress remains a transport adapter over interface-neutral application services. macOS lifecycle is product-owned launchd service lifecycle. This target does not broaden EP execution authority, grant Forge or Workspace SQL access, or permit either peer to bypass admission.
 

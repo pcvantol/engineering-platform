@@ -2,6 +2,8 @@
 
 **Status:** canonical product contract and installed-artifact qualification
 boundary. This contract does not install or activate a production host.
+Replacement of a revoked Forge consumer within an unchanged approved project
+uses the [existing EP credential route](EP_REPLACEMENT_CONSUMER_CONFORMANCE_V1.md).
 
 ```text
 EP_SERVER_RUNTIME_DEPLOYMENT_CONTRACT=FROZEN
