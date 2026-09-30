@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from hashlib import sha256
+from importlib.metadata import distribution
 import json
 from pathlib import Path
 import subprocess
@@ -25,6 +26,14 @@ def main() -> int:
     wheel = args.wheel.resolve()
     if sha256(wheel.read_bytes()).hexdigest() != args.expected_sha256:
         raise RuntimeError("published wheel digest mismatch")
+    origin = distribution("engineering-platform").read_text("direct_url.json")
+    try:
+        direct = json.loads(origin) if origin is not None else None
+    except json.JSONDecodeError:
+        direct = None
+    if (not isinstance(direct, dict) or direct.get("url") != wheel.as_uri()
+            or direct.get("archive_info", {}).get("hashes", {}).get("sha256") != args.expected_sha256):
+        raise RuntimeError("installed EP does not match the selected published wheel")
 
     from engineering_platform.ep_consumer_credentials import CredentialAuthority
     import engineering_platform
