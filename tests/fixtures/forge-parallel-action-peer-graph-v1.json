@@ -1,0 +1,54 @@
+{
+  "contract_version": "parallel-action-graph/v1",
+  "mission_id": "MISSION-FIXTURE-1",
+  "mission_revision": 1,
+  "actions": [
+    {
+      "action_id": "ACTION-A",
+      "target": {
+        "ep_instance_id": "ep-fixture-1",
+        "project_id": "project-fixture-1",
+        "repository_id": "repository-a",
+        "baseline_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "dependencies": []
+    },
+    {
+      "action_id": "ACTION-B",
+      "target": {
+        "ep_instance_id": "ep-fixture-1",
+        "project_id": "project-fixture-1",
+        "repository_id": "repository-b",
+        "baseline_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "dependencies": []
+    },
+    {
+      "action_id": "ACTION-Q",
+      "target": {
+        "ep_instance_id": "ep-fixture-1",
+        "project_id": "project-fixture-1",
+        "repository_id": "repository-a",
+        "baseline_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "dependencies": [
+        {
+          "predecessor_action_id": "ACTION-A",
+          "required_evidence": {
+            "kind": "QUALIFIED_ARTIFACT",
+            "repository_id": "repository-a",
+            "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "predecessor_action_id": "ACTION-B",
+          "required_evidence": {
+            "kind": "QUALIFIED_ARTIFACT",
+            "repository_id": "repository-b",
+            "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      ]
+    }
+  ]
+}
