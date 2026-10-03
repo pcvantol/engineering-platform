@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 import hashlib
 import json
 import re
@@ -554,7 +555,24 @@ def lifecycle(connection: sqlite3.Connection, submission_id: str) -> dict[str, s
     return _lifecycle_payload(transport=str(row[1]), producer_id=str(row[0]))
 
 
-def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_forge_exchange: bool = True) -> SubmissionResult:
+def _serialize_forge_submission(function: Any) -> Any:
+    """Keep graph activation and Forge queue admission in one write order."""
+    @wraps(function)
+    def guarded(connection: sqlite3.Connection, request: SubmissionRequest,
+                **kwargs: Any) -> SubmissionResult:
+        if request.mission_id is None or connection.in_transaction:
+            return function(connection, request, **kwargs)
+        connection.execute("BEGIN IMMEDIATE")
+        with connection:
+            return function(connection, request, **kwargs)
+    return guarded
+
+
+@_serialize_forge_submission
+def submit(connection: sqlite3.Connection, request: SubmissionRequest, *,
+           audit_forge_exchange: bool = True,
+           authenticated_consumer_id: str | None = None,
+           operator_retry_parent_submission_id: str | None = None) -> SubmissionResult:
     """Persist and admit one request; no provider or Agent is selected here."""
     tables = {
         str(row[0]) for row in connection.execute(
@@ -569,6 +587,10 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
     _transport(request.transport)
     _validate_execution_mode(request)
     _forge_provenance(request)
+    if ((request.constraints or {}).get("parallel_action_intake") is not None
+            and operator_retry_parent_submission_id is None
+            and authenticated_consumer_id != request.producer_id):
+        raise SubmissionError("PARALLEL_PRINCIPAL_REQUIRED", 403)
     try:
         parse_repository_revision_binding(request.constraints)
     except ValueError as error:
@@ -583,6 +605,18 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
         raise SubmissionError("UNKNOWN_REPOSITORY", 404)
     if repository[0] != request.project_id:
         raise SubmissionError("REPOSITORY_PROJECT_CONFLICT", 409)
+    if (authenticated_consumer_id is not None
+            and authenticated_consumer_id != request.producer_id
+            and "ep_parallel_action_repository_grants" in tables):
+        # Once either identity is enrolled for parallel Actions, the bearer
+        # principal is authoritative even before its first graph is staged.
+        enrolled = connection.execute(
+            """SELECT 1 FROM ep_parallel_action_repository_grants
+                WHERE project_id=? AND consumer_id IN (?,?) LIMIT 1""",
+            (request.project_id, authenticated_consumer_id, request.producer_id),
+        ).fetchone()
+        if enrolled is not None:
+            raise SubmissionError("PRODUCER_PRINCIPAL_MISMATCH", 403)
     if request.producer_type == "FORGE":
         provenance = (request.constraints or {}).get("forge_execution")
         approved = provenance.get("execution_constraints", []) if isinstance(provenance, dict) else []
@@ -643,6 +677,23 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
                 str(duplicate[1]), str(duplicate[3]), str(duplicate[14]), str(duplicate[5]), True,
                 receipt,
             )
+    parallel_intake_id = None
+    if "ep_parallel_action_graphs" in tables:
+        from . import parallel_action_admission
+        try:
+            if operator_retry_parent_submission_id is None:
+                parallel_intake_id = parallel_action_admission.validate_for_submission(
+                    connection, request, principal_id=authenticated_consumer_id,
+                )
+            elif not audit_forge_exchange:
+                parallel_intake_id = parallel_action_admission.validate_operator_retry(
+                    connection, request,
+                    parent_submission_id=operator_retry_parent_submission_id,
+                )
+            else:
+                raise parallel_action_admission.ParallelAdmissionError("PARALLEL_RETRY_MISMATCH")
+        except parallel_action_admission.ParallelAdmissionError as error:
+            raise SubmissionError(error.code, 409) from error
     submission_id, created_at = _allocate_submission_id(connection), _now()
     # Admission intentionally validates CENTRAL topology only at submission
     # time. Agent selection, leases and provider execution remain downstream.
@@ -661,6 +712,15 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *, audit_
     _record_forge_planning_context(
         connection, request=request, submission_id=submission_id, created_at=created_at,
     )
+    if parallel_intake_id is not None:
+        try:
+            parallel_action_admission.bind_accepted_submission(
+                connection, intake_id=parallel_intake_id, submission_id=submission_id,
+                request=request,
+                parent_submission_id=operator_retry_parent_submission_id,
+            )
+        except parallel_action_admission.ParallelAdmissionError as error:
+            raise SubmissionError(error.code, 409) from error
     receipt = _record_forge_submission_acceptance(
         connection, request=request, submission_id=submission_id, created_at=created_at,
     ) if audit_forge_exchange else None

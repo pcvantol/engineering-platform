@@ -97,7 +97,8 @@ def _request(base_url: str, item: dict[str, object]) -> int:
     request = item["request"]
     assert isinstance(request, dict)
     method, path = _collection_operation(item)
-    url = base_url + path.replace("{project_id}", "postman-project")
+    url = (base_url + path.replace("{project_id}", "postman-project")
+           .replace("{intake_id}", "0" * 64))
     headers = {str(header["key"]): str(header["value"]).replace("{{baseUrl}}", base_url)
                for header in request.get("header", []) if isinstance(header, dict) and "key" in header and "value" in header}
     body = request.get("body", {})

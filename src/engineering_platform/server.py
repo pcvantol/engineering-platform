@@ -67,6 +67,8 @@ from . import (
 )
 from . import operational_installation
 from . import owner_credential_recovery
+from . import parallel_action_admission
+from . import parallel_action_compat
 from . import product_installation_readback
 from . import local_repository_binding
 from . import project_topology
@@ -145,7 +147,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 72
+SERVER_STORE_SCHEMA_VERSION = 73
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -250,6 +252,31 @@ def _http_json_openapi_document() -> dict[str, object]:
                 "get": {
                     "summary": "Read server readiness",
                     "responses": {"200": {"description": "Server readiness"}},
+                },
+            },
+            "/v1/projects/{project_id}/parallel-action-intakes": {
+                "post": {
+                    "summary": "Stage one immutable Forge Action from a bounded graph",
+                    "security": [{"consumerBearer": []}],
+                    "requestBody": {"required": True, "content": {
+                        "application/json": {"schema": {"type": "object"}}}},
+                    "responses": {
+                        "201": {"description": "Action intake staged"},
+                        "200": {"description": "Identical intake replayed"},
+                        "401": {"description": "Missing or invalid consumer credential"},
+                        "409": {"description": "Graph or Action admission conflict"},
+                    },
+                },
+            },
+            "/v1/projects/{project_id}/parallel-action-intakes/{intake_id}": {
+                "get": {
+                    "summary": "Read exact Action dependency and scope state",
+                    "security": [{"consumerBearer": []}],
+                    "responses": {
+                        "200": {"description": "Current typed dependency decision"},
+                        "401": {"description": "Missing or invalid consumer credential"},
+                        "404": {"description": "Intake absent from the authenticated producer scope"},
+                    },
                 },
             },
             "/v1/projects/{project_id}/submissions": {
@@ -607,6 +634,13 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_agent_repository_attachments",
         "ep_local_repository_bindings",
         "ep_submissions",
+        "ep_parallel_action_graphs",
+        "ep_parallel_action_repository_grants",
+        "ep_parallel_action_intakes",
+        "ep_parallel_action_outcomes",
+        "ep_parallel_action_qualified_artifacts",
+        "ep_parallel_action_qualification_receipts",
+        "ep_parallel_action_submission_links",
         "ep_submission_events",
         "ep_submission_prompt_history",
         "ep_queue_disposition_operations",
@@ -647,6 +681,8 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_local_repository_bindings_repository_lookup",
         "ep_submissions_project_lookup",
         "ep_submissions_idempotency_lookup",
+        "ep_parallel_action_intakes_graph_lookup",
+        "ep_parallel_action_submission_root_unique",
         "ep_parity_lifecycle_dispatches_run_lookup",
         "ep_receipt_run_provenance_project_lookup",
         "ep_external_producer_bindings_active_key",
@@ -849,6 +885,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     # a second, checkout-local migration history.
     storage.install_central_operational_compatibility_schema(connection)
     _install_current_submission_schema(connection)
+    parallel_action_admission.install_schema(connection)
     _install_forge_action_context_schema(connection)
     _install_forge_planning_context_schema(connection)
     _install_execution_host_evidence_schema(connection)
@@ -2116,6 +2153,22 @@ def _migrate_schema_72(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=72")
 
 
+def _migrate_schema_73(connection: sqlite3.Connection) -> None:
+    """Add immutable provider-free parallel Action intake and outcome links."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema72")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 73))"
+    )
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,73 FROM ep_installations_schema72")
+    connection.execute("DROP TABLE ep_installations_schema72")
+    parallel_action_admission.install_schema(connection)
+    central_operational_reset.install_writer_fences(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(73)")
+    connection.execute("UPDATE engineering_metadata SET value='73' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=73")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2148,6 +2201,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (70, _migrate_schema_70),
     (71, _migrate_schema_71),
     (72, _migrate_schema_72),
+    (73, _migrate_schema_73),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -2193,6 +2247,18 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         "ep_assurance_target_selections_immutable_update",
         "ep_assurance_target_selections_immutable_delete",
         "ep_terminal_evidence_reconciliation_immutable_delete",
+        "ep_parallel_action_graphs_immutable_update",
+        "ep_parallel_action_graphs_immutable_delete",
+        "ep_parallel_action_intakes_immutable_update",
+        "ep_parallel_action_intakes_immutable_delete",
+        "ep_parallel_action_outcomes_immutable_update",
+        "ep_parallel_action_outcomes_immutable_delete",
+        "ep_parallel_action_qualified_artifacts_immutable_update",
+        "ep_parallel_action_qualified_artifacts_immutable_delete",
+        "ep_parallel_action_qualification_receipts_immutable_update",
+        "ep_parallel_action_qualification_receipts_immutable_delete",
+        "ep_parallel_action_submission_links_immutable_update",
+        "ep_parallel_action_submission_links_immutable_delete",
     } <= triggers and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
         raise ServerConfigurationError(
@@ -7191,6 +7257,36 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except sqlite3.Error:
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
+        parallel_readback = re.fullmatch(
+            r"/v1/projects/([^/]+)/parallel-action-intakes/([0-9a-f]{64})", request.path,
+        )
+        if parallel_readback:
+            project_id, intake_id = parallel_readback.groups()
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    consumer_id = _authenticated_consumer(connection, token, project_id)
+                    if consumer_id is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    owner = connection.execute(
+                        "SELECT producer_id FROM ep_parallel_action_intakes "
+                        "WHERE intake_id=? AND project_id=?", (intake_id, project_id),
+                    ).fetchone()
+                    if owner is None or owner[0] != consumer_id:
+                        self._send(404, {"error": "PARALLEL_INTAKE_NOT_FOUND"})
+                        return
+                    parallel_action_admission.reconcile_predecessors(
+                        connection, intake_id=intake_id,
+                    )
+                    projection = parallel_action_admission.dependency_readback(
+                        connection, intake_id=intake_id,
+                    )
+                self._send(200, projection, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+            return
         readback = re.fullmatch(r"/v1/projects/([^/]+)/submissions/([^/]+)", request.path)
         if readback:
             project_id, submission_id = readback.groups()
@@ -7255,6 +7351,71 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if urlsplit(self.path).path.startswith("/api/"):
             self._delegate_dashboard("do_POST")
             return
+        if self.path.startswith("/v1/projects/") and self.path.endswith("/parallel-action-intakes"):
+            parts = self.path.split("/")
+            if len(parts) != 5 or not parts[3]:
+                self._send(404, {"error": "not found"})
+                return
+            project_id = parts[3]
+            try:
+                if self.headers.get_content_type() != "application/json":
+                    self._send(415, {"error": "UNSUPPORTED_MEDIA_TYPE"})
+                    return
+                length = int(self.headers.get("Content-Length", "-1"))
+                if not 0 < length <= parallel_action_compat.MAX_DOCUMENT_BYTES:
+                    self._send(413, {"error": "PAYLOAD_TOO_LARGE"})
+                    return
+                authorization = self.headers.get("Authorization", "")
+                token = authorization[7:] if authorization.startswith("Bearer ") else None
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    consumer_id = _authenticated_consumer(connection, token, project_id)
+                    if consumer_id is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    body_deadline = time.monotonic() + 10
+                    previous_timeout = self.connection.gettimeout()
+                    chunks: list[bytes] = []
+                    remaining = length
+                    try:
+                        while remaining:
+                            budget = body_deadline - time.monotonic()
+                            if budget <= 0:
+                                raise TimeoutError("parallel Action body deadline exceeded")
+                            self.connection.settimeout(budget)
+                            chunk = self.rfile.read1(min(remaining, 65536))
+                            if not chunk:
+                                raise ValueError("incomplete parallel Action body")
+                            chunks.append(chunk)
+                            remaining -= len(chunk)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
+                    graph_bytes = b"".join(chunks)
+                    if _authenticated_consumer(connection, token, project_id) != consumer_id:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    result = parallel_action_admission.stage_action(
+                        connection, graph_bytes, project_id=project_id,
+                        consumer_id=consumer_id, producer_id=consumer_id,
+                        action_id=self.headers.get("EP-Action-ID"),
+                        action_revision=self.headers.get("EP-Action-Revision"),
+                        intent_id=self.headers.get("EP-Intent-ID"),
+                        intent_revision=self.headers.get("EP-Intent-Revision"),
+                        correlation_id=self.headers.get("EP-Correlation-ID"),
+                        idempotency_key=self.headers.get("Idempotency-Key"),
+                        write_scope=self.headers.get("EP-Write-Scope"),
+                        policy_digest=self.headers.get("EP-Policy-Digest"),
+                        concurrency_profile=self.headers.get("EP-Concurrency-Profile"),
+                    )
+                self._send(200 if result["replayed"] else 201, result)
+            except parallel_action_admission.ParallelAdmissionError as error:
+                self._send(409, {"error": error.code})
+            except TimeoutError:
+                self._send(408, {"error": "REQUEST_TIMEOUT"})
+            except (sqlite3.Error, OSError):
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+            except (ValueError, TypeError):
+                self._send(400, {"error": "MALFORMED_INPUT"})
+            return
         if self.path.startswith("/v1/projects/") and self.path.endswith("/submissions"):
             parts = self.path.split("/")
             if len(parts) != 5 or not parts[3]:
@@ -7279,10 +7440,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 # execution implementation through this header.
                 transport = self.headers.get("EP-Submission-Transport", "HTTP")
                 with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
-                    if _authenticated_consumer(connection, token, project_id) is None:
+                    authenticated_consumer = _authenticated_consumer(connection, token, project_id)
+                    if authenticated_consumer is None:
                         raise submission_service.SubmissionError("UNAUTHENTICATED", 401)
                     request = submission_service.request_from_mapping(project_id, payload, transport=transport)
-                    result = submission_service.submit(connection, request)
+                    result = submission_service.submit(
+                        connection, request, authenticated_consumer_id=authenticated_consumer,
+                    )
                 if result.receipt is not None:
                     receipt = result.receipt
                     logger = component_logger(
@@ -7560,7 +7724,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "recover-managed-workspace", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "grant-parallel-action-repository", "revoke-parallel-action-repository", "qualify-parallel-action-artifact", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "recover-managed-workspace", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -7574,6 +7738,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--declaration", type=Path)
     parser.add_argument("--consumer-id")
     parser.add_argument("--submission-id")
+    parser.add_argument("--intake-id")
+    parser.add_argument("--artifact-id")
+    parser.add_argument("--qualification-artifact-id")
+    parser.add_argument("--installed-relative-path")
     parser.add_argument("--producer-type")
     parser.add_argument("--external-resource-type")
     parser.add_argument("--external-resource-identity")
@@ -8567,6 +8735,35 @@ def main(argv: list[str] | None = None) -> int:
                         raise ServerConfigurationError("--delegation-id is required for revocation.")
                     result = {"result": "REVOKED" if merge_delegation.revoke(connection, args.delegation_id, actor_reference=actor_reference) else "NOT_ACTIVE",
                               "delegation_id": args.delegation_id}
+        elif args.command in {"grant-parallel-action-repository", "revoke-parallel-action-repository"}:
+            if not all((args.consumer_id, args.project_id, args.repository_id, args.reason)):
+                raise ServerConfigurationError(
+                    "--consumer-id, --project-id, --repository-id and --reason are required."
+                )
+            initialize(args.data_root)
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = parallel_action_admission.set_repository_grant(
+                    connection, data_root=args.data_root, consumer_id=args.consumer_id,
+                    project_id=args.project_id, repository_id=args.repository_id,
+                    reason=args.reason,
+                    active=args.command == "grant-parallel-action-repository",
+                )
+        elif args.command == "qualify-parallel-action-artifact":
+            if not all((args.intake_id, args.artifact_id, args.qualification_artifact_id,
+                        args.installed_relative_path, args.reason)):
+                raise ServerConfigurationError(
+                    "--intake-id, --artifact-id, --qualification-artifact-id, "
+                    "--installed-relative-path and --reason are required."
+                )
+            initialize(args.data_root)
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = parallel_action_admission.record_qualification_receipt(
+                    connection, data_root=args.data_root, intake_id=args.intake_id,
+                    artifact_id=args.artifact_id,
+                    qualification_artifact_id=args.qualification_artifact_id,
+                    installed_relative_path=args.installed_relative_path,
+                    reason=args.reason,
+                )
         elif args.command == "register-producer-binding":
             if not all((args.producer_type, args.external_resource_type, args.external_resource_identity, args.project_id, args.repository_id, args.reason)):
                 raise ServerConfigurationError("--producer-type, --external-resource-type, --external-resource-identity, --project-id, --repository-id and --reason are required for producer binding registration.")
@@ -8682,6 +8879,7 @@ def main(argv: list[str] | None = None) -> int:
             development_profile.DevelopmentProfileError,
             local_repository_binding.LocalRepositoryBindingError,
             managed_workspace_recovery.ManagedWorkspaceRecoveryError,
+            parallel_action_admission.ParallelAdmissionError,
             external_producer_binding.ProducerBindingError) as error:
         print(json.dumps({"error": str(error), "ready": False}, sort_keys=True))
         return 2

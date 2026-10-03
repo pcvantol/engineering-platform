@@ -33,6 +33,24 @@
       "event": [{"listen": "test", "script": {"exec": ["pm.test('producer compatibility is available', () => pm.response.to.have.status(200));"]}}]
     },
     {
+      "name": "Parallel Action intake rejects missing credential",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{}"},
+        "url": "{{baseUrl}}/v1/projects/:project_id/parallel-action-intakes"
+      },
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action intake requires a credential', () => pm.response.to.have.status(401));"]}}]
+    },
+    {
+      "name": "Parallel Action readback rejects missing credential",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/projects/:project_id/parallel-action-intakes/:intake_id"
+      },
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action readback requires a credential', () => pm.response.to.have.status(401));"]}}]
+    },
+    {
       "name": "Canonical submission rejects missing credential",
       "request": {
         "method": "POST",

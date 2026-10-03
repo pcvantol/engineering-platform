@@ -77,7 +77,7 @@ class CompatibilityScope:
             not _is_identifier(self.ep_instance_id)
             or not _is_identifier(self.project_id)
             or not isinstance(repositories, tuple)
-            or not 1 <= len(repositories) <= MAX_ACTIONS
+            or not repositories
             or any(not _is_identifier(repository) for repository in repositories)
             or len(set(repositories)) != len(repositories)
         ):
@@ -209,6 +209,7 @@ def _parse_actions(items: object, scope: CompatibilityScope) -> dict[str, dict[s
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_ACTIONS:
         raise CompatibilityError("INVALID_ENVELOPE", "$.actions")
     actions: dict[str, dict[str, Any]] = {}
+    allowed_repositories = set(scope.repository_ids)
     for index, value in enumerate(items):
         path = f"$.actions[{index}]"
         action = _require_object(value, _ACTION_FIELDS, "INVALID_ACTION", path)
@@ -220,7 +221,7 @@ def _parse_actions(items: object, scope: CompatibilityScope) -> dict[str, dict[s
             raise CompatibilityError("INVALID_TARGET", f"{path}.target")
         if target["ep_instance_id"] != scope.ep_instance_id or target["project_id"] != scope.project_id:
             raise CompatibilityError("TARGET_SCOPE_MISMATCH", f"{path}.target")
-        if target["repository_id"] not in scope.repository_ids:
+        if target["repository_id"] not in allowed_repositories:
             raise CompatibilityError("FOREIGN_REPOSITORY", f"{path}.target.repository_id")
         edges = action["dependencies"]
         if not isinstance(edges, list) or len(edges) > MAX_ACTIONS - 1:
