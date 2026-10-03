@@ -156,6 +156,10 @@ class ParallelActionCompatibilityTests(unittest.TestCase):
         self.assertEqual(result["status"], "COMPATIBLE")
         self.assertEqual(len(result["actions"]), 256)
         self.assertFalse(result["dispatch_authorized"])
+        escaped = json.dumps(_source(), separators=(",", ":")).encode().replace(
+            b'"MISSION-FIXTURE-1"', b'"' + b'\\u0041' * 128 + b'"'
+        )
+        self.assertEqual(assess_parallel_action_graph(escaped, scope=_SCOPE)["status"], "COMPATIBLE")
 
         flood = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
                  b'"mission_revision":1,"actions":[' + b'[],' * 1_999_999 + b'[]]}')
@@ -164,12 +168,22 @@ class ParallelActionCompatibilityTests(unittest.TestCase):
         field_flood = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
                        b'"mission_revision":1,"actions":[],' + b'"x":0,' * 129_999 + b'"x":0}')
         depth_flood = b'[' * 20 + b'0' + b']' * 20
+        nested_array_flood = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
+                              b'"mission_revision":1,"actions":[[{"x":0}]]}')
+        long_string = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
+                       b'"mission_revision":1,"actions":[],"x":"' + b'A' * 769 + b'"}')
+        unicode_string = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
+                          b'"mission_revision":1,"actions":[],"x":"' + "😀".encode() + b'"}')
         with patch("engineering_platform.parallel_action_compat.json.loads",
                    side_effect=AssertionError("invalid flood was decoded")):
-            for payload in (flood, object_flood, field_flood, depth_flood):
+            for payload in (flood, object_flood, field_flood, depth_flood,
+                            nested_array_flood, long_string):
                 self.assert_rejected(
                     assess_parallel_action_graph(payload, scope=_SCOPE), "STRUCTURE_LIMIT_EXCEEDED"
                 )
+            self.assert_rejected(
+                assess_parallel_action_graph(unicode_string, scope=_SCOPE), "MALFORMED_INPUT"
+            )
 
     def test_unsupported_version_and_unknown_authority_fields_fail_closed(self) -> None:
         for version in ["parallel-action-graph/v2", None, 1]:
