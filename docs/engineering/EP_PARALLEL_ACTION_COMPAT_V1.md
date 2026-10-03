@@ -47,9 +47,9 @@ including producer-claimed dispatch or concurrency grants, are rejected.
 The parser accepts up to 32 MiB of JSON so even a dense 256-Action Forge
 graph in ordinary serialization fits. It rejects larger wire documents with
 `INPUT_TOO_LARGE`. Producer keys and permitted values are ASCII, so raw
-non-ASCII bytes fail before decoding. Pre-decode punctuation, acyclic edge,
-container depth, array item, object field, and escaped string token budgets
-derived from the maximum Action and edge counts reject floods with
+non-ASCII bytes and escapes for non-ASCII code points fail before decoding.
+Pre-decode producer container shape, punctuation, acyclic edge, depth, array
+item, object field, and escaped string token budgets reject floods with
 `STRUCTURE_LIMIT_EXCEEDED`, before JSON can materialize an excessive invalid
 tree. The parser then bounds Action count, rejects duplicate JSON keys and
 identities, malformed identifiers/evidence, missing or repeated predecessors,

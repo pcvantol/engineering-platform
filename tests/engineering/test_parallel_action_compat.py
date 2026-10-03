@@ -174,6 +174,11 @@ class ParallelActionCompatibilityTests(unittest.TestCase):
                        b'"mission_revision":1,"actions":[],"x":"' + b'A' * 769 + b'"}')
         unicode_string = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
                           b'"mission_revision":1,"actions":[],"x":"' + "😀".encode() + b'"}')
+        escaped_unicode = (b'{"contract_version":"parallel-action-graph/v1",'
+                           b'"mission_id":"M\\ud83d\\ude00","mission_revision":1,"actions":[]}')
+        wrong_action_container = (b'{"contract_version":"parallel-action-graph/v1",'
+                                  b'"mission_id":"M","mission_revision":1,'
+                                  b'"actions":[{"action_id":"A","target":{},"x":[{"x":0}]}]}')
         with patch("engineering_platform.parallel_action_compat.json.loads",
                    side_effect=AssertionError("invalid flood was decoded")):
             for payload in (flood, object_flood, field_flood, depth_flood,
@@ -183,6 +188,12 @@ class ParallelActionCompatibilityTests(unittest.TestCase):
                 )
             self.assert_rejected(
                 assess_parallel_action_graph(unicode_string, scope=_SCOPE), "MALFORMED_INPUT"
+            )
+            self.assert_rejected(
+                assess_parallel_action_graph(escaped_unicode, scope=_SCOPE), "MALFORMED_INPUT"
+            )
+            self.assert_rejected(
+                assess_parallel_action_graph(wrong_action_container, scope=_SCOPE), "INVALID_ACTION"
             )
 
     def test_unsupported_version_and_unknown_authority_fields_fail_closed(self) -> None:

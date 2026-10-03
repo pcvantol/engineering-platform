@@ -35,6 +35,21 @@ _ACTION_FIELDS = frozenset({"action_id", "target", "dependencies"})
 _TARGET_FIELDS = frozenset({"ep_instance_id", "project_id", "repository_id", "baseline_revision"})
 _EDGE_FIELDS = frozenset({"predecessor_action_id", "required_evidence"})
 _EVIDENCE_FIELDS = frozenset({"kind", "repository_id", "content_digest"})
+_ROLE_FIELDS = {
+    "envelope": (_ENVELOPE_FIELDS, "INVALID_ENVELOPE"),
+    "action": (_ACTION_FIELDS, "INVALID_ACTION"),
+    "target": (_TARGET_FIELDS, "INVALID_TARGET"),
+    "edge": (_EDGE_FIELDS, "INVALID_DEPENDENCY"),
+    "evidence": (_EVIDENCE_FIELDS, "INVALID_EVIDENCE"),
+}
+_OBJECT_CHILDREN = {
+    "envelope": {"actions": (91, "actions")},
+    "action": {"target": (123, "target"), "dependencies": (91, "dependencies")},
+    "edge": {"required_evidence": (123, "evidence")},
+}
+_ARRAY_CHILDREN = {"actions": (123, "action"), "dependencies": (123, "edge")}
+_KNOWN_OBJECT_FIELDS = frozenset(fields for fields, _code in _ROLE_FIELDS.values())
+_INVALID_OBJECT = object()
 
 
 @dataclass(frozen=True)
@@ -79,13 +94,13 @@ def _require_object(value: object, fields: frozenset[str], code: str, path: str)
     return value
 
 
-def _object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+def _object_pairs(pairs: list[tuple[str, Any]]) -> object:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
             raise CompatibilityError("MALFORMED_INPUT")
         result[key] = value
-    return result
+    return result if frozenset(result) in _KNOWN_OBJECT_FIELDS else _INVALID_OBJECT
 
 
 def _invalid_constant(_value: str) -> None:
@@ -93,40 +108,73 @@ def _invalid_constant(_value: str) -> None:
 
 
 def _bound_container_items(document: bytes) -> None:
-    """Bound JSON token sizes and shape before the decoder allocates them."""
-    stack: list[list[int]] = []  # container byte, comma count
+    """Bound JSON token sizes and producer shape before the decoder allocates."""
+    stack: list[list[Any]] = []  # container byte, comma count, role, pending key
     in_string = False
     escaped = False
     string_bytes = 0
-    for byte in document:
+    string_start = 0
+    last_string: bytes | None = None
+    for index, byte in enumerate(document):
         if in_string:
             if escaped:
+                if byte == 117 and index + 4 < len(document):  # \uXXXX
+                    try:
+                        codepoint = int(document[index + 1:index + 5], 16)
+                    except ValueError:
+                        codepoint = None  # the JSON decoder reports malformed escapes
+                    if codepoint is not None and codepoint > 127:
+                        raise CompatibilityError("MALFORMED_INPUT")
                 escaped = False
             elif byte == 92:  # backslash
                 escaped = True
             elif byte == 34:  # quote
                 in_string = False
+                last_string = document[string_start:index + 1]
                 continue
             string_bytes += 1
             if string_bytes > _MAX_STRING_BYTES:
                 raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
             continue
+        if byte in (9, 10, 13, 32):  # JSON whitespace
+            continue
         if byte == 34:
+            if stack and stack[-1][0] == 123 and stack[-1][3] is not None:
+                stack[-1][3] = None  # string value, not a child container
             in_string = True
             string_bytes = 0
-        elif byte == 91:  # [
-            if stack and stack[-1][0] == 91:
-                raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
-            stack.append([byte, 0])
-        elif byte == 123:  # {
-            stack.append([byte, 0])
+            string_start = index
+        elif byte == 58 and last_string is not None and stack and stack[-1][0] == 123:
+            try:
+                key, _ = json.decoder.scanstring(last_string.decode("ascii"), 1)
+            except ValueError as error:
+                raise CompatibilityError("MALFORMED_INPUT") from error
+            stack[-1][3] = key
+        elif byte in (91, 123):  # [ or {
+            if not stack:
+                role = "envelope" if byte == 123 else "unknown"
+            elif stack[-1][0] == 91:
+                child = _ARRAY_CHILDREN.get(stack[-1][2])
+                if child is None or child[0] != byte:
+                    raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
+                role = child[1]
+            else:
+                parent = stack[-1]
+                child = _OBJECT_CHILDREN.get(parent[2], {}).get(parent[3])
+                if child is None or child[0] != byte:
+                    raise CompatibilityError(_ROLE_FIELDS[parent[2]][1])
+                parent[3] = None
+                role = child[1]
+            stack.append([byte, 0, role, None])
         elif byte == 44 and stack:  # comma in the current array or object
             stack[-1][1] += 1
             limit = _MAX_ARRAY_ITEMS if stack[-1][0] == 91 else _MAX_OBJECT_FIELDS
             if stack[-1][1] >= limit:
                 raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
+            stack[-1][3] = None
         elif byte in (93, 125) and stack:  # ] or }; syntax belongs to json.loads
             stack.pop()
+        last_string = None
         if len(stack) > _MAX_DEPTH:
             raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
 
