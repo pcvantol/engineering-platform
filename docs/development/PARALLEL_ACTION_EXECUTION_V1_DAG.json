@@ -14,6 +14,6 @@
     {"id":"PA-E2","status":"SOURCE_FIXED","depends_on":["PA-E1"],"deliverable":"Concurrent delivery with bounded repository/resource/capacity scheduling","source_contract":"docs/engineering/EP_PARALLEL_ACTION_DELIVERY_V1.md"},
     {"id":"PA-E3","status":"SOURCE_FIXED","depends_on":["PA-E2"],"deliverable":"Invocation isolation, fencing and partial-failure/restart/cancel safety","source_contract":"docs/engineering/EP_PARALLEL_ACTION_RECOVERY_V1.md"},
     {"id":"PA-E4","status":"SOURCE_FIXED","depends_on":["PA-E1"],"deliverable":"Per-result readback and complete multi-active timing/usage/export evidence","source_contract":"docs/engineering/EP_PARALLEL_ACTION_COLLECTION_V1.md"},
-    {"id":"PA-EQ","status":"PLANNED","depends_on":["PA-E2","PA-E3","PA-E4"],"deliverable":"Installed actual concurrency and negative-boundary qualification"}
+    {"id":"PA-EQ","status":"SOURCE_FIXED","depends_on":["PA-E2","PA-E3","PA-E4"],"deliverable":"Installed actual concurrency and negative-boundary qualification","source_contract":"docs/engineering/EP_PARALLEL_ACTION_QUALIFICATION_V1.md"}
   ]
 }

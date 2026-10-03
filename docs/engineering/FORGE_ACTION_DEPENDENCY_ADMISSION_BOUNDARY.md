@@ -12,12 +12,14 @@ PA-E0 is SOURCE_FIXED as an authority-free compatibility boundary. PA-E1 is
 SOURCE_FIXED as immutable intake and exact predecessor admission. PA-E2 is
 SOURCE_FIXED for bounded concurrent delivery, and PA-E3 is SOURCE_FIXED for
 per-run recovery fencing. PA-E4 is SOURCE_FIXED for graph-scoped collection
-and export; PA-EQ remains PLANNED. NO_BUMP. Their source contracts are
+and export; PA-EQ is SOURCE_FIXED for the bounded installed EP matrix. NO_BUMP. Their source contracts are
 [EP parallel Action compatibility V1](EP_PARALLEL_ACTION_COMPAT_V1.md),
 [EP parallel Action admission V1](EP_PARALLEL_ACTION_ADMISSION_V1.md) and
 [EP parallel Action delivery V1](EP_PARALLEL_ACTION_DELIVERY_V1.md),
 [EP parallel Action recovery V1](EP_PARALLEL_ACTION_RECOVERY_V1.md) and
 [EP parallel Action collection V1](EP_PARALLEL_ACTION_COLLECTION_V1.md).
+PA-EQ's installed proof and exclusions are specified by
+[EP parallel Action qualification V1](EP_PARALLEL_ACTION_QUALIFICATION_V1.md).
 Forge owns the companion `docs/architecture/PARALLEL_ACTION_RUNTIME_V1.md`
 and shared PA-01..PA-26 qualification catalogue. This refines existing
 [P-QUEUE/Agent delivery scheduling](AGENT_DELIVERY_SCHEDULING_ARCHITECTURE.md),
