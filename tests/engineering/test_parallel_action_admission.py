@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 
 from engineering_platform import parallel_action_admission as admission
 from engineering_platform import parallel_action_recovery as recovery
+from engineering_platform import parity_lifecycle_dispatcher as lifecycle_dispatcher
 from engineering_platform import server, submission_service
 from engineering_platform.agent_state import TransactionState
 from engineering_platform.execution_errors import CodexInvocationError, RunnerError
@@ -2532,11 +2533,15 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 (run_id,),
             ).fetchone()[0], 1)
             connection.execute("DROP TRIGGER fail_pa_e3_resource_release")
-        dispatcher._set_state(submission_id, run_id, "COMPLETE", pa_e3_attempt_id=attempt)
+        with patch.object(lifecycle_dispatcher, "log_event",
+                          side_effect=RuntimeError("log unavailable")):
+            dispatcher._set_state(submission_id, run_id, "COMPLETE", pa_e3_attempt_id=attempt)
         with sqlite_connection(self.database) as connection:
             self.assertEqual(connection.execute(
                 "SELECT state FROM ep_parity_lifecycle_dispatches WHERE run_id=?", (run_id,),
             ).fetchone()[0], "COMPLETE")
+            self.assertNotEqual(recovery.status(connection, run_id),
+                                "PROVIDER_EFFECT_UNCERTAIN")
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
                 "AND lease_id LIKE 'pa-e2:%' AND released_at IS NULL",

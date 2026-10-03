@@ -668,17 +668,23 @@ class ParityLifecycleDispatcher:
                         "AND run_id=? AND released_at IS NULL",
                         (now, pa_e3_attempt_id, run_id),
                     )
-        log_event(
-            self._logger,
-            logging.INFO if state not in {"BLOCKED", "FAILED"} else logging.WARNING,
-            "lifecycle_run_state_changed",
-            run_id=run_id,
-            context={
-                "submission_id": submission_id,
-                "dispatch_state": state,
-                "operator_resolution": resolution,
-            },
-        )
+        try:
+            log_event(
+                self._logger,
+                logging.INFO if state not in {"BLOCKED", "FAILED"} else logging.WARNING,
+                "lifecycle_run_state_changed",
+                run_id=run_id,
+                context={
+                    "submission_id": submission_id,
+                    "dispatch_state": state,
+                    "operator_resolution": resolution,
+                },
+            )
+        except Exception:
+            # The terminal transaction is already committed. An optional
+            # operational log failure cannot turn its released leases into
+            # an unresolvable PROVIDER_EFFECT_UNCERTAIN claim.
+            pass
 
     def _release_pa_e2_capacity(self, run_id: str) -> None:
         with sqlite_connection(central_database.path(self.data_root)) as connection:
