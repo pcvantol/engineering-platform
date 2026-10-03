@@ -390,8 +390,9 @@ class InstallationBoundaryTests(unittest.TestCase):
         """Exercise the installed handler in-process, where branch coverage runs."""
         handler = object.__new__(server._HealthHandler)
         handler.path = path
-        handler.server = SimpleNamespace(data_root=self.root)
+        handler.server = SimpleNamespace(data_root=self.root, server_port=8765)
         message = Message()
+        message["Host"] = "127.0.0.1:8765"
         for key, value in (headers or {}).items():
             message[key] = value
         handler.headers = message
