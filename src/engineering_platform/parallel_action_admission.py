@@ -1001,7 +1001,29 @@ def delivery_readback(connection: sqlite3.Connection, *, intake_id: str,
     if decision["state"] != "DEPENDENCY_ELIGIBLE":
         return decision
     from pathlib import Path
-    from . import parallel_action_delivery
+    from . import parallel_action_delivery, parallel_action_recovery
+    recovery_state = (
+        parallel_action_recovery.status(connection, continuation_run_id)
+        if continuation_run_id is not None else "NONE"
+    )
+    if recovery_state == "PROVIDER_EFFECT_UNCERTAIN":
+        return {**decision, "state": "WAITING_RECOVERY",
+                "recovery_state": recovery_state,
+                "resource_state": "HELD", "capacity_state": "HELD"}
+    if recovery_state == "CANCEL_REQUESTED":
+        return {**decision, "state": "CANCEL_REQUESTED",
+                "recovery_state": recovery_state,
+                "resource_state": "HELD", "capacity_state": "HELD"}
+    if recovery_state == "CANCEL_ACKNOWLEDGED":
+        resource_held = connection.execute(
+            "SELECT 1 FROM ep_execution_leases WHERE run_id=? "
+            "AND lease_id LIKE 'pa-e2:resource:%' AND released_at IS NULL LIMIT 1",
+            (continuation_run_id,),
+        ).fetchone() is not None
+        return {**decision, "state": "CANCEL_ACKNOWLEDGED",
+                "recovery_state": recovery_state,
+                "resource_state": "HELD" if resource_held else "AVAILABLE",
+                "capacity_state": "AVAILABLE"}
     try:
         gate = parallel_action_delivery.gate(
             connection, data_root=Path(data_root), project_id=str(row[1]),
@@ -1011,7 +1033,8 @@ def delivery_readback(connection: sqlite3.Connection, *, intake_id: str,
         return {**decision, "state": "WAITING_RESOURCE",
                 "resource_state": "UNQUALIFIED", "capacity_state": "NOT_EVALUATED"}
     return {**decision, "state": decision["state"] if gate.state == "READY" else gate.state,
-            "resource_state": gate.resource_state, "capacity_state": gate.capacity_state}
+            "resource_state": gate.resource_state, "capacity_state": gate.capacity_state,
+            "recovery_state": recovery_state}
 
 
 def reconcile_predecessors(connection: sqlite3.Connection, *, intake_id: str) -> int:

@@ -411,6 +411,8 @@ class CodexCliClient:
         self._workspace_progress_callback: Callable[[dict[str, int]], None] | None = None
         self._handoff_deadline_callback: Callable[[], bool] | None = None
         self._deadline_progress_callback: Callable[[], None] | None = None
+        self._cancellation_check: Callable[[], bool] | None = None
+        self._cancellation_observed = False
         # A process boundary remains published until this client has observed
         # the owned session disappear.  A callback failure must not make an
         # otherwise live provider look as though it has already exited.
@@ -440,20 +442,54 @@ class CodexCliClient:
         """Whether the last streamed provider session was observed to exit."""
         return self._provider_process_cleanup_confirmed
 
+    def set_cancellation_check(self, callback: Callable[[], bool] | None) -> None:
+        """Bind an exact Action's durable cancellation request to this client."""
+        self._cancellation_check = callback
+
+    def cancellation_observed(self) -> bool:
+        return self._cancellation_observed
+
     @staticmethod
-    def _terminate_owned_process_group(process: subprocess.Popen[str]) -> bool:
-        """Request a bounded stop for this invocation's own session only."""
+    def _owned_process_group_drained(process_group: int) -> bool:
+        """Prove no process remains in the invocation's private session."""
         try:
-            process_group = os.getpgid(process.pid)
-        except ProcessLookupError:
-            return True
+            observed = subprocess.run(
+                ("ps", "-axo", "pgid="), check=False, capture_output=True,
+                text=True, timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if observed.returncode:
+            return False
+        return str(process_group) not in observed.stdout.split()
+
+    @staticmethod
+    def _terminate_owned_process_group(process: subprocess.Popen[str], *,
+                                       known_group: int | None = None) -> bool:
+        """Request a bounded stop for this invocation's own session only."""
+        if known_group is None:
+            try:
+                process_group = os.getpgid(process.pid)
+            except ProcessLookupError:
+                return True
+        else:
+            process_group = known_group
         try:
             os.killpg(process_group, signal.SIGTERM)
         except ProcessLookupError:
-            return True
+            pass
+        except PermissionError:
+            pass
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
+            return False
+        if known_group is not None:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if CodexCliClient._owned_process_group_drained(process_group):
+                    return True
+                time.sleep(.1)
             return False
         try:
             os.killpg(process_group, 0)
@@ -892,6 +928,13 @@ class CodexCliClient:
             "deleted": 0,
             "codex_commands_executed": 0,
         }
+        if self._cancellation_check is not None and self._cancellation_check():
+            self._cancellation_observed = True
+            raise CodexInvocationError(
+                "Action cancellation was requested before provider launch.",
+                "The provider was not started for this cancelled Action.",
+                next_action="NONE", terminal_condition="operator_cancellation",
+            )
         if (
             self._activity_callback is None
             and self._transient_action_callback is None
@@ -900,9 +943,13 @@ class CodexCliClient:
             and self._workspace_progress_callback is None
             and self._handoff_deadline_callback is None
             and self._deadline_progress_callback is None
+            and self._cancellation_check is None
         ):
             return self.provider.invoke(root, command, environment=environment)
         process = self.provider.spawn_invocation(root, command, environment=environment)
+        # CodexCliProvider starts each invocation as a new session leader.
+        # Retain its group ID even if the parent exits before a child does.
+        owned_group = process.pid if self._cancellation_check is not None else None
         self._provider_process_cleanup_confirmed = False
         if self._process_callback is not None:
             try:
@@ -915,9 +962,27 @@ class CodexCliClient:
         completed_command_ids: set[str] = set()
         watchdog_stop = Event()
         handoff_timed_out = Event()
+        cancellation_requested = Event()
+        cancellation_probe_failed = Event()
 
         def watchdog() -> None:
             while not watchdog_stop.wait(1):
+                if self._cancellation_check is not None:
+                    try:
+                        if self._cancellation_check():
+                            cancellation_requested.set()
+                            self._cancellation_observed = True
+                    except Exception:
+                        cancellation_probe_failed.set()
+                    if cancellation_requested.is_set() or cancellation_probe_failed.is_set():
+                        try:
+                            os.killpg(owned_group or os.getpgid(process.pid), signal.SIGTERM)
+                        except (OSError, ProcessLookupError):
+                            try:
+                                process.terminate()
+                            except ProcessLookupError:
+                                pass
+                        return
                 if self._handoff_deadline_callback is None or not self._handoff_deadline_callback():
                     continue
                 handoff_timed_out.set()
@@ -932,13 +997,21 @@ class CodexCliClient:
 
         watchdog_thread = (
             Thread(target=watchdog, name="engineering-pr-handoff-watchdog", daemon=True)
-            if self._handoff_deadline_callback is not None else None
+            if self._handoff_deadline_callback is not None or self._cancellation_check is not None else None
         )
         if watchdog_thread is not None:
             watchdog_thread.start()
         try:
             assert process.stdout is not None
             for line in process.stdout:
+                if cancellation_probe_failed.is_set():
+                    raise RunnerError("PA_E3_CANCEL_STATUS_UNAVAILABLE")
+                if cancellation_requested.is_set():
+                    raise CodexInvocationError(
+                        "Action cancellation stopped the provider process.",
+                        "The exact Action's provider process group was stopped.",
+                        next_action="NONE", terminal_condition="operator_cancellation",
+                    )
                 if handoff_timed_out.is_set():
                     raise CodexHandoffTimeout("Agent did not return after the host-owned PR hand-off deadline.")
                 lines.append(line)
@@ -997,16 +1070,33 @@ class CodexCliClient:
                                 completed_command_ids.add(command_id)
                         if emit:
                             self._command_callback(*command_event)
+            if cancellation_probe_failed.is_set():
+                raise RunnerError("PA_E3_CANCEL_STATUS_UNAVAILABLE")
+            if cancellation_requested.is_set():
+                raise CodexInvocationError(
+                    "Action cancellation stopped the provider process.",
+                    "The exact Action's provider process group was stopped.",
+                    next_action="NONE", terminal_condition="operator_cancellation",
+                )
             if handoff_timed_out.is_set():
                 raise CodexHandoffTimeout("Agent did not return after the host-owned PR hand-off deadline.")
             returncode = process.wait()
-            self._provider_process_cleanup_confirmed = True
+            if owned_group is None:
+                self._provider_process_cleanup_confirmed = True
+            else:
+                self._provider_process_cleanup_confirmed = self._owned_process_group_drained(
+                    owned_group,
+                )
+                if not self._provider_process_cleanup_confirmed:
+                    raise RunnerError("PA_E3_PROVIDER_EXIT_UNCONFIRMED")
             return subprocess.CompletedProcess(command, returncode, "".join(lines), "")
         except BaseException:
             # Every invocation owns a fresh process session.  Callback and
             # host failures therefore have one narrow, safe stop boundary;
             # leaving this loop must never orphan an output-producing child.
-            self._provider_process_cleanup_confirmed = self._terminate_owned_process_group(process)
+            self._provider_process_cleanup_confirmed = self._terminate_owned_process_group(
+                process, known_group=owned_group,
+            )
             raise
         finally:
             watchdog_stop.set()

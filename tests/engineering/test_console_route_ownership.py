@@ -90,6 +90,7 @@ class ConsoleRouteOwnershipTest(unittest.TestCase):
             ("POST", "/api/central-database/configuration", PLATFORM),
             ("POST", "/api/execution-dismiss", PROJECT),
             ("POST", "/api/execution-retry", PROJECT),
+            ("POST", "/api/execution-cancel", PROJECT),
             ("POST", "/api/queue-disposition", PROJECT),
             ("POST", "/api/codex-chat", PROJECT),
             ("POST", "/api/codex-chat/clear", PROJECT),

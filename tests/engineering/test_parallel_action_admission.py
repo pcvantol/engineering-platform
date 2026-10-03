@@ -20,8 +20,10 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from engineering_platform import parallel_action_admission as admission
+from engineering_platform import parallel_action_recovery as recovery
 from engineering_platform import server, submission_service
 from engineering_platform.agent_state import TransactionState
+from engineering_platform.execution_errors import CodexInvocationError, RunnerError
 from engineering_platform.lifecycle_worker import LifecycleWorker
 from engineering_platform.parity_lifecycle_dispatcher import (
     ParityLifecycleDispatcher, ParityLifecycleDispatchError, dismiss_operator_gate,
@@ -32,6 +34,38 @@ from engineering_platform.storage import sqlite_connection
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "forge-parallel-action-peer-graph-v1.json"
 NOW = "2026-10-03T00:00:00+00:00"
+
+
+class _PaE3CheckpointRunner:
+    def __init__(self, repository_root: Path, data_root: Path, *,
+                 cancel: bool = False, observe_cancel: bool = False,
+                 cleanup_confirmed: bool = True, crash: bool = False) -> None:
+        self.root = repository_root
+        self.data_root = data_root
+        self.cancel = cancel
+        self.observe_cancel = observe_cancel
+        self.cleanup_confirmed = cleanup_confirmed
+        self.crash = crash
+        self.agent = self
+        self.check = lambda: False
+
+    def set_cancellation_check(self, callback: object) -> None:
+        self.check = callback
+
+    def cancellation_observed(self) -> bool:
+        return self.cancel and self.observe_cancel
+
+    def provider_process_cleanup_confirmed(self) -> bool:
+        return self.cleanup_confirmed
+
+    def run(self, prompt_path: Path, *, run_id: str, **_: object) -> TransactionState:
+        if self.cancel:
+            recovery.request_cancel(self.data_root, project_id="project-test", run_id=run_id)
+            assert self.check()
+        if self.crash:
+            raise RuntimeError("controlled dispatcher crash after runner entry")
+        return TransactionState(run_id, self.root.name, str(prompt_path),
+                                "RUNNING", terminal=False)
 
 
 class ParallelActionAdmissionTest(unittest.TestCase):
@@ -152,6 +186,31 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 },
             },
         )
+
+    def pa_e3_submissions(self) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
+        for repository_id, root in self.repository_roots.items():
+            subprocess.run(("git", "-C", str(root), "remote", "add", "origin",
+                            f"https://github.com/fixture/{repository_id}.git"), check=True)
+        with sqlite_connection(self.database) as connection:
+            staged = {action: self.stage(
+                connection, action, policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+            ) for action in ("ACTION-A", "ACTION-B")}
+            submissions = {action: submission_service.submit(
+                connection, self.request(
+                    action, staged[action], policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            ).submission_id for action in ("ACTION-A", "ACTION-B")}
+        return staged, submissions
+
+    def pa_e3_child(self, submission_id: str, boundary: str) -> tuple[int, dict[str, object]]:
+        driver = Path(__file__).parents[1] / "fixtures" / "pa_e3_recovery_driver.py"
+        environment = dict(os.environ)
+        completed = subprocess.run(
+            (sys.executable, str(driver), str(self.root), submission_id, boundary),
+            env=environment, capture_output=True, text=True, timeout=20,
+        )
+        self.assertTrue(completed.stdout, completed.stderr)
+        return completed.returncode, json.loads(completed.stdout.splitlines()[-1])
 
     def _fake_canonical_readback(self, action_id: str, submission_id: str,
                                  digest: str, repository_id: str) -> dict[str, object]:
@@ -1780,6 +1839,590 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             with redirect_stdout(output):
                 self.assertEqual(pa_e2_dispatch.main(), 0)
             self.assertEqual(json.loads(output.getvalue()), {"error": "WAITING_RESOURCE"})
+
+    def test_pa_e3_new_process_restart_requires_a_returned_checkpoint(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        staged, submissions = self.pa_e3_submissions()
+        first_code, first = self.pa_e3_child(submissions["ACTION-A"], "claimed")
+        self.assertEqual(first_code, 0, first)
+        second_code, second = self.pa_e3_child(submissions["ACTION-A"], "claimed")
+        self.assertEqual(second_code, 0, second)
+        self.assertEqual(first["run_id"], second["run_id"])
+        self.assertNotEqual(first["attempt_id"], second["attempt_id"])
+        self.assertTrue(second["duplicate"])
+        returned_code, returned = self.pa_e3_child(submissions["ACTION-A"], "returned")
+        self.assertEqual(returned_code, 0, returned)
+        next_code, next_attempt = self.pa_e3_child(submissions["ACTION-A"], "entered")
+        self.assertEqual(next_code, 0, next_attempt)
+        self.assertEqual(next_attempt["run_id"], first["run_id"])
+        denied_code, denied = self.pa_e3_child(submissions["ACTION-A"], "claimed")
+        self.assertEqual((denied_code, denied["error"]),
+                         (2, "PA_E3_PROVIDER_EFFECT_UNCERTAIN"))
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, str(first["run_id"])),
+                             "PROVIDER_EFFECT_UNCERTAIN")
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-a",
+            ).state, "WAITING_RESOURCE")
+            decision = admission.delivery_readback(
+                connection, intake_id=str(staged["ACTION-A"]["intake_id"]),
+                data_root=self.root,
+                decision=admission.dependency_readback(
+                    connection, intake_id=str(staged["ACTION-A"]["intake_id"])),
+                continuation_run_id=str(first["run_id"]),
+            )
+            self.assertEqual((decision["state"], decision["recovery_state"]),
+                             ("WAITING_RECOVERY", "PROVIDER_EFFECT_UNCERTAIN"))
+        projected = next(record for record in server._central_console_run_records(
+            self.root, "project-test") if record["run_id"] == first["run_id"])
+        self.assertEqual(projected["recovery_state"], "PROVIDER_EFFECT_UNCERTAIN")
+        self.assertFalse(projected["can_cancel"])
+        with self.assertRaisesRegex(ParityLifecycleDispatchError,
+                                    "PA_E3_PROVIDER_EFFECT_UNCERTAIN"):
+            dismiss_operator_gate(self.root, project_id="project-test",
+                                  run_id=str(first["run_id"]))
+        worker = LifecycleWorker(self.root)
+        self.assertNotIn(submissions["ACTION-A"], worker.eligible_submission_ids())
+        self.assertIn(submissions["ACTION-B"], worker.eligible_submission_ids())
+        sibling_code, sibling = self.pa_e3_child(submissions["ACTION-B"], "claimed")
+        self.assertEqual(sibling_code, 0, sibling)
+        self.assertNotEqual(sibling["run_id"], first["run_id"])
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE lease_id LIKE 'pa-e2:slot:%' "
+                "AND released_at IS NULL",
+            ).fetchone()[0], 2)
+
+    def test_pa_e3_exact_cancel_before_runner_releases_only_that_action(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            context, _candidate, run_id, _prompt, _duplicate = dispatcher._claim(submissions["ACTION-A"])
+        attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        with self.assertRaisesRegex(recovery.RecoveryFenceError, "PA_E3_DISPATCH_ACTIVE"):
+            recovery.acquire(
+                self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+                project_id=context.project_id, repository_id=context.repository_id,
+            )
+        with self.assertRaisesRegex(recovery.RecoveryFenceError, "PA_E3_CANCEL_TARGET_UNAVAILABLE"):
+            recovery.request_cancel(self.root, project_id="wrong-project", run_id=run_id)
+        self.assertEqual(recovery.request_cancel(
+            self.root, project_id="project-test", run_id=run_id,
+        )["state"], "CANCEL_REQUESTED")
+        self.assertEqual(recovery.request_cancel(
+            self.root, project_id="project-test", run_id=run_id,
+        )["state"], "CANCEL_REQUESTED")
+        self.assertEqual(recovery.runner_entry(
+            self.root, run_id=run_id, attempt_id=attempt,
+        ), "CANCEL_REQUESTED")
+        recovery.acknowledge_pre_runner_cancel(
+            self.root, run_id=run_id,
+            submission_id=submissions["ACTION-A"], attempt_id=attempt,
+        )
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_ACKNOWLEDGED")
+            decision = admission.delivery_readback(
+                connection, intake_id=str(staged["ACTION-A"]["intake_id"]),
+                data_root=self.root,
+                decision=admission.dependency_readback(
+                    connection, intake_id=str(staged["ACTION-A"]["intake_id"])),
+                continuation_run_id=run_id,
+            )
+            self.assertEqual((decision["state"], decision["resource_state"],
+                              decision["capacity_state"]),
+                             ("CANCEL_ACKNOWLEDGED", "AVAILABLE", "AVAILABLE"))
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-a",
+            ).state, "READY")
+            self.assertEqual(connection.execute(
+                "SELECT state,operator_resolution FROM ep_parity_lifecycle_dispatches "
+                "WHERE run_id=?", (run_id,),
+            ).fetchone(), ("FAILED", "DISMISSED"))
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            with self.assertRaisesRegex(ParityLifecycleDispatchError,
+                                        "PA_E3_DISPATCH_ALREADY_TERMINAL"):
+                dispatcher._claim(submissions["ACTION-A"])
+
+    def test_pa_e3_cancel_after_returned_checkpoint_keeps_prior_effects_held(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        _staged, submissions = self.pa_e3_submissions()
+        code, returned = self.pa_e3_child(submissions["ACTION-A"], "returned")
+        self.assertEqual(code, 0, returned)
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            context, _candidate, run_id, _prompt, _duplicate = dispatcher._claim(submissions["ACTION-A"])
+        attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        recovery.request_cancel(self.root, project_id="project-test", run_id=run_id)
+        self.assertEqual(recovery.runner_entry(
+            self.root, run_id=run_id, attempt_id=attempt,
+        ), "CANCEL_REQUESTED")
+        recovery.acknowledge_pre_runner_cancel(
+            self.root, run_id=run_id,
+            submission_id=submissions["ACTION-A"], attempt_id=attempt,
+        )
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_ACKNOWLEDGED")
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-a",
+            ).state, "WAITING_RESOURCE")
+            self.assertEqual(connection.execute(
+                "SELECT operator_resolution FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
+                (run_id,),
+            ).fetchone(), ("OPEN",))
+
+    def test_pa_e3_pending_cancel_skips_preflight_on_checkpoint_resume(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        code, returned = self.pa_e3_child(submissions["ACTION-A"], "returned")
+        self.assertEqual(code, 0, returned)
+        run_id = str(returned["run_id"])
+        recovery.request_cancel(self.root, project_id="project-test", run_id=run_id)
+        dispatcher = ParityLifecycleDispatcher(
+            self.root, runner_factory=lambda _root: (_ for _ in ()).throw(
+                AssertionError("cancelled checkpoint must not create a runner")),
+        )
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
+            dispatcher, "_persist_historical_input",
+            side_effect=AssertionError("cancelled checkpoint must not run preflight"),
+        ):
+            receipt = dispatcher.dispatch(submissions["ACTION-A"])
+        self.assertEqual((receipt.run_id, receipt.state), (run_id, "FAILED"))
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_ACKNOWLEDGED")
+            self.assertEqual(connection.execute(
+                "SELECT operator_resolution FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
+                (run_id,),
+            ).fetchone(), ("OPEN",))
+
+    def test_pa_e3_cancel_after_runner_entry_preserves_repository_hold(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            context, _candidate, run_id, _prompt, _duplicate = dispatcher._claim(submissions["ACTION-A"])
+        attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        self.assertEqual(recovery.runner_entry(
+            self.root, run_id=run_id, attempt_id=attempt,
+        ), "RUNNER_ENTERED")
+        recovery.request_cancel(self.root, project_id="project-test", run_id=run_id)
+        dispatcher._set_state(submissions["ACTION-A"], run_id, "BLOCKED")
+        recovery.acknowledge_stopped_provider(
+            self.root, run_id=run_id,
+            submission_id=submissions["ACTION-A"], attempt_id=attempt,
+        )
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_ACKNOWLEDGED")
+            decision = admission.delivery_readback(
+                connection, intake_id=str(staged["ACTION-A"]["intake_id"]),
+                data_root=self.root,
+                decision=admission.dependency_readback(
+                    connection, intake_id=str(staged["ACTION-A"]["intake_id"])),
+                continuation_run_id=run_id,
+            )
+            self.assertEqual((decision["state"], decision["resource_state"],
+                              decision["capacity_state"]),
+                             ("CANCEL_ACKNOWLEDGED", "HELD", "AVAILABLE"))
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-a",
+            ).state, "WAITING_RESOURCE")
+            self.assertEqual(connection.execute(
+                "SELECT state,operator_resolution FROM ep_parity_lifecycle_dispatches "
+                "WHERE run_id=?", (run_id,),
+            ).fetchone(), ("BLOCKED", "OPEN"))
+        dismiss_operator_gate(self.root, project_id="project-test", run_id=run_id)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-a",
+            ).state, "READY")
+
+    def test_pa_e3_console_cancel_route_is_project_scoped_and_audited(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        code, claimed = self.pa_e3_child(submissions["ACTION-A"], "claimed")
+        self.assertEqual(code, 0, claimed)
+        run_id = str(claimed["run_id"])
+        projected = next(record for record in server._central_console_run_records(
+            self.root, "project-test") if record["run_id"] == run_id)
+        self.assertTrue(projected["can_cancel"])
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), server._HealthHandler)
+        httpd.data_root = self.root
+        worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+        worker.start()
+        try:
+            base = f"http://127.0.0.1:{httpd.server_port}/api/execution-cancel"
+
+            def request(project: str, payload: dict[str, str], *, origin: str | None = None) -> Request:
+                headers = {"Content-Type": "application/json"}
+                if origin is not None:
+                    headers["Origin"] = origin
+                return Request(
+                    base + "?project=" + project, data=json.dumps(payload).encode(),
+                    method="POST", headers=headers,
+                )
+
+            with self.assertRaises(HTTPError) as foreign:
+                urlopen(request("foreign-project", {"run_id": run_id}))  # nosec B310 - loopback
+            self.assertEqual(foreign.exception.code, 409)
+            foreign.exception.close()
+            with self.assertRaises(HTTPError) as origin_denied:
+                urlopen(request("project-test", {"run_id": run_id}, origin="https://invalid.example"))  # nosec B310 - loopback
+            self.assertEqual(origin_denied.exception.code, 403)
+            origin_denied.exception.close()
+            with urlopen(request("project-test", {"run_id": run_id})) as response:  # nosec B310 - loopback
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.load(response)["state"], "CANCEL_REQUESTED")
+        finally:
+            httpd.shutdown()
+            worker.join(timeout=5)
+            httpd.server_close()
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_REQUESTED")
+
+    def test_pa_e3_fence_rejects_invalid_target_entry_and_checkpoint(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            context, _candidate, run_id, _prompt, _duplicate = dispatcher._claim(submissions["ACTION-A"])
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_DISPATCH_TARGET_INVALID"):
+            recovery.acquire(
+                self.root, run_id="run-nonexistent", submission_id=submissions["ACTION-A"],
+                project_id="project-test", repository_id="repository-a",
+            )
+        attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_DISPATCH_FENCE_CONFLICT"):
+            recovery.runner_entry(self.root, run_id=run_id, attempt_id="wrong-attempt")
+        with patch.object(recovery, "capture_process_identity", return_value=None):
+            with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                        "PA_E3_PROCESS_IDENTITY_UNAVAILABLE"):
+                recovery.runner_entry(self.root, run_id=run_id, attempt_id=attempt)
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_CHECKPOINT_INVALID"):
+            recovery.complete_attempt(self.root, run_id=run_id, attempt_id=attempt,
+                                      checkpoint_phase="COMPLETE")
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_RUNNER_ENTRY_MISSING"):
+            recovery.complete_attempt(self.root, run_id=run_id, attempt_id=attempt,
+                                      checkpoint_phase="WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(recovery.runner_entry(
+            self.root, run_id=run_id, attempt_id=attempt,
+        ), "RUNNER_ENTERED")
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_RUNNER_ALREADY_ENTERED"):
+            recovery.runner_entry(self.root, run_id=run_id, attempt_id=attempt)
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_DISPATCH_FENCE_CONFLICT"):
+            recovery.complete_attempt(self.root, run_id=run_id, attempt_id="wrong-attempt",
+                                      checkpoint_phase="WAIT_FOR_OPERATOR_MERGE")
+        recovery.complete_attempt(self.root, run_id=run_id, attempt_id=attempt,
+                                  checkpoint_phase="WAIT_FOR_OPERATOR_MERGE")
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_DISPATCH_TARGET_INVALID"):
+            recovery.acquire(
+                self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+                project_id="wrong-project", repository_id="repository-a",
+            )
+        next_attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        self.assertNotEqual(attempt, next_attempt)
+        recovery.release_attempt(self.root, run_id=run_id, attempt_id=next_attempt)
+
+    def test_pa_e3_uncertain_and_cancel_pending_block_operator_release(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            context, _candidate, run_id, _prompt, _duplicate = dispatcher._claim(submissions["ACTION-A"])
+        attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        recovery.request_cancel(self.root, project_id="project-test", run_id=run_id)
+        with sqlite_connection(self.database) as connection:
+            with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                        "PA_E3_CANCEL_ACK_PENDING"):
+                recovery.require_resolved(connection, run_id)
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_CANCEL_NOT_REQUESTED"):
+            recovery.acknowledge_pre_runner_cancel(
+                self.root, run_id="unknown-run", submission_id=submissions["ACTION-A"],
+                attempt_id=attempt,
+            )
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_DISPATCH_FENCE_CONFLICT"):
+            recovery.acknowledge_pre_runner_cancel(
+                self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+                attempt_id="wrong-attempt",
+            )
+        recovery.mark_uncertain(self.root, run_id=run_id)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id),
+                             "PROVIDER_EFFECT_UNCERTAIN")
+            with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                        "PA_E3_PROVIDER_EFFECT_UNCERTAIN"):
+                recovery.require_resolved(connection, run_id)
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_PROVIDER_EFFECT_UNCERTAIN"):
+            recovery.runner_entry(self.root, run_id=run_id, attempt_id=attempt)
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_PROVIDER_EFFECT_UNCERTAIN"):
+            recovery.request_cancel(self.root, project_id="project-test", run_id=run_id)
+        recovery.release_attempt(self.root, run_id=run_id, attempt_id=attempt)
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_PROVIDER_EFFECT_UNCERTAIN"):
+            recovery.acquire(
+                self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+                project_id=context.project_id, repository_id=context.repository_id,
+            )
+
+    def test_pa_e3_terminal_cancel_is_too_late_without_retroactive_ack(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            context, _candidate, run_id, _prompt, _duplicate = dispatcher._claim(submissions["ACTION-A"])
+        attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submissions["ACTION-A"],
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        recovery.close_terminal_cancel(self.root, run_id=run_id)
+        recovery.request_cancel(self.root, project_id="project-test", run_id=run_id)
+        recovery.close_terminal_cancel(self.root, run_id=run_id)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_REQUESTED")
+        dispatcher._set_state(submissions["ACTION-A"], run_id, "COMPLETE")
+        recovery.close_terminal_cancel(self.root, run_id=run_id)
+        recovery.close_terminal_cancel(self.root, run_id=run_id)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_TOO_LATE")
+        with self.assertRaisesRegex(recovery.RecoveryFenceError,
+                                    "PA_E3_CANCEL_NOT_REQUESTED"):
+            recovery.acknowledge_stopped_provider(
+                self.root, run_id=run_id,
+                submission_id=submissions["ACTION-A"], attempt_id=attempt,
+            )
+
+    def test_pa_e3_dispatch_acknowledges_cancel_before_runner_entry(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+
+        class NoProviderRunner:
+            def __init__(self) -> None:
+                self.agent = self
+                self.called = False
+
+            def set_cancellation_check(self, callback: object) -> None:
+                self.callback = callback
+
+            def run(self, *_: object, **__: object) -> None:
+                self.called = True
+                raise AssertionError("provider must not run after pre-entry cancel")
+
+        runner = NoProviderRunner()
+        dispatcher = ParityLifecycleDispatcher(self.root, runner_factory=lambda _root: runner)
+
+        def cancel_during_preflight(_root: Path, _candidate: object,
+                                    run_id: str, _prompt: Path) -> None:
+            recovery.request_cancel(self.root, project_id="project-test", run_id=run_id)
+
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
+            dispatcher, "_persist_historical_input", side_effect=cancel_during_preflight,
+        ):
+            receipt = dispatcher.dispatch(submissions["ACTION-A"])
+        self.assertEqual(receipt.state, "FAILED")
+        self.assertFalse(runner.called)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, receipt.run_id), "CANCEL_ACKNOWLEDGED")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:%' AND released_at IS NULL",
+                (receipt.run_id,),
+            ).fetchone()[0], 0)
+
+    def test_pa_e3_dispatch_acknowledges_owned_provider_stop(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        _staged, submissions = self.pa_e3_submissions()
+
+        class CancelledAgent:
+            def __init__(self) -> None:
+                self.check = lambda: False
+                self.observed = False
+
+            def set_cancellation_check(self, callback: object) -> None:
+                self.check = callback
+
+            def cancellation_observed(self) -> bool:
+                return self.observed
+
+            def provider_process_cleanup_confirmed(self) -> bool:
+                return True
+
+        class CancelledRunner:
+            def __init__(self, agent: CancelledAgent) -> None:
+                self.agent = agent
+
+            def run(self, _prompt: Path, *, run_id: str, **_: object) -> None:
+                recovery.request_cancel(self_root, project_id="project-test", run_id=run_id)
+                self.agent.observed = bool(self.agent.check())
+                raise CodexInvocationError(
+                    "operator cancellation", "owned provider stopped",
+                    next_action="NONE", terminal_condition="operator_cancellation",
+                )
+
+        self_root = self.root
+        agent = CancelledAgent()
+        dispatcher = ParityLifecycleDispatcher(
+            self.root, runner_factory=lambda _root: CancelledRunner(agent),
+        )
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
+            dispatcher, "_persist_historical_input", return_value=None,
+        ):
+            with self.assertRaises(CodexInvocationError):
+                dispatcher.dispatch(submissions["ACTION-A"])
+        self.assertTrue(agent.observed)
+        with sqlite_connection(self.database) as connection:
+            row = connection.execute(
+                "SELECT run_id,state,operator_resolution FROM ep_parity_lifecycle_dispatches "
+                "WHERE submission_id=?", (submissions["ACTION-A"],),
+            ).fetchone()
+            self.assertEqual((row[1], row[2]), ("BLOCKED", "OPEN"))
+            self.assertEqual(recovery.status(connection, str(row[0])), "CANCEL_ACKNOWLEDGED")
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-a",
+            ).state, "WAITING_RESOURCE")
+
+    def test_pa_e3_dispatch_initialize_only_and_active_owner_exclusion(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {
+            "EP_PA_E2_ISOLATED_PROCESS": str(os.getpid()),
+            "EP_QUALIFICATION_INITIALIZE_ONLY": "1",
+        }):
+            initialized = dispatcher.dispatch(submissions["ACTION-A"])
+        self.assertEqual(initialized.state, "RUNNING")
+        attempt = recovery.acquire(
+            self.root, run_id=initialized.run_id,
+            submission_id=submissions["ACTION-A"],
+            project_id="project-test", repository_id="repository-a",
+        )
+        try:
+            with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+                with self.assertRaisesRegex(ParityLifecycleDispatchError,
+                                            "PA_E3_DISPATCH_ACTIVE"):
+                    dispatcher.dispatch(submissions["ACTION-A"])
+        finally:
+            recovery.release_attempt(self.root, run_id=initialized.run_id,
+                                     attempt_id=attempt)
+
+    def test_pa_e3_dispatch_returns_a_resumable_child_free_checkpoint(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(
+            self.root, runner_factory=lambda root: _PaE3CheckpointRunner(root, self.root),
+        )
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
+            dispatcher, "_persist_historical_input", return_value=None,
+        ), patch.object(
+            dispatcher, "_release_pa_e2_capacity",
+            side_effect=AssertionError("no release may follow a returned checkpoint"),
+        ):
+            first = dispatcher.dispatch(submissions["ACTION-A"])
+            second = dispatcher.dispatch(submissions["ACTION-A"])
+        self.assertEqual((first.state, second.state), ("RUNNING", "RUNNING"))
+        self.assertEqual(first.run_id, second.run_id)
+        self.assertTrue(second.duplicate_claim)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e3:returned:%'",
+                (first.run_id,),
+            ).fetchone()[0], 2)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:slot:%' AND released_at IS NULL",
+                (first.run_id,),
+            ).fetchone()[0], 0)
+
+    def test_pa_e3_dispatch_nonterminal_cancel_requires_stop_ack(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(
+            self.root, runner_factory=lambda root: _PaE3CheckpointRunner(
+                root, self.root, cancel=True, observe_cancel=True,
+            ),
+        )
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
+            dispatcher, "_persist_historical_input", return_value=None,
+        ):
+            receipt = dispatcher.dispatch(submissions["ACTION-A"])
+        self.assertEqual(receipt.state, "BLOCKED")
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, receipt.run_id),
+                             "CANCEL_ACKNOWLEDGED")
+            self.assertEqual(connection.execute(
+                "SELECT operator_resolution FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
+                (receipt.run_id,),
+            ).fetchone(), ("OPEN",))
+
+    def test_pa_e3_dispatch_retains_uncertain_hold_for_unconfirmed_provider(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(
+            self.root, runner_factory=lambda root: _PaE3CheckpointRunner(
+                root, self.root, cleanup_confirmed=False,
+            ),
+        )
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
+            dispatcher, "_persist_historical_input", return_value=None,
+        ):
+            with self.assertRaisesRegex(RunnerError, "PA_E3_PROVIDER_EXIT_UNCONFIRMED"):
+                dispatcher.dispatch(submissions["ACTION-A"])
+        with sqlite_connection(self.database) as connection:
+            run_id = str(connection.execute(
+                "SELECT run_id FROM ep_parity_lifecycle_dispatches WHERE submission_id=?",
+                (submissions["ACTION-A"],),
+            ).fetchone()[0])
+            self.assertEqual(recovery.status(connection, run_id),
+                             "PROVIDER_EFFECT_UNCERTAIN")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:slot:%' AND released_at IS NULL",
+                (run_id,),
+            ).fetchone()[0], 1)
+
+    def test_pa_e3_dispatch_unexpected_runner_crash_stays_uncertain(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(
+            self.root, runner_factory=lambda root: _PaE3CheckpointRunner(
+                root, self.root, crash=True,
+            ),
+        )
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
+            dispatcher, "_persist_historical_input", return_value=None,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "controlled dispatcher crash"):
+                dispatcher.dispatch(submissions["ACTION-A"])
+        with sqlite_connection(self.database) as connection:
+            run_id = str(connection.execute(
+                "SELECT run_id FROM ep_parity_lifecycle_dispatches WHERE submission_id=?",
+                (submissions["ACTION-A"],),
+            ).fetchone()[0])
+            self.assertEqual(recovery.status(connection, run_id),
+                             "PROVIDER_EFFECT_UNCERTAIN")
 
 
 if __name__ == "__main__":
