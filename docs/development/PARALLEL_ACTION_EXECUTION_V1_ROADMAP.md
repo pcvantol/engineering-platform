@@ -1,6 +1,6 @@
 # Parallel Action execution V1 — EP owning roadmap
 
-**Owner:** Engineering Platform. **PA-E0/PA-E1/PA-E2: SOURCE_FIXED; PA-E3/E4/EQ: PLANNED. NO_BUMP.**
+**Owner:** Engineering Platform. **PA-E0/PA-E1/PA-E2/PA-E3/PA-E4: SOURCE_FIXED; PA-EQ: PLANNED. NO_BUMP.**
 This is the bounded decomposition of the existing dependency-admission and P-QUEUE/multi-execution seams in [the canonical roadmap](ENGINEERING_PLATFORM_ROADMAP.md). It does not implement a second scheduler or reopen the entire Agent fleet, subagent-efficiency or post-assurance-publication programme.
 
 Owning contract: [Forge Action dependency and EP admission boundary](../engineering/FORGE_ACTION_DEPENDENCY_ADMISSION_BOUNDARY.md). Machine-readable index: [documentary DAG](PARALLEL_ACTION_EXECUTION_V1_DAG.json). Forge companion: `docs/roadmap/PARALLEL_ACTION_RUNTIME_V1.md`; shared tests: `docs/architecture/PARALLEL_ACTION_QUALIFICATION_V1.md`, PA-01..PA-26.
@@ -21,6 +21,8 @@ PA-E0's source contract is [EP parallel Action compatibility V1](../engineering/
 PA-E1's source contract is [EP parallel Action admission V1](../engineering/EP_PARALLEL_ACTION_ADMISSION_V1.md). It persists immutable Action intakes, gates canonical submission and worker claim on exact predecessor evidence, and exposes typed scope/dependency waits. It does not qualify concurrent workers or publish predecessor artifact packages.
 
 PA-E2's source contract is [EP parallel Action delivery V1](../engineering/EP_PARALLEL_ACTION_DELIVERY_V1.md). It adds opt-in, resource-fenced and capacity-bounded concurrent lifecycle delivery for distinct repositories on one host while preserving PA-E1's serial digest.
+
+PA-E3's source contract is [EP parallel Action recovery V1](../engineering/EP_PARALLEL_ACTION_RECOVERY_V1.md). Its protected delivery fences per-run process ownership and provider uncertainty through restart and cancellation. PA-E4's separately selected collection/readback/export contract is [EP parallel Action collection V1](../engineering/EP_PARALLEL_ACTION_COLLECTION_V1.md); it does not make PA-EQ or Forge consumer acceptance complete.
 
 First delivery uses two authorized repositories and isolated workspaces on one compatible host. Existing admission/worker/lease/provider paths must actually run concurrently; capability labels or a threadpool alone do not qualify it. No full Workspace UI, distributed Agent fleet, new universal installer or nested provider-agent engine prerequisite. Same-repository parallel writes remain a separate stricter profile.
 

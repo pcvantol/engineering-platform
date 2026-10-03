@@ -699,7 +699,8 @@ def _stored_submission_matches_intake(connection: sqlite3.Connection, *,
             (parent,),
         ).fetchone()
         return (parent_link is not None and parent_link[0] == intake_id
-                and resolution == ("RETRIED", submission_id)
+                and resolution is not None
+                and tuple(resolution) == ("RETRIED", submission_id)
                 and _stored_submission_matches_intake(
                     connection, intake_id=intake_id, submission_id=parent,
                     seen=seen | {submission_id},
