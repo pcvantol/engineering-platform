@@ -46,8 +46,8 @@ including producer-claimed dispatch or concurrency grants, are rejected.
 
 The parser accepts up to 32 MiB of UTF-8 JSON so even a dense 256-Action Forge
 graph in ordinary serialization fits. It rejects larger wire documents with
-`INPUT_TOO_LARGE`. A pre-decode punctuation budget derived from the maximum
-Action and edge counts rejects container/element floods with
+`INPUT_TOO_LARGE`. Pre-decode punctuation, container depth, array item, and
+object field budgets derived from the maximum Action and edge counts reject floods with
 `STRUCTURE_LIMIT_EXCEEDED`, before JSON can materialize an excessive invalid
 tree. The parser then bounds Action count, rejects duplicate JSON keys and
 identities, malformed identifiers/evidence, missing or repeated predecessors,

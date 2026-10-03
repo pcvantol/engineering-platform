@@ -18,7 +18,10 @@ PRODUCER_VERSION = "parallel-action-graph/v1"
 READBACK_VERSION = "ep-parallel-action-compat/v1"
 MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
 MAX_ACTIONS = 256
-_MAX_ARRAYS = 2 * MAX_ACTIONS + 1  # headroom for ordinary over-limit field errors
+_MAX_ARRAYS = MAX_ACTIONS + 1
+_MAX_ARRAY_ITEMS = MAX_ACTIONS
+_MAX_OBJECT_FIELDS = 8  # twice the largest producer object
+_MAX_DEPTH = 16
 _MAX_EDGES = MAX_ACTIONS * (MAX_ACTIONS - 1)
 _MAX_OBJECTS = 1 + 2 * MAX_ACTIONS + 2 * _MAX_EDGES
 _MAX_COMMAS = 4 * _MAX_EDGES + 6 * MAX_ACTIONS + 3
@@ -88,6 +91,38 @@ def _invalid_constant(_value: str) -> None:
     raise CompatibilityError("MALFORMED_INPUT")
 
 
+def _bound_container_items(document: bytes) -> None:
+    """Bound JSON container depth and items before the decoder allocates them."""
+    stack: list[list[int]] = []  # container byte, comma count
+    in_string = False
+    escaped = False
+    for byte in document:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 92:  # backslash
+                escaped = True
+            elif byte == 34:  # quote
+                in_string = False
+        elif byte == 34:
+            in_string = True
+        elif byte == 91:  # [
+            stack.append([byte, 0])
+        elif byte == 123:  # {
+            stack.append([byte, 0])
+        if len(stack) > _MAX_DEPTH:
+            raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
+        if in_string:
+            continue
+        if byte == 44 and stack:  # comma in the current array or object
+            stack[-1][1] += 1
+            limit = _MAX_ARRAY_ITEMS if stack[-1][0] == 91 else _MAX_OBJECT_FIELDS
+            if stack[-1][1] >= limit:
+                raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
+        elif byte in (93, 125) and stack:  # ] or }; syntax belongs to json.loads
+            stack.pop()
+
+
 def _decode(document: bytes) -> object:
     if not isinstance(document, bytes) or not document:
         raise CompatibilityError("MALFORMED_INPUT")
@@ -99,6 +134,7 @@ def _decode(document: bytes) -> object:
             or document.count(b"{") > _MAX_OBJECTS
             or document.count(b",") > _MAX_COMMAS):
         raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
+    _bound_container_items(document)
     try:
         return json.loads(
             document.decode("utf-8"),

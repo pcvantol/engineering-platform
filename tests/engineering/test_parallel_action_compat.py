@@ -159,11 +159,17 @@ class ParallelActionCompatibilityTests(unittest.TestCase):
 
         flood = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
                  b'"mission_revision":1,"actions":[' + b'[],' * 1_999_999 + b'[]]}')
+        object_flood = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
+                        b'"mission_revision":1,"actions":[' + b'{"x":0},' * 129_999 + b'{"x":0}]}')
+        field_flood = (b'{"contract_version":"parallel-action-graph/v1","mission_id":"M",'
+                       b'"mission_revision":1,"actions":[],' + b'"x":0,' * 129_999 + b'"x":0}')
+        depth_flood = b'[' * 20 + b'0' + b']' * 20
         with patch("engineering_platform.parallel_action_compat.json.loads",
                    side_effect=AssertionError("invalid flood was decoded")):
-            self.assert_rejected(
-                assess_parallel_action_graph(flood, scope=_SCOPE), "STRUCTURE_LIMIT_EXCEEDED"
-            )
+            for payload in (flood, object_flood, field_flood, depth_flood):
+                self.assert_rejected(
+                    assess_parallel_action_graph(payload, scope=_SCOPE), "STRUCTURE_LIMIT_EXCEEDED"
+                )
 
     def test_unsupported_version_and_unknown_authority_fields_fail_closed(self) -> None:
         for version in ["parallel-action-graph/v2", None, 1]:
@@ -184,7 +190,7 @@ class ParallelActionCompatibilityTests(unittest.TestCase):
         graph = _source(); graph["mission_revision"] = True; cases.append((graph, "INVALID_ENVELOPE"))
         graph = _source(); graph["mission_revision"] = 0; cases.append((graph, "INVALID_ENVELOPE"))
         graph = _source(); graph["actions"] = []; cases.append((graph, "INVALID_ENVELOPE"))
-        graph = _source(); graph["actions"] = [graph["actions"][0]] * 257; cases.append((graph, "INVALID_ENVELOPE"))
+        graph = _source(); graph["actions"] = [graph["actions"][0]] * 257; cases.append((graph, "STRUCTURE_LIMIT_EXCEEDED"))
         graph = _source(); graph["actions"][0]["unknown"] = 1; cases.append((graph, "INVALID_ACTION"))
         graph = _source(); graph["actions"][0]["action_id"] = "bad/id"; cases.append((graph, "INVALID_ACTION"))
         graph = _source(); graph["actions"][1]["action_id"] = "ACTION-A"; cases.append((graph, "INVALID_ACTION"))
