@@ -16,8 +16,12 @@ from typing import Any
 
 PRODUCER_VERSION = "parallel-action-graph/v1"
 READBACK_VERSION = "ep-parallel-action-compat/v1"
-MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
 MAX_ACTIONS = 256
+_MAX_ARRAYS = 2 * MAX_ACTIONS + 1  # headroom for ordinary over-limit field errors
+_MAX_EDGES = MAX_ACTIONS * (MAX_ACTIONS - 1)
+_MAX_OBJECTS = 1 + 2 * MAX_ACTIONS + 2 * _MAX_EDGES
+_MAX_COMMAS = 4 * _MAX_EDGES + 6 * MAX_ACTIONS + 3
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -85,8 +89,16 @@ def _invalid_constant(_value: str) -> None:
 
 
 def _decode(document: bytes) -> object:
-    if not isinstance(document, bytes) or not 0 < len(document) <= MAX_DOCUMENT_BYTES:
+    if not isinstance(document, bytes) or not document:
         raise CompatibilityError("MALFORMED_INPUT")
+    if len(document) > MAX_DOCUMENT_BYTES:
+        raise CompatibilityError("INPUT_TOO_LARGE")
+    # No valid producer value contains these punctuation bytes. Bound container
+    # and element counts before json.loads can materialize a huge invalid tree.
+    if (document.count(b"[") > _MAX_ARRAYS
+            or document.count(b"{") > _MAX_OBJECTS
+            or document.count(b",") > _MAX_COMMAS):
+        raise CompatibilityError("STRUCTURE_LIMIT_EXCEEDED")
     try:
         return json.loads(
             document.decode("utf-8"),

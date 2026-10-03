@@ -27,6 +27,9 @@ readback = assess_parallel_action_graph(forge_graph_bytes, scope=scope)
 ```
 
 `CompatibilityScope` is an EP caller's expected identity set for comparison.
+PA-E0's first profile compares one EP instance and project with up to 256
+repository IDs; graphs spanning instances or projects fail closed in this
+profile. The scope can be widened only in a later explicitly qualified profile.
 The synthetic fixture scope is not a registration, binding, repository grant or
 execution admission. A future PA-E1 caller must obtain its scope from current
 authoritative EP state and separately enforce grant, baseline, resource,
@@ -41,7 +44,12 @@ and `dependencies`; its target has `ep_instance_id`, `project_id`,
 `REPOSITORY_REVISION`; digests are lower-case SHA-256 tokens. Unknown fields,
 including producer-claimed dispatch or concurrency grants, are rejected.
 
-The parser bounds input size and Action count, rejects duplicate JSON keys and
+The parser accepts up to 32 MiB of UTF-8 JSON so even a dense 256-Action Forge
+graph in ordinary serialization fits. It rejects larger wire documents with
+`INPUT_TOO_LARGE`. A pre-decode punctuation budget derived from the maximum
+Action and edge counts rejects container/element floods with
+`STRUCTURE_LIMIT_EXCEEDED`, before JSON can materialize an excessive invalid
+tree. The parser then bounds Action count, rejects duplicate JSON keys and
 identities, malformed identifiers/evidence, missing or repeated predecessors,
 self edges, cycles, foreign repositories, instance/project mismatches and
 evidence repositories that do not match their predecessor target. It copies
@@ -71,7 +79,8 @@ no concurrency grant field. `resource_and_capacity_verified=false`,
 Rejection returns `status=REJECTED`, `compatible=false`,
 `dispatch_authorized=false`, `admission=DENIED` and a safe `error.code` plus
 structural `error.path`; it returns no Action snapshot. Codes are
-`INVALID_SCOPE`, `MALFORMED_INPUT`, `UNSUPPORTED_VERSION`,
+`INVALID_SCOPE`, `MALFORMED_INPUT`, `INPUT_TOO_LARGE`,
+`STRUCTURE_LIMIT_EXCEEDED`, `UNSUPPORTED_VERSION`,
 `INVALID_ENVELOPE`, `INVALID_ACTION`, `INVALID_TARGET`,
 `TARGET_SCOPE_MISMATCH`, `FOREIGN_REPOSITORY`, `INVALID_DEPENDENCY`,
 `MISSING_PREDECESSOR`, `INVALID_EVIDENCE`, `EVIDENCE_TARGET_MISMATCH` and

@@ -8,7 +8,9 @@ Increment `FORGE_EP_PARALLEL_ACTION_RUNTIME_V1` specifies the EP side of
 multiple independent Actions from one Mission actually executing concurrently.
 See [owning roadmap](../development/PARALLEL_ACTION_EXECUTION_V1_ROADMAP.md)
 and [documentary DAG](../development/PARALLEL_ACTION_EXECUTION_V1_DAG.json).
-All six added EP implementation/qualification nodes remain PLANNED; NO_BUMP.
+PA-E0 is SOURCE_FIXED as an authority-free compatibility boundary; PA-E1,
+PA-E2, PA-E3, PA-E4 and PA-EQ remain PLANNED. NO_BUMP. The PA-E0 source
+contract is [EP parallel Action compatibility V1](EP_PARALLEL_ACTION_COMPAT_V1.md).
 Forge owns the companion `docs/architecture/PARALLEL_ACTION_RUNTIME_V1.md`
 and shared PA-01..PA-26 qualification catalogue. This refines existing
 [P-QUEUE/Agent delivery scheduling](AGENT_DELIVERY_SCHEDULING_ARCHITECTURE.md),
@@ -300,7 +302,8 @@ cross-product qualification cycle or Workspace predecessor is introduced.
 
 The first Forge dynamic inner-Mission canary may remain serial and does not require this full multi-repository parallel qualification. The cross-repository Forge canary requires this boundary together with EP's qualified multi-execution, repository lease and Agent/provider capacity capabilities.
 
-This design change performs no runtime implementation, schema migration, active
-policy change, process start, reset, credential operation, release or installation.
+This architecture document itself activates no policy, worker, reset, credential
+operation, release or installation. The separate PA-E0 source implementation is
+contract compatibility only and performs no provider or repository execution.
 The existing reset-development streams and serial Mission-3 acceptance are not
-expanded or reclassified by this document.
+expanded or reclassified here.
