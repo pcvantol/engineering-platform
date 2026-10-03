@@ -17,7 +17,7 @@ import subprocess
 from typing import Any
 
 from .local_repository_binding import (
-    LocalRepositoryBindingError, resolve_execution_repository,
+    LocalRepositoryBindingError, _next_updated_at, resolve_execution_repository,
 )
 from .parallel_action_compat import (
     CompatibilityError, CompatibilityScope, assess_parallel_action_graph,
@@ -344,7 +344,12 @@ def set_repository_grant(connection: sqlite3.Connection, *, data_root: object,
     if scope is None:
         raise ParallelAdmissionError("SCOPE_UNAVAILABLE")
     status = "ACTIVE" if active else "REVOKED"
-    now = _now()
+    previous = connection.execute(
+        "SELECT updated_at FROM ep_parallel_action_repository_grants "
+        "WHERE consumer_id=? AND project_id=? AND repository_id=?",
+        (consumer_id, project_id, repository_id),
+    ).fetchone()
+    now = _next_updated_at(previous[0] if previous else None)
     connection.execute(
         """INSERT INTO ep_parallel_action_repository_grants
              VALUES(?,?,?,?,?,?,?,?)

@@ -6,7 +6,7 @@ checkouts, consult Agent storage, or grant execution authority.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 
@@ -33,6 +33,18 @@ def _fail(code: str) -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _next_updated_at(previous: object) -> str:
+    """Keep a rebinding revision distinct even within one clock tick."""
+    now = datetime.now(timezone.utc)
+    try:
+        prior = datetime.fromisoformat(str(previous))
+        if prior.tzinfo is not None and prior >= now:
+            now = prior + timedelta(microseconds=1)
+    except ValueError:
+        pass
+    return now.isoformat()
 
 
 def install_schema(connection: sqlite3.Connection) -> None:
@@ -102,10 +114,10 @@ def bind_local_repository(
     _validate_topology(connection, project_id, repository_id)
     root = _validated_root(local_root, data_root=data_root)
     _validate_declaration(root, project_id, repository_id)
-    existing = connection.execute("SELECT local_root,state,created_at FROM ep_local_repository_bindings WHERE project_id=? AND repository_id=?", (project_id, repository_id)).fetchone()
+    existing = connection.execute("SELECT local_root,state,created_at,updated_at FROM ep_local_repository_bindings WHERE project_id=? AND repository_id=?", (project_id, repository_id)).fetchone()
     if existing is not None and str(existing[0]) != str(root) and not rebind:
         _fail("LOCAL_BINDING_EXISTS_REBIND_REQUIRED")
-    now = _now()
+    now = _next_updated_at(existing[3] if existing else None)
     if existing is None:
         connection.execute("INSERT INTO ep_local_repository_bindings(project_id,repository_id,local_root,state,created_at,updated_at) VALUES(?,?,?,'BOUND',?,?)", (project_id, repository_id, str(root), now, now))
         created_at = now
@@ -129,7 +141,11 @@ def resolve_local_repository_binding(connection: sqlite3.Connection, *, project_
 def unbind_local_repository(connection: sqlite3.Connection, *, project_id: str, repository_id: str) -> None:
     """Disable the mapping while preserving historical binding evidence."""
     _validate_topology(connection, project_id, repository_id)
-    now = _now()
+    previous = connection.execute(
+        "SELECT updated_at FROM ep_local_repository_bindings WHERE project_id=? AND repository_id=?",
+        (project_id, repository_id),
+    ).fetchone()
+    now = _next_updated_at(previous[0] if previous else None)
     connection.execute("UPDATE ep_local_repository_bindings SET state='UNBOUND',updated_at=? WHERE project_id=? AND repository_id=?", (now, project_id, repository_id))
 
 
