@@ -54,6 +54,9 @@ bounded grace period. Only then is cancellation acknowledged and the provider
 slot released. The run remains blocked with an open operator decision and its
 repository remains exclusive while existing workspace, commit or PR effects
 are reviewed. Explicit dismissal releases that repository reservation.
+Terminal state, cancellation outcome, attempt closure and capacity/resource
+release commit together in CENTRAL; a crash cannot expose a terminal run with
+an unresolved provider slot.
 Producer readback distinguishes `CANCEL_REQUESTED` from
 `CANCEL_ACKNOWLEDGED` and reports whether the repository is still held.
 

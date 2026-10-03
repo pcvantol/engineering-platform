@@ -2432,7 +2432,8 @@ class ParallelActionAdmissionTest(unittest.TestCase):
         with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
             dispatcher, "_persist_historical_input", return_value=None,
         ), patch.object(
-            recovery, "acknowledge_stopped_provider", side_effect=RuntimeError("ack write failed"),
+            recovery, "acknowledge_stopped_provider_in_transaction",
+            side_effect=RuntimeError("ack write failed"),
         ):
             with self.assertRaisesRegex(RuntimeError, "ack write failed"):
                 dispatcher.dispatch(submissions["ACTION-A"])
@@ -2452,6 +2453,95 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 "AND lease_id LIKE 'pa-e2:resource:%' AND released_at IS NULL",
                 (run_id,),
             ).fetchone()[0], 1)
+
+    def test_pa_e3_terminal_state_and_cancel_ack_commit_together(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        submission_id = submissions["ACTION-A"]
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            context, _candidate, run_id, _prompt, _duplicate = dispatcher._claim(submission_id)
+        attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submission_id,
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        recovery.runner_entry(self.root, run_id=run_id, attempt_id=attempt)
+        recovery.request_cancel(self.root, project_id="project-test", run_id=run_id)
+        with sqlite_connection(self.database) as connection:
+            connection.execute(
+                "CREATE TRIGGER fail_pa_e3_terminal_release BEFORE UPDATE ON ep_execution_leases "
+                "WHEN OLD.lease_id LIKE 'pa-e2:slot:%' AND NEW.released_at IS NOT NULL "
+                "BEGIN SELECT RAISE(ABORT, 'slot release blocked'); END"
+            )
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "slot release blocked"):
+            dispatcher._set_state(
+                submission_id, run_id, "BLOCKED",
+                pa_e3_attempt_id=attempt, pa_e3_ack_stopped=True,
+            )
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT state FROM ep_parity_lifecycle_dispatches WHERE run_id=?", (run_id,),
+            ).fetchone()[0], "CLAIMED")
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_REQUESTED")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:slot:%' AND released_at IS NULL",
+                (run_id,),
+            ).fetchone()[0], 1)
+            connection.execute("DROP TRIGGER fail_pa_e3_terminal_release")
+        dispatcher._set_state(
+            submission_id, run_id, "BLOCKED",
+            pa_e3_attempt_id=attempt, pa_e3_ack_stopped=True,
+        )
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT state FROM ep_parity_lifecycle_dispatches WHERE run_id=?", (run_id,),
+            ).fetchone()[0], "BLOCKED")
+            self.assertEqual(recovery.status(connection, run_id), "CANCEL_ACKNOWLEDGED")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:slot:%' AND released_at IS NULL",
+                (run_id,),
+            ).fetchone()[0], 0)
+
+    def test_pa_e3_complete_and_resource_release_commit_together(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        submission_id = submissions["ACTION-A"]
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            context, _candidate, run_id, _prompt, _duplicate = dispatcher._claim(submission_id)
+        attempt = recovery.acquire(
+            self.root, run_id=run_id, submission_id=submission_id,
+            project_id=context.project_id, repository_id=context.repository_id,
+        )
+        recovery.runner_entry(self.root, run_id=run_id, attempt_id=attempt)
+        with sqlite_connection(self.database) as connection:
+            connection.execute(
+                "CREATE TRIGGER fail_pa_e3_resource_release BEFORE UPDATE ON ep_execution_leases "
+                "WHEN OLD.lease_id LIKE 'pa-e2:resource:%' AND NEW.released_at IS NOT NULL "
+                "BEGIN SELECT RAISE(ABORT, 'resource release blocked'); END"
+            )
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "resource release blocked"):
+            dispatcher._set_state(submission_id, run_id, "COMPLETE", pa_e3_attempt_id=attempt)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT state FROM ep_parity_lifecycle_dispatches WHERE run_id=?", (run_id,),
+            ).fetchone()[0], "CLAIMED")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:slot:%' AND released_at IS NULL",
+                (run_id,),
+            ).fetchone()[0], 1)
+            connection.execute("DROP TRIGGER fail_pa_e3_resource_release")
+        dispatcher._set_state(submission_id, run_id, "COMPLETE", pa_e3_attempt_id=attempt)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT state FROM ep_parity_lifecycle_dispatches WHERE run_id=?", (run_id,),
+            ).fetchone()[0], "COMPLETE")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:%' AND released_at IS NULL",
+                (run_id,),
+            ).fetchone()[0], 0)
 
     def test_pa_e3_dispatch_retains_uncertain_hold_for_unconfirmed_provider(self) -> None:
         _staged, submissions = self.pa_e3_submissions()

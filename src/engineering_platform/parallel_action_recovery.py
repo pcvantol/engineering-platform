@@ -394,59 +394,74 @@ def cancel_requested(data_root: Path, run_id: str) -> bool:
         return status(connection, run_id) == "CANCEL_REQUESTED"
 
 
+def acknowledge_stopped_provider_in_transaction(connection: sqlite3.Connection, *,
+                                                run_id: str, submission_id: str,
+                                                attempt_id: str) -> None:
+    """Acknowledge a stopped provider inside the caller's terminal commit."""
+    if status(connection, run_id) != "CANCEL_REQUESTED":
+        raise RecoveryFenceError("PA_E3_CANCEL_NOT_REQUESTED")
+    if not connection.execute(
+        "SELECT 1 FROM ep_execution_leases WHERE lease_id=?",
+        (_entered_id(attempt_id),),
+    ).fetchone():
+        raise RecoveryFenceError("PA_E3_PROVIDER_EFFECT_UNCERTAIN")
+    attempts = _active(connection, run_id)
+    if len(attempts) != 1 or attempts[0][0] != attempt_id:
+        raise RecoveryFenceError("PA_E3_DISPATCH_FENCE_CONFLICT")
+    if _unreturned_entries(connection, run_id) != [_entered_id(attempt_id)]:
+        raise RecoveryFenceError("PA_E3_CANCEL_PRIOR_EFFECT_UNQUALIFIED")
+    eligible = connection.execute(
+        "SELECT 1 FROM ep_parity_lifecycle_dispatches "
+        "WHERE submission_id=? AND run_id=? AND state IN ('BLOCKED','FAILED') "
+        "AND operator_resolution='OPEN'",
+        (submission_id, run_id),
+    ).fetchone()
+    if eligible is None:
+        raise RecoveryFenceError("PA_E3_CANCEL_TARGET_UNAVAILABLE")
+    parallel_action_delivery.release_capacity(connection, run_id)
+    # The provider stopped, but its earlier workspace/PR effects remain
+    # for operator review. Keep this repository exclusive until dismissal.
+    connection.execute(
+        "UPDATE ep_execution_leases SET released_at=? WHERE lease_id IN (?,?) "
+        "AND run_id=? AND released_at IS NULL",
+        (_now(), attempt_id, _CANCEL + run_id, run_id),
+    )
+
+
 def acknowledge_stopped_provider(data_root: Path, *, run_id: str,
                                  submission_id: str, attempt_id: str) -> None:
     """Acknowledge only after this invocation observed its provider group exit."""
     with sqlite_connection(central_database.path(data_root)) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        if status(connection, run_id) != "CANCEL_REQUESTED":
-            raise RecoveryFenceError("PA_E3_CANCEL_NOT_REQUESTED")
-        if not connection.execute(
-            "SELECT 1 FROM ep_execution_leases WHERE lease_id=?",
-            (_entered_id(attempt_id),),
-        ).fetchone():
-            raise RecoveryFenceError("PA_E3_PROVIDER_EFFECT_UNCERTAIN")
-        attempts = _active(connection, run_id)
-        if len(attempts) != 1 or attempts[0][0] != attempt_id:
-            raise RecoveryFenceError("PA_E3_DISPATCH_FENCE_CONFLICT")
-        if _unreturned_entries(connection, run_id) != [_entered_id(attempt_id)]:
-            raise RecoveryFenceError("PA_E3_CANCEL_PRIOR_EFFECT_UNQUALIFIED")
-        eligible = connection.execute(
-            "SELECT 1 FROM ep_parity_lifecycle_dispatches "
-            "WHERE submission_id=? AND run_id=? AND state IN ('BLOCKED','FAILED') "
-            "AND operator_resolution='OPEN'",
-            (submission_id, run_id),
-        ).fetchone()
-        if eligible is None:
-            raise RecoveryFenceError("PA_E3_CANCEL_TARGET_UNAVAILABLE")
-        parallel_action_delivery.release_capacity(connection, run_id)
-        # The provider stopped, but its earlier workspace/PR effects remain
-        # for operator review. Keep this repository exclusive until dismissal.
-        connection.execute(
-            "UPDATE ep_execution_leases SET released_at=? WHERE lease_id IN (?,?) "
-            "AND run_id=? AND released_at IS NULL",
-            (_now(), attempt_id, _CANCEL + run_id, run_id),
+        acknowledge_stopped_provider_in_transaction(
+            connection, run_id=run_id, submission_id=submission_id,
+            attempt_id=attempt_id,
         )
+
+
+def close_terminal_cancel_in_transaction(connection: sqlite3.Connection, *, run_id: str) -> None:
+    """Close a late cancellation within the same terminal state transaction."""
+    if status(connection, run_id) != "CANCEL_REQUESTED":
+        return
+    row = connection.execute(
+        "SELECT state FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    if row is None or row[0] not in {"COMPLETE", "BLOCKED", "FAILED"}:
+        return
+    connection.execute(
+        "INSERT OR IGNORE INTO ep_execution_leases "
+        "(lease_id,run_id,holder_id,acquired_at,expires_at) VALUES(?,?,?,?,?)",
+        (_CANCEL_OUTCOME + run_id, run_id, "COMPLETED_BEFORE_CANCELLATION", _now(), _FOREVER),
+    )
+    connection.execute(
+        "UPDATE ep_execution_leases SET released_at=? WHERE lease_id=? AND released_at IS NULL",
+        (_now(), _CANCEL + run_id),
+    )
 
 
 def close_terminal_cancel(data_root: Path, *, run_id: str) -> None:
     """Record that an already-ended run could not be cancelled retroactively."""
     with sqlite_connection(central_database.path(data_root)) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        if status(connection, run_id) != "CANCEL_REQUESTED":
-            return
-        row = connection.execute(
-            "SELECT state FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
-            (run_id,),
-        ).fetchone()
-        if row is None or row[0] not in {"COMPLETE", "BLOCKED", "FAILED"}:
-            return
-        connection.execute(
-            "INSERT OR IGNORE INTO ep_execution_leases "
-            "(lease_id,run_id,holder_id,acquired_at,expires_at) VALUES(?,?,?,?,?)",
-            (_CANCEL_OUTCOME + run_id, run_id, "COMPLETED_BEFORE_CANCELLATION", _now(), _FOREVER),
-        )
-        connection.execute(
-            "UPDATE ep_execution_leases SET released_at=? WHERE lease_id=? AND released_at IS NULL",
-            (_now(), _CANCEL + run_id),
-        )
+        close_terminal_cancel_in_transaction(connection, run_id=run_id)
