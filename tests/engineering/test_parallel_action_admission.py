@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 import io
+import os
 from contextlib import redirect_stdout
 from hashlib import sha256
 import http.server
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -20,7 +24,8 @@ from engineering_platform import server, submission_service
 from engineering_platform.agent_state import TransactionState
 from engineering_platform.lifecycle_worker import LifecycleWorker
 from engineering_platform.parity_lifecycle_dispatcher import (
-    ParityLifecycleDispatcher, ParityLifecycleDispatchError, retry_operator_gate,
+    ParityLifecycleDispatcher, ParityLifecycleDispatchError, dismiss_operator_gate,
+    retry_operator_gate,
 )
 from engineering_platform.storage import sqlite_connection
 
@@ -108,7 +113,8 @@ class ParallelActionAdmissionTest(unittest.TestCase):
         values.update(changes)
         return admission.stage_action(connection, json.dumps(self.graph).encode(), **values)
 
-    def request(self, action_id: str, staged: dict[str, object]) -> submission_service.SubmissionRequest:
+    def request(self, action_id: str, staged: dict[str, object], *,
+                policy_digest: str = admission.SUPPORTED_POLICY_DIGEST) -> submission_service.SubmissionRequest:
         target = next(item["target"] for item in self.graph["actions"]
                       if item["action_id"] == action_id)
         repository_id = target["repository_id"]
@@ -141,7 +147,7 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                     "intake_id": staged["intake_id"],
                     "snapshot_digest": staged["snapshot_digest"],
                     "action_revision": "1", "write_scope": "repository-only",
-                    "policy_digest": admission.SUPPORTED_POLICY_DIGEST,
+                    "policy_digest": policy_digest,
                     "concurrency_profile": "DIFFERENT_REPOSITORIES_V1",
                 },
             },
@@ -1487,6 +1493,293 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 contract_version="1.3",
             )
             self.assertTrue(readback["result"]["delivery_qualified"])
+
+    def test_pa_e2_claims_two_repositories_and_fences_duplicate_and_dependency(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        for repository_id, root in self.repository_roots.items():
+            subprocess.run(("git", "-C", str(root), "remote", "add", "origin",
+                            f"https://github.com/fixture/{repository_id}.git"), check=True)
+        with sqlite_connection(self.database) as connection:
+            staged = {action: self.stage(
+                connection, action, policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+            ) for action in ("ACTION-A", "ACTION-B", "ACTION-Q")}
+            submissions = {action: submission_service.submit(
+                connection, self.request(
+                    action, staged[action], policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            ).submission_id for action in ("ACTION-A", "ACTION-B")}
+            blocked_q = admission.dependency_readback(connection, intake_id=staged["ACTION-Q"]["intake_id"])
+            self.assertEqual(blocked_q["state"], "WAITING_DEPENDENCY")
+        worker = LifecycleWorker(self.root, dispatcher_factory=lambda: None)
+        with sqlite_connection(self.database) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("held-resource", "project-test", "BLOCKED", NOW, NOW),
+            )
+            for resource in delivery.repository_resources(self.repository_roots["repository-a"]):
+                connection.execute(
+                    "INSERT INTO ep_execution_leases VALUES(?,?,?,?,?,NULL)",
+                    (resource, "held-resource", "pa-e2:repository", NOW,
+                     "9999-12-31T23:59:59+00:00"),
+                )
+        self.assertEqual(worker.eligible_submission_ids(), [submissions["ACTION-B"]])
+        with sqlite_connection(self.database) as connection:
+            delivery.release_resources(connection, "held-resource")
+        self.assertEqual(set(worker.eligible_submission_ids()), set(submissions.values()))
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": "inherited-parent"}):
+            with self.assertRaisesRegex(ParityLifecycleDispatchError, "PA_E2_ISOLATED_PROCESS_REQUIRED"):
+                dispatcher._claim(submissions["ACTION-A"])
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            first = dispatcher._claim(submissions["ACTION-A"])
+            second = dispatcher._claim(submissions["ACTION-B"])
+            duplicate = dispatcher._claim(submissions["ACTION-A"])
+        self.assertNotEqual(first[2], second[2])
+        self.assertEqual(duplicate[2], first[2])
+        self.assertTrue(duplicate[4])
+        subprocess.run(("git", "-C", str(self.repository_roots["repository-a"]),
+                        "remote", "set-url", "origin", "https://github.com/fixture/changed.git"), check=True)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            with self.assertRaisesRegex(ParityLifecycleDispatchError, "REPOSITORY_RESOURCE_CHANGED"):
+                dispatcher._claim(submissions["ACTION-A"])
+        subprocess.run(("git", "-C", str(self.repository_roots["repository-a"]),
+                        "remote", "set-url", "origin", "https://github.com/fixture/repository-a.git"), check=True)
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE lease_id LIKE 'pa-e2:slot:%' "
+                "AND released_at IS NULL").fetchone()[0], 2)
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-a",
+            ).state, "WAITING_RESOURCE")
+        dispatcher._set_state(submissions["ACTION-A"], first[2], "COMPLETE")
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE lease_id LIKE 'pa-e2:slot:%' "
+                "AND released_at IS NULL").fetchone()[0], 1)
+
+    def test_pa_e2_origin_alias_waits_and_readback_distinguishes_capacity(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        for repository_id, root in self.repository_roots.items():
+            subprocess.run(("git", "-C", str(root), "remote", "add", "origin",
+                            f"https://github.com/fixture/{repository_id}.git"), check=True)
+            subprocess.run(("git", "-C", str(root), "remote", "set-url", "--push",
+                            "origin", "https://github.com/fixture/shared.git"), check=True)
+        with sqlite_connection(self.database) as connection:
+            staged = {action: self.stage(
+                connection, action, policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+            ) for action in ("ACTION-A", "ACTION-B")}
+            submissions = {action: submission_service.submit(
+                connection, self.request(
+                    action, staged[action], policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            ).submission_id for action in ("ACTION-A", "ACTION-B")}
+        dispatcher = ParityLifecycleDispatcher(self.root)
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}):
+            first = dispatcher._claim(submissions["ACTION-A"])
+            with self.assertRaisesRegex(ParityLifecycleDispatchError, "WAITING_RESOURCE"):
+                dispatcher._claim(submissions["ACTION-B"])
+        with sqlite_connection(self.database) as connection:
+            decision = admission.delivery_readback(
+                connection, intake_id=str(staged["ACTION-B"]["intake_id"]),
+                data_root=self.root,
+                decision=admission.dependency_readback(
+                    connection, intake_id=str(staged["ACTION-B"]["intake_id"])),
+            )
+            self.assertEqual((decision["state"], decision["resource_state"]),
+                             ("WAITING_RESOURCE", "HELD"))
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("other-provider", "project-test", "RUNNING", NOW, NOW),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_leases VALUES(?,?,?,?,?,NULL)",
+                ("pa-e2:slot:1", "other-provider", "pa-e2:provider", NOW,
+                 "9999-12-31T23:59:59+00:00"),
+            )
+            combined = admission.delivery_readback(
+                connection, intake_id=str(staged["ACTION-B"]["intake_id"]),
+                data_root=self.root,
+                decision=admission.dependency_readback(
+                    connection, intake_id=str(staged["ACTION-B"]["intake_id"])),
+            )
+            self.assertEqual((combined["state"], combined["resource_state"],
+                              combined["capacity_state"]),
+                             ("WAITING_RESOURCE", "HELD", "FULL"))
+            delivery.release_capacity(connection, "other-provider")
+        dispatcher._set_state(submissions["ACTION-A"], first[2], "BLOCKED")
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-b",
+            ).state, "WAITING_RESOURCE")
+        dismiss_operator_gate(self.root, project_id="project-test", run_id=first[2])
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-b",
+            ).state, "READY")
+            # The same available resource can independently be held by a
+            # full provider pool; projection must name capacity, not resource.
+            for index in range(2):
+                run_id = f"capacity-fixture-{index}"
+                connection.execute(
+                    "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    (run_id, "project-test", "RUNNING", NOW, NOW),
+                )
+                connection.execute(
+                    """INSERT INTO ep_execution_leases VALUES(?,?,?,?,?,NULL)
+                       ON CONFLICT(lease_id) DO UPDATE SET run_id=excluded.run_id,
+                       released_at=NULL""",
+                    (f"pa-e2:slot:{index}", run_id, "pa-e2:provider", NOW,
+                     "9999-12-31T23:59:59+00:00"),
+                )
+            decision = admission.delivery_readback(
+                connection, intake_id=str(staged["ACTION-B"]["intake_id"]),
+                data_root=self.root,
+                decision=admission.dependency_readback(
+                    connection, intake_id=str(staged["ACTION-B"]["intake_id"])),
+            )
+            self.assertEqual((decision["state"], decision["capacity_state"]),
+                             ("WAITING_CAPACITY", "FULL"))
+            delivery.release_capacity(connection, "capacity-fixture-0")
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-b",
+            ).state, "READY")
+
+    def test_pa_e2_worker_and_provider_intervals_overlap_in_separate_processes(self) -> None:
+        for repository_id, root in self.repository_roots.items():
+            subprocess.run(("git", "-C", str(root), "remote", "add", "origin",
+                            f"https://github.com/fixture/{repository_id}.git"), check=True)
+        with sqlite_connection(self.database) as connection:
+            staged = {action: self.stage(
+                connection, action, policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+            ) for action in ("ACTION-A", "ACTION-B")}
+            submissions = {action: submission_service.submit(
+                connection, self.request(
+                    action, staged[action], policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            ).submission_id for action in ("ACTION-A", "ACTION-B")}
+        worker = LifecycleWorker(self.root)
+        with patch.dict(os.environ, {"EP_QUALIFICATION_INITIALIZE_ONLY": "1"}):
+            self.assertTrue(worker.run_once())
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                with sqlite_connection(self.database) as connection:
+                    rows = connection.execute(
+                        "SELECT submission_id,run_id FROM ep_parity_lifecycle_dispatches "
+                        "WHERE submission_id IN (?,?) AND state='RUNNING'",
+                        tuple(submissions.values()),
+                    ).fetchall()
+                if len(rows) == 2 and worker.diagnostics().dispatched == 2:
+                    break
+                time.sleep(.02)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(worker.diagnostics().dispatched, 2)
+        self.assertEqual(len({row[1] for row in rows}), 2)
+        rendezvous = Path(self.temporary.name) / "provider-overlap"
+        rendezvous.mkdir()
+        env = {**os.environ, "EP_QUALIFICATION_PA_E2_OVERLAP_DIR": str(rendezvous)}
+        driver = Path(__file__).parents[1] / "fixtures" / "pa_e2_provider_driver.py"
+        processes = [subprocess.Popen(
+            (sys.executable, str(driver), str(self.root), submissions[action]),
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ) for action in ("ACTION-A", "ACTION-B")]
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if len(list(rendezvous.glob("*.provider-started"))) == 2:
+                    break
+                if any(process.poll() is not None for process in processes):
+                    break
+                time.sleep(.02)
+            markers = [json.loads(path.read_text()) for path in rendezvous.glob("*.provider-started")]
+            self.assertEqual(len(markers), 2)
+            self.assertEqual(len({marker["pid"] for marker in markers}), 2)
+            self.assertEqual(len({marker["root"] for marker in markers}), 2)
+            self.assertTrue(all(process.poll() is None for process in processes))
+            (rendezvous / "release").write_text("go", encoding="utf-8")
+            outputs = [process.communicate(timeout=20) for process in processes]
+            self.assertEqual([process.returncode for process in processes], [0, 0], outputs)
+            self.assertEqual({json.loads(output[0])["run_id"] for output in outputs},
+                             {row[1] for row in rows})
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+    def test_pa_e2_resource_identity_rejects_unqualified_origin_and_git_failure(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        self.assertEqual(delivery._origin_identity("git@github.com:Owner/Repo.git"),
+                         "github.com/owner/repo")
+        self.assertEqual(delivery._origin_identity("ssh://git@github.com/Owner/Repo"),
+                         "github.com/owner/repo")
+        with self.assertRaisesRegex(delivery.DeliveryScopeError, "REPOSITORY_ORIGIN_UNQUALIFIED"):
+            delivery._origin_identity("https://example.com/owner/repo.git")
+        with self.assertRaisesRegex(delivery.DeliveryScopeError, "REPOSITORY_ORIGIN_UNQUALIFIED"):
+            delivery._origin_identity("https://github.com/owner")
+        with self.assertRaisesRegex(delivery.DeliveryScopeError, "REPOSITORY_RESOURCE_UNAVAILABLE"):
+            delivery._git(self.root, "rev-parse", "--git-common-dir")
+        with patch("engineering_platform.parallel_action_delivery.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("git", 5)):
+            with self.assertRaisesRegex(delivery.DeliveryScopeError, "REPOSITORY_RESOURCE_UNAVAILABLE"):
+                delivery._git(self.repository_roots["repository-a"], "rev-parse", "--git-common-dir")
+        with patch("engineering_platform.parallel_action_delivery.additional_workspace_write_roots",
+                   return_value=(self.root,)):
+            with self.assertRaisesRegex(delivery.DeliveryScopeError, "PA_E2_SHARED_WRITE_SCOPE_UNQUALIFIED"):
+                delivery.repository_resources(self.repository_roots["repository-a"])
+
+    def test_pa_e2_waits_behind_active_legacy_project_gate(self) -> None:
+        from engineering_platform import parallel_action_delivery as delivery
+        for repository_id, root in self.repository_roots.items():
+            subprocess.run(("git", "-C", str(root), "remote", "add", "origin",
+                            f"https://github.com/fixture/{repository_id}.git"), check=True)
+        with sqlite_connection(self.database) as connection:
+            staged = self.stage(connection, "ACTION-A",
+                                policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST)
+            submission = submission_service.submit(
+                connection, self.request(
+                    "ACTION-A", staged, policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            ).submission_id
+            legacy = submission_service.submit(connection, submission_service.SubmissionRequest(
+                "project-test", "repository-b", "operator", "HUMAN", None,
+                "Legacy independent task.", "HTTP",
+            )).submission_id
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("legacy-run", "project-test", "RUNNING", NOW, NOW),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches
+                   (submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (legacy, "project-test", "repository-b", "legacy-run", "RUNNING", "prompt", NOW, NOW),
+            )
+            self.assertEqual(delivery.gate(
+                connection, data_root=self.root, project_id="project-test",
+                repository_id="repository-a",
+            ).state, "WAITING_RESOURCE")
+        self.assertNotIn(submission, LifecycleWorker(self.root).eligible_submission_ids())
+
+    def test_pa_e2_child_process_protocol_reports_success_and_claim_wait(self) -> None:
+        from engineering_platform import pa_e2_dispatch
+        with patch.dict(os.environ, {}, clear=False), patch.object(sys, "argv", [
+            "pa_e2_dispatch", str(self.root), "submission-test",
+        ]), patch.object(pa_e2_dispatch, "ParityLifecycleDispatcher") as dispatcher:
+            dispatcher.return_value.dispatch.return_value = SimpleNamespace(run_id="run-test", state="RUNNING")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(pa_e2_dispatch.main(), 0)
+            self.assertEqual(json.loads(output.getvalue()), {"run_id": "run-test", "state": "RUNNING"})
+            self.assertEqual(os.environ["EP_PA_E2_ISOLATED_PROCESS"], str(os.getpid()))
+            dispatcher.return_value.dispatch.side_effect = ParityLifecycleDispatchError("WAITING_RESOURCE")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(pa_e2_dispatch.main(), 0)
+            self.assertEqual(json.loads(output.getvalue()), {"error": "WAITING_RESOURCE"})
 
 
 if __name__ == "__main__":

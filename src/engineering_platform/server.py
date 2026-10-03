@@ -7283,6 +7283,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     projection = parallel_action_admission.dependency_readback(
                         connection, intake_id=intake_id,
                     )
+                    projection = parallel_action_admission.delivery_readback(
+                        connection, intake_id=intake_id,
+                        data_root=self.server.data_root, decision=projection,
+                    )
                 self._send(200, projection, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except sqlite3.Error:
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})

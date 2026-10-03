@@ -383,8 +383,11 @@ _format_cli_failure = format_cli_failure
 MANAGED_EXECUTION_SANDBOX = "danger-full-access"
 
 class CodexCliClient:
-    def __init__(self, provider: CodexCliProvider | None = None) -> None:
+    def __init__(self, provider: CodexCliProvider | None = None, *,
+                 disable_multi_agent: bool = False, repository_only: bool = False) -> None:
         self.provider = provider or CodexCliProvider()
+        self._disable_multi_agent = disable_multi_agent
+        self._repository_only = repository_only
         self.last_usage: dict[str, int | float | str] = {}
         self.last_usage_snapshots: tuple[dict[str, int], ...] = ()
         self.last_churn: dict[str, int] = {}
@@ -755,11 +758,21 @@ class CodexCliClient:
             schema_path = Path(handle.name)
         try:
             extra_roots = additional_workspace_write_roots(root)
+            if self._repository_only and extra_roots:
+                raise RunnerError("PA_E2_SHARED_WRITE_SCOPE_UNQUALIFIED")
             command = [
                 "codex",
+                *(["--strict-config",
+                   "-c", "sandbox_workspace_write.network_access=true",
+                   "-c", "sandbox_workspace_write.writable_roots=[]",
+                   "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+                   "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
+                  if self._repository_only else []),
+                *(["--disable", "multi_agent"] if self._disable_multi_agent else []),
                 "exec",
                 "--sandbox",
-                getattr(self, "_sandbox_override", MANAGED_EXECUTION_SANDBOX),
+                getattr(self, "_sandbox_override",
+                        "workspace-write" if self._repository_only else MANAGED_EXECUTION_SANDBOX),
                 "-C",
                 str(root),
                 "--json",

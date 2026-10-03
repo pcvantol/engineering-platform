@@ -9,14 +9,18 @@ the preserved EngineeringRunner.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
-import sqlite3
+import subprocess
+import sys
+from types import SimpleNamespace
 from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Callable, Protocol
 
-from .parity_lifecycle_dispatcher import ParityLifecycleDispatcher
+from .parity_lifecycle_dispatcher import ParityLifecycleDispatcher, ParityLifecycleDispatchError
 from . import central_database
+from . import parallel_action_admission, parallel_action_delivery
 from .component_logging import component_logger, log_event
 from .storage import sqlite_connection
 
@@ -57,7 +61,7 @@ class LifecycleWorkerDiagnostics:
 
 
 class LifecycleWorker:
-    """One installation-owned observer with one active lifecycle per project."""
+    """Installation observer with legacy project FIFO and bounded PA-E2 delivery."""
 
     def __init__(self, data_root, *, dispatcher_factory: DispatcherFactory | None = None,
                  idle_seconds: float = 0.25, failure_seconds: float = 1.0) -> None:
@@ -67,6 +71,7 @@ class LifecycleWorker:
             "lifecycle_worker",
             central_database=central_database.path(self.data_root),
         )
+        self._default_dispatcher = dispatcher_factory is None
         self._dispatcher_factory = dispatcher_factory or (lambda: ParityLifecycleDispatcher(self.data_root))
         self._idle_seconds = idle_seconds
         self._failure_seconds = failure_seconds
@@ -89,12 +94,15 @@ class LifecycleWorker:
             self._diagnostics = LifecycleWorkerDiagnostics(**values)  # type: ignore[arg-type]
 
     def eligible_submission_ids(self) -> list[str]:
-        """Return one FIFO candidate per project; claims remain dispatcher-owned."""
+        """Return ready legacy heads and independent PA-E2 Actions in FIFO order."""
         with sqlite_connection(central_database.path(self.data_root)) as connection:
-            rows = connection.execute("""SELECT s.submission_id,s.project_id,d.state,d.claimed_at,
-                                               s.created_at,d.run_id
+            rows = connection.execute("""SELECT s.submission_id,s.project_id,s.repository_id,
+                                               d.state,d.claimed_at,s.created_at,d.run_id,
+                                               i.policy_digest
                 FROM ep_submissions s
                 LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id
+                LEFT JOIN ep_parallel_action_submission_links l ON l.submission_id=s.submission_id
+                LEFT JOIN ep_parallel_action_intakes i ON i.intake_id=l.intake_id
                 WHERE s.state='QUEUED' AND s.admission='ADMITTED'
                   AND (
                     d.submission_id IS NULL OR d.state IN ('CLAIMED','RUNNING')
@@ -108,7 +116,7 @@ class LifecycleWorker:
                       )
                     )
                   )
-                  AND NOT EXISTS (
+                  AND (i.policy_digest=? OR NOT EXISTS (
                     SELECT 1 FROM ep_parity_lifecycle_dispatches prior
                     WHERE prior.project_id=s.project_id AND (
                       (prior.state IN ('CLAIMED','RUNNING') AND prior.submission_id!=s.submission_id)
@@ -120,16 +128,19 @@ class LifecycleWorker:
                                 AND retry.state IN ('COMPLETE','BLOCKED','FAILED')
                                 AND retry.operator_resolution IN ('NONE','RETRIED','DISMISSED')))
                     )
-                  )
-                ORDER BY s.project_id,
+                  ))
+                ORDER BY
                   CASE WHEN d.state IN ('CLAIMED','RUNNING') THEN 0 ELSE 1 END,
-                  COALESCE(d.claimed_at,s.created_at),s.created_at,s.submission_id""").fetchall()
+                  COALESCE(d.claimed_at,s.created_at),s.created_at,s.submission_id""",
+                (parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST,)).fetchall()
             candidates: list[str] = []
-            projects: set[str] = set()
-            for submission_id, project_id, _state, _claimed_at, _created_at, run_id in rows:
-                if str(project_id) in projects:
+            project_modes: dict[str, str] = {}
+            for submission_id, project_id, repository_id, _state, _claimed_at, _created_at, run_id, policy in rows:
+                project = str(project_id)
+                pa_e2 = policy == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST
+                selected_mode = project_modes.get(project)
+                if selected_mode == "legacy" or (selected_mode == "pa-e2" and not pa_e2):
                     continue
-                from . import parallel_action_admission
                 try:
                     decision = parallel_action_admission.linked_submission_decision(
                         connection, submission_id=str(submission_id),
@@ -139,13 +150,55 @@ class LifecycleWorker:
                     continue
                 if decision is not None and decision["state"] != "DEPENDENCY_ELIGIBLE":
                     continue
-                projects.add(str(project_id))
+                if pa_e2:
+                    try:
+                        gate = parallel_action_delivery.gate(
+                            connection, data_root=self.data_root, project_id=project,
+                            repository_id=str(repository_id),
+                            run_id=str(run_id) if run_id is not None else None,
+                        )
+                    except (parallel_action_delivery.DeliveryScopeError, ValueError, OSError):
+                        continue
+                    if gate.state != "READY":
+                        continue
+                    project_modes[project] = "pa-e2"
+                else:
+                    project_modes[project] = "legacy"
                 candidates.append(str(submission_id))
         return candidates
 
     def _dispatch(self, submission_id: str) -> None:
         try:
-            receipt = self._dispatcher_factory().dispatch(submission_id)
+            if self._default_dispatcher:
+                with sqlite_connection(central_database.path(self.data_root)) as connection:
+                    pa_e2 = (parallel_action_delivery.policy_for_submission(connection, submission_id)
+                             == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST)
+            else:
+                pa_e2 = False
+            if pa_e2:
+                completed = subprocess.run(
+                    (sys.executable, "-m", "engineering_platform.pa_e2_dispatch",
+                     str(self.data_root), submission_id),
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+                )
+                if completed.returncode:
+                    raise ParityLifecycleDispatchError("PA_E2_DISPATCH_FAILED")
+                payload = json.loads(completed.stdout.splitlines()[-1])
+                if "error" in payload:
+                    raise ParityLifecycleDispatchError(str(payload["error"]))
+                receipt = SimpleNamespace(**payload)
+            else:
+                receipt = self._dispatcher_factory().dispatch(submission_id)
+        except ParityLifecycleDispatchError as error:
+            if str(error) in {"WAITING_RESOURCE", "WAITING_CAPACITY", "PROJECT_RUN_ALREADY_ACTIVE"}:
+                with self._lock:
+                    self._next_merge_resume_at.pop(submission_id, None)
+                return
+            current = self.diagnostics()
+            self._replace(state=WORKER_DEGRADED, failures=current.failures + 1,
+                          last_error=type(error).__name__)
+            log_event(self._logger, logging.ERROR, "lifecycle_dispatch_failed",
+                      diagnostic=type(error).__name__, context={"submission_id": submission_id})
         except Exception as error:  # Dispatcher persists its own terminal/recovery boundary.
             current = self.diagnostics()
             self._replace(state=WORKER_DEGRADED, failures=current.failures + 1,
@@ -179,6 +232,13 @@ class LifecycleWorker:
     def run_once(self) -> bool:
         with self._lock:
             inflight = frozenset(self._inflight)
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
+            pa_e2_inflight = sum(
+                parallel_action_delivery.policy_for_submission(connection, submission_id)
+                == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST
+                for submission_id in inflight
+            )
+        pa_e2_budget = max(0, parallel_action_delivery.MAX_PROVIDER_INVOCATIONS - pa_e2_inflight)
         now = monotonic()
         candidates = [
             submission_id for submission_id in self.eligible_submission_ids()
@@ -187,7 +247,19 @@ class LifecycleWorker:
         ]
         if not candidates:
             return False
-        for submission_id in candidates:
+        selected = []
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
+            for submission_id in candidates:
+                pa_e2 = (parallel_action_delivery.policy_for_submission(connection, submission_id)
+                         == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST)
+                if pa_e2:
+                    if pa_e2_budget == 0:
+                        continue
+                    pa_e2_budget -= 1
+                selected.append(submission_id)
+        if not selected:
+            return False
+        for submission_id in selected:
             current = self.diagnostics()
             self._replace(observed=current.observed + 1, last_submission_id=submission_id, last_error=None)
             log_event(

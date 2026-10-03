@@ -1861,6 +1861,7 @@ class ClientContractTest(unittest.TestCase):
             subprocess.CompletedProcess(("codex",), 0, review_output, ""),
             subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
             subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": assessment_message}}), ""),
+            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1868,6 +1869,8 @@ class ClientContractTest(unittest.TestCase):
             review = client.review(root, __import__("engineering_platform.capability_review", fromlist=["ReviewerSelection"]).ReviewerSelection("validation", "scope", 1), "objective")
             result = client.invoke(root, "objective")
             validation = client.validate(root, "validation objective")
+            CodexCliClient(CodexCliProvider(), disable_multi_agent=True,
+                           repository_only=True).invoke(root, "bounded objective")
         self.assertFalse(review.failed)
         self.assertEqual(review.recommendations, ("keep scope",))
         self.assertEqual(review.runtime_metadata["raw_provider_model"], "gpt-5.6-terra")
@@ -1881,6 +1884,24 @@ class ClientContractTest(unittest.TestCase):
         self.assertNotIn("--ignore-user-config", run.call_args_list[1].args[0])
         self.assertNotIn("--ignore-rules", run.call_args_list[1].args[0])
         self.assertFalse(hasattr(client, "_sandbox_override"))
+        bounded_command = run.call_args_list[3].args[0]
+        self.assertEqual(tuple(bounded_command[bounded_command.index("--disable"):bounded_command.index("--disable") + 3]),
+                         ("--disable", "multi_agent", "exec"))
+        self.assertIn("--strict-config", bounded_command)
+        self.assertIn("sandbox_workspace_write.network_access=true", bounded_command)
+        self.assertIn("sandbox_workspace_write.writable_roots=[]", bounded_command)
+        self.assertIn("sandbox_workspace_write.exclude_slash_tmp=true", bounded_command)
+        self.assertIn("sandbox_workspace_write.exclude_tmpdir_env_var=true", bounded_command)
+        self.assertEqual(bounded_command[bounded_command.index("--sandbox") + 1],
+                         "workspace-write")
+
+    @patch("engineering_platform.execution_executor.additional_workspace_write_roots")
+    def test_pa_e2_codex_rejects_shared_write_root(self, extra_roots: object) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            extra_roots.return_value = (root.parent,)
+            with self.assertRaisesRegex(RunnerError, "PA_E2_SHARED_WRITE_SCOPE_UNQUALIFIED"):
+                CodexCliClient(repository_only=True).invoke(root, "bounded objective")
 
     def test_codex_client_uses_autonomous_quality_timeout_only_for_mandatory_assurance(self) -> None:
         review_message = json.dumps(
