@@ -1320,7 +1320,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )} <= triggers)
             self.assertEqual(connection.execute(
                 "SELECT schema_version FROM ep_installations"
-            ).fetchone(), (72,))
+            ).fetchone(), (73,))
         self.assertNotIn("WRITER_FENCE_INCOMPLETE", central_operational_reset.preview(self.root)["blocking_codes"])
 
     def test_schema_41_installation_upgrades_through_the_ordered_current_path(self) -> None:

@@ -15,7 +15,10 @@ import warnings
 from unittest.mock import patch
 
 from engineering_platform import central_operational_reset as reset
-from engineering_platform import development_profile, merge_delegation, server, submission_service
+from engineering_platform import (
+    development_profile, merge_delegation, parallel_action_admission,
+    server, submission_service,
+)
 from engineering_platform.operational_installation_lock import OperationalInstallationLock
 from engineering_platform.storage import sqlite_connection
 
@@ -320,6 +323,82 @@ class CentralOperationalResetTests(unittest.TestCase):
         self.assertEqual(first["generation_after"], 1)
         self.assertEqual(second["generation_after"], 1)
         reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+
+    def test_parallel_action_intake_identity_is_retired_by_reset(self) -> None:
+        self._populate()
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            instance_id = connection.execute(
+                "SELECT instance_id FROM ep_installations"
+            ).fetchone()[0]
+            graph = json.dumps({
+                "contract_version": "parallel-action-graph/v1",
+                "mission_id": "mission-reset", "mission_revision": 1,
+                "actions": [{
+                    "action_id": "action-reset",
+                    "target": {"ep_instance_id": instance_id,
+                               "project_id": "project-a", "repository_id": "repo-a",
+                               "baseline_revision": "a" * 40},
+                    "dependencies": [],
+                }],
+            }).encode()
+            arguments = {
+                "project_id": "project-a", "consumer_id": "consumer-a",
+                "producer_id": "consumer-a", "action_id": "action-reset",
+                "action_revision": "1", "intent_id": "intent-reset",
+                "intent_revision": "1", "correlation_id": "corr-reset",
+                "idempotency_key": "key-reset", "write_scope": "repository-only",
+                "policy_digest": parallel_action_admission.SUPPORTED_POLICY_DIGEST,
+            }
+            connection.execute(
+                """INSERT INTO ep_parallel_action_repository_grants
+                    VALUES(?,?,?,?,?,?,?,?)""",
+                ("consumer-a", "project-a", "repo-a", "ACTIVE", "reset-test-owner",
+                 "fixture grant", "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:00+00:00"),
+            )
+            staged = parallel_action_admission.stage_action(connection, graph, **arguments)
+            previous_submission = connection.execute(
+                "SELECT submission_id FROM ep_submissions LIMIT 1"
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO ep_parallel_action_submission_links VALUES(?,?,?,?,?)",
+                (previous_submission, staged["intake_id"], None,
+                 "sha256:" + "a" * 64, "2026-10-03T00:00:00+00:00"),
+            )
+            legacy = submission_service.SubmissionRequest(
+                "project-a", "repo-a", "legacy-alias", "HUMAN", "1",
+                "legacy Action", "HTTP", idempotency_key="legacy-action-key",
+                mission_id="mission-legacy", engineering_action_id="action-legacy",
+            )
+            submission_service.submit(connection, legacy)
+        operation_id, digest = self._prepared(operation_id="reset-parallel-intake-0001")
+        reset.apply(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.verify(self.root, operation_id=operation_id, plan_digest=digest)
+        reset.finish(self.root, operation_id=operation_id, plan_digest=digest)
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_parallel_action_graphs"
+            ).fetchone(), (0,))
+            with self.assertRaises(parallel_action_admission.ParallelAdmissionError) as retired:
+                parallel_action_admission.stage_action(connection, graph, **arguments)
+            self.assertEqual(retired.exception.code, "PARALLEL_IDENTITY_RETIRED")
+            new_graph = json.loads(graph)
+            new_graph["mission_revision"] = 2
+            new_arguments = {**arguments, "action_revision": "2",
+                             "idempotency_key": "key-reset-revision-2"}
+            with self.assertRaises(parallel_action_admission.ParallelAdmissionError) as reused_root:
+                parallel_action_admission.stage_action(
+                    connection, json.dumps(new_graph).encode(), **new_arguments)
+            self.assertEqual(reused_root.exception.code, "PARALLEL_IDENTITY_RETIRED")
+            legacy_graph = json.loads(graph)
+            legacy_graph["mission_id"] = "mission-legacy"
+            legacy_graph["actions"][0]["action_id"] = "action-legacy"
+            legacy_arguments = {**arguments, "action_id": "action-legacy",
+                                "correlation_id": "corr-legacy",
+                                "idempotency_key": "new-legacy-graph-key"}
+            with self.assertRaises(parallel_action_admission.ParallelAdmissionError) as retired_alias:
+                parallel_action_admission.stage_action(
+                    connection, json.dumps(legacy_graph).encode(), **legacy_arguments)
+            self.assertEqual(retired_alias.exception.code, "PARALLEL_IDENTITY_RETIRED")
 
     def test_changed_source_plan_target_and_request_are_rejected(self) -> None:
         plan = reset.preview(self.root)

@@ -36,7 +36,7 @@ from .storage import sqlite_connection
 
 PROFILE = "EP_CENTRAL_OPERATIONAL_HISTORY_V1"
 PLAN_VERSION = 2
-SCHEMA_VERSION = 72
+SCHEMA_VERSION = 73
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}")
 _INSTANCE_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -75,6 +75,7 @@ SECURITY_AND_AUTHORITY_LEDGER = frozenset({
     "ep_control_provenance", "ep_external_producer_binding_audit",
     "ep_operator_capabilities",
     "ep_merge_delegations",
+    "ep_parallel_action_repository_grants",
 })
 DERIVED_CACHE_OR_PROJECTION = frozenset({
     "daily_execution_statistics", "engineering_component_logs", "engineering_status",
@@ -88,6 +89,9 @@ OPERATIONAL_HISTORY = frozenset({
     "ep_forge_planning_context_envelopes", "ep_parity_lifecycle_dispatches",
     "ep_queue_disposition_operations", "ep_receipt_run_provenance",
     "ep_submission_events", "ep_submission_prompt_history", "ep_submissions",
+    "ep_parallel_action_graphs", "ep_parallel_action_intakes", "ep_parallel_action_outcomes",
+    "ep_parallel_action_qualified_artifacts", "ep_parallel_action_qualification_receipts",
+    "ep_parallel_action_submission_links",
     "ep_technical_diagnostics", "ep_terminal_evidence_reconciliation_operations",
     "execution_admission_decisions", "execution_artifact_records",
     "execution_chat_messages", "execution_dismissals", "execution_emergency_recoveries",
@@ -115,6 +119,10 @@ MAPPED_TABLES = (
 # table as one statement also handles its self-references.  Foreign keys stay
 # enabled throughout.
 PURGE_ORDER = (
+    "ep_parallel_action_submission_links", "ep_parallel_action_qualified_artifacts",
+    "ep_parallel_action_qualification_receipts",
+    "ep_parallel_action_outcomes",
+    "ep_parallel_action_intakes", "ep_parallel_action_graphs",
     "ep_terminal_evidence_reconciliation_operations",
     "ep_forge_action_context_envelopes", "ep_forge_planning_context_envelopes",
     "ep_forge_exchange_audit", "ep_queue_disposition_operations",
@@ -2221,8 +2229,41 @@ def _submission_request_digest(row: sqlite3.Row) -> str:
 
 def _record_tombstones(connection: sqlite3.Connection, operation_id: str) -> None:
     connection.row_factory = sqlite3.Row
+    for row in connection.execute(
+        "SELECT project_id,producer_id,mission_id,mission_revision,snapshot_digest "
+        "FROM ep_parallel_action_graphs"
+    ):
+        identity = f"{row['project_id']}\0{row['producer_id']}\0{row['mission_id']}\0{row['mission_revision']}"
+        _tombstone(connection, "parallel_graph_revision", identity, operation_id,
+                   str(row["snapshot_digest"]))
+    for row in connection.execute(
+        "SELECT project_id,producer_id,mission_id,action_id,action_revision,"
+        "idempotency_key,intake_id FROM ep_parallel_action_intakes"
+    ):
+        key = f"{row['project_id']}\0{row['producer_id']}\0{row['idempotency_key']}"
+        action = (f"{row['project_id']}\0{row['producer_id']}\0{row['mission_id']}"
+                  f"\0{row['action_id']}\0{row['action_revision']}")
+        _tombstone(connection, "parallel_intake_idempotency", key, operation_id,
+                   str(row["intake_id"]))
+        _tombstone(connection, "parallel_action_revision", action, operation_id,
+                   str(row["intake_id"]))
+    for row in connection.execute(
+        """SELECT i.project_id,i.producer_id,i.mission_id,i.action_id,l.intake_id
+             FROM ep_parallel_action_submission_links l
+             JOIN ep_parallel_action_intakes i ON i.intake_id=l.intake_id
+            WHERE l.parent_submission_id IS NULL"""
+    ):
+        identity = (f"{row['project_id']}\0{row['producer_id']}\0"
+                    f"{row['mission_id']}\0{row['action_id']}")
+        _tombstone(connection, "parallel_action_root", identity, operation_id,
+                   str(row["intake_id"]))
     for row in connection.execute("SELECT * FROM ep_submissions"):
         _tombstone(connection, "submission_id", str(row["submission_id"]), operation_id)
+        if row["mission_id"] is not None and row["engineering_action_id"] is not None:
+            conflict = (f"{row['project_id']}\0{row['mission_id']}\0"
+                        f"{row['engineering_action_id']}")
+            _tombstone(connection, "parallel_action_conflict", conflict, operation_id,
+                       str(row["submission_id"]))
         if row["idempotency_key"] is not None:
             identity = f"{row['project_id']}\0{row['idempotency_key']}"
             _tombstone(connection, "submission_idempotency", identity, operation_id,

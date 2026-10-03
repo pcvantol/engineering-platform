@@ -91,7 +91,8 @@ class LifecycleWorker:
     def eligible_submission_ids(self) -> list[str]:
         """Return one FIFO candidate per project; claims remain dispatcher-owned."""
         with sqlite_connection(central_database.path(self.data_root)) as connection:
-            rows = connection.execute("""SELECT s.submission_id,s.project_id,d.state,d.claimed_at,s.created_at
+            rows = connection.execute("""SELECT s.submission_id,s.project_id,d.state,d.claimed_at,
+                                               s.created_at,d.run_id
                 FROM ep_submissions s
                 LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id
                 WHERE s.state='QUEUED' AND s.admission='ADMITTED'
@@ -123,13 +124,23 @@ class LifecycleWorker:
                 ORDER BY s.project_id,
                   CASE WHEN d.state IN ('CLAIMED','RUNNING') THEN 0 ELSE 1 END,
                   COALESCE(d.claimed_at,s.created_at),s.created_at,s.submission_id""").fetchall()
-        candidates: list[str] = []
-        projects: set[str] = set()
-        for submission_id, project_id, _state, _claimed_at, _created_at in rows:
-            if str(project_id) in projects:
-                continue
-            projects.add(str(project_id))
-            candidates.append(str(submission_id))
+            candidates: list[str] = []
+            projects: set[str] = set()
+            for submission_id, project_id, _state, _claimed_at, _created_at, run_id in rows:
+                if str(project_id) in projects:
+                    continue
+                from . import parallel_action_admission
+                try:
+                    decision = parallel_action_admission.linked_submission_decision(
+                        connection, submission_id=str(submission_id),
+                        continuation_run_id=str(run_id) if run_id is not None else None,
+                    )
+                except parallel_action_admission.ParallelAdmissionError:
+                    continue
+                if decision is not None and decision["state"] != "DEPENDENCY_ELIGIBLE":
+                    continue
+                projects.add(str(project_id))
+                candidates.append(str(submission_id))
         return candidates
 
     def _dispatch(self, submission_id: str) -> None:

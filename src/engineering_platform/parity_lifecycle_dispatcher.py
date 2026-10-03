@@ -21,7 +21,7 @@ import uuid
 from uuid import uuid4
 from typing import Callable, Protocol
 
-from . import central_database, execution_host_evidence, submission_service
+from . import central_database, execution_host_evidence, parallel_action_admission, submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
@@ -132,7 +132,8 @@ def retry_operator_gate(
     with sqlite_connection(database) as connection:
         source = connection.execute(
             """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
-                      s.prompt,s.transport,s.correlation_id,s.mission_id,s.engineering_action_id,s.constraints
+                      s.prompt,s.transport,s.correlation_id,s.mission_id,s.engineering_action_id,s.constraints,
+                      s.submission_id
                 FROM ep_parity_lifecycle_dispatches AS d
                 JOIN ep_submissions AS s ON s.submission_id=d.submission_id
                 WHERE d.project_id=? AND d.run_id=? AND d.state IN ('BLOCKED','FAILED')
@@ -160,7 +161,8 @@ def retry_operator_gate(
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
-                      s.prompt,s.transport,s.correlation_id,s.mission_id,s.engineering_action_id,s.constraints
+                      s.prompt,s.transport,s.correlation_id,s.mission_id,s.engineering_action_id,s.constraints,
+                      s.submission_id
                 FROM ep_parity_lifecycle_dispatches AS d
                 JOIN ep_submissions AS s ON s.submission_id=d.submission_id
                 WHERE d.project_id=? AND d.run_id=? AND d.state IN ('BLOCKED','FAILED')
@@ -183,7 +185,18 @@ def retry_operator_gate(
         )
         # A retry reuses EP's already-admitted local record.  It is not a new
         # Forge→EP HTTP exchange and must not mint a second producer receipt.
-        result = submission_service.submit(connection, request, audit_forge_exchange=False)
+        parallel_parent = connection.execute(
+            "SELECT 1 FROM ep_parallel_action_submission_links WHERE submission_id=?",
+            (str(row[10]),),
+        ).fetchone() is not None
+        try:
+            result = submission_service.submit(
+                connection, request, audit_forge_exchange=False,
+                operator_retry_parent_submission_id=str(row[10]) if parallel_parent else None,
+            )
+        except submission_service.SubmissionError as error:
+            connection.execute("ROLLBACK")
+            raise ParityLifecycleDispatchError(error.code) from error
         cursor = connection.execute(
             """UPDATE ep_parity_lifecycle_dispatches
                 SET operator_resolution=?,resolution_submission_id=?,updated_at=?
@@ -378,6 +391,17 @@ class ParityLifecycleDispatcher:
                 "SELECT project_id,repository_id,run_id,prompt_path FROM ep_parity_lifecycle_dispatches WHERE submission_id=?",
                 (submission_id,),
             ).fetchone()
+            try:
+                parallel_decision = parallel_action_admission.linked_submission_decision(
+                    connection, submission_id=submission_id,
+                    continuation_run_id=str(existing[2]) if existing is not None else None,
+                )
+            except parallel_action_admission.ParallelAdmissionError as error:
+                connection.execute("ROLLBACK")
+                raise ParityLifecycleDispatchError(error.code) from error
+            if parallel_decision is not None and parallel_decision["state"] != "DEPENDENCY_ELIGIBLE":
+                connection.execute("ROLLBACK")
+                raise ParityLifecycleDispatchError(str(parallel_decision["state"]))
             if existing is not None:
                 provenance = connection.execute(
                     """SELECT 1 FROM ep_receipt_run_provenance p
@@ -939,6 +963,24 @@ class ParityLifecycleDispatcher:
                         submission_id, run_id, terminal,
                         occurred_at=terminal_occurred_at,
                     )
+                    if terminal == "COMPLETE":
+                        try:
+                            with sqlite_connection(central_database.path(self.data_root)) as connection:
+                                link = connection.execute(
+                                    "SELECT intake_id FROM ep_parallel_action_submission_links "
+                                    "WHERE submission_id=?", (submission_id,),
+                                ).fetchone()
+                                if link is not None:
+                                    parallel_action_admission.attest_terminal_outcome(
+                                        connection, intake_id=str(link[0]),
+                                        submission_id=submission_id,
+                                    )
+                        except (sqlite3.Error, parallel_action_admission.ParallelAdmissionError) as error:
+                            log_event(
+                                self._logger, logging.WARNING,
+                                "parallel_action_terminal_reconciliation_pending",
+                                run_id=run_id, diagnostic=type(error).__name__,
+                            )
                 else:
                     self._set_state(submission_id, run_id, terminal)
             log_event(
