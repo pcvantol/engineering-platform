@@ -21,7 +21,7 @@ import uuid
 from uuid import uuid4
 from typing import Callable, Protocol
 
-from . import central_database, execution_host_evidence, parallel_action_admission, submission_service
+from . import central_database, execution_host_evidence, parallel_action_admission, parallel_action_delivery, submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
@@ -76,6 +76,7 @@ def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> d
         if cursor.rowcount != 1:
             connection.execute("ROLLBACK")
             raise ParityLifecycleDispatchError("PROJECT_RUN_NOT_AWAITING_OPERATOR")
+        parallel_action_delivery.release_resources(connection, run_id)
         connection.execute("COMMIT")
     log_event(
         _lifecycle_logger(data_root), logging.INFO, "lifecycle_operator_gate_dismissed",
@@ -206,6 +207,7 @@ def retry_operator_gate(
         if cursor.rowcount != 1:
             connection.execute("ROLLBACK")
             raise ParityLifecycleDispatchError("PROJECT_RETRY_RESOLUTION_CONFLICT")
+        parallel_action_delivery.release_resources(connection, run_id)
         connection.execute("COMMIT")
     log_event(
         _lifecycle_logger(data_root), logging.INFO, "lifecycle_retry_submitted",
@@ -340,7 +342,11 @@ def _default_runner(repository_root: Path, *, central_database: Path | None = No
         ),
         SubprocessRepositoryClient(),
         GhCliClient(repository=repository),
-        CodexCliClient(CodexCliProvider()),
+        CodexCliClient(
+            CodexCliProvider(),
+            disable_multi_agent=os.environ.get("EP_PA_E2_ISOLATED_PROCESS") == str(os.getpid()),
+            repository_only=os.environ.get("EP_PA_E2_ISOLATED_PROCESS") == str(os.getpid()),
+        ),
     )
 
 
@@ -402,6 +408,11 @@ class ParityLifecycleDispatcher:
             if parallel_decision is not None and parallel_decision["state"] != "DEPENDENCY_ELIGIBLE":
                 connection.execute("ROLLBACK")
                 raise ParityLifecycleDispatchError(str(parallel_decision["state"]))
+            pa_e2 = (parallel_action_delivery.policy_for_submission(connection, submission_id)
+                     == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST)
+            if pa_e2 and os.environ.get("EP_PA_E2_ISOLATED_PROCESS") != str(os.getpid()):
+                connection.execute("ROLLBACK")
+                raise ParityLifecycleDispatchError("PA_E2_ISOLATED_PROCESS_REQUIRED")
             if existing is not None:
                 provenance = connection.execute(
                     """SELECT 1 FROM ep_receipt_run_provenance p
@@ -416,6 +427,27 @@ class ParityLifecycleDispatcher:
                     raise ParityLifecycleDispatchError("PROVENANCE_REPLAY_INVALID")
                 context = project_context(connection, data_root=self.data_root, project_id=str(existing[0]), repository_id=str(existing[1]))
                 candidate = historical_candidate(connection, context=context, submission_id=submission_id)
+                if pa_e2:
+                    try:
+                        if context.local_repository_root is None:
+                            raise parallel_action_delivery.DeliveryScopeError("LOCAL_BINDING_UNBOUND")
+                        parallel_action_delivery.verify_resources(
+                            connection, run_id=str(existing[2]),
+                            root=context.local_repository_root,
+                        )
+                        gate = parallel_action_delivery.gate(
+                            connection, data_root=self.data_root,
+                            project_id=context.project_id, repository_id=context.repository_id,
+                            run_id=str(existing[2]),
+                        )
+                        if gate.state != "READY":
+                            raise ParityLifecycleDispatchError(gate.state)
+                        parallel_action_delivery.reserve(
+                            connection, run_id=str(existing[2]), resources=gate.resources,
+                        )
+                    except parallel_action_delivery.DeliveryScopeError as error:
+                        connection.execute("ROLLBACK")
+                        raise ParityLifecycleDispatchError(str(error)) from error
                 connection.execute("COMMIT")
                 return context, candidate, str(existing[2]), Path(str(existing[3])), True
             row = connection.execute("SELECT project_id,repository_id FROM ep_submissions WHERE submission_id=?", (submission_id,)).fetchone()
@@ -424,21 +456,36 @@ class ParityLifecycleDispatcher:
                 raise ParityLifecycleDispatchError("UNKNOWN_SUBMISSION")
             context = project_context(connection, data_root=self.data_root, project_id=str(row[0]), repository_id=str(row[1]))
             active = connection.execute(
-                """SELECT run_id FROM ep_parity_lifecycle_dispatches
-                    WHERE project_id=? AND (
-                        state IN ('CLAIMED','RUNNING')
-                        OR (state IN ('BLOCKED','FAILED') AND operator_resolution='OPEN')
-                        OR (operator_resolution='RETRIED' AND resolution_submission_id!=?
+                """SELECT d.run_id FROM ep_parity_lifecycle_dispatches d
+                    LEFT JOIN ep_parallel_action_submission_links l ON l.submission_id=d.submission_id
+                    LEFT JOIN ep_parallel_action_intakes i ON i.intake_id=l.intake_id
+                    WHERE d.project_id=? AND (?=0 OR i.policy_digest IS NULL OR i.policy_digest!=?) AND (
+                        d.state IN ('CLAIMED','RUNNING')
+                        OR (d.state IN ('BLOCKED','FAILED') AND d.operator_resolution='OPEN')
+                        OR (d.operator_resolution='RETRIED' AND d.resolution_submission_id!=?
                             AND NOT EXISTS (SELECT 1 FROM ep_parity_lifecycle_dispatches retry
-                                WHERE retry.submission_id=ep_parity_lifecycle_dispatches.resolution_submission_id
+                                WHERE retry.submission_id=d.resolution_submission_id
                                   AND retry.state IN ('COMPLETE','BLOCKED','FAILED')
                                   AND retry.operator_resolution IN ('NONE','RETRIED','DISMISSED')))
                     ) LIMIT 1""",
-                (context.project_id, submission_id),
+                (context.project_id, int(pa_e2), parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST, submission_id),
             ).fetchone()
             if active is not None:
                 connection.execute("ROLLBACK")
                 raise ParityLifecycleDispatchError("PROJECT_RUN_ALREADY_ACTIVE")
+            gate = None
+            if pa_e2:
+                try:
+                    gate = parallel_action_delivery.gate(
+                        connection, data_root=self.data_root,
+                        project_id=context.project_id, repository_id=context.repository_id,
+                    )
+                except parallel_action_delivery.DeliveryScopeError as error:
+                    connection.execute("ROLLBACK")
+                    raise ParityLifecycleDispatchError(str(error)) from error
+                if gate.state != "READY":
+                    connection.execute("ROLLBACK")
+                    raise ParityLifecycleDispatchError(gate.state)
             candidate = historical_candidate(connection, context=context, submission_id=submission_id)
             run_id = _allocate_run_id(connection)
             prompt = self._prompt_path(context, run_id)
@@ -460,6 +507,8 @@ class ParityLifecycleDispatcher:
                 "INSERT INTO ep_receipt_run_provenance(submission_id,run_id,project_id,repository_id,installation_id,created_at) VALUES(?,?,?,?,?,?)",
                 (submission_id, run_id, context.project_id, context.repository_id, str(installation[0]), now),
             )
+            if gate is not None:
+                parallel_action_delivery.reserve(connection, run_id=run_id, resources=gate.resources)
             connection.execute("COMMIT")
             return context, candidate, run_id, prompt, False
 
@@ -539,6 +588,11 @@ class ParityLifecycleDispatcher:
                     WHERE submission_id=? AND run_id=?""",
                 (state, resolution, now, submission_id, run_id),
             )
+            if parallel_action_delivery.policy_for_submission(connection, submission_id) == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST:
+                if state in TERMINAL_STATES:
+                    parallel_action_delivery.release_capacity(connection, run_id)
+                if state == "COMPLETE":
+                    parallel_action_delivery.release_resources(connection, run_id)
         log_event(
             self._logger,
             logging.INFO if state not in {"BLOCKED", "FAILED"} else logging.WARNING,
@@ -550,6 +604,10 @@ class ParityLifecycleDispatcher:
                 "operator_resolution": resolution,
             },
         )
+
+    def _release_pa_e2_capacity(self, run_id: str) -> None:
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
+            parallel_action_delivery.release_capacity(connection, run_id)
 
     def _record_terminal_timing_boundary(self, run_id: str) -> str:
         """Freeze terminal timing without exposing a half-projected terminal run.
@@ -869,8 +927,15 @@ class ParityLifecycleDispatcher:
         # exercises the real worker and dispatcher, while avoiding provider,
         # checkout and PR side effects for six transport canaries.
         if os.environ.get("EP_QUALIFICATION_INITIALIZE_ONLY") == "1":
+            self._release_pa_e2_capacity(run_id)
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, "RUNNING", duplicate)
         try:
+            with sqlite_connection(central_database.path(self.data_root)) as connection:
+                if (parallel_action_delivery.policy_for_submission(connection, submission_id)
+                        == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST):
+                    parallel_action_delivery.verify_resources(
+                        connection, run_id=run_id, root=repository_root,
+                    )
             with _historical_admission_environment(repository_root, self.data_root):
                 # INITIALIZE_ONLY qualification deliberately allocates the
                 # canonical dispatch before writing the runner input.  A
@@ -983,6 +1048,7 @@ class ParityLifecycleDispatcher:
                             )
                 else:
                     self._set_state(submission_id, run_id, terminal)
+                    self._release_pa_e2_capacity(run_id)
             log_event(
                 self._logger,
                 logging.INFO if terminal == "COMPLETE" else logging.WARNING,

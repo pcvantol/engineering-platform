@@ -35,6 +35,13 @@ _POLICY_BYTES = (
     b'"write_scope":"repository-only"}'
 )
 SUPPORTED_POLICY_DIGEST = "sha256:" + sha256(_POLICY_BYTES).hexdigest()
+_PA_E2_POLICY_BYTES = (
+    b'{"concurrency_profile":"DIFFERENT_REPOSITORIES_V1",'
+    b'"execution":"BOUNDED_PARALLEL_PA_E2",'
+    b'"provider_child_limit":1,'
+    b'"write_scope":"repository-only"}'
+)
+SUPPORTED_PA_E2_POLICY_DIGEST = "sha256:" + sha256(_PA_E2_POLICY_BYTES).hexdigest()
 
 
 class ParallelAdmissionError(ValueError):
@@ -369,7 +376,8 @@ def stage_action(
         _identifier(value)
     if producer_id != consumer_id:
         raise ParallelAdmissionError("PRODUCER_PRINCIPAL_MISMATCH")
-    if policy_digest != SUPPORTED_POLICY_DIGEST or write_scope != "repository-only":
+    if (policy_digest not in {SUPPORTED_POLICY_DIGEST, SUPPORTED_PA_E2_POLICY_DIGEST}
+            or write_scope != "repository-only"):
         raise ParallelAdmissionError("UNSUPPORTED_PARALLEL_POLICY")
     if concurrency_profile != "DIFFERENT_REPOSITORIES_V1":
         raise ParallelAdmissionError("UNSUPPORTED_CONCURRENCY_PROFILE")
@@ -978,6 +986,32 @@ def linked_submission_decision(connection: sqlite3.Connection, *,
             return dependency_readback(connection, intake_id=intake_id,
                                        baseline_revision=current_head)
     return decision
+
+
+def delivery_readback(connection: sqlite3.Connection, *, intake_id: str,
+                      data_root: object, decision: dict[str, object],
+                      continuation_run_id: str | None = None) -> dict[str, object]:
+    """Add live PA-E2 resource and capacity state without granting a claim."""
+    row = connection.execute(
+        "SELECT policy_digest,project_id,target_repository_id FROM ep_parallel_action_intakes "
+        "WHERE intake_id=?", (intake_id,),
+    ).fetchone()
+    if row is None or row[0] != SUPPORTED_PA_E2_POLICY_DIGEST:
+        return decision
+    if decision["state"] != "DEPENDENCY_ELIGIBLE":
+        return decision
+    from pathlib import Path
+    from . import parallel_action_delivery
+    try:
+        gate = parallel_action_delivery.gate(
+            connection, data_root=Path(data_root), project_id=str(row[1]),
+            repository_id=str(row[2]), run_id=continuation_run_id,
+        )
+    except (parallel_action_delivery.DeliveryScopeError, ValueError, OSError):
+        return {**decision, "state": "WAITING_RESOURCE",
+                "resource_state": "UNQUALIFIED", "capacity_state": "NOT_EVALUATED"}
+    return {**decision, "state": decision["state"] if gate.state == "READY" else gate.state,
+            "resource_state": gate.resource_state, "capacity_state": gate.capacity_state}
 
 
 def reconcile_predecessors(connection: sqlite3.Connection, *, intake_id: str) -> int:

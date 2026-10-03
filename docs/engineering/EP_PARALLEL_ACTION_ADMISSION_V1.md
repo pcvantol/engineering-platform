@@ -22,6 +22,9 @@ profile accepts `repository-only`, `DIFFERENT_REPOSITORIES_V1` and the
 `engineering_platform.parallel_action_admission`. Staging returns an immutable
 `intake_id`, the graph snapshot digest and `dispatch_authorized=false`. An
 identical retry returns HTTP 200 with `replayed=true`; a new intake returns 201.
+The opt-in PA-E2 digest and its bounded delivery behavior are specified in
+[EP parallel Action delivery V1](EP_PARALLEL_ACTION_DELIVERY_V1.md); the
+original PA-E1 digest retains project-serial behavior.
 
 The installation owner must grant each consumer access to each target using
 `grant-parallel-action-repository --consumer-id ... --project-id ...
@@ -87,8 +90,9 @@ the current producer-scoped decision. It can report `WAITING_SCOPE`,
 Scope and baseline waits retain unsatisfied predecessor IDs in `blockers`.
 The normal target baseline requires a clean local `main` at the exact declared
 commit; a dirty worktree or another branch remains `WAITING_BASELINE`.
-`DEPENDENCY_ELIGIBLE` is a predecessor predicate, not resource or capacity
-approval: those fields remain `NOT_EVALUATED`, and `dispatch_authorized` stays
+`DEPENDENCY_ELIGIBLE` is a predecessor predicate, not a claim. Under the
+PA-E1 serial digest, resource and capacity fields remain `NOT_EVALUATED`;
+PA-E2 overlays live resource and capacity state. `dispatch_authorized` stays
 false. The queue worker and immediate claim boundary recheck the predicate so
 a stale or corrupted predecessor cannot be used for a new run.
 When a claimed run has moved its repository `HEAD`, continuation requires a
