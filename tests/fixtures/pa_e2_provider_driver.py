@@ -14,18 +14,32 @@ from engineering_platform.qualification_runtime import DeterministicQualificatio
 
 
 class ControlledProvider(DeterministicQualificationAgent):
+    @staticmethod
+    def _github_write_target(root: Path) -> bool:
+        # This local overlap fixture must stay offline even if the parent
+        # qualification environment has an external-write flow armed.
+        return False
+
     def invoke(self, root: Path, prompt: str):
         rendezvous = Path(os.environ["EP_QUALIFICATION_PA_E2_OVERLAP_DIR"])
         rendezvous.mkdir(parents=True, exist_ok=True)
         (rendezvous / (root.name + ".provider-started")).write_text(
-            json.dumps({"pid": os.getpid(), "root": str(root)}), encoding="utf-8",
+            json.dumps({"pid": os.getpid(), "root": str(root),
+                        "wall_ns": time.time_ns(),
+                        "monotonic_ns": time.monotonic_ns()}), encoding="utf-8",
         )
         deadline = time.monotonic() + 15
         while not (rendezvous / "release").is_file():
             if time.monotonic() >= deadline:
                 raise RuntimeError("PA_E2_PROVIDER_OVERLAP_TIMED_OUT")
             time.sleep(.02)
-        return super().invoke(root, prompt)
+        result = super().invoke(root, prompt)
+        (rendezvous / (root.name + ".provider-ended")).write_text(
+            json.dumps({"pid": os.getpid(), "root": str(root),
+                        "wall_ns": time.time_ns(),
+                        "monotonic_ns": time.monotonic_ns()}), encoding="utf-8",
+        )
+        return result
 
 
 class ProviderRunner:
