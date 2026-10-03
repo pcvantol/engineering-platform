@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from html import escape
 import http.server
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 import json
 import logging
 import os
@@ -5620,6 +5620,31 @@ def _same_origin(headers: Mapping[str, str]) -> bool:
     return origin in {"", f"http://{host}", f"https://{host}"}
 
 
+def _execution_console_origin(headers: Mapping[str, str], port: int) -> bool:
+    """Accept a Console mutation only through a literal local/Tailnet host.
+
+    A browser can rebind an attacker-controlled DNS name to loopback and send
+    matching Origin and Host headers. Literal addresses cannot be rebound.
+    """
+    host = headers.get("Host", "") or ""
+    try:
+        parsed = urlsplit("http://" + host)
+        if (not host or parsed.netloc != host or parsed.path or parsed.query
+                or parsed.fragment or parsed.username is not None
+                or parsed.password is not None or parsed.port != port):
+            return False
+        hostname = parsed.hostname or ""
+        if hostname != "localhost":
+            address = ip_address(hostname)
+            if address.version != 4 or not (
+                address.is_loopback or address in ip_network("100.64.0.0/10")
+            ):
+                return False
+    except ValueError:
+        return False
+    return headers.get("Origin") in {None, "", f"http://{host}"}
+
+
 def _strict_json_object(raw: bytes) -> dict[str, object]:
     """Decode one JSON object while rejecting duplicate member names."""
     def no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -6724,7 +6749,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 "/api/execution-retry": "execution_retry_submitted",
                 "/api/execution-cancel": "execution_cancel_requested",
             }[request.path]
-            if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+            if not _execution_console_origin(self.headers, self.server.server_port):
                 self._send(403, {"error": "INVALID_ORIGIN"})
                 return
             if not isinstance(selected, str) or selected not in project_ids:
@@ -6780,12 +6805,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 )
                 self._send(409, {"error": str(error)})
                 return
-            _audit_dashboard_action(
-                self.server.data_root,  # type: ignore[attr-defined]
-                action=action_name,
-                project_id=selected,
-                run_id=run_id,
-            )
+            if request.path != "/api/execution-cancel":
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action_name,
+                    project_id=selected,
+                    run_id=run_id,
+                )
             self._send(200, result)
             return
         if method == "do_POST" and request.path in {"/api/codex-chat", "/api/codex-chat/clear"}:

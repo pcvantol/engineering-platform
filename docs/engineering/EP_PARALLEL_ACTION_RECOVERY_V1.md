@@ -37,8 +37,10 @@ project gates remain in force. A terminal Action cannot be dispatched again.
 
 The private, project-scoped Console `POST /api/execution-cancel` accepts only
 `{"run_id":"..."}` for an active PA-E2 Action. It audits accepted and rejected
-requests, enforces the selected project and same origin, and persists one
-idempotent `CANCEL_REQUESTED` intent. The Console shows the action only for a
+requests, enforces the selected project and a literal loopback or Tailnet
+address with matching origin, and persists one idempotent `CANCEL_REQUESTED`
+intent. An accepted Console request and its CENTRAL audit row commit together;
+rejected-request logging follows the existing Console audit path. The Console shows the action only for a
 qualifying active run. The intent is not a claim that the provider stopped.
 
 Before any runner entry, the dispatcher can acknowledge cancellation without a
@@ -47,12 +49,19 @@ repository reservation. If an earlier attempt returned at a proved checkpoint,
 cancellation before the next runner entry retains the repository for operator
 review. After runner entry, the Codex client checks the
 durable request, signals only its own provider process group, and verifies that
-the group is empty. Only then is cancellation acknowledged and the provider
+the group is empty. A process that ignores `SIGTERM` receives `SIGKILL` after a
+bounded grace period. Only then is cancellation acknowledged and the provider
 slot released. The run remains blocked with an open operator decision and its
 repository remains exclusive while existing workspace, commit or PR effects
 are reviewed. Explicit dismissal releases that repository reservation.
 Producer readback distinguishes `CANCEL_REQUESTED` from
 `CANCEL_ACKNOWLEDGED` and reports whether the repository is still held.
+
+This V1 cleanup proof covers the provider's owned process group. A descendant
+that deliberately creates another session is outside that proof; qualifying
+such a provider requires stronger containment before its effects can be
+treated as stopped. The repository reservation stays held after a normal
+post-entry cancellation for operator review.
 
 If provider stop or process-group cleanup cannot be proved, the run is
 `PROVIDER_EFFECT_UNCERTAIN` and both reservations stay held. If the runner

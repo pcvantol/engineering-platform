@@ -2090,6 +2090,49 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             httpd.server_close()
         with sqlite_connection(self.database) as connection:
             self.assertEqual(recovery.status(connection, run_id), "CANCEL_REQUESTED")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM engineering_component_logs "
+                "WHERE component='operations_console' "
+                "AND json_extract(payload, '$.run_id')=? "
+                "AND json_extract(payload, '$.audit_action')='execution_cancel_requested'",
+                (run_id,),
+            ).fetchone()[0], 1)
+
+    def test_pa_e3_console_mutation_rejects_dns_rebinding_host(self) -> None:
+        port = 8765
+        for host in ("127.0.0.1:8765", "localhost:8765", "100.100.10.1:8765"):
+            with self.subTest(host=host):
+                self.assertTrue(server._execution_console_origin(
+                    {"Host": host, "Origin": "http://" + host}, port,
+                ))
+        for host in ("attacker.example:8765", "192.168.1.10:8765",
+                     "127.0.0.1:8766", "user@127.0.0.1:8765", ""):
+            with self.subTest(host=host):
+                self.assertFalse(server._execution_console_origin(
+                    {"Host": host, "Origin": "http://" + host}, port,
+                ))
+        self.assertFalse(server._execution_console_origin(
+            {"Host": "127.0.0.1:8765", "Origin": "http://attacker.example:8765"}, port,
+        ))
+
+    def test_pa_e3_cancel_audit_write_failure_rolls_back_intent(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        code, claimed = self.pa_e3_child(submissions["ACTION-A"], "claimed")
+        self.assertEqual(code, 0, claimed)
+        run_id = str(claimed["run_id"])
+        with sqlite_connection(self.database) as connection:
+            connection.execute(
+                "CREATE TRIGGER reject_cancel_audit BEFORE INSERT ON engineering_component_logs "
+                "WHEN NEW.component='operations_console' "
+                "BEGIN SELECT RAISE(ABORT, 'audit write blocked'); END"
+            )
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "audit write blocked"):
+            recovery.request_cancel(
+                self.root, project_id="project-test", run_id=run_id,
+                audit_actor="DASHBOARD_USER",
+            )
+        with sqlite_connection(self.database) as connection:
+            self.assertEqual(recovery.status(connection, run_id), "NONE")
 
     def test_pa_e3_fence_rejects_invalid_target_entry_and_checkpoint(self) -> None:
         _staged, submissions = self.pa_e3_submissions()
@@ -2378,6 +2421,37 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 "SELECT operator_resolution FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
                 (receipt.run_id,),
             ).fetchone(), ("OPEN",))
+
+    def test_pa_e3_cancel_ack_failure_keeps_capacity_and_repository_held(self) -> None:
+        _staged, submissions = self.pa_e3_submissions()
+        dispatcher = ParityLifecycleDispatcher(
+            self.root, runner_factory=lambda root: _PaE3CheckpointRunner(
+                root, self.root, cancel=True, observe_cancel=True,
+            ),
+        )
+        with patch.dict(os.environ, {"EP_PA_E2_ISOLATED_PROCESS": str(os.getpid())}), patch.object(
+            dispatcher, "_persist_historical_input", return_value=None,
+        ), patch.object(
+            recovery, "acknowledge_stopped_provider", side_effect=RuntimeError("ack write failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ack write failed"):
+                dispatcher.dispatch(submissions["ACTION-A"])
+        with sqlite_connection(self.database) as connection:
+            run_id = str(connection.execute(
+                "SELECT run_id FROM ep_parity_lifecycle_dispatches WHERE submission_id=?",
+                (submissions["ACTION-A"],),
+            ).fetchone()[0])
+            self.assertEqual(recovery.status(connection, run_id), "PROVIDER_EFFECT_UNCERTAIN")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:slot:%' AND released_at IS NULL",
+                (run_id,),
+            ).fetchone()[0], 1)
+            self.assertGreaterEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_execution_leases WHERE run_id=? "
+                "AND lease_id LIKE 'pa-e2:resource:%' AND released_at IS NULL",
+                (run_id,),
+            ).fetchone()[0], 1)
 
     def test_pa_e3_dispatch_retains_uncertain_hold_for_unconfirmed_provider(self) -> None:
         _staged, submissions = self.pa_e3_submissions()

@@ -466,7 +466,7 @@ class CodexCliClient:
     @staticmethod
     def _terminate_owned_process_group(process: subprocess.Popen[str], *,
                                        known_group: int | None = None) -> bool:
-        """Request a bounded stop for this invocation's own session only."""
+        """Stop this invocation's session, escalating after a bounded grace."""
         if known_group is None:
             try:
                 process_group = os.getpgid(process.pid)
@@ -474,30 +474,35 @@ class CodexCliClient:
                 return True
         else:
             process_group = known_group
-        try:
-            os.killpg(process_group, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+
+        def drained() -> bool:
+            if known_group is not None:
+                return CodexCliClient._owned_process_group_drained(process_group)
+            try:
+                os.killpg(process_group, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                return False
             return False
-        if known_group is not None:
-            deadline = time.monotonic() + 5
+
+        for stop_signal, grace in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 5.0)):
+            if drained():
+                return True
+            try:
+                os.killpg(process_group, stop_signal)
+            except (ProcessLookupError, PermissionError):
+                pass
+            deadline = time.monotonic() + grace
             while time.monotonic() < deadline:
-                if CodexCliClient._owned_process_group_drained(process_group):
+                try:
+                    process.wait(timeout=0.1)
+                except subprocess.TimeoutExpired:
+                    pass
+                if drained():
                     return True
                 time.sleep(.1)
-            return False
-        try:
-            os.killpg(process_group, 0)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            return False
-        return False
+        return drained()
 
     def set_runtime_metadata_callback(
         self, callback: Callable[[dict[str, str]], None] | None
@@ -975,13 +980,11 @@ class CodexCliClient:
                     except Exception:
                         cancellation_probe_failed.set()
                     if cancellation_requested.is_set() or cancellation_probe_failed.is_set():
-                        try:
-                            os.killpg(owned_group or os.getpgid(process.pid), signal.SIGTERM)
-                        except (OSError, ProcessLookupError):
-                            try:
-                                process.terminate()
-                            except ProcessLookupError:
-                                pass
+                        # A child may inherit stdout and ignore SIGTERM. The
+                        # reader cannot observe the request until that pipe
+                        # closes, so the watchdog must finish the bounded
+                        # stop itself instead of returning after one signal.
+                        self._terminate_owned_process_group(process, known_group=owned_group)
                         return
                 if self._handoff_deadline_callback is None or not self._handoff_deadline_callback():
                     continue

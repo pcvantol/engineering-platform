@@ -296,7 +296,8 @@ def require_resolved(connection: sqlite3.Connection, run_id: str) -> None:
         raise RecoveryFenceError("PA_E3_CANCEL_ACK_PENDING")
 
 
-def request_cancel(data_root: Path, *, project_id: str, run_id: str) -> dict[str, str]:
+def request_cancel(data_root: Path, *, project_id: str, run_id: str,
+                   audit_actor: str | None = None) -> dict[str, str]:
     """Persist one exact per-Action request; it is not an effect acknowledgement."""
     with sqlite_connection(central_database.path(data_root)) as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -330,6 +331,22 @@ def request_cancel(data_root: Path, *, project_id: str, run_id: str) -> dict[str
             )
         elif existing[0] is not None:
             raise RecoveryFenceError("PA_E3_CANCEL_ALREADY_RESOLVED")
+        if audit_actor is not None:
+            # The accepted intent and its Console audit fact are one CENTRAL
+            # transaction. A log sink failure must not leave an unaudited
+            # cancellation request behind.
+            now = _now()
+            payload = json.dumps({
+                "timestamp": now, "level": "INFO", "component": "operations_console",
+                "run_id": run_id, "event": "dashboard_action_completed",
+                "project_id": project_id, "audit_action": "execution_cancel_requested",
+                "audit_actor": audit_actor, "audit_outcome": "COMPLETED",
+                "user_action": "execution_cancel_requested",
+            }, separators=(",", ":"))
+            connection.execute(
+                "INSERT INTO engineering_component_logs(component,payload,created_at) "
+                "VALUES('operations_console',?,?)", (payload, now),
+            )
     return {"run_id": run_id, "project_id": project_id,
             "repository_id": str(row[1]), "state": "CANCEL_REQUESTED"}
 

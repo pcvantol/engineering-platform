@@ -70,6 +70,52 @@ class ParallelActionRecoveryClientTest(unittest.TestCase):
         self.assertTrue(client.cancellation_observed())
         self.assertTrue(client.provider_process_cleanup_confirmed())
 
+    def test_cancel_kills_term_resistant_child_holding_stdout_open(self) -> None:
+        class Provider:
+            process: subprocess.Popen[str] | None = None
+
+            def spawn_invocation(self, *_: object, **__: object) -> subprocess.Popen[str]:
+                child = (
+                    "import signal,time; "
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    "print('child ready', flush=True); time.sleep(60)"
+                )
+                parent = (
+                    "import subprocess,sys,time; "
+                    f"subprocess.Popen((sys.executable, '-c', {child!r}), "
+                    "stdout=sys.stdout, stderr=sys.stderr); "
+                    "print('parent ready', flush=True); time.sleep(60)"
+                )
+                self.process = subprocess.Popen(
+                    (sys.executable, "-c", parent), text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                return self.process
+
+        provider = Provider()
+        client = CodexCliClient(provider=provider)  # type: ignore[arg-type]
+        requested = threading.Event()
+        client.set_cancellation_check(requested.is_set)
+        timer = threading.Timer(.5, requested.set)
+        timer.start()
+        started = time.monotonic()
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaises(CodexInvocationError) as raised:
+                    client._run_invocation(("codex", "exec"), Path(temporary))
+        finally:
+            timer.cancel()
+            if provider.process is not None:
+                try:
+                    os.killpg(provider.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                provider.process.wait(timeout=5)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(raised.exception.terminal_condition, "operator_cancellation")
+        self.assertTrue(client.provider_process_cleanup_confirmed())
+
     def test_cancellation_status_failure_stops_owned_provider_fail_closed(self) -> None:
         provider = _SleepingProvider()
         client = CodexCliClient(provider=provider)  # type: ignore[arg-type]

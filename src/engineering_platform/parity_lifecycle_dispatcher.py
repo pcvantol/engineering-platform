@@ -68,6 +68,7 @@ def request_operator_cancel(data_root: Path, *, project_id: str,
     try:
         return parallel_action_recovery.request_cancel(
             data_root, project_id=project_id, run_id=run_id,
+            audit_actor="DASHBOARD_USER",
         )
     except parallel_action_recovery.RecoveryFenceError as error:
         raise ParityLifecycleDispatchError(str(error)) from error
@@ -614,7 +615,8 @@ class ParityLifecycleDispatcher:
                         )
             raise ParityLifecycleDispatchError("HISTORICAL_ADMISSION_BLOCKED")
 
-    def _set_state(self, submission_id: str, run_id: str, state: str, *, occurred_at: str | None = None) -> None:
+    def _set_state(self, submission_id: str, run_id: str, state: str, *,
+                   occurred_at: str | None = None, defer_pa_release: bool = False) -> None:
         if state not in {"CLAIMED", "RUNNING", *TERMINAL_STATES}:
             raise ParityLifecycleDispatchError("INVALID_DISPATCH_STATE")
         with sqlite_connection(central_database.path(self.data_root)) as connection:
@@ -630,9 +632,9 @@ class ParityLifecycleDispatcher:
             if parallel_action_delivery.policy_for_submission(connection, submission_id) == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST:
                 recovery_uncertain = (parallel_action_recovery.status(connection, run_id)
                                       == "PROVIDER_EFFECT_UNCERTAIN")
-                if state in TERMINAL_STATES and not recovery_uncertain:
+                if state in TERMINAL_STATES and not recovery_uncertain and not defer_pa_release:
                     parallel_action_delivery.release_capacity(connection, run_id)
-                if state == "COMPLETE" and not recovery_uncertain:
+                if state == "COMPLETE" and not recovery_uncertain and not defer_pa_release:
                     parallel_action_delivery.release_resources(connection, run_id)
         log_event(
             self._logger,
@@ -649,6 +651,15 @@ class ParityLifecycleDispatcher:
     def _release_pa_e2_capacity(self, run_id: str) -> None:
         with sqlite_connection(central_database.path(self.data_root)) as connection:
             parallel_action_delivery.release_capacity(connection, run_id)
+
+    def _release_pa_e3_terminal(self, run_id: str, terminal: str) -> None:
+        """Release only after terminal cancellation has been durably resolved."""
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
+            if parallel_action_recovery.status(connection, run_id) == "PROVIDER_EFFECT_UNCERTAIN":
+                raise ParityLifecycleDispatchError("PA_E3_PROVIDER_EFFECT_UNCERTAIN")
+            parallel_action_delivery.release_capacity(connection, run_id)
+            if terminal == "COMPLETE":
+                parallel_action_delivery.release_resources(connection, run_id)
 
     def _record_terminal_timing_boundary(self, run_id: str) -> str:
         """Freeze terminal timing without exposing a half-projected terminal run.
@@ -1093,7 +1104,7 @@ class ParityLifecycleDispatcher:
                 if (attempt_id is not None and terminal == "RUNNING"
                         and parallel_action_recovery.cancel_requested(self.data_root, run_id)):
                     if cancelled_provider_stopped:
-                        self._set_state(submission_id, run_id, "BLOCKED")
+                        self._set_state(submission_id, run_id, "BLOCKED", defer_pa_release=True)
                         parallel_action_recovery.acknowledge_stopped_provider(
                             self.data_root, run_id=run_id,
                             submission_id=submission_id, attempt_id=attempt_id,
@@ -1135,6 +1146,7 @@ class ParityLifecycleDispatcher:
                     self._set_state(
                         submission_id, run_id, terminal,
                         occurred_at=terminal_occurred_at,
+                        defer_pa_release=attempt_id is not None,
                     )
                     if attempt_id is not None and cancelled_provider_stopped and terminal in {"BLOCKED", "FAILED"}:
                         parallel_action_recovery.acknowledge_stopped_provider(
@@ -1146,6 +1158,8 @@ class ParityLifecycleDispatcher:
                         parallel_action_recovery.close_terminal_cancel(
                             self.data_root, run_id=run_id,
                         )
+                    if attempt_id is not None:
+                        self._release_pa_e3_terminal(run_id, terminal)
                     if terminal == "COMPLETE":
                         try:
                             with sqlite_connection(central_database.path(self.data_root)) as connection:
@@ -1193,12 +1207,19 @@ class ParityLifecycleDispatcher:
             if runner_entered and not attempt_completed and not cancelled_provider_stopped:
                 parallel_action_recovery.mark_uncertain(self.data_root, run_id=run_id)
             self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error)
-            self._set_state(submission_id, run_id, "BLOCKED")
+            self._set_state(
+                submission_id, run_id, "BLOCKED",
+                defer_pa_release=attempt_id is not None and cancelled_provider_stopped,
+            )
             if attempt_id is not None and cancelled_provider_stopped and not attempt_completed:
-                parallel_action_recovery.acknowledge_stopped_provider(
-                    self.data_root, run_id=run_id,
-                    submission_id=submission_id, attempt_id=attempt_id,
-                )
+                try:
+                    parallel_action_recovery.acknowledge_stopped_provider(
+                        self.data_root, run_id=run_id,
+                        submission_id=submission_id, attempt_id=attempt_id,
+                    )
+                except Exception:
+                    parallel_action_recovery.mark_uncertain(self.data_root, run_id=run_id)
+                    raise
                 attempt_completed = True
             raise
         except Exception as error:
