@@ -6331,6 +6331,13 @@ function operatorHandlingLabel(entry) {
 }
 function promptHistoryDisplayStatus(entry) {
   const outcome = promptHistoryStatus(entry?.status);
+  const recovery = String(entry?.recovery_state || "NONE").toUpperCase();
+  if (recovery === "PROVIDER_EFFECT_UNCERTAIN")
+    return `${outcome} · ${t("handling.recovery_required")}`;
+  if (recovery === "CANCEL_REQUESTED")
+    return `${outcome} · ${t("handling.cancel_requested")}`;
+  if (recovery === "CANCEL_ACKNOWLEDGED")
+    return `${outcome} · ${t("handling.cancel_acknowledged")}`;
   if (entry?.emergency_cancelled_at) return outcome;
   const handling = String(entry?.handling_state || entry?.operator_resolution || "").toUpperCase();
   return ["DISMISSED", "RETRIED"].includes(handling) || entry?.dismissed
@@ -6567,6 +6574,14 @@ function renderPromptHistory() {
         dismiss.textContent = t("action.dismiss_execution");
         dismiss.addEventListener("click", () => dismissExecution(entry));
         actionControls.append(dismiss);
+      }
+      if (entry.can_cancel === true && entry.run_id) {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "predecessor-retry execution-history-action execution-cancel";
+        cancel.textContent = t("action.cancel_execution");
+        cancel.addEventListener("click", () => cancelExecution(entry));
+        actionControls.append(cancel);
       }
       if (actionControls.childElementCount) action.append(actionControls);
       else action.textContent = "—";
@@ -9298,6 +9313,28 @@ function dismissExecution(entry) {
         return refreshAfterOperatorAction({ dismissedRunId: entry.run_id });
       })
       .catch((error) => showDashboardError(error.message, t("dismiss.failed")));
+  });
+}
+function cancelExecution(entry) {
+  if (!entry?.run_id || entry.can_cancel !== true) return;
+  confirmDashboardAction(
+    t("cancel.title"),
+    t("cancel.details", { run_id: entry.run_id, title: String(entry.title || entry.run_id) }),
+    t("action.cancel_execution"),
+    { destructive: true },
+  ).then((confirmed) => {
+    if (!confirmed) return;
+    fetch("/api/execution-cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: entry.run_id }),
+    })
+      .then(async (response) => ({ ok: response.ok, body: await response.json() }))
+      .then((result) => {
+        if (!result.ok) throw Error(result.body.error || t("cancel.failed"));
+        return refreshAfterOperatorAction();
+      })
+      .catch((error) => showDashboardError(error.message, t("cancel.failed")));
   });
 }
 function abortOperatorMergeWait() {

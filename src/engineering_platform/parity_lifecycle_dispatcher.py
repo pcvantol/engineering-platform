@@ -21,7 +21,7 @@ import uuid
 from uuid import uuid4
 from typing import Callable, Protocol
 
-from . import central_database, execution_host_evidence, parallel_action_admission, parallel_action_delivery, submission_service
+from . import central_database, execution_host_evidence, parallel_action_admission, parallel_action_delivery, parallel_action_recovery, submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
@@ -62,10 +62,26 @@ class ParityLifecycleDispatchError(RuntimeError):
     """A stable failure at the Phase-P composition boundary."""
 
 
+def request_operator_cancel(data_root: Path, *, project_id: str,
+                            run_id: str) -> dict[str, str]:
+    """Persist an exact PA-E3 cancellation intent without claiming an effect."""
+    try:
+        return parallel_action_recovery.request_cancel(
+            data_root, project_id=project_id, run_id=run_id,
+            audit_actor="DASHBOARD_USER",
+        )
+    except parallel_action_recovery.RecoveryFenceError as error:
+        raise ParityLifecycleDispatchError(str(error)) from error
+
+
 def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> dict[str, str]:
     """Explicitly release a failed CENTRAL run's project FIFO gate."""
     with sqlite_connection(central_database.path(data_root)) as connection:
         connection.execute("BEGIN IMMEDIATE")
+        try:
+            parallel_action_recovery.require_resolved(connection, run_id)
+        except parallel_action_recovery.RecoveryFenceError as error:
+            raise ParityLifecycleDispatchError(str(error)) from error
         cursor = connection.execute(
             """UPDATE ep_parity_lifecycle_dispatches
                 SET operator_resolution=?,updated_at=?
@@ -131,6 +147,10 @@ def retry_operator_gate(
     repository = repository or SubprocessRepositoryClient()
     database = central_database.path(data_root)
     with sqlite_connection(database) as connection:
+        try:
+            parallel_action_recovery.require_resolved(connection, run_id)
+        except parallel_action_recovery.RecoveryFenceError as error:
+            raise ParityLifecycleDispatchError(str(error)) from error
         source = connection.execute(
             """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
                       s.prompt,s.transport,s.correlation_id,s.mission_id,s.engineering_action_id,s.constraints,
@@ -160,6 +180,10 @@ def retry_operator_gate(
     )
     with sqlite_connection(database) as connection:
         connection.execute("BEGIN IMMEDIATE")
+        try:
+            parallel_action_recovery.require_resolved(connection, run_id)
+        except parallel_action_recovery.RecoveryFenceError as error:
+            raise ParityLifecycleDispatchError(str(error)) from error
         row = connection.execute(
             """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
                       s.prompt,s.transport,s.correlation_id,s.mission_id,s.engineering_action_id,s.constraints,
@@ -350,6 +374,19 @@ def _default_runner(repository_root: Path, *, central_database: Path | None = No
     )
 
 
+def _cancelled_provider_stopped(runner: Runner | None) -> bool:
+    agent = getattr(runner, "agent", None)
+    observed = getattr(agent, "cancellation_observed", None)
+    cleaned = getattr(agent, "provider_process_cleanup_confirmed", None)
+    return bool(callable(observed) and callable(cleaned) and observed() and cleaned())
+
+
+def _provider_session_stopped(runner: Runner | None) -> bool:
+    cleaned = getattr(getattr(runner, "agent", None),
+                      "provider_process_cleanup_confirmed", None)
+    return bool(callable(cleaned) and cleaned())
+
+
 @contextmanager
 def _historical_admission_environment(repository_root: Path, data_root: Path):
     """Keep the runner's existing persisted-admission guard in force."""
@@ -394,7 +431,7 @@ class ParityLifecycleDispatcher:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT project_id,repository_id,run_id,prompt_path FROM ep_parity_lifecycle_dispatches WHERE submission_id=?",
+                "SELECT project_id,repository_id,run_id,prompt_path,state FROM ep_parity_lifecycle_dispatches WHERE submission_id=?",
                 (submission_id,),
             ).fetchone()
             try:
@@ -414,6 +451,9 @@ class ParityLifecycleDispatcher:
                 connection.execute("ROLLBACK")
                 raise ParityLifecycleDispatchError("PA_E2_ISOLATED_PROCESS_REQUIRED")
             if existing is not None:
+                if pa_e2 and existing[4] in TERMINAL_STATES:
+                    connection.execute("ROLLBACK")
+                    raise ParityLifecycleDispatchError("PA_E3_DISPATCH_ALREADY_TERMINAL")
                 provenance = connection.execute(
                     """SELECT 1 FROM ep_receipt_run_provenance p
                        JOIN engineering_metadata m ON m.key='installation.instance_id'
@@ -575,10 +615,27 @@ class ParityLifecycleDispatcher:
                         )
             raise ParityLifecycleDispatchError("HISTORICAL_ADMISSION_BLOCKED")
 
-    def _set_state(self, submission_id: str, run_id: str, state: str, *, occurred_at: str | None = None) -> None:
+    def _set_state(self, submission_id: str, run_id: str, state: str, *,
+                   occurred_at: str | None = None,
+                   pa_e3_attempt_id: str | None = None,
+                   pa_e3_ack_stopped: bool = False) -> None:
         if state not in {"CLAIMED", "RUNNING", *TERMINAL_STATES}:
             raise ParityLifecycleDispatchError("INVALID_DISPATCH_STATE")
+        if pa_e3_ack_stopped and pa_e3_attempt_id is None:
+            raise ParityLifecycleDispatchError("PA_E3_DISPATCH_FENCE_CONFLICT")
         with sqlite_connection(central_database.path(self.data_root)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            policy = parallel_action_delivery.policy_for_submission(connection, submission_id)
+            if pa_e3_attempt_id is not None:
+                if policy != parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST:
+                    raise ParityLifecycleDispatchError("PA_E3_DISPATCH_TARGET_INVALID")
+                attempts = connection.execute(
+                    "SELECT lease_id FROM ep_execution_leases WHERE run_id=? "
+                    "AND lease_id LIKE 'pa-e3:attempt:%' AND released_at IS NULL",
+                    (run_id,),
+                ).fetchall()
+                if len(attempts) != 1 or attempts[0][0] != pa_e3_attempt_id:
+                    raise ParityLifecycleDispatchError("PA_E3_DISPATCH_FENCE_CONFLICT")
             now = occurred_at or _utcnow()
             connection.execute("UPDATE ep_execution_runs SET state=?,updated_at=? WHERE run_id=?", (state, now, run_id))
             resolution = OPERATOR_RESOLUTION_OPEN if state in {"BLOCKED", "FAILED"} else "NONE"
@@ -588,22 +645,46 @@ class ParityLifecycleDispatcher:
                     WHERE submission_id=? AND run_id=?""",
                 (state, resolution, now, submission_id, run_id),
             )
-            if parallel_action_delivery.policy_for_submission(connection, submission_id) == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST:
-                if state in TERMINAL_STATES:
+            if policy == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST:
+                if pa_e3_attempt_id is not None:
+                    if pa_e3_ack_stopped:
+                        parallel_action_recovery.acknowledge_stopped_provider_in_transaction(
+                            connection, run_id=run_id, submission_id=submission_id,
+                            attempt_id=pa_e3_attempt_id,
+                        )
+                    elif state in TERMINAL_STATES:
+                        parallel_action_recovery.close_terminal_cancel_in_transaction(
+                            connection, run_id=run_id,
+                        )
+                recovery_uncertain = (parallel_action_recovery.status(connection, run_id)
+                                      == "PROVIDER_EFFECT_UNCERTAIN")
+                if state in TERMINAL_STATES and not recovery_uncertain:
                     parallel_action_delivery.release_capacity(connection, run_id)
-                if state == "COMPLETE":
+                if state == "COMPLETE" and not recovery_uncertain:
                     parallel_action_delivery.release_resources(connection, run_id)
-        log_event(
-            self._logger,
-            logging.INFO if state not in {"BLOCKED", "FAILED"} else logging.WARNING,
-            "lifecycle_run_state_changed",
-            run_id=run_id,
-            context={
-                "submission_id": submission_id,
-                "dispatch_state": state,
-                "operator_resolution": resolution,
-            },
-        )
+                if pa_e3_attempt_id is not None and state in TERMINAL_STATES:
+                    connection.execute(
+                        "UPDATE ep_execution_leases SET released_at=? WHERE lease_id=? "
+                        "AND run_id=? AND released_at IS NULL",
+                        (now, pa_e3_attempt_id, run_id),
+                    )
+        try:
+            log_event(
+                self._logger,
+                logging.INFO if state not in {"BLOCKED", "FAILED"} else logging.WARNING,
+                "lifecycle_run_state_changed",
+                run_id=run_id,
+                context={
+                    "submission_id": submission_id,
+                    "dispatch_state": state,
+                    "operator_resolution": resolution,
+                },
+            )
+        except Exception:
+            # The terminal transaction is already committed. An optional
+            # operational log failure cannot turn its released leases into
+            # an unresolvable PROVIDER_EFFECT_UNCERTAIN claim.
+            pass
 
     def _release_pa_e2_capacity(self, run_id: str) -> None:
         with sqlite_connection(central_database.path(self.data_root)) as connection:
@@ -893,6 +974,27 @@ class ParityLifecycleDispatcher:
 
     def dispatch(self, submission_id: str) -> DispatchReceipt:
         context, candidate, run_id, prompt, duplicate = self._claim(submission_id)
+        with sqlite_connection(central_database.path(self.data_root)) as connection:
+            pa_e2 = (parallel_action_delivery.policy_for_submission(connection, submission_id)
+                     == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST)
+        attempt_id: str | None = None
+        if pa_e2:
+            try:
+                attempt_id = parallel_action_recovery.acquire(
+                    self.data_root, run_id=run_id, submission_id=submission_id,
+                    project_id=context.project_id, repository_id=context.repository_id,
+                )
+            except parallel_action_recovery.RecoveryFenceError as error:
+                raise ParityLifecycleDispatchError(str(error)) from error
+            if parallel_action_recovery.cancel_requested(self.data_root, run_id):
+                parallel_action_recovery.acknowledge_pre_runner_cancel(
+                    self.data_root, run_id=run_id,
+                    submission_id=submission_id, attempt_id=attempt_id,
+                )
+                return DispatchReceipt(
+                    submission_id, context.project_id, context.repository_id,
+                    run_id, "FAILED", duplicate,
+                )
         log_event(
             self._logger,
             logging.INFO,
@@ -928,7 +1030,15 @@ class ParityLifecycleDispatcher:
         # checkout and PR side effects for six transport canaries.
         if os.environ.get("EP_QUALIFICATION_INITIALIZE_ONLY") == "1":
             self._release_pa_e2_capacity(run_id)
+            if attempt_id is not None:
+                parallel_action_recovery.release_attempt(
+                    self.data_root, run_id=run_id, attempt_id=attempt_id,
+                )
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, "RUNNING", duplicate)
+        runner_entered = False
+        attempt_completed = False
+        runner: Runner | None = None
+        cancelled_provider_stopped = False
         try:
             with sqlite_connection(central_database.path(self.data_root)) as connection:
                 if (parallel_action_delivery.policy_for_submission(connection, submission_id)
@@ -978,6 +1088,13 @@ class ParityLifecycleDispatcher:
                     self.data_root, run_id=run_id, repository_root=repository_root, captured_at=_utcnow(),
                 )
                 runner = self.runner_factory(repository_root)
+                if pa_e2:
+                    cancellation_setter = getattr(getattr(runner, "agent", None),
+                                                  "set_cancellation_check", None)
+                    if callable(cancellation_setter):
+                        cancellation_setter(
+                            lambda: parallel_action_recovery.cancel_requested(self.data_root, run_id)
+                        )
                 log_event(
                     self._logger,
                     logging.INFO,
@@ -991,11 +1108,41 @@ class ParityLifecycleDispatcher:
                         "execution_mode": candidate.execution_mode,
                     },
                 )
+                if attempt_id is not None:
+                    entry = parallel_action_recovery.runner_entry(
+                        self.data_root, run_id=run_id, attempt_id=attempt_id,
+                    )
+                    if entry == "CANCEL_REQUESTED":
+                        parallel_action_recovery.acknowledge_pre_runner_cancel(
+                            self.data_root, run_id=run_id,
+                            submission_id=submission_id, attempt_id=attempt_id,
+                        )
+                        return DispatchReceipt(
+                            submission_id, context.project_id, context.repository_id,
+                            run_id, "FAILED", duplicate,
+                        )
+                    runner_entered = True
                 state = runner.run(
                     prompt, run_id=run_id, resume=duplicate,
                     owner_authorized=candidate.execution_mode == "MANAGED",
                 )
+                if attempt_id is not None and not _provider_session_stopped(runner):
+                    raise RunnerError("PA_E3_PROVIDER_EXIT_UNCONFIRMED")
+                cancelled_provider_stopped = _cancelled_provider_stopped(runner)
                 terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
+                if (attempt_id is not None and terminal == "RUNNING"
+                        and parallel_action_recovery.cancel_requested(self.data_root, run_id)):
+                    if cancelled_provider_stopped:
+                        self._set_state(
+                            submission_id, run_id, "BLOCKED",
+                            pa_e3_attempt_id=attempt_id, pa_e3_ack_stopped=True,
+                        )
+                        attempt_completed = True
+                        return DispatchReceipt(
+                            submission_id, context.project_id, context.repository_id,
+                            run_id, "BLOCKED", duplicate,
+                        )
+                    raise RunnerError("PA_E3_CANCEL_PROVIDER_EFFECT_UNCERTAIN")
                 # The terminal run record is the single timing authority for both
                 # producer readback and immutable terminal evidence.  Close the
                 # enclosing span and persist that terminal boundary before any
@@ -1027,7 +1174,13 @@ class ParityLifecycleDispatcher:
                     self._set_state(
                         submission_id, run_id, terminal,
                         occurred_at=terminal_occurred_at,
+                        pa_e3_attempt_id=attempt_id,
+                        pa_e3_ack_stopped=bool(
+                            attempt_id is not None and cancelled_provider_stopped
+                            and terminal in {"BLOCKED", "FAILED"}
+                        ),
                     )
+                    attempt_completed = True
                     if terminal == "COMPLETE":
                         try:
                             with sqlite_connection(central_database.path(self.data_root)) as connection:
@@ -1048,7 +1201,14 @@ class ParityLifecycleDispatcher:
                             )
                 else:
                     self._set_state(submission_id, run_id, terminal)
-                    self._release_pa_e2_capacity(run_id)
+                    if attempt_id is not None:
+                        parallel_action_recovery.complete_attempt(
+                            self.data_root, run_id=run_id, attempt_id=attempt_id,
+                            checkpoint_phase=state.phase,
+                        )
+                    else:
+                        self._release_pa_e2_capacity(run_id)
+                    attempt_completed = True
             log_event(
                 self._logger,
                 logging.INFO if terminal == "COMPLETE" else logging.WARNING,
@@ -1063,12 +1223,35 @@ class ParityLifecycleDispatcher:
             )
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, terminal, duplicate)
         except RunnerError as error:
+            cancelled_provider_stopped = _cancelled_provider_stopped(runner)
+            if runner_entered and not attempt_completed and not cancelled_provider_stopped:
+                parallel_action_recovery.mark_uncertain(self.data_root, run_id=run_id)
             self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error)
-            self._set_state(submission_id, run_id, "BLOCKED")
+            try:
+                self._set_state(
+                    submission_id, run_id, "BLOCKED",
+                    pa_e3_attempt_id=attempt_id if cancelled_provider_stopped else None,
+                    pa_e3_ack_stopped=attempt_id is not None and cancelled_provider_stopped,
+                )
+            except Exception:
+                if attempt_id is not None and cancelled_provider_stopped:
+                    parallel_action_recovery.mark_uncertain(self.data_root, run_id=run_id)
+                raise
+            if attempt_id is not None and cancelled_provider_stopped:
+                attempt_completed = True
             raise
         except Exception as error:
+            if attempt_completed:
+                raise
+            if runner_entered and not attempt_completed:
+                parallel_action_recovery.mark_uncertain(self.data_root, run_id=run_id)
             # A nonterminal checkpoint is deliberately resumable with the same
             # run ID; an uncheckpointed admission failure is visible as BLOCKED.
             self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error, stage="PRECHECKPOINT")
             self._set_state(submission_id, run_id, "BLOCKED")
             raise
+        finally:
+            if attempt_id is not None and (not runner_entered or attempt_completed):
+                parallel_action_recovery.release_attempt(
+                    self.data_root, run_id=run_id, attempt_id=attempt_id,
+                )

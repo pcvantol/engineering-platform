@@ -11653,6 +11653,39 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.getByRole("button", { name: "Uitvoering afsluiten" })).toHaveCount(0);
   });
 
+  test("cancels only an eligible central Action and shows its pending state", async ({ page }) => {
+    let requests = 0;
+    let cancelled = false;
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
+      run_id: "inbox-pa-e3", status: "RUNNING", history_source: "CENTRAL",
+      title: "Parallel Action", executed_at: "2026-10-03T12:00:00Z",
+      can_cancel: !cancelled, recovery_state: cancelled ? "CANCEL_REQUESTED" : "NONE",
+    }] } }));
+    await page.route("**/api/execution-cancel", (route) => {
+      requests += 1;
+      expect(route.request().postDataJSON()).toEqual({ run_id: "inbox-pa-e3" });
+      cancelled = true;
+      return route.fulfill({ json: { run_id: "inbox-pa-e3", state: "CANCEL_REQUESTED" } });
+    });
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+      status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] },
+      component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
+    const cancel = page.getByRole("button", { name: "Uitvoering annuleren" });
+    await expect(cancel).toBeVisible();
+    await dispatchDashboardPointerClick(cancel);
+    await expect(page.locator("#confirmationModal")).toContainText("Bestaande wijzigingen blijven");
+    await page.locator("#confirmationModalConfirm").click();
+    await expect.poll(() => requests).toBe(1);
+    await expect(cancel).toHaveCount(0);
+    await expect(page.locator("#promptHistoryRows")).toContainText("Annulering aangevraagd");
+  });
+
   test("shows the iPhone pull-to-refresh threshold", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => updatePullRefresh(72));

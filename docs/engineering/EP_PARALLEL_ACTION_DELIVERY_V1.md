@@ -51,6 +51,7 @@ The sandbox overrides use the documented
 
 This source slice qualifies two independent repositories on one host, with
 distinct run and provider process identities and overlapping provider
-intervals. PA-E3 owns crash and cancellation recovery beyond the fail-closed
-reservation, PA-E4 owns complete multi-active telemetry/export evidence, and
+intervals. [PA-E3](EP_PARALLEL_ACTION_RECOVERY_V1.md) adds the process,
+checkpoint and cancellation fence beyond the fail-closed reservation.
+PA-E4 owns complete multi-active telemetry/export evidence, and
 PA-EQ owns the installed Forge-to-EP matrix.

@@ -20,7 +20,7 @@ from typing import Callable, Protocol
 
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatcher, ParityLifecycleDispatchError
 from . import central_database
-from . import parallel_action_admission, parallel_action_delivery
+from . import parallel_action_admission, parallel_action_delivery, parallel_action_recovery
 from .component_logging import component_logger, log_event
 from .storage import sqlite_connection
 
@@ -151,6 +151,10 @@ class LifecycleWorker:
                 if decision is not None and decision["state"] != "DEPENDENCY_ELIGIBLE":
                     continue
                 if pa_e2:
+                    if (run_id is not None and
+                            parallel_action_recovery.status(connection, str(run_id))
+                            == "PROVIDER_EFFECT_UNCERTAIN"):
+                        continue
                     try:
                         gate = parallel_action_delivery.gate(
                             connection, data_root=self.data_root, project_id=project,
@@ -190,7 +194,10 @@ class LifecycleWorker:
             else:
                 receipt = self._dispatcher_factory().dispatch(submission_id)
         except ParityLifecycleDispatchError as error:
-            if str(error) in {"WAITING_RESOURCE", "WAITING_CAPACITY", "PROJECT_RUN_ALREADY_ACTIVE"}:
+            if str(error) in {
+                "WAITING_RESOURCE", "WAITING_CAPACITY", "PROJECT_RUN_ALREADY_ACTIVE",
+                "PA_E3_DISPATCH_ACTIVE", "PA_E3_PROVIDER_EFFECT_UNCERTAIN",
+            }:
                 with self._lock:
                     self._next_merge_resume_at.pop(submission_id, None)
                 return

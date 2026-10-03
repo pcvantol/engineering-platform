@@ -390,8 +390,9 @@ class InstallationBoundaryTests(unittest.TestCase):
         """Exercise the installed handler in-process, where branch coverage runs."""
         handler = object.__new__(server._HealthHandler)
         handler.path = path
-        handler.server = SimpleNamespace(data_root=self.root)
+        handler.server = SimpleNamespace(data_root=self.root, server_port=8765)
         message = Message()
+        message["Host"] = "127.0.0.1:8765"
         for key, value in (headers or {}).items():
             message[key] = value
         handler.headers = message
@@ -1675,10 +1676,12 @@ class InstallationBoundaryTests(unittest.TestCase):
             for path, body, expected in (
                 ("/api/execution-dismiss", b'{"run_id":"run-a"}', 403),
                 ("/api/execution-dismiss", b"{}", 400),
+                ("/api/execution-cancel", b'{"run_id":"run-a"}', 403),
+                ("/api/execution-cancel", b"{}", 400),
                 ("/api/configuration", b"{}", 409),
             ):
                 headers = {"Content-Length": str(len(body)), "X-Engineering-Platform-Project": "project-a"}
-                if path == "/api/execution-dismiss" and body != b"{}":
+                if path in {"/api/execution-dismiss", "/api/execution-cancel"} and body != b"{}":
                     headers["Origin"] = "https://invalid"
                 handler, responses = self._in_process_console_handler(path, body=body, headers=headers)
                 handler._central_database_configuration = lambda _method: False

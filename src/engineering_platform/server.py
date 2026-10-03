@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from html import escape
 import http.server
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 import json
 import logging
 import os
@@ -67,7 +67,7 @@ from . import (
 )
 from . import operational_installation
 from . import owner_credential_recovery
-from . import parallel_action_admission
+from . import parallel_action_admission, parallel_action_recovery
 from . import parallel_action_compat
 from . import product_installation_readback
 from . import local_repository_binding
@@ -3350,7 +3350,8 @@ class _CentralForgeProvenance:
         return context
 
 
-def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
+def _central_run_record(row: sqlite3.Row, project_id: str,
+                        recovery_state: str = "NONE") -> dict[str, object]:
     """Project one run and its immutable admitted Producer facts for Console.
 
     ``ep_submissions`` is the canonical input record.  In particular, it is
@@ -3381,6 +3382,7 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
     awaiting_operator = (
         dispatch_state in {"BLOCKED", "FAILED"}
         and operator_resolution == "OPEN"
+        and recovery_state not in {"PROVIDER_EFFECT_UNCERTAIN", "CANCEL_REQUESTED"}
     )
     retry_child_run_id = _central_text(row["retry_child_run_id"])
     retry_dispatch_state = _central_text(row["retry_dispatch_state"])
@@ -3442,6 +3444,12 @@ def _central_run_record(row: sqlite3.Row, project_id: str) -> dict[str, object]:
         # handling decision separately from the immutable outcome, so a
         # refresh after a successful action cannot offer that action again.
         "history_source": "CENTRAL",
+        "recovery_state": recovery_state,
+        "can_cancel": (
+            row["parallel_policy_digest"] == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST
+            and dispatch_state in {"CLAIMED", "RUNNING"}
+            and recovery_state == "NONE"
+        ),
         "can_retry": awaiting_operator,
         "can_dismiss": awaiting_operator,
         "retry_child_run_id": retry_child_run_id,
@@ -3481,6 +3489,7 @@ def _central_console_run_records(
                       retry.run_id AS retry_child_run_id,
                       retry.state AS retry_dispatch_state,retry.updated_at AS retry_updated_at,
                       s.repository_id,s.producer_id,s.producer_type,s.producer_version,
+                      i.policy_digest AS parallel_policy_digest,
                       s.constraints,s.correlation_id,s.mission_id,s.engineering_action_id,
                       s.transport_receipt_id,a.document AS action_context_document,
                       p.document AS planning_context_document,
@@ -3502,6 +3511,8 @@ def _central_console_run_records(
                  LEFT JOIN ep_parity_lifecycle_dispatches AS retry
                    ON retry.submission_id=d.resolution_submission_id
                  LEFT JOIN ep_submissions AS s ON s.submission_id=d.submission_id
+                 LEFT JOIN ep_parallel_action_submission_links AS l ON l.submission_id=s.submission_id
+                 LEFT JOIN ep_parallel_action_intakes AS i ON i.intake_id=l.intake_id
                  LEFT JOIN ep_forge_action_context_envelopes AS a ON a.submission_id=s.submission_id
                  LEFT JOIN ep_forge_planning_context_envelopes AS p ON p.submission_id=s.submission_id
                  LEFT JOIN ep_execution_host_evidence AS h ON h.run_id=r.run_id
@@ -3518,12 +3529,18 @@ def _central_console_run_records(
             if len(page) < batch_size:
                 break
             offset += len(page)
+        records = [_central_run_record(
+            row, project_id,
+            parallel_action_recovery.status(connection, str(row["run_id"]))
+            if row["parallel_policy_digest"] == parallel_action_admission.SUPPORTED_PA_E2_POLICY_DIGEST
+            else "NONE",
+        ) for row in rows]
     finally:
         if owns_connection and connection.in_transaction:
             connection.rollback()
         if owns_connection:
             connection.close()
-    return [_central_run_record(row, project_id) for row in rows]
+    return records
 
 
 def _central_console_lifecycle(data_root: Path, run_id: str) -> dict[str, object]:
@@ -5603,6 +5620,31 @@ def _same_origin(headers: Mapping[str, str]) -> bool:
     return origin in {"", f"http://{host}", f"https://{host}"}
 
 
+def _execution_console_origin(headers: Mapping[str, str], port: int) -> bool:
+    """Accept a Console mutation only through a literal local/Tailnet host.
+
+    A browser can rebind an attacker-controlled DNS name to loopback and send
+    matching Origin and Host headers. Literal addresses cannot be rebound.
+    """
+    host = headers.get("Host", "") or ""
+    try:
+        parsed = urlsplit("http://" + host)
+        if (not host or parsed.netloc != host or parsed.path or parsed.query
+                or parsed.fragment or parsed.username is not None
+                or parsed.password is not None or parsed.port != port):
+            return False
+        hostname = parsed.hostname or ""
+        if hostname != "localhost":
+            address = ip_address(hostname)
+            if address.version != 4 or not (
+                address.is_loopback or address in ip_network("100.64.0.0/10")
+            ):
+                return False
+    except ValueError:
+        return False
+    return headers.get("Origin") in {None, "", f"http://{host}"}
+
+
 def _strict_json_object(raw: bytes) -> dict[str, object]:
     """Decode one JSON object while rejecting duplicate member names."""
     def no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -6701,9 +6743,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if request.path == "/api/events":
                 self._stream_project_console_events(selected)
                 return
-        if method == "do_POST" and request.path in {"/api/execution-dismiss", "/api/execution-retry"}:
-            action_name = "execution_dismissed" if request.path == "/api/execution-dismiss" else "execution_retry_submitted"
-            if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+        if method == "do_POST" and request.path in {"/api/execution-dismiss", "/api/execution-retry", "/api/execution-cancel"}:
+            action_name = {
+                "/api/execution-dismiss": "execution_dismissed",
+                "/api/execution-retry": "execution_retry_submitted",
+                "/api/execution-cancel": "execution_cancel_requested",
+            }[request.path]
+            if not _execution_console_origin(self.headers, self.server.server_port):
                 self._send(403, {"error": "INVALID_ORIGIN"})
                 return
             if not isinstance(selected, str) or selected not in project_ids:
@@ -6719,6 +6765,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             from .parity_lifecycle_dispatcher import (
                 ParityLifecycleDispatchError,
                 dismiss_operator_gate,
+                request_operator_cancel,
                 retry_operator_gate,
             )
             run_id: str | None = None
@@ -6732,6 +6779,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError
                 if request.path == "/api/execution-dismiss":
                     result: dict[str, object] = dismiss_operator_gate(
+                        self.server.data_root, project_id=selected, run_id=run_id,  # type: ignore[attr-defined]
+                    )
+                elif request.path == "/api/execution-cancel":
+                    result = request_operator_cancel(
                         self.server.data_root, project_id=selected, run_id=run_id,  # type: ignore[attr-defined]
                     )
                 else:
@@ -6754,12 +6805,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 )
                 self._send(409, {"error": str(error)})
                 return
-            _audit_dashboard_action(
-                self.server.data_root,  # type: ignore[attr-defined]
-                action=action_name,
-                project_id=selected,
-                run_id=run_id,
-            )
+            if request.path != "/api/execution-cancel":
+                _audit_dashboard_action(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    action=action_name,
+                    project_id=selected,
+                    run_id=run_id,
+                )
             self._send(200, result)
             return
         if method == "do_POST" and request.path in {"/api/codex-chat", "/api/codex-chat/clear"}:

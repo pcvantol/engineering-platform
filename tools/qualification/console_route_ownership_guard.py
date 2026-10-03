@@ -33,7 +33,8 @@ _DASHBOARD_REQUEST_CONTRACTS = (
     ("GET", "/api/open-pull-requests"),
     ("POST", "/api/open-pull-requests/1/owner-authorization"),
     ("POST", "/api/open-pull-requests/1/repair-failed-checks"),
-    ("POST", "/api/execution-dismiss"), ("POST", "/api/execution-retry"), ("POST", "/api/managed-branch-recovery"),
+    ("POST", "/api/execution-dismiss"), ("POST", "/api/execution-retry"),
+    ("POST", "/api/execution-cancel"), ("POST", "/api/managed-branch-recovery"),
     ("POST", "/api/stale-git-lock-recovery"), ("POST", "/api/workspace-switch-to-main"),
     ("POST", "/api/workspace-switch-to-worktree"),
     ("POST", "/api/execution-merge-wait-abort"), ("POST", "/api/execution-merge-status-check"),
@@ -89,7 +90,7 @@ def violations(source_root: Path) -> list[str]:
         "/api/open-pull-requests", "/api/dashboard-snapshot", "/api/events",
         "/api/logs/", "/api/components/", "/api/telemetry/", "/api/provider-login",
         "/api/execution-runtime", "/api/configuration", "/api/audit/user-action",
-        "/api/execution-dismiss", "/api/managed-branch", "/api/stale-git-lock",
+        "/api/execution-dismiss", "/api/execution-cancel", "/api/managed-branch", "/api/stale-git-lock",
         "/api/workspace-switch", "/api/execution-merge", "/health",
     )
     if dashboard is not None and any(anchor not in dashboard for anchor in required_anchors):

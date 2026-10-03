@@ -31,6 +31,11 @@ class ControlledProvider(DeterministicQualificationAgent):
 class ProviderRunner:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.agent = self
+
+    def provider_process_cleanup_confirmed(self) -> bool:
+        # This deterministic provider runs synchronously in this process.
+        return True
 
     def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False,
             owner_authorized: bool = False, transaction_kind: str = "IMPLEMENTATION") -> TransactionState:
