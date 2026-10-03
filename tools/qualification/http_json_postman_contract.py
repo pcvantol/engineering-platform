@@ -98,6 +98,7 @@ def _request(base_url: str, item: dict[str, object]) -> int:
     assert isinstance(request, dict)
     method, path = _collection_operation(item)
     url = (base_url + path.replace("{project_id}", "postman-project")
+           .replace("{repository_id}", "postman-repository")
            .replace("{intake_id}", "0" * 64))
     raw_url = request.get("url")
     if isinstance(raw_url, str) and "?" in raw_url:

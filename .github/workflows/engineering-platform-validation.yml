@@ -87,7 +87,9 @@ jobs:
       - name: Qualify installed P-TRANSPORT 3×2 ingress matrix
         run: python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
       - name: Qualify installed parallel Action concurrency matrix
-        run: python3 tools/qualification/pa_eq_installed_matrix.py --source-root . --require-clean --receipt pa-eq-installed-matrix.json
+        run: python3 tools/qualification/pa_eq_installed_matrix.py --source-root . --require-clean --receipt "$RUNNER_TEMP/pa-eq-installed-matrix.json"
+      - name: Qualify installed per-repository consumer authority
+        run: python3 tools/qualification/ep_repository_authority_installed_matrix.py --source-root . --require-clean --receipt "$RUNNER_TEMP/ep-repository-authority-installed-matrix.json"
       - name: Qualify deterministic Genesis and Managed execution E2E
         # The E2E script creates an isolated CENTRAL data root and a local bare
         # Git origin for Managed.  CI therefore exercises both execution modes

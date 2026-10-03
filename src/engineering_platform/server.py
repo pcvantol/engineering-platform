@@ -71,6 +71,7 @@ from . import parallel_action_admission, parallel_action_collection, parallel_ac
 from . import parallel_action_compat
 from . import product_installation_readback
 from . import local_repository_binding
+from . import repository_authority_readback
 from . import project_topology
 from . import submission_service
 from . import server_relay
@@ -219,6 +220,30 @@ def _http_json_openapi_document() -> dict[str, object]:
                         "200": {"description": "Public v1.0 or authenticated scoped v1.1 compatibility declaration"},
                         "401": {"description": "Scoped declaration credential is absent or invalid"},
                         "403": {"description": "Credential or repository does not match the requested scope"},
+                    },
+                },
+            },
+            "/v1/projects/{project_id}/repositories/{repository_id}/consumer-authority": {
+                "get": {
+                    "summary": "Read one current repository and consumer authority binding",
+                    "description": "Authenticated EP-owned per-repository authority evidence v1. The readback does not authorize Forge dispatch or provider execution. Optional revision and digest headers require exact current evidence.",
+                    "security": [{"consumerBearer": []}],
+                    "parameters": [
+                        {"name": "project_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "repository_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "EP-Instance-ID", "in": "header", "required": True, "schema": {"type": "string"}},
+                        {"name": "EP-Consumer-ID", "in": "header", "required": True, "schema": {"type": "string"}},
+                        {"name": "EP-GitHub-Repository", "in": "header", "required": True, "schema": {"type": "string"}},
+                        {"name": "EP-Authority-Revision", "in": "header", "required": False, "schema": {"type": "string"}},
+                        {"name": "EP-Authority-Digest", "in": "header", "required": False, "schema": {"type": "string"}},
+                    ],
+                    "responses": {
+                        "200": {"description": "Current ep-repository-consumer-authority/v1 readback"},
+                        "400": {"description": "Malformed or incomplete scope or pin"},
+                        "401": {"description": "Missing, invalid or inactive consumer credential"},
+                        "403": {"description": "Instance, consumer, project, repository, attachment or grant unavailable"},
+                        "409": {"description": "Requested revision or digest is no longer current"},
+                        "503": {"description": "CENTRAL is unavailable"},
                     },
                 },
             },
@@ -5726,13 +5751,16 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             report["lifecycle_worker"] = worker.diagnostics().to_dict()
         return report
 
-    def _send(self, status_code: int, payload: dict[str, object], instance_id: str | None = None) -> None:
+    def _send(self, status_code: int, payload: dict[str, object], instance_id: str | None = None,
+              *, cache_control: str | None = None) -> None:
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
         if instance_id:
             self.send_header("EP-Server-Instance", instance_id)
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         route = getattr(self, "_console_route", None)
         if route is not None:
             self.send_header("EP-Console-Route-Owner", route.owner)
@@ -7108,6 +7136,45 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         request = urlsplit(self.path)
         if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
+            return
+        authority_match = re.fullmatch(
+            r"/v1/projects/([^/]+)/repositories/([^/]+)/consumer-authority", request.path,
+        )
+        if authority_match:
+            project_id, repository_id = authority_match.groups()
+            expected_instance = self.headers.get("EP-Instance-ID")
+            expected_consumer = self.headers.get("EP-Consumer-ID")
+            expected_github_repository = self.headers.get("EP-GitHub-Repository")
+            if not expected_instance or not expected_consumer or not expected_github_repository:
+                self._send(400, {"error": "AUTHORITY_SCOPE_INCOMPLETE"}, cache_control="no-store")
+                return
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                database = self.server.data_root / SERVER_DATABASE_FILENAME  # type: ignore[attr-defined]
+                with storage.sqlite_connection(f"file:{database}?mode=ro", uri=True) as connection:
+                    connection.execute("BEGIN")
+                    scope = _authenticated_consumer_scope(connection, token)
+                    if scope is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"}, cache_control="no-store")
+                        return
+                    if scope[1] != project_id:
+                        self._send(403, {"error": "AUTHORITY_PROJECT_SCOPE_MISMATCH"}, cache_control="no-store")
+                        return
+                    readback = repository_authority_readback.read_current(
+                        connection, data_root=self.server.data_root,  # type: ignore[attr-defined]
+                        project_id=project_id, repository_id=repository_id,
+                        consumer_id=scope[0], expected_instance_id=expected_instance,
+                        expected_consumer_id=expected_consumer,
+                        expected_github_repository=expected_github_repository,
+                        expected_revision=self.headers.get("EP-Authority-Revision"),
+                        expected_digest=self.headers.get("EP-Authority-Digest"),
+                    )
+                self._send(200, readback, str(readback["instance_id"]), cache_control="no-store")
+            except repository_authority_readback.AuthorityReadbackError as error:
+                self._send(error.status, {"error": error.code}, cache_control="no-store")
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"}, cache_control="no-store")
             return
         if request.path == "/v1/owner-credential-recovery-probe":
             try:

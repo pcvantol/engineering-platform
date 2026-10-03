@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.dev/schemas/repository-consumer-authority/v1",
+  "title": "Engineering Platform per-repository consumer authority readback v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version", "instance_id", "project_id", "project_status",
+    "repository_id", "repository_role", "authority_repository_id",
+    "github_repository", "local_repository_binding", "consumer_id",
+    "consumer_status", "repository_grant", "submission_authorization",
+    "dispatch_authorized", "binding_revision", "provenance", "authority_digest"
+  ],
+  "properties": {
+    "contract_version": {"const": "ep-repository-consumer-authority/v1"},
+    "instance_id": {"type": "string", "minLength": 1},
+    "project_id": {"$ref": "#/$defs/identifier"},
+    "project_status": {"const": "ACTIVE"},
+    "repository_id": {"$ref": "#/$defs/identifier"},
+    "repository_role": {"enum": ["authority", "child"]},
+    "authority_repository_id": {"$ref": "#/$defs/identifier"},
+    "github_repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+    "local_repository_binding": {"const": "BOUND"},
+    "consumer_id": {"$ref": "#/$defs/identifier"},
+    "consumer_status": {"const": "ACTIVE"},
+    "repository_grant": {"const": "ACTIVE"},
+    "submission_authorization": {"const": "PARALLEL_ACTION_INTAKE"},
+    "dispatch_authorized": {"const": false},
+    "binding_revision": {"$ref": "#/$defs/digest"},
+    "authority_digest": {"$ref": "#/$defs/digest"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "attachment_schema_version", "attachment_digest"],
+      "properties": {
+        "source": {"const": "EP_CENTRAL_AND_BOUND_ATTACHMENT"},
+        "attachment_schema_version": {"const": "1.0"},
+        "attachment_digest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
