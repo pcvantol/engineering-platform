@@ -51,6 +51,22 @@
       "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action readback requires a credential', () => pm.response.to.have.status(401));"]}}]
     },
     {
+      "name": "Parallel Action collection rejects missing credential",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/projects/:project_id/parallel-action-intakes/:intake_id/collection"
+      },
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action collection requires a credential', () => pm.response.to.have.status(401));"]}}]
+    },
+    {
+      "name": "Parallel Action collection export rejects missing credential",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/projects/:project_id/parallel-action-intakes/:intake_id/collection/export?format=json&snapshot_id=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action collection export requires a credential', () => pm.response.to.have.status(401));"]}}]
+    },
+    {
       "name": "Canonical submission rejects missing credential",
       "request": {
         "method": "POST",

@@ -67,7 +67,7 @@ from . import (
 )
 from . import operational_installation
 from . import owner_credential_recovery
-from . import parallel_action_admission, parallel_action_recovery
+from . import parallel_action_admission, parallel_action_collection, parallel_action_recovery
 from . import parallel_action_compat
 from . import product_installation_readback
 from . import local_repository_binding
@@ -276,6 +276,29 @@ def _http_json_openapi_document() -> dict[str, object]:
                         "200": {"description": "Current typed dependency decision"},
                         "401": {"description": "Missing or invalid consumer credential"},
                         "404": {"description": "Intake absent from the authenticated producer scope"},
+                    },
+                },
+            },
+            "/v1/projects/{project_id}/parallel-action-intakes/{intake_id}/collection": {
+                "get": {
+                    "summary": "Read one immutable producer graph's complete EP Action collection",
+                    "security": [{"consumerBearer": []}],
+                    "responses": {
+                        "200": {"description": "Graph-scoped Actions, attempts and canonical EP telemetry snapshot"},
+                        "401": {"description": "Missing or invalid consumer credential"},
+                        "404": {"description": "Intake absent from the authenticated producer scope"},
+                        "409": {"description": "Stored graph or attempt identity conflict"},
+                    },
+                },
+            },
+            "/v1/projects/{project_id}/parallel-action-intakes/{intake_id}/collection/export": {
+                "get": {
+                    "summary": "Download the same retained Action collection as Markdown or JSON",
+                    "security": [{"consumerBearer": []}],
+                    "responses": {
+                        "200": {"description": "Complete selected collection snapshot"},
+                        "401": {"description": "Missing or invalid consumer credential"},
+                        "409": {"description": "Snapshot unavailable or selection mismatch"},
                     },
                 },
             },
@@ -7307,6 +7330,90 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                                  "assurance_policy_digest": grant.assurance_policy_digest},
                            initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+            return
+        collection_match = re.fullmatch(
+            r"/v1/projects/([^/]+)/parallel-action-intakes/([0-9a-f]{64})/collection(/export)?",
+            request.path,
+        )
+        if collection_match:
+            project_id, intake_id, export_suffix = collection_match.groups()
+            parameters = parse_qs(request.query)
+            locale = (parameters.get("locale") or ["en"])[0]
+            export_format = (parameters.get("format") or [""])[0]
+            snapshot_id = (parameters.get("snapshot_id") or [""])[0]
+            if (locale not in telemetry_export.SUPPORTED_LOCALES
+                    or (export_suffix and (
+                        export_format not in {"markdown", "json"}
+                        or re.fullmatch(r"sha256:[0-9a-f]{64}", snapshot_id) is None
+                    )) or (not export_suffix and (export_format or snapshot_id))):
+                self._send(400, {"error": "PARALLEL_COLLECTION_SELECTION_INVALID"})
+                return
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with _telemetry_read_snapshot(self.server.data_root) as (  # type: ignore[attr-defined]
+                    connection, source_as_of, source_reference,
+                ):
+                    consumer_id = _authenticated_consumer(connection, token, project_id)
+                    if consumer_id is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    owner = connection.execute(
+                        "SELECT producer_id FROM ep_parallel_action_intakes "
+                        "WHERE intake_id=? AND project_id=?",
+                        (intake_id, project_id),
+                    ).fetchone()
+                    if owner is None or owner[0] != consumer_id:
+                        self._send(404, {"error": "PARALLEL_COLLECTION_NOT_FOUND"})
+                        return
+                    collection = (
+                        None if export_suffix else parallel_action_collection.collection_readback(
+                            connection, data_root=self.server.data_root,  # type: ignore[attr-defined]
+                            project_id=project_id, producer_id=consumer_id,
+                            intake_id=intake_id, source_as_of=source_as_of,
+                        )
+                    )
+                binding = json.dumps({
+                    "project_id": project_id, "producer_id": consumer_id,
+                    "intake_id": intake_id, "scope": "EP_PARALLEL_ACTION_COLLECTION",
+                    "locale": locale,
+                }, sort_keys=True, separators=(",", ":"))
+                store = _telemetry_export_store(self.server)
+                if export_suffix:
+                    model = store.read(snapshot_id, binding=binding)
+                    if model is None:
+                        self._send(409, {"error": "TELEMETRY_EXPORT_SNAPSHOT_UNAVAILABLE"})
+                        return
+                    downloaded = telemetry_export.download_model(model)
+                    markdown = export_format == "markdown"
+                    payload = (
+                        telemetry_export.serialize_markdown(downloaded) if markdown
+                        else telemetry_export.serialize_json(downloaded)
+                    )
+                    self._send_download(
+                        payload, export_format=export_format,
+                        filename=(f"parallel-action-collection-{project_id}-{intake_id}."
+                                  f"{'md' if markdown else 'json'}"),
+                    )
+                    return
+                assert collection is not None
+                model = telemetry_export.parallel_action_model(
+                    collection=collection, locale=locale,
+                    source_as_of=source_as_of, source_reference=source_reference,
+                )
+                retained_id, snapshot_error = _retain_telemetry_export_snapshot(
+                    store, model, binding=binding,
+                )
+                if snapshot_error is not None:
+                    self._send(snapshot_error[0], {"error": snapshot_error[1]})
+                    return
+                assert retained_id == model["snapshot_id"]
+                self._send(200, model, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except parallel_action_collection.CollectionError as error:
+                self._send(404 if error.code == "PARALLEL_COLLECTION_NOT_FOUND" else 409,
+                           {"error": error.code})
+            except (sqlite3.Error, OSError):
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
             return
         parallel_readback = re.fullmatch(

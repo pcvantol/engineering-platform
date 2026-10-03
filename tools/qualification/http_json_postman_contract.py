@@ -68,7 +68,7 @@ def _collection_operation(item: dict[str, object]) -> tuple[str, str]:
     method, raw = request.get("method"), request.get("url")
     if not isinstance(method, str) or not isinstance(raw, str):
         raise RuntimeError("POSTMAN_REQUEST_INVALID")
-    path = raw.removeprefix("{{baseUrl}}")
+    path = raw.removeprefix("{{baseUrl}}").split("?", 1)[0]
     # Postman's ``:name`` parameters occur at a path-segment boundary.  Do
     # not rewrite a literal colon in an evidence-artifact identifier.
     path = re.sub(r"/:([A-Za-z_][A-Za-z0-9_]*)", r"/{\1}", path)
@@ -99,6 +99,9 @@ def _request(base_url: str, item: dict[str, object]) -> int:
     method, path = _collection_operation(item)
     url = (base_url + path.replace("{project_id}", "postman-project")
            .replace("{intake_id}", "0" * 64))
+    raw_url = request.get("url")
+    if isinstance(raw_url, str) and "?" in raw_url:
+        url += "?" + raw_url.split("?", 1)[1]
     headers = {str(header["key"]): str(header["value"]).replace("{{baseUrl}}", base_url)
                for header in request.get("header", []) if isinstance(header, dict) and "key" in header and "value" in header}
     body = request.get("body", {})

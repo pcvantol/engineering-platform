@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import io
 import os
+from datetime import datetime
 from contextlib import redirect_stdout
 from hashlib import sha256
 import http.server
@@ -20,8 +21,10 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from engineering_platform import parallel_action_admission as admission
+from engineering_platform import parallel_action_collection as collection
 from engineering_platform import parallel_action_recovery as recovery
 from engineering_platform import parity_lifecycle_dispatcher as lifecycle_dispatcher
+from engineering_platform import telemetry_export
 from engineering_platform import server, submission_service
 from engineering_platform.agent_state import TransactionState
 from engineering_platform.execution_errors import CodexInvocationError, RunnerError
@@ -30,6 +33,8 @@ from engineering_platform.parity_lifecycle_dispatcher import (
     ParityLifecycleDispatcher, ParityLifecycleDispatchError, dismiss_operator_gate,
     retry_operator_gate,
 )
+from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
+from engineering_platform.execution_timing import record_phase
 from engineering_platform.storage import sqlite_connection
 
 
@@ -1553,6 +1558,13 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 contract_version="1.3",
             )
             self.assertTrue(readback["result"]["delivery_qualified"])
+        # PA-E4 must independently recover this real canonical result from a
+        # fresh read connection, without the dependency-readback request path.
+        collection_model = self._pa_e4_model(str(a["intake_id"]))
+        action = next(row for row in collection_model["data"]["parallel_action_collection"]["actions"]
+                      if row["action_id"] == "ACTION-A")
+        self.assertEqual((action["state"], action["terminal_evidence"]),
+                         ("COMPLETE", "VERIFIED"))
 
     def test_pa_e2_claims_two_repositories_and_fences_duplicate_and_dependency(self) -> None:
         from engineering_platform import parallel_action_delivery as delivery
@@ -2592,6 +2604,339 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             ).fetchone()[0])
             self.assertEqual(recovery.status(connection, run_id),
                              "PROVIDER_EFFECT_UNCERTAIN")
+
+    def _pa_e4_model(self, intake_id: str) -> dict[str, object]:
+        with server._telemetry_read_snapshot(self.root) as (
+            connection, source_as_of, source_reference,
+        ):
+            readback = collection.collection_readback(
+                connection, data_root=self.root, project_id="project-test",
+                producer_id="forge", intake_id=intake_id,
+                source_as_of=source_as_of,
+            )
+        return telemetry_export.parallel_action_model(
+            collection=readback, locale="en", source_as_of=source_as_of,
+            source_reference=source_reference,
+        )
+
+    def _pa_e4_run(self, connection: sqlite3.Connection, submission_id: str,
+                   action_id: str, repository_id: str, start: str, end: str,
+                   state: str = "RUNNING", suffix: str = "") -> str:
+        run_id = "pa-e4-" + action_id + suffix
+        connection.execute(
+            "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) "
+            "VALUES(?,?,?,?,?,?)",
+            (run_id, "project-test", state, start, end, "MANAGED"),
+        )
+        connection.execute(
+            """INSERT INTO ep_parity_lifecycle_dispatches(
+                submission_id,project_id,repository_id,run_id,state,prompt_path,
+                claimed_at,updated_at,operator_resolution)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+            (submission_id, "project-test", repository_id, run_id,
+             state, "/synthetic/pa-e4", start, end, "NONE"),
+        )
+        return run_id
+
+    def test_pa_e4_graph_collection_and_same_snapshot_exports(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            staged = {action: self.stage(connection, action)
+                      for action in ("ACTION-A", "ACTION-Q")}
+            second_credential = submission_service.issue_consumer_credential(
+                connection, consumer_id="other-producer", project_id="project-test",
+            )["credential"]
+            submission_service.submit(
+                connection, self.request("ACTION-A", staged["ACTION-A"]),
+                authenticated_consumer_id="forge",
+            )
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), server._HealthHandler)
+        httpd.data_root = self.root
+        worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+        worker.start()
+        try:
+            base = (f"http://127.0.0.1:{httpd.server_port}"
+                    f"/v1/projects/project-test/parallel-action-intakes/{staged['ACTION-A']['intake_id']}"
+                    "/collection")
+            with self.assertRaises(HTTPError) as unauthenticated:
+                urlopen(base)  # nosec B310 - loopback test server
+            self.assertEqual(unauthenticated.exception.code, 401)
+            unauthenticated.exception.close()
+            with self.assertRaises(HTTPError) as foreign:
+                urlopen(Request(base, headers={
+                    "Authorization": f"Bearer {second_credential}",
+                }))  # nosec B310 - loopback test server
+            self.assertEqual(foreign.exception.code, 404)
+            foreign.exception.close()
+            headers = {"Authorization": f"Bearer {self.credential}"}
+            with urlopen(Request(base, headers=headers)) as response:  # nosec B310
+                model = json.load(response)
+            data = model["data"]["parallel_action_collection"]
+            self.assertEqual(data["summary"]["action_count"], 3)
+            self.assertEqual(data["summary"]["staged_action_count"], 2)
+            by_action = {row["action_id"]: row for row in data["actions"]}
+            self.assertEqual(by_action["ACTION-B"]["state"], "NOT_STAGED")
+            self.assertEqual(by_action["ACTION-Q"]["state"], "WAITING_DEPENDENCY")
+            self.assertEqual(by_action["ACTION-A"]["attempts"][0]["parent_submission_id"], None)
+            self.assertFalse(data["dispatch_authorized"])
+            self.assertEqual(data["mission_acceptance"], "NOT_EVALUATED_BY_EP")
+            export = base + "/export?locale=en&snapshot_id=" + model["snapshot_id"]
+            with urlopen(Request(export + "&format=json", headers=headers)) as response:  # nosec B310
+                downloaded = json.load(response)
+            self.assertEqual(downloaded["snapshot_id"], model["snapshot_id"])
+            self.assertEqual(downloaded["data"], model["data"])
+            with urlopen(Request(export + "&format=markdown", headers=headers)) as response:  # nosec B310
+                markdown = response.read().decode()
+            for action_id in ("ACTION-A", "ACTION-B", "ACTION-Q"):
+                self.assertIn("Action: `" + action_id + "`", markdown)
+            self.assertIn(model["snapshot_id"], markdown)
+            complete = markdown.split("## Complete Action collection data (JSON)\n\n", 1)[1]
+            complete = complete.split("\n## ", 1)[0]
+            self.assertEqual(
+                json.loads("\n".join(line[4:] for line in complete.splitlines()
+                                      if line.startswith("    "))),
+                data,
+            )
+            with self.assertRaises(HTTPError) as wrong_selection:
+                urlopen(Request(
+                    base + "/export?locale=nl&snapshot_id=" + model["snapshot_id"] + "&format=json",
+                    headers=headers,
+                ))  # nosec B310
+            self.assertEqual(wrong_selection.exception.code, 409)
+            wrong_selection.exception.close()
+        finally:
+            httpd.shutdown()
+            worker.join(timeout=5)
+            httpd.server_close()
+
+    def test_pa_e4_measured_overlap_and_partial_usage(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            staged = {action: self.stage(
+                connection, action, policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+            ) for action in ("ACTION-A", "ACTION-B")}
+            staged["ACTION-Q"] = self.stage(connection, "ACTION-Q")
+            submissions = {action: submission_service.submit(
+                connection, self.request(
+                    action, staged[action],
+                    policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            ).submission_id for action in ("ACTION-A", "ACTION-B")}
+            a_run = self._pa_e4_run(
+                connection, submissions["ACTION-A"], "ACTION-A", "repository-a",
+                "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:10+00:00",
+            )
+            b_run = self._pa_e4_run(
+                connection, submissions["ACTION-B"], "ACTION-B", "repository-b",
+                "2026-10-03T00:00:05+00:00", "2026-10-03T00:00:15+00:00",
+            )
+        for run_id, begin, finish, tokens in (
+            (a_run, 0, 10, 100), (b_run, 5, 15, 200),
+        ):
+            start = f"2026-10-03T00:00:{begin:02d}+00:00"
+            end = f"2026-10-03T00:00:{finish:02d}+00:00"
+            persist_provider_invocation(self.root, ProviderInvocation(
+                run_id, 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+                start, end, 10000,
+                {"input_tokens": tokens, "cached_input_tokens": 20,
+                 "output_tokens": 10}, invocation_id="invocation-" + run_id,
+            ), central_database=self.database)
+            record_phase(
+                self.root, run_id, "TOTAL_EXECUTION",
+                started_at=datetime.fromisoformat(start),
+                completed_at=datetime.fromisoformat(end),
+            )
+        model = self._pa_e4_model(str(staged["ACTION-A"]["intake_id"]))
+        data = model["data"]["parallel_action_collection"]
+        summary = data["summary"]
+        self.assertEqual(summary["run_count"], 2)
+        self.assertEqual(summary["provider_busy_union_ms"], 15000)
+        self.assertEqual(summary["provider_multi_action_overlap_ms"], 5000)
+        self.assertTrue(summary["actual_provider_overlap"])
+        self.assertEqual(summary["usage_metrics"]["input_tokens"]["value"], 300)
+        self.assertEqual(summary["usage_metrics"]["input_tokens"]["coverage"], "COMPLETE")
+        self.assertEqual(summary["dependency_wait_ms"], None)
+        self.assertEqual(summary["wait_duration_coverage"],
+                         "UNAVAILABLE_WAIT_TRANSITIONS_NOT_RECORDED")
+        actions = {row["action_id"]: row for row in data["actions"]}
+        self.assertEqual(actions["ACTION-Q"]["state"], "WAITING_DEPENDENCY")
+        self.assertEqual(actions["ACTION-A"]["state"], "ACTIVE")
+        self.assertEqual(actions["ACTION-B"]["state"], "ACTIVE")
+        self.assertEqual([row["run_id"] for row in actions["ACTION-A"]["runs"]], [a_run])
+        self.assertEqual([row["run_id"] for row in actions["ACTION-B"]["runs"]], [b_run])
+        self.assertIn("invocation-" + a_run, telemetry_export.serialize_markdown(model).decode())
+
+        with sqlite_connection(self.database) as connection:
+            connection.execute(
+                "UPDATE provider_invocations SET input_tokens=NULL WHERE invocation_id=?",
+                ("invocation-" + b_run,),
+            )
+        partial = self._pa_e4_model(str(staged["ACTION-A"]["intake_id"]))
+        metric = partial["data"]["parallel_action_collection"]["summary"]["usage_metrics"]["input_tokens"]
+        self.assertNotEqual(metric["coverage"], "COMPLETE")
+        self.assertNotEqual(metric["value"], 300)
+
+    def test_pa_e4_rejects_foreign_attempt_identity(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            staged = self.stage(connection, "ACTION-A")
+            accepted = submission_service.submit(
+                connection, self.request("ACTION-A", staged),
+                authenticated_consumer_id="forge",
+            )
+            connection.execute(
+                "UPDATE ep_submissions SET repository_id='repository-b' WHERE submission_id=?",
+                (accepted.submission_id,),
+            )
+        with self.assertRaises(collection.CollectionError) as rejected:
+            self._pa_e4_model(str(staged["intake_id"]))
+        self.assertEqual(rejected.exception.code, "PARALLEL_COLLECTION_IDENTITY_CONFLICT")
+
+    def test_pa_e4_terminal_readback_survives_fresh_database_connection(self) -> None:
+        digest = "sha256:" + sha256(b"pa-e4-terminal").hexdigest()
+        with sqlite_connection(self.database) as connection:
+            staged = self.stage(connection, "ACTION-A")
+            accepted = submission_service.submit(
+                connection, self.request("ACTION-A", staged),
+                authenticated_consumer_id="forge",
+            )
+            self._canonical_fixture_rows(
+                connection, accepted.submission_id, "ACTION-A", "repository-a", digest,
+            )
+            connection.execute(
+                """INSERT INTO ep_parallel_action_outcomes(
+                    intake_id,submission_id,run_id,terminal_artifact_id,
+                    terminal_digest,repository_revision,recorded_at)
+                    VALUES(?,?,?,?,?,?,?)""",
+                (staged["intake_id"], accepted.submission_id, "run-ACTION-A",
+                 "terminal-ACTION-A", digest, "c" * 40, NOW),
+            )
+        canonical = self._fake_canonical_readback(
+            "ACTION-A", accepted.submission_id, digest, "repository-a",
+        )
+        with patch.object(admission, "producer_readback", return_value=canonical):
+            for _ in range(2):
+                model = self._pa_e4_model(str(staged["intake_id"]))
+                action = next(row for row in model["data"]["parallel_action_collection"]["actions"]
+                              if row["action_id"] == "ACTION-A")
+                self.assertEqual(action["state"], "COMPLETE")
+                self.assertEqual(action["terminal_evidence"], "VERIFIED")
+                self.assertEqual(action["terminal_outcome"]["run_id"], "run-ACTION-A")
+
+    def test_pa_e4_retry_lineage_stays_inside_its_action(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            a = self.stage(connection, "ACTION-A")
+            b = self.stage(connection, "ACTION-B")
+            a_root = submission_service.submit(
+                connection, self.request("ACTION-A", a), authenticated_consumer_id="forge",
+            ).submission_id
+            b_root = submission_service.submit(
+                connection, self.request("ACTION-B", b), authenticated_consumer_id="forge",
+            ).submission_id
+            self._pa_e4_run(
+                connection, a_root, "ACTION-A", "repository-a",
+                "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:03+00:00", "FAILED",
+            )
+            self._pa_e4_run(
+                connection, b_root, "ACTION-B", "repository-b",
+                "2026-10-03T00:00:01+00:00", "2026-10-03T00:00:04+00:00", "RUNNING",
+            )
+            connection.execute(
+                "UPDATE ep_parity_lifecycle_dispatches SET operator_resolution='OPEN' "
+                "WHERE submission_id=?",
+                (a_root,),
+            )
+            constraints = json.loads(json.dumps(self.request("ACTION-A", a).constraints))
+            constraints["repository_revision_binding"]["allowed_baseline_revision"] = (
+                constraints["repository_revision_binding"]["requested_revision"])
+        with patch("engineering_platform.parity_lifecycle_dispatcher._retry_constraints_for_current_main",
+                   return_value=constraints):
+            successor = retry_operator_gate(
+                self.root, project_id="project-test", run_id="pa-e4-ACTION-A",
+            )
+        with sqlite_connection(self.database) as connection:
+            self._pa_e4_run(
+                connection, successor.submission_id, "ACTION-A", "repository-a",
+                "2026-10-03T00:00:05+00:00", "2026-10-03T00:00:08+00:00",
+                "RUNNING", suffix="-retry",
+            )
+        for run_id, tokens in (("pa-e4-ACTION-A", 100),
+                               ("pa-e4-ACTION-A-retry", 50),
+                               ("pa-e4-ACTION-B", 200)):
+            persist_provider_invocation(self.root, ProviderInvocation(
+                run_id, 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+                "2026-10-03T00:00:01+00:00", "2026-10-03T00:00:02+00:00",
+                1000, {"input_tokens": tokens, "cached_input_tokens": 10,
+                       "output_tokens": 1}, invocation_id="invocation-" + run_id,
+            ), central_database=self.database)
+        model = self._pa_e4_model(str(a["intake_id"]))
+        data = model["data"]["parallel_action_collection"]
+        actions = {row["action_id"]: row for row in data["actions"]}
+        self.assertEqual(data["summary"]["run_count"], 3)
+        self.assertEqual(data["summary"]["usage_metrics"]["input_tokens"]["value"], 350)
+        self.assertEqual(actions["ACTION-A"]["usage_metrics"]["input_tokens"]["value"], 150)
+        self.assertEqual(actions["ACTION-B"]["usage_metrics"]["input_tokens"]["value"], 200)
+        self.assertEqual(actions["ACTION-A"]["attempts"][1]["parent_submission_id"], a_root)
+        self.assertEqual([row["run_id"] for row in actions["ACTION-A"]["runs"]],
+                         ["pa-e4-ACTION-A", "pa-e4-ACTION-A-retry"])
+
+    def test_pa_e4_new_graph_revision_includes_compatible_accepted_predecessor(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            a = self.stage(connection, "ACTION-A")
+            accepted = submission_service.submit(
+                connection, self.request("ACTION-A", a), authenticated_consumer_id="forge",
+            )
+            self._pa_e4_run(
+                connection, accepted.submission_id, "ACTION-A", "repository-a",
+                "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:03+00:00",
+            )
+            self.graph["mission_revision"] = 2
+            q = self.stage(connection, "ACTION-Q")
+        model = self._pa_e4_model(str(q["intake_id"]))
+        data = model["data"]["parallel_action_collection"]
+        actions = {row["action_id"]: row for row in data["actions"]}
+        self.assertEqual(data["mission_revision"], 2)
+        self.assertEqual(data["summary"]["staged_action_count"], 1)
+        self.assertEqual(data["summary"]["represented_action_count"], 2)
+        self.assertEqual(actions["ACTION-A"]["intake_id"], a["intake_id"])
+        self.assertIsNone(actions["ACTION-A"]["selected_graph_intake_id"])
+        self.assertNotEqual(actions["ACTION-A"]["source_graph_id"], data["graph_id"])
+        self.assertEqual(actions["ACTION-A"]["state"], "ACTIVE")
+        self.assertEqual(actions["ACTION-Q"]["state"], "WAITING_DEPENDENCY")
+
+    def test_pa_e4_running_labels_and_conflicting_clocks_do_not_prove_overlap(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            staged = {action: self.stage(connection, action)
+                      for action in ("ACTION-A", "ACTION-B")}
+            for action, repository, start, end in (
+                ("ACTION-A", "repository-a", "2026-10-03T00:00:00+00:00",
+                 "2026-10-03T00:00:10+00:00"),
+                ("ACTION-B", "repository-b", "2026-10-03T00:00:05+00:00",
+                 "2026-10-03T00:00:15+00:00"),
+            ):
+                accepted = submission_service.submit(
+                    connection, self.request(action, staged[action]),
+                    authenticated_consumer_id="forge",
+                )
+                self._pa_e4_run(connection, accepted.submission_id,
+                                action, repository, start, end)
+        empty = self._pa_e4_model(str(staged["ACTION-A"]["intake_id"]))
+        summary = empty["data"]["parallel_action_collection"]["summary"]
+        self.assertEqual(summary["state_counts"]["ACTIVE"], 2)
+        self.assertIsNone(summary["actual_provider_overlap"])
+        self.assertEqual(summary["provider_interval_coverage"], "UNAVAILABLE")
+        persist_provider_invocation(self.root, ProviderInvocation(
+            "pa-e4-ACTION-A", 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+            "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:10+00:00", 1000,
+            {"input_tokens": 100}, invocation_id="clock-conflict-a",
+        ), central_database=self.database)
+        persist_provider_invocation(self.root, ProviderInvocation(
+            "pa-e4-ACTION-B", 1, "codex_cli", None, "PROVIDER_EXECUTION", "IMPLEMENTATION",
+            "2026-10-03T00:00:05+00:00", "2026-10-03T00:00:15+00:00", 10000,
+            {"input_tokens": 200}, invocation_id="clock-valid-b",
+        ), central_database=self.database)
+        conflicted = self._pa_e4_model(str(staged["ACTION-A"]["intake_id"]))
+        summary = conflicted["data"]["parallel_action_collection"]["summary"]
+        self.assertEqual(summary["provider_interval_coverage"], "CONFLICT")
+        self.assertEqual(summary["provider_multi_action_overlap_ms"], 0)
+        self.assertIsNone(summary["actual_provider_overlap"])
 
 
 if __name__ == "__main__":

@@ -225,6 +225,50 @@ def detail_model(
     )
 
 
+def parallel_action_model(
+    *, collection: Mapping[str, object], locale: str,
+    source_as_of: str, source_reference: str,
+) -> dict[str, object]:
+    """Wrap one complete producer graph collection in the canonical export."""
+    raw_actions = collection.get("actions")
+    if not isinstance(raw_actions, list):
+        raise ValueError("PARALLEL_COLLECTION_INVALID")
+    actions: list[dict[str, object]] = []
+    references = [str(collection["graph_id"])]
+    for raw_action in raw_actions:
+        if not isinstance(raw_action, Mapping):
+            raise ValueError("PARALLEL_COLLECTION_INVALID")
+        action = {key: value for key, value in raw_action.items() if key != "runs"}
+        runs = raw_action.get("runs")
+        if not isinstance(runs, list):
+            raise ValueError("PARALLEL_COLLECTION_INVALID")
+        action["runs"] = [_safe_run(run) for run in runs if isinstance(run, Mapping)]
+        if len(action["runs"]) != len(runs):
+            raise ValueError("PARALLEL_COLLECTION_INVALID")
+        actions.append(action)
+        if isinstance(raw_action.get("intake_id"), str):
+            references.append(str(raw_action["intake_id"]))
+        references.extend(str(run["run_id"]) for run in runs if isinstance(run.get("run_id"), str))
+    safe_collection = {key: value for key, value in collection.items() if key != "actions"}
+    safe_collection["actions"] = actions
+    selection = {
+        "project_id": collection["project_id"],
+        "producer_id": collection["producer_id"],
+        "mission_id": collection["mission_id"],
+        "mission_revision": collection["mission_revision"],
+        "graph_id": collection["graph_id"],
+        "scope": "EP_PARALLEL_ACTION_COLLECTION", "timezone": "UTC",
+    }
+    return _envelope(
+        locale=locale, selection=selection,
+        data={"parallel_action_collection": safe_collection},
+        references=references, displayed_population=len(actions),
+        full_population=len(raw_actions), export_complete=True,
+        contract_version=str(collection["contract_version"]),
+        source_as_of=source_as_of, source_reference=source_reference,
+    )
+
+
 def serialize_json(model: Mapping[str, object]) -> bytes:
     return (json.dumps(model, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
 
@@ -244,7 +288,18 @@ def serialize_markdown(model: Mapping[str, object]) -> bytes:
         [labels["field"], labels["value"]],
         [[key, _display(value, labels)] for key, value in completeness.items()] if isinstance(completeness, Mapping) else [],
     ), ""]
-    if isinstance(data, Mapping) and isinstance(data.get("overview"), Mapping):
+    if isinstance(data, Mapping) and isinstance(data.get("parallel_action_collection"), Mapping):
+        lines += _markdown_parallel_actions(data["parallel_action_collection"], labels)
+        # Keep every nested observation available in the human-readable export.
+        # The summary tables above are convenient to scan, but omit nested
+        # invocation coverage and phase details by design.
+        complete = json.dumps(
+            data["parallel_action_collection"], ensure_ascii=False,
+            sort_keys=True, indent=2, allow_nan=False,
+        )
+        lines += ["## Complete Action collection data (JSON)", "",
+                  *("    " + line for line in complete.splitlines()), ""]
+    elif isinstance(data, Mapping) and isinstance(data.get("overview"), Mapping):
         summary = data["overview"].get("summary", {})
         if isinstance(summary, Mapping):
             lines += [f"## {_md(labels['summary'])}", "", _table(
@@ -283,6 +338,45 @@ def serialize_markdown(model: Mapping[str, object]) -> bytes:
     if limitations:
         lines += [f"## {_md(labels['limitations'])}", "", *[f"- {_md(reason)}" for reason in limitations], ""]
     return ("\n".join(lines).rstrip() + "\n").encode("utf-8")
+
+
+def _markdown_parallel_actions(collection: Mapping[str, object], labels: Mapping[str, str]) -> list[str]:
+    summary = collection.get("summary")
+    lines = [f"## {_md(labels['summary'])}", "", _table(
+        [labels["field"], labels["value"]],
+        [[key, _display(value, labels)] for key, value in summary.items()]
+        if isinstance(summary, Mapping) else [],
+    ), ""]
+    actions = collection.get("actions")
+    if not isinstance(actions, list):
+        return lines
+    for action in actions:
+        if not isinstance(action, Mapping):
+            continue
+        lines += [f"## Action: `{_md(action.get('action_id'))}`", "", _table(
+            [labels["field"], labels["value"]],
+            [[key, _display(value, labels)] for key, value in action.items()
+             if key not in {"attempts", "runs", "dependencies", "usage_metrics"}],
+        ), ""]
+        dependencies = action.get("dependencies")
+        if isinstance(dependencies, list):
+            lines += ["### Dependencies", "", _records_table(dependencies, labels), ""]
+        attempts = action.get("attempts")
+        if isinstance(attempts, list):
+            lines += ["### Requests and attempts", "", _records_table(attempts, labels), ""]
+        metrics = action.get("usage_metrics")
+        if isinstance(metrics, Mapping):
+            lines += ["### EP usage", "", _table(
+                [labels["field"], labels["value"]],
+                [[key, _display(value, labels)] for key, value in metrics.items()],
+            ), ""]
+        runs = action.get("runs")
+        if isinstance(runs, list):
+            for run in runs:
+                if isinstance(run, Mapping):
+                    lines += [f"### Run: `{_md(run.get('run_id'))}`", "",
+                              *_markdown_detail(run, labels)]
+    return lines
 
 
 def _envelope(*, locale: str, selection: Mapping[str, object], data: Mapping[str, object], references: Sequence[str], displayed_population: int, full_population: int, export_complete: bool, contract_version: str, source_as_of: str | None = None, source_reference: str | None = None) -> dict[str, object]:
