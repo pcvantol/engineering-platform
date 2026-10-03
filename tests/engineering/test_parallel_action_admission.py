@@ -1512,6 +1512,9 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 (accepted.submission_id, "project-test", "repository-a", run_id,
                  "COMPLETE", "/synthetic/prompt", started, completed, "NONE"),
             )
+            self._pa_e4_provenance(
+                connection, accepted.submission_id, run_id, "repository-a",
+            )
             checkpoint = TransactionState(
                 run_id, "repository-a", "prompt", "COMPLETE", terminal=True,
                 action_intent="MUTATING_DELIVERY", transaction_kind="IMPLEMENTATION",
@@ -2636,7 +2639,18 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             (submission_id, "project-test", repository_id, run_id,
              state, "/synthetic/pa-e4", start, end, "NONE"),
         )
+        self._pa_e4_provenance(connection, submission_id, run_id, repository_id)
         return run_id
+
+    def _pa_e4_provenance(self, connection: sqlite3.Connection,
+                          submission_id: str, run_id: str, repository_id: str) -> None:
+        connection.execute(
+            """INSERT INTO ep_receipt_run_provenance(
+                submission_id,run_id,project_id,repository_id,installation_id,created_at)
+                SELECT ?,?,'project-test',?,value,?
+                  FROM engineering_metadata WHERE key='installation.instance_id'""",
+            (submission_id, run_id, repository_id, NOW),
+        )
 
     def test_pa_e4_graph_collection_and_same_snapshot_exports(self) -> None:
         with sqlite_connection(self.database) as connection:
@@ -2675,12 +2689,16 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             self.assertEqual(data["summary"]["staged_action_count"], 2)
             by_action = {row["action_id"]: row for row in data["actions"]}
             self.assertEqual(by_action["ACTION-B"]["state"], "NOT_STAGED")
-            self.assertEqual(by_action["ACTION-Q"]["state"], "WAITING_DEPENDENCY")
+            self.assertEqual(by_action["ACTION-Q"]["state"], "NOT_EVALUATED_IN_COLLECTION")
             self.assertEqual(by_action["ACTION-A"]["attempts"][0]["parent_submission_id"], None)
             self.assertFalse(data["dispatch_authorized"])
             self.assertEqual(data["mission_acceptance"], "NOT_EVALUATED_BY_EP")
             export = base + "/export?locale=en&snapshot_id=" + model["snapshot_id"]
             with urlopen(Request(export + "&format=json", headers=headers)) as response:  # nosec B310
+                self.assertEqual(
+                    response.headers["Content-Disposition"],
+                    f'attachment; filename="parallel-action-collection-{staged["ACTION-A"]["intake_id"]}.json"',
+                )
                 downloaded = json.load(response)
             self.assertEqual(downloaded["snapshot_id"], model["snapshot_id"])
             self.assertEqual(downloaded["data"], model["data"])
@@ -2703,6 +2721,13 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 ))  # nosec B310
             self.assertEqual(wrong_selection.exception.code, 409)
             wrong_selection.exception.close()
+            q_url = base.replace(staged["ACTION-A"]["intake_id"],
+                                 staged["ACTION-Q"]["intake_id"])
+            with urlopen(Request(q_url, headers=headers)) as response:  # nosec B310
+                q_model = json.load(response)
+            q_actions = {row["action_id"]: row for row in
+                         q_model["data"]["parallel_action_collection"]["actions"]}
+            self.assertEqual(q_actions["ACTION-Q"]["state"], "WAITING_DEPENDENCY")
         finally:
             httpd.shutdown()
             worker.join(timeout=5)
@@ -2757,7 +2782,7 @@ class ParallelActionAdmissionTest(unittest.TestCase):
         self.assertEqual(summary["wait_duration_coverage"],
                          "UNAVAILABLE_WAIT_TRANSITIONS_NOT_RECORDED")
         actions = {row["action_id"]: row for row in data["actions"]}
-        self.assertEqual(actions["ACTION-Q"]["state"], "WAITING_DEPENDENCY")
+        self.assertEqual(actions["ACTION-Q"]["state"], "NOT_EVALUATED_IN_COLLECTION")
         self.assertEqual(actions["ACTION-A"]["state"], "ACTIVE")
         self.assertEqual(actions["ACTION-B"]["state"], "ACTIVE")
         self.assertEqual([row["run_id"] for row in actions["ACTION-A"]["runs"]], [a_run])
@@ -2789,6 +2814,115 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             self._pa_e4_model(str(staged["intake_id"]))
         self.assertEqual(rejected.exception.code, "PARALLEL_COLLECTION_IDENTITY_CONFLICT")
 
+    def test_pa_e4_rejects_dispatch_repointed_away_from_immutable_run_provenance(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            staged = self.stage(connection, "ACTION-A")
+            accepted = submission_service.submit(
+                connection, self.request("ACTION-A", staged),
+                authenticated_consumer_id="forge",
+            )
+            self._pa_e4_run(
+                connection, accepted.submission_id, "ACTION-A", "repository-a",
+                "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:03+00:00",
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) "
+                "VALUES(?,?,?,?,?,?)",
+                ("other-producer-run", "project-test", "RUNNING", NOW, NOW, "MANAGED"),
+            )
+            connection.execute(
+                "UPDATE ep_parity_lifecycle_dispatches SET run_id='other-producer-run' "
+                "WHERE submission_id=?", (accepted.submission_id,),
+            )
+        with self.assertRaises(collection.CollectionError) as rejected:
+            self._pa_e4_model(str(staged["intake_id"]))
+        self.assertEqual(rejected.exception.code, "PARALLEL_COLLECTION_IDENTITY_CONFLICT")
+
+    def test_pa_e4_projects_durable_recovery_and_cancel_holds(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            staged = {action: self.stage(
+                connection, action, policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+            ) for action in ("ACTION-A", "ACTION-B")}
+            accepted = {action: submission_service.submit(
+                connection, self.request(
+                    action, staged[action],
+                    policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            ).submission_id for action in ("ACTION-A", "ACTION-B")}
+            uncertain_run = self._pa_e4_run(
+                connection, accepted["ACTION-A"], "ACTION-A", "repository-a",
+                "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:03+00:00",
+                "BLOCKED",
+            )
+            cancel_run = self._pa_e4_run(
+                connection, accepted["ACTION-B"], "ACTION-B", "repository-b",
+                "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:03+00:00",
+            )
+        recovery.mark_uncertain(self.root, run_id=uncertain_run)
+        recovery.request_cancel(
+            self.root, project_id="project-test", run_id=cancel_run,
+        )
+        model = self._pa_e4_model(str(staged["ACTION-A"]["intake_id"]))
+        actions = {row["action_id"]: row for row in
+                   model["data"]["parallel_action_collection"]["actions"]}
+        for action_id, expected_state, recovery_state in (
+            ("ACTION-A", "WAITING_RECOVERY", "PROVIDER_EFFECT_UNCERTAIN"),
+            ("ACTION-B", "CANCEL_REQUESTED", "CANCEL_REQUESTED"),
+        ):
+            action = actions[action_id]
+            self.assertEqual(action["state"], expected_state)
+            self.assertEqual(action["recovery_state"], recovery_state)
+            self.assertEqual(action["resource_state"], "HELD")
+            self.assertEqual(action["capacity_state"], "HELD")
+            self.assertEqual(action["attempts"][0]["recovery_state"], recovery_state)
+            self.assertEqual(action["runs"][0]["recovery_state"], recovery_state)
+
+    def test_pa_e4_256_action_collection_bounds_live_decision_probes(self) -> None:
+        template = next(item for item in self.graph["actions"]
+                        if item["action_id"] == "ACTION-A")
+        self.graph["actions"] = []
+        for index in range(256):
+            item = json.loads(json.dumps(template))
+            item["action_id"] = f"ACTION-{index:03d}"
+            item["dependencies"] = []
+            self.graph["actions"].append(item)
+        with sqlite_connection(self.database) as connection:
+            selected = self.stage(connection, "ACTION-000")
+            columns = [row[1] for row in connection.execute(
+                "PRAGMA table_info(ep_parallel_action_intakes)"
+            )]
+            original = dict(zip(columns, connection.execute(
+                "SELECT * FROM ep_parallel_action_intakes WHERE intake_id=?",
+                (selected["intake_id"],),
+            ).fetchone(), strict=True))
+            placeholders = ",".join("?" for _ in columns)
+            for index in range(1, 256):
+                action_id = f"ACTION-{index:03d}"
+                values = dict(original)
+                values.update({
+                    "intake_id": sha256(action_id.encode()).hexdigest(),
+                    "action_id": action_id,
+                    "idempotency_key": "key-" + action_id,
+                    "correlation_id": "corr-" + action_id,
+                })
+                connection.execute(
+                    f"INSERT INTO ep_parallel_action_intakes({','.join(columns)}) "
+                    f"VALUES({placeholders})",
+                    tuple(values[name] for name in columns),
+                )
+        with patch.object(admission, "dependency_readback",
+                          wraps=admission.dependency_readback) as dependency, patch.object(
+            admission, "delivery_readback", wraps=admission.delivery_readback,
+        ) as delivery:
+            model = self._pa_e4_model(str(selected["intake_id"]))
+        data = model["data"]["parallel_action_collection"]
+        self.assertEqual(data["summary"]["action_count"], 256)
+        self.assertEqual(data["summary"]["staged_action_count"], 256)
+        self.assertEqual(dependency.call_count, 1)
+        self.assertEqual(delivery.call_count, 1)
+        self.assertEqual(data["actions"][1]["state"],
+                         "NOT_EVALUATED_IN_COLLECTION")
+
     def test_pa_e4_terminal_readback_survives_fresh_database_connection(self) -> None:
         digest = "sha256:" + sha256(b"pa-e4-terminal").hexdigest()
         with sqlite_connection(self.database) as connection:
@@ -2799,6 +2933,9 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             )
             self._canonical_fixture_rows(
                 connection, accepted.submission_id, "ACTION-A", "repository-a", digest,
+            )
+            self._pa_e4_provenance(
+                connection, accepted.submission_id, "run-ACTION-A", "repository-a",
             )
             connection.execute(
                 """INSERT INTO ep_parallel_action_outcomes(

@@ -7393,7 +7393,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     )
                     self._send_download(
                         payload, export_format=export_format,
-                        filename=(f"parallel-action-collection-{project_id}-{intake_id}."
+                        filename=(f"parallel-action-collection-{intake_id}."
                                   f"{'md' if markdown else 'json'}"),
                     )
                     return

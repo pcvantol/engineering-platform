@@ -20,8 +20,12 @@ their own Action; sibling Actions never become one execution chain. Accepted
 request, target, run and terminal outcome identities are checked against the
 stored project, producer, Mission, Action and repository. A COMPLETE delivery
 is distinguished from a verified canonical terminal artifact and from Forge
-Mission acceptance. The current admission decision is shown for staged or
-queued Actions; it never grants dispatch authority.
+Mission acceptance. The current admission decision is evaluated for the
+selected staged or queued Action. Other pending Actions carry
+`NOT_EVALUATED_IN_COLLECTION` and can be selected through their own intake
+for a bounded live decision. All durable attempts and run evidence remain
+included. Current PA-E3 recovery and cancellation holds are projected for
+every run and Action. No collection decision grants dispatch authority.
 
 Canonical `provider_usage` and `execution_timing` reducers supply full run
 detail. EP sums observed usage over distinct run IDs once and keeps partial or
@@ -35,8 +39,8 @@ Action elapsed spans. Open or invalid intervals lower coverage; two RUNNING
 labels alone never assert provider overlap. Existing measured queue wait is
 reported when available. Historical dependency, resource and capacity wait
 durations are explicitly unavailable because wait transitions were not
-persisted; current typed wait states remain visible. No speedup or savings
-estimate is manufactured.
+persisted; the selected Action's current typed wait state remains visible.
+No speedup or savings estimate is manufactured.
 
 `GET .../collection/export?format=json|markdown&snapshot_id=sha256:...`
 downloads the same retained, complete, privacy-safe snapshot. The ID is bound
@@ -49,7 +53,9 @@ nested evidence remains available without truncation. Downloads add only their o
 timestamp. The existing ten-minute bounded snapshot cache and size rejection
 apply. Construction uses one consistent read-only CENTRAL transaction and the
 existing batch telemetry loaders; serializers do no database reads or metric
-recalculation. Reads make no provider call or repository mutation.
+recalculation. Only the selected Action performs live baseline/resource probes,
+so a 256-Action graph cannot multiply those probes within one response. Reads
+make no provider call or repository mutation.
 
 This slice does not perform PA-EQ's installed Forge-to-EP concurrency matrix,
 Forge PA-F3 consumer acceptance, live provider work, production CENTRAL,

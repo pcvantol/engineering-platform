@@ -9,12 +9,14 @@ transaction, and canonical timing/usage reducers provide the measurements.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import sqlite3
 from typing import Mapping
 
-from . import parallel_action_admission
+from . import parallel_action_admission, parallel_action_recovery
+from .central_database import DATABASE_FILENAME
 from .execution_timing import timing_summaries
 from .provider_usage import provider_usage_summaries
 from .telemetry_metrics import aggregate_numeric_metric, metric_coverage
@@ -107,6 +109,11 @@ def _linked_attempts(connection: sqlite3.Connection, intake_ids: list[str]) -> l
                   d.repository_id AS dispatch_repository_id,
                   d.state AS dispatch_state,d.operator_resolution,
                   d.claimed_at,d.updated_at AS dispatch_updated_at,
+                  p.run_id AS provenance_run_id,
+                  p.project_id AS provenance_project_id,
+                  p.repository_id AS provenance_repository_id,
+                  p.installation_id AS provenance_installation_id,
+                  m.value AS current_installation_id,
                   r.project_id AS run_project_id,r.state AS run_state,
                   r.created_at AS run_started_at,r.updated_at AS run_updated_at,
                   r.execution_mode
@@ -114,6 +121,8 @@ def _linked_attempts(connection: sqlite3.Connection, intake_ids: list[str]) -> l
              JOIN ep_parallel_action_submission_links AS l ON l.intake_id=i.intake_id
              LEFT JOIN ep_submissions AS s ON s.submission_id=l.submission_id
              LEFT JOIN ep_parity_lifecycle_dispatches AS d ON d.submission_id=l.submission_id
+             LEFT JOIN ep_receipt_run_provenance AS p ON p.submission_id=l.submission_id
+             LEFT JOIN engineering_metadata AS m ON m.key='installation.instance_id'
              LEFT JOIN ep_execution_runs AS r ON r.run_id=d.run_id
             WHERE i.intake_id IN ({placeholders})
             ORDER BY i.action_id,l.recorded_at,l.submission_id""",
@@ -124,7 +133,8 @@ def _linked_attempts(connection: sqlite3.Connection, intake_ids: list[str]) -> l
 def _verified_graph(connection: sqlite3.Connection, *, project_id: str,
                     producer_id: str, intake_id: str) -> tuple[sqlite3.Row, dict[str, object]]:
     selected = connection.execute(
-        """SELECT i.graph_id,i.mission_id AS intake_mission_id,
+        """SELECT i.graph_id,i.action_id AS selected_action_id,
+                  i.mission_id AS intake_mission_id,
                   g.snapshot,g.snapshot_digest,g.mission_id,g.mission_revision,
                   g.recorded_at
              FROM ep_parallel_action_intakes AS i
@@ -138,20 +148,29 @@ def _verified_graph(connection: sqlite3.Connection, *, project_id: str,
     if selected["intake_mission_id"] != selected["mission_id"]:
         raise CollectionError("PARALLEL_COLLECTION_IDENTITY_CONFLICT")
     try:
-        decision = parallel_action_admission.dependency_readback(
-            connection, intake_id=intake_id,
-        )
-    except parallel_action_admission.ParallelAdmissionError:
-        raise CollectionError("PARALLEL_COLLECTION_INVALID_SNAPSHOT") from None
-    if decision["state"] == "INVALID_SNAPSHOT":
-        raise CollectionError("PARALLEL_COLLECTION_INVALID_SNAPSHOT")
-    try:
         graph = json.loads(str(selected["snapshot"]))
         actions = graph["actions"]
+        canonical_graph = {
+            "contract_version": "parallel-action-graph/v1",
+            "mission_id": graph["mission_id"],
+            "mission_revision": graph["mission_revision"],
+            "actions": [
+                {"action_id": item["action_id"], "target": item["target"],
+                 "dependencies": item["dependencies"]}
+                for item in actions
+            ],
+        }
         if (not isinstance(actions, list) or not actions
+                or parallel_action_admission._canonical(graph) != selected["snapshot"]
+                or graph["contract_version"] != "ep-parallel-action-compat/v1"
+                or graph["status"] != "COMPATIBLE"
+                or graph["dispatch_authorized"] is not False
                 or graph["mission_id"] != selected["mission_id"]
                 or graph["mission_revision"] != selected["mission_revision"]
-                or graph["producer_snapshot_digest"] != selected["snapshot_digest"]):
+                or graph["producer_snapshot_digest"] != selected["snapshot_digest"]
+                or "sha256:" + sha256(parallel_action_admission._canonical(
+                    canonical_graph,
+                ).encode()).hexdigest() != selected["snapshot_digest"]):
             raise ValueError("graph identity mismatch")
     except (ValueError, TypeError, KeyError):
         raise CollectionError("PARALLEL_COLLECTION_INVALID_SNAPSHOT") from None
@@ -175,6 +194,14 @@ def _attempt(row: sqlite3.Row) -> dict[str, object]:
             or row["dispatch_repository_id"] != row["target_repository_id"]
         ))
         or (row["run_id"] is not None and row["run_project_id"] != row["project_id"])
+        or (row["run_id"] is None and row["provenance_run_id"] is not None)
+        or (row["run_id"] is not None and (
+            row["provenance_run_id"] != row["run_id"]
+            or row["provenance_project_id"] != row["project_id"]
+            or row["provenance_repository_id"] != row["target_repository_id"]
+            or row["provenance_installation_id"] != row["current_installation_id"]
+            or row["current_installation_id"] is None
+        ))
     ):
         raise CollectionError("PARALLEL_COLLECTION_IDENTITY_CONFLICT")
     if row["parent_submission_id"] is None and row["idempotency_key"] != row["intake_idempotency_key"]:
@@ -206,6 +233,10 @@ def _attempt(row: sqlite3.Row) -> dict[str, object]:
 
 def _action_state(attempts: list[dict[str, object]], decision: Mapping[str, object] | None,
                   terminal_evidence: str) -> str:
+    if any(row.get("recovery_state") == "PROVIDER_EFFECT_UNCERTAIN" for row in attempts):
+        return "WAITING_RECOVERY"
+    if any(row.get("recovery_state") == "CANCEL_REQUESTED" for row in attempts):
+        return "CANCEL_REQUESTED"
     if any(row["dispatch_state"] in _ACTIVE for row in attempts):
         return "ACTIVE"
     if any(row["dispatch_state"] is None and row["state"] == "QUEUED" for row in attempts):
@@ -309,7 +340,7 @@ def collection_readback(
             raise CollectionError("PARALLEL_COLLECTION_IDENTITY_CONFLICT")
 
     run_ids = sorted(seen_runs)
-    database = data_root / "engineering.db"
+    database = data_root / DATABASE_FILENAME
     timing = timing_summaries(
         data_root, run_ids, central_database=database,
         timeline_limit=None, _read_connection=connection,
@@ -362,13 +393,24 @@ def collection_readback(
         )
         decision = None
         if pending:
-            decision = parallel_action_admission.dependency_readback(
-                connection, intake_id=str(intake["intake_id"]),
-            )
-            decision = parallel_action_admission.delivery_readback(
-                connection, intake_id=str(intake["intake_id"]),
-                data_root=data_root, decision=decision,
-            )
+            if action_id == selected["selected_action_id"]:
+                decision = parallel_action_admission.dependency_readback(
+                    connection, intake_id=str(intake["intake_id"]),
+                )
+                decision = parallel_action_admission.delivery_readback(
+                    connection, intake_id=str(intake["intake_id"]),
+                    data_root=data_root, decision=decision,
+                )
+            else:
+                decision = {
+                    "contract_version": parallel_action_admission.READBACK_VERSION,
+                    "intake_id": intake["intake_id"],
+                    "state": "NOT_EVALUATED_IN_COLLECTION",
+                    "admission": "NOT_GRANTED",
+                    "resource_state": "NOT_EVALUATED",
+                    "capacity_state": "NOT_EVALUATED",
+                    "dispatch_authorized": False,
+                }
         runs: list[dict[str, object]] = []
         action_usage: list[Mapping[str, object]] = []
         action_run_intervals: list[tuple[datetime, datetime, str]] = []
@@ -376,6 +418,8 @@ def collection_readback(
             run_id = attempt["run_id"]
             if not isinstance(run_id, str):
                 continue
+            recovery_state = parallel_action_recovery.status(connection, run_id)
+            attempt["recovery_state"] = recovery_state
             run_usage = usage.get(run_id, {})
             run_timing = timing.get(run_id, {})
             started = _utc(attempt["run_started_at"])
@@ -397,6 +441,7 @@ def collection_readback(
             runs.append({
                 "run_id": run_id, "submission_id": attempt["submission_id"],
                 "state": attempt["dispatch_state"],
+                "recovery_state": recovery_state,
                 "run_state": attempt["run_state"],
                 "operator_resolution": attempt["operator_resolution"],
                 "repository_id": item["target"]["repository_id"],
@@ -437,6 +482,11 @@ def collection_readback(
         action_busy, _ = _interval_totals(action_run_intervals)
         action_first = min((row[0] for row in action_run_intervals), default=None)
         action_last = max((row[1] for row in action_run_intervals), default=None)
+        action_recovery_state = next((
+            str(row["recovery_state"]) for row in reversed(action_attempts)
+            if row.get("recovery_state") not in (None, "NONE")
+        ), "NONE")
+        held = action_recovery_state in {"PROVIDER_EFFECT_UNCERTAIN", "CANCEL_REQUESTED"}
         actions.append({
             "action_id": action_id, "target": item["target"],
             "dependencies": item["dependencies"],
@@ -454,6 +504,9 @@ def collection_readback(
             "concurrency_profile": intake["concurrency_profile"],
             "recorded_at": intake["recorded_at"],
             "decision": decision, "attempts": action_attempts, "runs": runs,
+            "recovery_state": action_recovery_state,
+            "resource_state": "HELD" if held else decision.get("resource_state") if decision else None,
+            "capacity_state": "HELD" if held else decision.get("capacity_state") if decision else None,
             "terminal_evidence": terminal_evidence,
             "terminal_outcome": dict(outcome) if outcome is not None else None,
             "usage_metrics": _usage_metrics(action_usage, "EP_ACTION"),
