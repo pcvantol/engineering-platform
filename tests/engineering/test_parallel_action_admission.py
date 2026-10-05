@@ -2683,6 +2683,8 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             foreign.exception.close()
             headers = {"Authorization": f"Bearer {self.credential}"}
             with urlopen(Request(base, headers=headers)) as response:  # nosec B310
+                self.assertEqual(response.headers["EP-Server-Instance"],
+                                 self.identity.instance_id)
                 model = json.load(response)
             data = model["data"]["parallel_action_collection"]
             self.assertEqual(data["summary"]["action_count"], 3)
@@ -2691,6 +2693,17 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             self.assertEqual(by_action["ACTION-B"]["state"], "NOT_STAGED")
             self.assertEqual(by_action["ACTION-Q"]["state"], "NOT_EVALUATED_IN_COLLECTION")
             self.assertEqual(by_action["ACTION-A"]["attempts"][0]["parent_submission_id"], None)
+            continuation = by_action["ACTION-A"]["continuation_evidence"]
+            self.assertEqual(continuation["contract_version"],
+                             "ep-governed-continuation-evidence/v1")
+            self.assertEqual(continuation["identity"]["instance_id"],
+                             self.identity.instance_id)
+            self.assertEqual(continuation["authority"]["repository_grant"], "ACTIVE")
+            self.assertEqual(continuation["effect_leases"]["repository_mutation"],
+                             "NOT_ACQUIRED")
+            self.assertFalse(continuation["effect_leases"]["terminal_release_confirmed"])
+            self.assertEqual(continuation["successor"]["selection_authority"], "FORGE")
+            self.assertFalse(continuation["successor"]["release_authorized"])
             self.assertFalse(data["dispatch_authorized"])
             self.assertEqual(data["mission_acceptance"], "NOT_EVALUATED_BY_EP")
             export = base + "/export?locale=en&snapshot_id=" + model["snapshot_id"]
@@ -2957,6 +2970,187 @@ class ParallelActionAdmissionTest(unittest.TestCase):
                 self.assertEqual(action["terminal_evidence"], "VERIFIED")
                 self.assertEqual(action["terminal_outcome"]["run_id"], "run-ACTION-A")
 
+    def test_governed_continuation_evidence_joins_receipt_and_released_effects(self) -> None:
+        digest = "sha256:" + sha256(b"governed-continuation").hexdigest()
+        replacement_id = "terminal-ACTION-A-reconciled"
+        replacement_digest = "e" * 64
+        with sqlite_connection(self.database) as connection:
+            staged = self.stage(
+                connection, "ACTION-A",
+                policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+            )
+            accepted = submission_service.submit(
+                connection, self.request(
+                    "ACTION-A", staged,
+                    policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            )
+            self._canonical_fixture_rows(
+                connection, accepted.submission_id, "ACTION-A", "repository-a", digest,
+            )
+            self._pa_e4_provenance(
+                connection, accepted.submission_id, "run-ACTION-A", "repository-a",
+            )
+            connection.execute(
+                """INSERT INTO ep_parallel_action_outcomes(
+                    intake_id,submission_id,run_id,terminal_artifact_id,
+                    terminal_digest,repository_revision,recorded_at)
+                    VALUES(?,?,?,?,?,?,?)""",
+                (staged["intake_id"], accepted.submission_id, "run-ACTION-A",
+                 "terminal-ACTION-A", digest, "c" * 40, NOW),
+            )
+            connection.execute(
+                """INSERT INTO execution_artifact_records(
+                    artifact_id,artifact_type,digest_algorithm,digest,content_type,
+                    ep_run_id,ep_submission_id,created_at,integrity_status,
+                    storage_location,projection_status)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (replacement_id, "EP_TERMINAL_EVIDENCE", "sha256",
+                 replacement_digest, "application/json", "run-ACTION-A",
+                 accepted.submission_id, NOW, "VERIFIED",
+                 "ACTION-A-reconciled.json", "CANDIDATE"),
+            )
+            connection.execute(
+                "UPDATE execution_artifact_records SET projection_status='SUPERSEDED' "
+                "WHERE artifact_id='terminal-ACTION-A'",
+            )
+            connection.execute(
+                "UPDATE execution_artifact_records SET projection_status='AVAILABLE' "
+                "WHERE artifact_id=?", (replacement_id,),
+            )
+            connection.execute(
+                """INSERT INTO ep_terminal_evidence_reconciliation_operations(
+                    operation_id,run_id,project_id,source_artifact_id,source_digest,
+                    replacement_artifact_id,replacement_digest,reason_code,recorded_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                ("governed-continuation-reconciliation", "run-ACTION-A", "project-test",
+                 "terminal-ACTION-A", digest[7:], replacement_id,
+                 replacement_digest, "MERGE_CANDIDATE_PROJECTION_V1", NOW),
+            )
+            for lease_id, holder in (
+                ("pa-e2:resource:fixture", "repository"),
+                ("pa-e2:slot:0", "provider"),
+                ("pa-e3:attempt:run-ACTION-A:fixture", "dispatch"),
+            ):
+                connection.execute(
+                    "INSERT INTO ep_execution_leases VALUES(?,?,?,?,?,?)",
+                    (lease_id, "run-ACTION-A", holder, NOW,
+                     "9999-12-31T23:59:59+00:00", NOW),
+                )
+        canonical = self._fake_canonical_readback(
+            "ACTION-A", accepted.submission_id, digest, "repository-a",
+        )
+        canonical["evidence"]["terminal_artifact"] = {
+            "id": replacement_id, "digest": "sha256:" + replacement_digest,
+        }
+        with patch.object(admission, "producer_readback", return_value=canonical):
+            model = self._pa_e4_model(str(staged["intake_id"]))
+            replayed = self._pa_e4_model(str(staged["intake_id"]))
+        action = next(row for row in model["data"]["parallel_action_collection"]["actions"]
+                      if row["action_id"] == "ACTION-A")
+        evidence = action["continuation_evidence"]
+        replayed_action = next(
+            row for row in replayed["data"]["parallel_action_collection"]["actions"]
+            if row["action_id"] == "ACTION-A"
+        )
+        self.assertEqual(replayed_action["continuation_evidence"], evidence)
+        self.assertEqual(evidence["contract_version"],
+                         "ep-governed-continuation-evidence/v1")
+        self.assertEqual(evidence["identity"], {
+            "instance_id": self.identity.instance_id,
+            "project_id": "project-test", "mission_id": "mission-test",
+            "mission_revision": 1, "action_id": "ACTION-A",
+            "action_revision": "1", "intake_id": staged["intake_id"],
+            "correlation_id": "corr-ACTION-A",
+        })
+        self.assertEqual(evidence["operation"]["submission_id"], accepted.submission_id)
+        self.assertEqual(evidence["operation"]["run_id"], "run-ACTION-A")
+        self.assertEqual(evidence["terminal_receipt"]["artifact_id"], replacement_id)
+        self.assertEqual(evidence["terminal_receipt"]["artifact_digest"],
+                         "sha256:" + replacement_digest)
+        self.assertEqual(evidence["terminal_receipt"]["repository_revision"], "c" * 40)
+        self.assertEqual(evidence["effect_leases"], {
+            "repository_mutation": "RELEASED", "provider_capacity": "RELEASED",
+            "dispatch_attempt": "RELEASED", "uncertain_effect": "NONE",
+            "ep_effects_released": True, "terminal_release_confirmed": True,
+        })
+        self.assertEqual(evidence["authority"], {
+            "consumer_id": "forge", "repository_id": "repository-a",
+            "repository_grant": "ACTIVE", "authenticated_readback_required": True,
+            "authority_contract": "ep-repository-consumer-authority/v1",
+        })
+        self.assertEqual(evidence["successor"], {
+            "selection_authority": "FORGE", "release_authorized": False,
+        })
+        self.assertFalse(evidence["dispatch_authorized"])
+        with sqlite_connection(self.database) as connection:
+            connection.execute(
+                "UPDATE ep_parallel_action_repository_grants SET status='REVOKED',updated_at=? "
+                "WHERE consumer_id='forge' AND project_id='project-test' "
+                "AND repository_id='repository-a'",
+                (NOW,),
+            )
+            before = tuple(connection.execute(
+                "SELECT (SELECT COUNT(*) FROM ep_submissions),"
+                "(SELECT COUNT(*) FROM provider_invocations)",
+            ).fetchone())
+        with patch.object(admission, "producer_readback", return_value=canonical):
+            revoked = self._pa_e4_model(str(staged["intake_id"]))
+        revoked_action = next(
+            row for row in revoked["data"]["parallel_action_collection"]["actions"]
+            if row["action_id"] == "ACTION-A"
+        )
+        self.assertEqual(
+            revoked_action["continuation_evidence"]["authority"]["repository_grant"],
+            "UNAVAILABLE",
+        )
+        self.assertTrue(
+            revoked_action["continuation_evidence"]["effect_leases"]
+            ["terminal_release_confirmed"]
+        )
+        with sqlite_connection(self.database) as connection:
+            after = tuple(connection.execute(
+                "SELECT (SELECT COUNT(*) FROM ep_submissions),"
+                "(SELECT COUNT(*) FROM provider_invocations)",
+            ).fetchone())
+        self.assertEqual(after, before)
+
+    def test_governed_continuation_evidence_keeps_uncertain_effects_held(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            staged = self.stage(
+                connection, "ACTION-A",
+                policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+            )
+            accepted = submission_service.submit(
+                connection, self.request(
+                    "ACTION-A", staged,
+                    policy_digest=admission.SUPPORTED_PA_E2_POLICY_DIGEST,
+                ), authenticated_consumer_id="forge",
+            )
+            run_id = self._pa_e4_run(
+                connection, accepted.submission_id, "ACTION-A", "repository-a",
+                "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:03+00:00",
+            )
+            for lease_id, holder in (
+                ("pa-e2:resource:fixture", "repository"),
+                ("pa-e2:slot:0", "provider"),
+                ("pa-e3:attempt:" + run_id + ":fixture", "dispatch"),
+                ("pa-e3:uncertain:" + run_id, "PROVIDER_EFFECT_UNCERTAIN"),
+            ):
+                connection.execute(
+                    "INSERT INTO ep_execution_leases VALUES(?,?,?,?,?,NULL)",
+                    (lease_id, run_id, holder, NOW, "9999-12-31T23:59:59+00:00"),
+                )
+        model = self._pa_e4_model(str(staged["intake_id"]))
+        action = next(row for row in model["data"]["parallel_action_collection"]["actions"]
+                      if row["action_id"] == "ACTION-A")
+        self.assertEqual(action["recovery_state"], "PROVIDER_EFFECT_UNCERTAIN")
+        self.assertEqual(action["continuation_evidence"]["effect_leases"], {
+            "repository_mutation": "HELD", "provider_capacity": "HELD",
+            "dispatch_attempt": "HELD", "uncertain_effect": "HELD",
+            "ep_effects_released": False, "terminal_release_confirmed": False,
+        })
+
     def test_pa_e4_retry_lineage_stays_inside_its_action(self) -> None:
         with sqlite_connection(self.database) as connection:
             a = self.stage(connection, "ACTION-A")
@@ -3035,6 +3229,14 @@ class ParallelActionAdmissionTest(unittest.TestCase):
         self.assertEqual(actions["ACTION-A"]["intake_id"], a["intake_id"])
         self.assertIsNone(actions["ACTION-A"]["selected_graph_intake_id"])
         self.assertNotEqual(actions["ACTION-A"]["source_graph_id"], data["graph_id"])
+        self.assertEqual(
+            actions["ACTION-A"]["continuation_evidence"]["identity"]["mission_revision"],
+            1,
+        )
+        self.assertEqual(
+            actions["ACTION-Q"]["continuation_evidence"]["identity"]["mission_revision"],
+            2,
+        )
         self.assertEqual(actions["ACTION-A"]["state"], "ACTIVE")
         self.assertEqual(actions["ACTION-Q"]["state"], "WAITING_DEPENDENCY")
 

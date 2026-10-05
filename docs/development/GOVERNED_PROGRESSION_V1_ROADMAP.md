@@ -38,3 +38,10 @@ Before delivery-aware execution is claimed, prove exact authority, environment,
 artifact and operation binding, retained external gates, no duplicate approvals,
 current authorization, fail-closed unknown evidence and qualified recovery.
 See [the owning design](../engineering/GOVERNED_PROGRESSION_AND_DELIVERY_AUTHORITY.md).
+
+The bounded serial continuation producer subset is defined by
+[`ep-governed-continuation-evidence/v1`](../engineering/EP_GOVERNED_CONTINUATION_EVIDENCE_V1.md).
+It joins the existing Action collection, terminal-evidence and repository
+authority contracts and exposes only EP effect-lease release/hold state. This
+subset does not mark full GP-E or GP-Q complete and gives EP no successor or
+review-decision authority.
