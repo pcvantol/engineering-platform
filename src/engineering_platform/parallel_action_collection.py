@@ -8,12 +8,12 @@ transaction, and canonical timing/usage reducers provide the measurements.
 
 from __future__ import annotations
 
+import json
+import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from hashlib import sha256
-import json
 from pathlib import Path
-import sqlite3
-from typing import Mapping
 
 from . import parallel_action_admission, parallel_action_recovery
 from .central_database import DATABASE_FILENAME
@@ -21,8 +21,8 @@ from .execution_timing import timing_summaries
 from .provider_usage import provider_usage_summaries
 from .telemetry_metrics import aggregate_numeric_metric, metric_coverage
 
-
 COLLECTION_VERSION = "ep-parallel-action-collection/v1"
+CONTINUATION_EVIDENCE_VERSION = "ep-governed-continuation-evidence/v1"
 _METRICS = ("input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens")
 _TERMINAL = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 _ACTIVE = frozenset({"CLAIMED", "RUNNING"})
@@ -32,6 +32,151 @@ class CollectionError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _effect_lease_state(connection: sqlite3.Connection, run_id: str | None) -> dict[str, object]:
+    """Project redacted EP effect ownership without exposing lease identities."""
+    if run_id is None:
+        return {
+            "repository_mutation": "NOT_ACQUIRED",
+            "provider_capacity": "NOT_ACQUIRED",
+            "dispatch_attempt": "NOT_ACQUIRED",
+            "uncertain_effect": "NONE",
+            "ep_effects_released": True,
+        }
+    rows = connection.execute(
+        "SELECT lease_id,released_at FROM ep_execution_leases WHERE run_id=?",
+        (run_id,),
+    ).fetchall()
+
+    def state(prefix: str) -> str:
+        selected = [row for row in rows if str(row[0]).startswith(prefix)]
+        if not selected:
+            return "NOT_ACQUIRED"
+        return "HELD" if any(row[1] is None for row in selected) else "RELEASED"
+
+    repository = state("pa-e2:resource:")
+    capacity = state("pa-e2:slot:")
+    dispatch = state("pa-e3:attempt:")
+    uncertain = "HELD" if any(
+        str(row[0]).startswith("pa-e3:uncertain:") and row[1] is None for row in rows
+    ) else "NONE"
+    return {
+        "repository_mutation": repository,
+        "provider_capacity": capacity,
+        "dispatch_attempt": dispatch,
+        "uncertain_effect": uncertain,
+        "ep_effects_released": (
+            "HELD" not in {repository, capacity, dispatch} and uncertain == "NONE"
+        ),
+    }
+
+
+def _effective_terminal_receipt(
+    connection: sqlite3.Connection, *, project_id: str, outcome: sqlite3.Row,
+    terminal_evidence: str,
+) -> tuple[object, object]:
+    """Return the verified active artifact after an immutable reconciliation."""
+    artifact_id, digest = outcome["terminal_artifact_id"], outcome["terminal_digest"]
+    if terminal_evidence != "VERIFIED" or not isinstance(digest, str):
+        return artifact_id, digest
+    replacement = connection.execute(
+        """SELECT r.replacement_artifact_id,r.replacement_digest,
+                  a.artifact_type,a.digest_algorithm,a.digest,a.ep_run_id,
+                  a.ep_submission_id,a.projection_status
+             FROM ep_terminal_evidence_reconciliation_operations AS r
+             JOIN execution_artifact_records AS a
+               ON a.artifact_id=r.replacement_artifact_id
+            WHERE r.run_id=? AND r.project_id=? AND r.source_artifact_id=?
+              AND r.source_digest=?
+              AND r.reason_code='MERGE_CANDIDATE_PROJECTION_V1'""",
+        (outcome["run_id"], project_id, artifact_id,
+         digest[7:] if digest.startswith("sha256:") else ""),
+    ).fetchone()
+    if replacement is None:
+        return artifact_id, digest
+    if tuple(replacement[2:]) != (
+        "EP_TERMINAL_EVIDENCE", "sha256", replacement[1], outcome["run_id"],
+        outcome["submission_id"], "AVAILABLE",
+    ):
+        return artifact_id, digest
+    return replacement[0], "sha256:" + str(replacement[1])
+
+
+def _continuation_evidence(
+    connection: sqlite3.Connection, *, instance_id: str, project_id: str,
+    mission_id: str, action_id: str, intake: sqlite3.Row,
+    attempts: list[dict[str, object]], outcome: sqlite3.Row | None,
+    terminal_evidence: str,
+) -> dict[str, object]:
+    """Join one Action identity, terminal receipt and current EP effect boundary."""
+    effective_artifact = (
+        None if outcome is None else _effective_terminal_receipt(
+            connection, project_id=project_id, outcome=outcome,
+            terminal_evidence=terminal_evidence,
+        )
+    )
+    terminal = None if outcome is None else {
+        "state": terminal_evidence,
+        "submission_id": outcome["submission_id"],
+        "run_id": outcome["run_id"],
+        "artifact_id": effective_artifact[0],
+        "artifact_digest": effective_artifact[1],
+        "repository_revision": outcome["repository_revision"],
+    }
+    operation = next((attempt for attempt in reversed(attempts)
+                      if attempt["run_id"] is not None), attempts[-1] if attempts else None)
+    run_id = str(outcome["run_id"]) if outcome is not None else (
+        str(operation["run_id"]) if operation is not None and operation["run_id"] is not None
+        else None
+    )
+    leases = _effect_lease_state(connection, run_id)
+    grant_active = parallel_action_admission._target_grant_current(
+        connection, consumer_id=str(intake["producer_id"]), project_id=project_id,
+        repository_id=str(intake["target_repository_id"]),
+    )
+    return {
+        "contract_version": CONTINUATION_EVIDENCE_VERSION,
+        "identity": {
+            "instance_id": instance_id,
+            "project_id": project_id,
+            "mission_id": mission_id,
+            "mission_revision": intake["origin_mission_revision"],
+            "action_id": action_id,
+            "action_revision": intake["action_revision"],
+            "intake_id": intake["intake_id"],
+            "correlation_id": intake["correlation_id"],
+        },
+        "operation": None if operation is None else {
+            "submission_id": operation["submission_id"],
+            "run_id": operation["run_id"],
+            "idempotency_key": operation["idempotency_key"],
+        },
+        "policy": {
+            "digest": intake["policy_digest"],
+            "concurrency_profile": intake["concurrency_profile"],
+        },
+        "terminal_receipt": terminal,
+        "authority": {
+            "consumer_id": intake["producer_id"],
+            "repository_id": intake["target_repository_id"],
+            "repository_grant": "ACTIVE" if grant_active else "UNAVAILABLE",
+            "authenticated_readback_required": True,
+            "authority_contract": "ep-repository-consumer-authority/v1",
+        },
+        "effect_leases": {
+            **leases,
+            "terminal_release_confirmed": bool(
+                terminal_evidence == "VERIFIED" and run_id is not None
+                and leases["ep_effects_released"]
+            ),
+        },
+        "successor": {
+            "selection_authority": "FORGE",
+            "release_authorized": False,
+        },
+        "dispatch_authorized": False,
+    }
 
 
 def _utc(value: object) -> datetime | None:
@@ -264,12 +409,14 @@ def collection_readback(
     graph_id = str(selected["graph_id"])
     action_items = {str(item["action_id"]): item for item in graph["actions"]}
     intakes = connection.execute(
-        """SELECT intake_id,graph_id,project_id,producer_id,mission_id,
-                  action_id,action_revision,intent_id,intent_revision,
-                  correlation_id,idempotency_key,write_scope,policy_digest,
-                  concurrency_profile,target_repository_id,baseline_revision,recorded_at
-             FROM ep_parallel_action_intakes WHERE graph_id=?
-             ORDER BY action_id""", (graph_id,),
+        """SELECT i.intake_id,i.graph_id,i.project_id,i.producer_id,i.mission_id,
+                  i.action_id,i.action_revision,i.intent_id,i.intent_revision,
+                  i.correlation_id,i.idempotency_key,i.write_scope,i.policy_digest,
+                  i.concurrency_profile,i.target_repository_id,i.baseline_revision,
+                  i.recorded_at,g.mission_revision AS origin_mission_revision
+             FROM ep_parallel_action_intakes AS i
+             JOIN ep_parallel_action_graphs AS g ON g.graph_id=i.graph_id
+            WHERE i.graph_id=? ORDER BY i.action_id""", (graph_id,),
     ).fetchall()
     current_by_action: dict[str, sqlite3.Row] = {}
     for row in intakes:
@@ -302,11 +449,14 @@ def collection_readback(
         if accepted is None:
             raise CollectionError("PARALLEL_COLLECTION_IDENTITY_CONFLICT")
         effective = connection.execute(
-            """SELECT intake_id,graph_id,project_id,producer_id,mission_id,
-                      action_id,action_revision,intent_id,intent_revision,
-                      correlation_id,idempotency_key,write_scope,policy_digest,
-                      concurrency_profile,target_repository_id,baseline_revision,recorded_at
-                 FROM ep_parallel_action_intakes WHERE intake_id=?""",
+            """SELECT i.intake_id,i.graph_id,i.project_id,i.producer_id,i.mission_id,
+                      i.action_id,i.action_revision,i.intent_id,i.intent_revision,
+                      i.correlation_id,i.idempotency_key,i.write_scope,i.policy_digest,
+                      i.concurrency_profile,i.target_repository_id,i.baseline_revision,
+                      i.recorded_at,g.mission_revision AS origin_mission_revision
+                 FROM ep_parallel_action_intakes AS i
+                 JOIN ep_parallel_action_graphs AS g ON g.graph_id=i.graph_id
+                WHERE i.intake_id=?""",
             (accepted[0],),
         ).fetchone()
         if (effective is None or effective["project_id"] != project_id
@@ -356,6 +506,12 @@ def collection_readback(
              FROM ep_parallel_action_outcomes AS o
             WHERE o.intake_id IN ({outcome_placeholders})""", intake_ids,
     )} if intake_ids else {}
+    installation = connection.execute(
+        "SELECT value FROM engineering_metadata WHERE key='installation.instance_id'",
+    ).fetchone()
+    if installation is None or not isinstance(installation[0], str) or not installation[0]:
+        raise CollectionError("PARALLEL_COLLECTION_IDENTITY_CONFLICT")
+    instance_id = str(installation[0])
     actions: list[dict[str, object]] = []
     provider_intervals: list[tuple[datetime, datetime, str]] = []
     run_intervals: list[tuple[datetime, datetime, str]] = []
@@ -373,6 +529,7 @@ def collection_readback(
                 "dependencies": item["dependencies"], "state": "NOT_STAGED",
                 "intake_id": None, "attempts": [], "runs": [],
                 "terminal_evidence": "UNAVAILABLE", "decision": None,
+                "continuation_evidence": None,
                 "usage_metrics": _usage_metrics([], "EP_ACTION"),
             })
             continue
@@ -509,6 +666,12 @@ def collection_readback(
             "capacity_state": "HELD" if held else decision.get("capacity_state") if decision else None,
             "terminal_evidence": terminal_evidence,
             "terminal_outcome": dict(outcome) if outcome is not None else None,
+            "continuation_evidence": _continuation_evidence(
+                connection, instance_id=instance_id, project_id=project_id,
+                mission_id=str(selected["mission_id"]),
+                action_id=action_id, intake=intake, attempts=action_attempts, outcome=outcome,
+                terminal_evidence=terminal_evidence,
+            ),
             "usage_metrics": _usage_metrics(action_usage, "EP_ACTION"),
             "execution_first_started_at": action_first.isoformat() if action_first else None,
             "execution_last_observed_at": action_last.isoformat() if action_last else None,
