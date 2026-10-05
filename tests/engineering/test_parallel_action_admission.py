@@ -193,6 +193,50 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             },
         )
 
+    def production_adapter_request(
+        self, action_id: str, staged: dict[str, object], *,
+        contract_version: str = "1.3", extra_constraint: bool = False,
+    ) -> submission_service.SubmissionRequest:
+        """Reproduce the exact constraints authored by Forge's HTTP adapter."""
+        explicit = self.request(action_id, staged)
+        constraints = json.loads(json.dumps(explicit.constraints))
+        constraints.pop("parallel_action_intake")
+        provenance = constraints["forge_execution"]
+        provenance["contract_version"] = contract_version
+        summary = "Execute the bounded staged Action."
+        action_context = {
+            "envelope_version": "1.0", "action_id": action_id,
+            "summary": summary,
+            "summary_digest": submission_service._action_context_digest(summary),
+            "generator": {
+                "id": "forge-redacted-action-summary", "model": "deterministic-template",
+                "version": "1.0", "source_digest": "sha256:" + "a" * 64,
+            },
+        }
+        action_context["envelope_digest"] = submission_service._action_context_digest(
+            action_context)
+        provenance["action_context_envelope"] = action_context
+        if contract_version == "1.3":
+            planning_context = {
+                "envelope_version": "1.0", "mission_id": "mission-test",
+                "mission_revision": "1", "intent_id": "intent-test",
+                "intent_revision": "1", "action_id": action_id,
+                "mission_title": "Bounded fixture Mission",
+                "business_summary": "Deliver the verified fixture outcome.",
+                "engineering_summary": "Exercise the versioned Forge boundary.",
+                "mission_lifecycle": "ACTIVE",
+                "decision_evidence_reference": "architecture-review:fixture",
+                "decision_evidence_reference_digest": submission_service._action_context_digest(
+                    "architecture-review:fixture"),
+            }
+            planning_context["envelope_digest"] = submission_service._action_context_digest(
+                planning_context)
+            provenance["planning_context_envelope"] = planning_context
+        if extra_constraint:
+            constraints["producer_extension"] = {"untrusted": True}
+        return submission_service.SubmissionRequest(
+            **{**explicit.__dict__, "constraints": constraints})
+
     def pa_e3_submissions(self) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
         for repository_id, root in self.repository_roots.items():
             subprocess.run(("git", "-C", str(root), "remote", "add", "origin",
@@ -1283,6 +1327,120 @@ class ParallelActionAdmissionTest(unittest.TestCase):
             with self.assertRaises(submission_service.SubmissionError) as no_principal:
                 submission_service.submit(connection, self.request("ACTION-Q", q))
             self.assertEqual(no_principal.exception.code, "PARALLEL_PRINCIPAL_REQUIRED")
+
+    def test_v13_production_adapter_resolves_one_staged_intake_without_rewriting_payload(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            a = self.stage(connection, "ACTION-A")
+            request = self.production_adapter_request("ACTION-A", a)
+            original_constraints = json.loads(json.dumps(request.constraints))
+            accepted = submission_service.submit(
+                connection, request, authenticated_consumer_id="forge")
+            replay = submission_service.submit(
+                connection, request, authenticated_consumer_id="forge")
+
+            self.assertTrue(replay.duplicate)
+            self.assertEqual(replay.submission_id, accepted.submission_id)
+            self.assertEqual(
+                json.loads(connection.execute(
+                    "SELECT constraints FROM ep_submissions WHERE submission_id=?",
+                    (accepted.submission_id,),
+                ).fetchone()[0]),
+                original_constraints,
+            )
+            self.assertNotIn("parallel_action_intake", original_constraints)
+            self.assertEqual(connection.execute(
+                "SELECT intake_id FROM ep_parallel_action_submission_links WHERE submission_id=?",
+                (accepted.submission_id,),
+            ).fetchone(), (a["intake_id"],))
+            self.assertTrue(admission._stored_submission_matches_intake(
+                connection, intake_id=str(a["intake_id"]),
+                submission_id=accepted.submission_id,
+            ))
+
+            b = self.stage(connection, "ACTION-B")
+            legacy = self.production_adapter_request(
+                "ACTION-B", b, contract_version="1.2")
+            with self.assertRaises(submission_service.SubmissionError) as old_contract:
+                submission_service.submit(
+                    connection, legacy, authenticated_consumer_id="forge")
+            self.assertEqual(old_contract.exception.code, "PARALLEL_INTAKE_MISMATCH")
+
+            extended = self.production_adapter_request(
+                "ACTION-B", b, extra_constraint=True)
+            with self.assertRaises(submission_service.SubmissionError) as extra:
+                submission_service.submit(
+                    connection, extended, authenticated_consumer_id="forge")
+            self.assertEqual(extra.exception.code, "PARALLEL_INTAKE_MISMATCH")
+
+            explicit = submission_service.submit(
+                connection, self.request("ACTION-B", b),
+                authenticated_consumer_id="forge")
+            self.assertEqual(connection.execute(
+                "SELECT intake_id FROM ep_parallel_action_submission_links WHERE submission_id=?",
+                (explicit.submission_id,),
+            ).fetchone(), (b["intake_id"],))
+
+    def test_v13_implicit_intake_binding_fails_closed_on_identity_drift(self) -> None:
+        with sqlite_connection(self.database) as connection:
+            a = self.stage(connection, "ACTION-A")
+            self.stage(connection, "ACTION-B")
+            base = self.production_adapter_request("ACTION-A", a)
+
+            def changed(**fields: object) -> submission_service.SubmissionRequest:
+                constraints = json.loads(json.dumps(base.constraints))
+                provenance = constraints["forge_execution"]
+                if "correlation_id" in fields:
+                    provenance["correlation_id"] = fields["correlation_id"]
+                if "engineering_action_id" in fields:
+                    action_id = fields["engineering_action_id"]
+                    provenance["action_id"] = action_id
+                    action_context = provenance["action_context_envelope"]
+                    action_context["action_id"] = action_id
+                    action_context["envelope_digest"] = submission_service._action_context_digest({
+                        key: value for key, value in action_context.items()
+                        if key != "envelope_digest"
+                    })
+                    planning = provenance["planning_context_envelope"]
+                    planning["action_id"] = action_id
+                    planning["envelope_digest"] = submission_service._action_context_digest({
+                        key: value for key, value in planning.items()
+                        if key != "envelope_digest"
+                    })
+                if "intent_id" in fields:
+                    intent_id = fields.pop("intent_id")
+                    provenance["intent_id"] = intent_id
+                    planning = provenance["planning_context_envelope"]
+                    planning["intent_id"] = intent_id
+                    planning["envelope_digest"] = submission_service._action_context_digest({
+                        key: value for key, value in planning.items()
+                        if key != "envelope_digest"
+                    })
+                if "requested_revision" in fields:
+                    constraints["repository_revision_binding"]["requested_revision"] = (
+                        fields.pop("requested_revision"))
+                request_fields = {**base.__dict__, "constraints": constraints, **fields}
+                return submission_service.SubmissionRequest(**request_fields)
+
+            mismatches = (
+                changed(correlation_id="corr-drift"),
+                changed(engineering_action_id="ACTION-B"),
+                changed(intent_id="intent-drift"),
+                changed(requested_revision="a" * 40),
+            )
+            for request in mismatches:
+                with self.subTest(request=request):
+                    with self.assertRaises(submission_service.SubmissionError) as rejected:
+                        submission_service.submit(
+                            connection, request, authenticated_consumer_id="forge")
+                    self.assertEqual(rejected.exception.code, "PARALLEL_INTAKE_MISMATCH")
+
+            with self.assertRaises(submission_service.SubmissionError) as principal:
+                submission_service.submit(
+                    connection, base, authenticated_consumer_id="different-producer")
+            self.assertEqual(principal.exception.code, "PRODUCER_PRINCIPAL_MISMATCH")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM ep_submissions WHERE mission_id='mission-test'"
+            ).fetchone(), (0,))
 
     def test_graph_cannot_activate_after_unlinked_join_was_admitted(self) -> None:
         fake = {"intake_id": "0" * 64, "snapshot_digest": "sha256:" + "0" * 64}

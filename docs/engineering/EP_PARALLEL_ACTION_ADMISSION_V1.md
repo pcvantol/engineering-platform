@@ -56,8 +56,16 @@ and requested baseline revision. Its constraints also carry:
 }
 ```
 
-The existing authenticated submission route rejects an absent, stripped or
-mismatched intake. A graph cannot be activated after any of its Actions has
+The existing authenticated submission route rejects a mismatched intake. It
+also rejects an absent or stripped intake except for Forge provenance contract
+`1.3` requests containing exactly `forge_execution` and
+`repository_revision_binding`: for that production-adapter shape, EP resolves
+the single exact current staged intake from the authenticated producer,
+Mission revision, Action, intent, idempotency, correlation, repository and
+baseline identities. EP stores and hashes the producer request unchanged; the
+derived intake link is EP-owned admission evidence. Older provenance versions,
+additional constraints and every identity mismatch remain fail closed. A graph
+cannot be activated after any of its Actions has
 already entered the legacy queue without the exact link. Graph revisions,
 Action revisions, idempotency keys and accepted submission links are append
 only; operational reset records retirement tombstones before purging history.
