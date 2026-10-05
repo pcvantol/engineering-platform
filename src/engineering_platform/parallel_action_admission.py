@@ -22,7 +22,10 @@ from .local_repository_binding import (
 from .parallel_action_compat import (
     CompatibilityError, CompatibilityScope, assess_parallel_action_graph,
 )
-from .submission_service import SubmissionRequest, _accepted_request_digest, producer_readback
+from .submission_service import (
+    SubmissionError, SubmissionRequest, _accepted_request_digest,
+    _forge_provenance, producer_readback,
+)
 
 
 READBACK_VERSION = "ep-parallel-action-admission/v1"
@@ -639,8 +642,22 @@ def validate_for_submission(connection: sqlite3.Connection,
         "policy_digest": intake[8],
         "concurrency_profile": intake[9],
     }
+    implicit_production_binding = False
+    if binding is None and set(constraints) == {
+        "forge_execution", "repository_revision_binding",
+    }:
+        try:
+            _forge_provenance(request)
+        except SubmissionError:
+            pass
+        else:
+            implicit_production_binding = (
+                isinstance(provenance, dict)
+                and provenance.get("contract_version") == "1.3"
+            )
     revision_binding = constraints.get("repository_revision_binding")
-    if (binding != expected or request.idempotency_key != intake[1]
+    if ((binding != expected and not implicit_production_binding)
+            or request.idempotency_key != intake[1]
             or request.engineering_action_id != intake[2]
             or request.repository_id != intake[10]
             or request.correlation_id != intake[6]

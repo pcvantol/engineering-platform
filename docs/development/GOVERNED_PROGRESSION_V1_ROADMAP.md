@@ -45,3 +45,9 @@ It joins the existing Action collection, terminal-evidence and repository
 authority contracts and exposes only EP effect-lease release/hold state. This
 subset does not mark full GP-E or GP-Q complete and gives EP no successor or
 review-decision authority.
+
+The GP-E producer boundary also accepts the exact Forge provenance `1.3`
+production-adapter request after EP has staged the corresponding parallel
+Action. EP derives the durable intake link from the complete authenticated
+identity tuple and retains the original producer payload and digest unchanged;
+this compatibility rule does not create dispatch or successor authority.
