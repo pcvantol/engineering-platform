@@ -1,7 +1,7 @@
 # Bounded effect execution and result evidence V1
 
-**Status:** QUALIFIED_ON_MAIN / source and noneditable installed qualification complete.
-**Package:** 2.3.110. **Owner:** LANE_2_WORK, existing EP source writer.
+**Status:** FIE-24 profile readback implemented / qualifying; the 2.3.110 baseline remains qualified.
+**Package:** 2.3.111. **Owner:** LANE_2_WORK, existing EP source writer.
 **Assignment:** `L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006`.
 
 The owner approved this FME runtime extension in the existing Work session.
@@ -12,6 +12,48 @@ closed/unmerged. The r30 dependency/hold dispositions remain applicable. There
 is no new assignment, writer, engine, queue, live EP environment, publication
 canary or public release. The two previously consumed assignment correction
 rounds remain counted; the FME review corrections use the third and final round.
+
+## FIE-24 validation-profile readback follow-up
+
+The [concrete L3 request](https://github.com/pcvantol/forge/issues/142#issuecomment-6018928661)
+identified that result 1.0 omitted the selected validation bindings used by the
+profile digest. The existing r31 assignment and sole writer now publish those
+inputs; execution scope and the three consumed correction rounds are unchanged.
+The [2.3.110 exact-final-main receipt](https://github.com/pcvantol/engineering-platform/pull/341#issuecomment-6019329270)
+remains historical evidence, not qualification of this follow-up.
+
+Effect-result **1.1** and newly materialized terminal evidence **1.6** expose
+`validation_profile`, with strict `effect-validation-profile-v1.schema.json`.
+The object contains exactly `version: "effect-validation@1.0"`, the same
+`subject` as the result, ordered `controls` pairs `[validation_id, authority]`,
+and the exact ordered selected `validation_bindings`. Each binding has
+`validation_id`, `category` and the command argument array `command`. Empty
+bindings are explicit for modes without an owning validator. They are frozen
+checkpoint inputs already bound to the immutable control/review observations;
+readback does not select or execute a new profile.
+
+A consumer computes `sha256:` plus SHA-256 of this whole object serialized as
+ASCII JSON, sorted keys, `ensure_ascii=true`, separators `,`/`:` and no newline.
+It checks the profile subject against the result, the ordered control pairs
+against the required observed controls, and the digest against every control
+and exact-subject review. Omitting bindings, changing their order/content or
+uniformly replacing the advertised digest must not pass. No server-private
+input is needed. Command arguments are inert authenticated evidence, never an
+instruction for the consumer to execute.
+
+The digest algorithm and all existing accepted request/checkpoint/report inputs
+are unchanged. Request and report-envelope contracts remain 1.0. Result 1.0 and
+terminal 1.5 schemas and pinned historical captures remain unchanged. Current
+result readback advertises 1.1; old strict consumers must negotiate that version
+before accepting it. Existing immutable terminal 1.5 artifacts remain readable;
+new terminal materialization uses 1.6. A consumer requiring FIE-24 must reject an
+older artifact without these inputs or join its exact report/subject to the
+authenticated 1.1 result. Non-FME terminal 1.4 is unchanged. NOT_STARTED in result
+1.1 remains explicitly unqualified and contains no fabricated profile.
+
+The same producer/project credential and corruption checks protect these inputs.
+Only the existing supported hermetic validators are covered. No live EP test
+environment, new mode, execution privilege, repair budget or publication is added.
 
 ## Composition and required controls
 
@@ -67,13 +109,14 @@ outputs require `.md`, `.txt`, `.rst`, `.adoc`, `.mmd` or `.puml`. Security stil
 assesses content; a document suffix grants no executable authority.
 
 Scoped authenticated `/v1/producer-compatibility` advertises effect request 1.0,
-effect result 1.0 and terminal evidence 1.5. The legacy public declaration and
-non-FME terminal 1.4 retain compatibility. Four strict schemas ship in the wheel:
+effect result 1.1, validation profile 1.0 and terminal evidence 1.6. The legacy public declaration and
+non-FME terminal 1.4 retain compatibility. Current strict schemas ship in the wheel; prior versioned schemas remain available:
 
 - `schemas/effect-request-v1.schema.json`
 - `schemas/effect-report-envelope-v1.schema.json`
-- `schemas/effect-result-v1.schema.json`
-- `schemas/terminal-evidence-v1.5.schema.json`
+- `schemas/effect-result-v1.1.schema.json`
+- `schemas/effect-validation-profile-v1.schema.json`
+- `schemas/terminal-evidence-v1.6.schema.json`
 
 `GET /v1/projects/{project}/submissions/{submission}/effect-result` returns actual
 report bytes represented by `artifact.content`. The SHA-256 digest covers ASCII
@@ -90,7 +133,7 @@ missing/corrupt result evidence 409; CENTRAL failure 503. Before a transaction
 exists the result is explicitly `NOT_STARTED`. Existing submission readback
 distinguishes in-progress work from missing terminal evidence.
 
-Terminal 1.5 links the same report ID/digest/readback path and embeds the result
+Terminal 1.6 links the same report ID/digest/readback path and embeds the result
 projection without duplicating content. `effect_qualified` requires all selected
 controls and both exact-subject reviews. Evidence-only uses `REPORT_ARTIFACT`,
 source provenance and null candidate/merge/PR. A useful no-change conclusion may

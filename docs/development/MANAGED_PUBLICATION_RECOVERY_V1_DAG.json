@@ -148,6 +148,13 @@
     "fixtures_manifest": "docs/engineering/fixtures/fme-producer-v1/manifest.json",
     "total_assignment_correction_rounds_consumed": 3,
     "l3_execution": "STATEFUL_HTTP_SIMULATOR_ONLY",
-    "scope": "Four existing FME modes with explicit supported/unsupported boundaries; no new assignment, engine or live EP environment."
+    "scope": "Four existing FME modes with explicit supported/unsupported boundaries; no new assignment, engine or live EP environment.",
+    "profile_readback_followup": {
+      "status": "IMPLEMENTED_QUALIFYING",
+      "version": "2.3.111",
+      "request": "https://github.com/pcvantol/forge/issues/142#issuecomment-6018928661",
+      "scope": "Publish the exact immutable selected validation-profile digest inputs through effect-result 1.1 and terminal 1.6; execution unchanged.",
+      "correction_rounds_consumed": 3
+    }
   }
 }

@@ -16,10 +16,16 @@ def required_controls(checkpoint: dict[str, object]) -> tuple[tuple[str, str], .
             + tuple((item["validation_id"], item["category"]) for item in checkpoint["validation_bindings"]))
 
 
+def profile_inputs(checkpoint: dict[str, object], attempt: dict[str, object]) -> dict[str, object]:
+    """The exact immutable digest inputs, suitable for authenticated HTTP readback."""
+    return {"version": "effect-validation@1.0", "subject": subject(checkpoint, attempt),
+            "controls": [list(control) for control in required_controls(checkpoint)],
+            "validation_bindings": [{**binding, "command": list(binding["command"])}
+                                    for binding in checkpoint["validation_bindings"]]}
+
+
 def profile_digest(checkpoint: dict[str, object], attempt: dict[str, object]) -> str:
-    return "sha256:" + digest({"version": "effect-validation@1.0", "subject": subject(checkpoint, attempt),
-                              "controls": required_controls(checkpoint),
-                              "validation_bindings": checkpoint["validation_bindings"]})
+    return "sha256:" + digest(profile_inputs(checkpoint, attempt))
 
 
 def register(database: Path, checkpoint: dict[str, object], path: Path, *, artifact_id: str,
