@@ -1,6 +1,6 @@
 # Bounded effect execution and result evidence V1
 
-**Status:** FIE-24 profile readback implemented / qualifying; the 2.3.110 baseline remains qualified.
+**Status:** QUALIFIED_ON_MAIN / source and noneditable installed profile readback complete.
 **Package:** 2.3.111. **Owner:** LANE_2_WORK, existing EP source writer.
 **Assignment:** `L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006`.
 
@@ -17,8 +17,9 @@ rounds remain counted; the FME review corrections use the third and final round.
 
 The [concrete L3 request](https://github.com/pcvantol/forge/issues/142#issuecomment-6018928661)
 identified that result 1.0 omitted the selected validation bindings used by the
-profile digest. The existing r31 assignment and sole writer now publish those
-inputs; execution scope and the three consumed correction rounds are unchanged.
+profile digest. The existing r31 assignment and sole writer publish those inputs, now qualified
+on protected main2.3.111; execution scope and three consumed correction rounds
+are unchanged.
 The [2.3.110 exact-final-main receipt](https://github.com/pcvantol/engineering-platform/pull/341#issuecomment-6019329270)
 remains historical evidence, not qualification of this follow-up.
 
@@ -54,6 +55,48 @@ authenticated 1.1 result. Non-FME terminal 1.4 is unchanged. NOT_STARTED in resu
 The same producer/project credential and corruption checks protect these inputs.
 Only the existing supported hermetic validators are covered. No live EP test
 environment, new mode, execution privilege, repair budget or publication is added.
+
+## Completed FIE-24 producer delivery
+
+[PR #342](https://github.com/pcvantol/engineering-platform/pull/342) merged normally
+through the configured protected squash route to **`bc2e8d6800cc64ef44990ce9412d6b9c1c8824ff`**, tree
+`df1d8a316cf6bdc6e2e64b6f3afa56ef796747d2`, identical to reviewed candidate
+`c8f3fe1bc63436076d8ee65c20491e2fca1cd48f`.
+[Independent reviews/source qualification](https://github.com/pcvantol/engineering-platform/pull/342#issuecomment-6020297420)
+and [exact protected-main installed receipt](https://github.com/pcvantol/engineering-platform/pull/342#issuecomment-6020710204) bind this completed
+producer boundary.
+
+Source qualification:2,245 discovered,2,243 passed/two existing skips. All19
+changed production files across the approved FME assignment strictly exceed
+80.2% executable-line coverage (minimum83.0488289%); all163 module gates pass,
+aggregate84.87256197%. Normal Linux CI passed2,263 discovered/2,262 passed/one
+existing skip and coverage2,245 discovered/2,244 passed/one existing skip, native
+enforcement, installed matrices, HTTP, four browser shards, localization,
+security/CodeQL and version/projection. Exact-SHA Owner Authorization is the
+supported success/not-required LOW_RISK-or-NORMAL_RISK disposition.
+
+Exact main noneditable Python3.14.8 qualification outside checkout:67tests PASS
+(118.263s),190package files equal to wheel and committed source before/after
+testing,192committed test files verified,15version components PASS and all three
+actual new-process repair recovery boundaries PASS. Each preserves one PR,
+one repair/two attempts/six provider invocations and unchanged target; repeated
+resume completes without replay.
+
+Wheel SHA-256 `4d588b831b0979389ed5238f1b78ee0eff8f487b46f5ee938892cd5127bb643e`;
+sdist SHA-256 `2903afc5959da6c39c4543d526913d039006b28fd92582463df2f3f4066e73a9`.
+The normal documentary finalization is NO_BUMP and carries the further
+exact-final-main installed receipt after its own protected merge.
+
+[Installed1.1/1.6 producer captures](fixtures/fme-producer-v1.1/README.md) supply
+all five supported combinations and five actual errors for L3's stateful HTTP
+simulator. Manifest SHA-256 `4490eb31468028138d4942acda5380464f99fc70cb4666f32278b809a1922896`. It binds the exact protected producer,
+five schemas, five serializer/digest sources and six capture files. Every profile
+independently reconstructs all control/review digests, including nonempty selected
+bindings for BOUNDED_REPOSITORY_CHANGE/GIT. Old captures remain immutable.
+`AVAILABLE_TO_CONSUMER=TRUE` for this qualified boundary; Forge FCI remains L3-owned.
+Actual TDE policy FAIL/repository qualification FAILED remains nonblocking
+NFR-TDE-001, never workflow-derived policy PASS. GP/MPR closure, r30/native holds,
+hermetic validator scope and correction consumption3 remain intact.
 
 ## Composition and required controls
 
@@ -227,7 +270,7 @@ does not alter product permissions; all filesystem/network denial tests remain
 mandatory. The runner setup addresses Ubuntu's
 [AppArmor user-namespace restriction](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007).
 
-## Completed producer delivery — 2026-10-06
+## Previously qualified 2.3.110 producer baseline — 2026-10-06
 
 [PR #340](https://github.com/pcvantol/engineering-platform/pull/340) merged through
 the normal protected route to **`ff2f5072bcf5df7aa2828dde0b2d1b0a6ad32433`**.
@@ -257,7 +300,7 @@ Sdist SHA-256:
 The ordinary documentary finalization is `NO_BUMP`; its PR carries the further
 exact-final-main build/install receipt after its own protected merge.
 
-## L3 HTTP simulator handoff
+## Historical 1.0/1.5 HTTP simulator handoff
 
 [Installed producer captures](fixtures/fme-producer-v1/README.md) are pinned to
 qualified producer `ff2f5072bcf5df7aa2828dde0b2d1b0a6ad32433` / 2.3.110.

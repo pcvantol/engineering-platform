@@ -204,3 +204,12 @@ This does not reopen MPR or replace its historical receipts. Total assignment
 correction consumption is three after the FME extension, without replenishment.
 The GP assignment and PR #175 stay closed. No subsequent Mission, subagent
 programme, release or operational installation is started by this closure.
+
+### FIE-24 profile-input producer completion
+
+The later concrete profile-digest readback request is completed in the same
+r31 assignment at2.3.111. [Protected main installed receipt](https://github.com/pcvantol/engineering-platform/pull/342#issuecomment-6020710204) and
+[actual1.1/1.6 captures](../engineering/fixtures/fme-producer-v1.1/README.md)
+bind exact selected validation inputs for independent consumer reconstruction.
+MPR/GP stay closed; correction consumption3 and r30/native holds are unchanged.
+L3 retains its stateful HTTP simulator and owns Forge FCI completion.
