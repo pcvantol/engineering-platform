@@ -1,0 +1,42 @@
+{
+  "capture_runtime": "noneditable installed wheel outside source checkout; Python 3.14; native Codex 0.160.1",
+  "captures_sha256": {
+    "architecture_design_only-evidence_only.json": "9304dc206d49bfb91c6e7ca77a99e3ca5fd358ec1f9b12956526f5c115a447de",
+    "architecture_design_only-git.json": "74f0531cc6a6e0e802f1aeda72008ddc0b15ca2f7c4aaee9b69c37e7cc087ee3",
+    "bounded_repository_change-git.json": "07f236493e1b75c059676a8424b9faf6d19ecd31bdec7db9cb8544eacb0fd17f",
+    "documentation_only-git.json": "522ab81d3073c921dd074597bb895a976c6118f3daf548942f920bced6640847",
+    "errors.json": "c532baa9a360af883cf5528d66d45b4420d35dc8defa7b73e2860e42d083b96a",
+    "read_only_assessment-evidence_only.json": "a21aa7305f15ef5ff6a8fd253fc2282f998caa30f8720dc72797d66f00726112"
+  },
+  "external_fixtures": [
+    "Codex model/provider response",
+    "Git remote transport",
+    "GitHub API/publication/merge response"
+  ],
+  "producer_source_sha": "ff2f5072bcf5df7aa2828dde0b2d1b0a6ad32433",
+  "producer_version": "2.3.110",
+  "real_services": [
+    "HTTP serializer",
+    "submission",
+    "CENTRAL",
+    "dispatcher",
+    "EngineeringRunner",
+    "native sandbox",
+    "validation",
+    "reviews parser",
+    "managed publication",
+    "result and terminal readback"
+  ],
+  "schema_sha256": {
+    "effect-report-envelope-v1.schema.json": "2477bb1d585be1f35c8acc5332f38280138afd730ee3fb32b6a6b35777881517",
+    "effect-request-v1.schema.json": "c9fdbe6cbadd441a389c388905655c7cb60d4a98c7252417bd9bf985f93968cb",
+    "effect-result-v1.schema.json": "4e9b404475a373e2842537b881e04cf5160b2e466c04a56c0971334425497b5b",
+    "terminal-evidence-v1.5.schema.json": "86cda52608de5be75fa068d561f9088144a534954602dde6fadfead25f2648b3"
+  },
+  "serializer_sha256": {
+    "effect_readback.py": "e95a84688469bd81ca4c303bdcfb13554c60b7351f4e287f776244f1e2c278ca",
+    "server.py": "9dbbaeaab782e47e650b6e41b9e7b4a5a20b6cdec2dc6134a610dd16185a4cb0",
+    "submission_service.py": "92478299874f69079c033787209003d8afc0e6707e96a957c82ea89b587921b1"
+  },
+  "supported_boundary": "Hermetic validators only; full EP/Forge host-loopback validators remain unsupported with network=false."
+}
