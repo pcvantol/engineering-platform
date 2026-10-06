@@ -52,6 +52,12 @@ MANDATORY_FINDING_FIELDS = frozenset({
 MANDATORY_COVERAGE_FIELDS = frozenset({"surface", "status", "evidence_ref"})
 MANDATORY_DISPOSITION_FIELDS = frozenset({"finding_id", "disposition", "evidence_ref"})
 MANDATORY_COVERAGE_SURFACES = {
+    "EFFECT_RESULT": {
+        "quality": ("approved_criteria", "source_evidence", "meaningful_result", "output_scope",
+                    "document_design_content", "validation_controls", "restart_identity"),
+        "security": ("approved_criteria", "source_evidence", "authority_scope", "sensitive_data",
+                     "containment", "artifact_integrity", "restart_identity"),
+    },
     "IMPLEMENTATION": {
         "quality": (
             "approved_criteria", "full_candidate_diff", "callers_and_consumers",

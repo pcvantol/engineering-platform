@@ -1,5 +1,13 @@
 # Execution Host architecture
 
+## Bounded effect execution V1
+
+The authorized [FME extension](BOUNDED_EFFECT_EXECUTION_V1.md) composes explicit
+assessment, documentation, design and bounded repository effects in the existing
+Managed runner. Its report-only subject, native containment, mode controls,
+immutable evidence and recovery semantics are owned there. It adds no engine,
+queue or planning authority; MPR publication remains the Git delivery boundary.
+
 The Execution Host owns the Engineering lifecycle, checkpoints and terminal
 evidence. It does not own platform process execution or dashboard projection.
 

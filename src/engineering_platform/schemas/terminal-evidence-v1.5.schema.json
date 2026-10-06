@@ -1,0 +1,589 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/terminal-evidence-v1.5.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "contract_version",
+    "submission",
+    "producer",
+    "correlation",
+    "provenance",
+    "run",
+    "host_execution",
+    "validation_controls",
+    "repository",
+    "delivery",
+    "report",
+    "references",
+    "assurance",
+    "effect_result"
+  ],
+  "properties": {
+    "artifact_type": {
+      "enum": [
+        "EP_TERMINAL_EVIDENCE"
+      ]
+    },
+    "contract_version": {
+      "enum": [
+        "1.5"
+      ]
+    },
+    "submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "project_id",
+        "repository_id",
+        "accepted_request_digest"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "repository_id": {
+          "type": "string"
+        },
+        "accepted_request_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "correlation_id",
+        "mission_id",
+        "engineering_action_id"
+      ],
+      "properties": {
+        "correlation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mission_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engineering_action_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "id",
+        "outcome",
+        "delivery_qualified",
+        "effect_qualified",
+        "execution_started_at",
+        "execution_completed_at",
+        "execution_duration_ms"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "COMPLETE",
+            "FAILED",
+            "BLOCKED"
+          ]
+        },
+        "delivery_qualified": {
+          "type": "boolean"
+        },
+        "effect_qualified": {
+          "type": "boolean"
+        },
+        "execution_started_at": {
+          "type": "string"
+        },
+        "execution_completed_at": {
+          "type": "string"
+        },
+        "execution_duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "host_execution": {
+      "type": "object"
+    },
+    "validation_controls": {
+      "type": "object"
+    },
+    "repository": {
+      "type": "object"
+    },
+    "delivery": {
+      "type": "object"
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "digest_algorithm",
+        "digest",
+        "content_type",
+        "readback_path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "digest_algorithm": {
+          "enum": [
+            "sha256"
+          ]
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "content_type": {
+          "enum": [
+            "application/json"
+          ]
+        },
+        "readback_path": {
+          "type": "string"
+        }
+      }
+    },
+    "references": {
+      "type": "object"
+    },
+    "assurance": {
+      "type": "object"
+    },
+    "effect_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "outcome",
+        "terminal",
+        "effect_qualified",
+        "subject",
+        "validation_controls",
+        "assurance_reviews",
+        "repair_rounds",
+        "delivery"
+      ],
+      "properties": {
+        "contract_version": {
+          "enum": [
+            "1.0"
+          ]
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "effect_qualified": {
+          "type": "boolean"
+        },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subject_kind",
+            "subject_id",
+            "subject_digest",
+            "source_revision",
+            "source_snapshot_digest",
+            "effect_contract_digest",
+            "criteria_digest",
+            "binding_digest",
+            "repair_ordinal",
+            "candidate_revision"
+          ],
+          "properties": {
+            "subject_kind": {
+              "enum": [
+                "REPORT_ARTIFACT"
+              ]
+            },
+            "subject_id": {
+              "type": "string"
+            },
+            "subject_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "source_revision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "source_snapshot_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "effect_contract_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "criteria_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "binding_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "repair_ordinal": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3
+            },
+            "candidate_revision": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "validation_controls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "validation_id",
+              "authority",
+              "command_id",
+              "started_at",
+              "completed_at",
+              "exit_code",
+              "profile_digest",
+              "status"
+            ],
+            "properties": {
+              "validation_id": {
+                "type": "string"
+              },
+              "authority": {
+                "type": "string"
+              },
+              "command_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "completed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "exit_code": {
+                "type": "integer"
+              },
+              "profile_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "status": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ]
+              }
+            }
+          }
+        },
+        "assurance_reviews": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reviewer",
+              "status",
+              "subject",
+              "profile_digest",
+              "invocation_id",
+              "contract_version",
+              "started_at",
+              "completed_at",
+              "findings",
+              "coverage",
+              "finding_dispositions"
+            ],
+            "properties": {
+              "reviewer": {
+                "enum": [
+                  "quality",
+                  "security"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ]
+              },
+              "subject": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "subject_kind",
+                  "subject_id",
+                  "subject_digest",
+                  "source_revision",
+                  "source_snapshot_digest",
+                  "effect_contract_digest",
+                  "criteria_digest",
+                  "binding_digest",
+                  "repair_ordinal",
+                  "candidate_revision"
+                ],
+                "properties": {
+                  "subject_kind": {
+                    "enum": [
+                      "REPORT_ARTIFACT"
+                    ]
+                  },
+                  "subject_id": {
+                    "type": "string"
+                  },
+                  "subject_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "source_revision": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "source_snapshot_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "effect_contract_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "criteria_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "binding_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "repair_ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3
+                  },
+                  "candidate_revision": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "profile_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "invocation_id": {
+                "type": "string"
+              },
+              "contract_version": {
+                "enum": [
+                  "3.0"
+                ]
+              },
+              "started_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "completed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "coverage": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "surface",
+                    "status",
+                    "evidence_ref"
+                  ],
+                  "properties": {
+                    "surface": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "REVIEWED",
+                        "NOT_APPLICABLE"
+                      ]
+                    },
+                    "evidence_ref": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "finding_dispositions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "finding_id",
+                    "disposition",
+                    "evidence_ref"
+                  ],
+                  "properties": {
+                    "finding_id": {
+                      "type": "string"
+                    },
+                    "disposition": {
+                      "enum": [
+                        "RESOLVED",
+                        "OPEN"
+                      ]
+                    },
+                    "evidence_ref": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "maxItems": 2
+        },
+        "repair_rounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "used",
+            "maximum"
+          ],
+          "properties": {
+            "used": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3
+            },
+            "maximum": {
+              "enum": [
+                3
+              ]
+            }
+          }
+        },
+        "delivery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "revision",
+            "pull_request"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "EVIDENCE_ONLY",
+                "GIT"
+              ]
+            },
+            "revision": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pull_request": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

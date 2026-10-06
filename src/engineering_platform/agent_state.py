@@ -183,6 +183,7 @@ class TransactionState:
     publication_intent: dict[str, object] | None = None
     managed_candidate_adoption: dict[str, object] | None = None
     managed_adoption_actor: str | None = None
+    effect_execution: dict[str, object] | None = None
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -193,6 +194,7 @@ class TransactionState:
         expected = {field.name for field in cls.__dataclass_fields__.values()}
         defaults = {
             "diagnostic": None, "owner_authorized": False, "transaction_kind": "IMPLEMENTATION",
+            "effect_execution": None,
             "execution_mode": "MANAGED", "genesis_repository_path": None, "genesis_commit_sha": None,
             "requested_repository_revision": None, "execution_baseline_sha": None,
             "allowed_baseline_revision": None,
@@ -485,6 +487,14 @@ class TransactionState:
             )
         ):
             raise StateError("checkpoint quality evidence is invalid or unsafe")
+        from .effect_state import validate as validate_effect_state
+        try:
+            validate_effect_state(state.effect_execution)
+            if (state.effect_execution is not None
+                    and state.effect_execution["identity"]["run_id"] != state.run_id):
+                raise ValueError("effect checkpoint run identity mismatch")
+        except ValueError as error:
+            raise StateError(str(error)) from error
         profile_fields = {"version", "digest", "candidate_sha"}
         current_profile_fields = profile_fields | {"criteria_digest"}
         validation_bound_profile_fields = current_profile_fields | {"validation_profile_digest"}
@@ -729,6 +739,12 @@ class StateStore:
                 previous_phase = str(prior[0]) if prior is not None else None
                 previous_intent = json.loads(prior[1]).get("publication_intent") if prior else None
                 prior_adoption = json.loads(prior[1]).get("managed_candidate_adoption") if prior else None
+                from .effect_state import transition as effect_transition
+                try:
+                    effect_transition(json.loads(prior[1]).get("effect_execution") if prior else None,
+                                      state.effect_execution)
+                except ValueError as error:
+                    raise StateError(str(error)) from error
                 if prior_adoption is not None and prior_adoption != state.managed_candidate_adoption:
                     raise StateError("managed candidate adoption cannot be replaced or erased")
                 prior_actor = json.loads(prior[1]).get("managed_adoption_actor") if prior else None

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,21 @@ from .providers import GitProvider
 from .execution_activity import cumulative_activity, live_worktree_snapshot
 
 _REVIEWER_PROJECTION_PHASE = "CAPABILITY_REVIEW"
+_OWNED_OUTPUT: ContextVar[Path | None] = ContextVar("ep_owned_status_output", default=None)
+
+
+@contextmanager
+def owned_output(directory: Path):
+    """Keep bounded-effect operational projections outside the target."""
+    token = _OWNED_OUTPUT.set(directory)
+    try:
+        yield
+    finally:
+        _OWNED_OUTPUT.reset(token)
+
+
+def _directory(root: Path) -> Path:
+    return _OWNED_OUTPUT.get() or root / ".engineering" / "status"
 _GITHUB_ORIGIN = re.compile(
     r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
     r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repository>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"
@@ -57,7 +74,7 @@ def write_live_status(
     transient_action: str | None = None,
 ) -> Path:
     """Atomically publish the advisory current transaction state."""
-    directory = root / ".engineering" / "status"
+    directory = _directory(root)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / "current.json"
     checkout = (
@@ -267,7 +284,7 @@ def print_live_status(root: Path) -> int:
 
 def write_runner_process(root: Path, run_id: str, process: Mapping[str, int] | None) -> None:
     """Atomically record only the Execution Host-owned Codex process group."""
-    directory = root / ".engineering" / "status"
+    directory = _directory(root)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / "runner_process.json"
     if process is None:

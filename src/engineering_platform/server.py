@@ -195,7 +195,9 @@ def _http_json_openapi_document() -> dict[str, object]:
         "correlation_id": {"type": "string"},
         "mission_id": {"type": "string"},
         "engineering_action_id": {"type": "string"},
-        "constraints": {"type": "object", "additionalProperties": True},
+        "constraints": {"type": "object", "additionalProperties": True,
+                        "properties": {"effect_contract": {"type": "object", "description":
+                            "Optional strict ep-effect-request/v1.0 contract; packaged schemas/effect-request-v1.schema.json defines modes, scopes, source revision and criteria. Invalid or unsupported combinations reject before admission."}}},
         "transport_receipt_id": {"type": "string"},
         "transport_received_at": {"type": "string", "format": "date-time"},
     }
@@ -207,6 +209,22 @@ def _http_json_openapi_document() -> dict[str, object]:
             "description": "Canonical authenticated submission ingress and platform health.",
         },
         "paths": {
+            "/v1/projects/{project_id}/submissions/{submission_id}/effect-result": {
+                "get": {
+                    "summary": "Read the producer-bound FME result and exact artifact bytes",
+                    "description": "ep-effect-result/v1.0. Canonical compact sorted ASCII JSON of artifact.content hashes to artifact.digest. Same producer bearer required; terminal COMPLETE alone does not imply effect_qualified.",
+                    "security": [{"consumerBearer": []}],
+                    "parameters": [
+                        {"name": "project_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "submission_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "Exact report or explicit NOT_STARTED"},
+                                  "401": {"description": "Invalid credential"},
+                                  "404": {"description": "No submission for this producer"},
+                                  "409": {"description": "Result or required evidence unavailable or corrupt"},
+                                  "503": {"description": "CENTRAL unavailable"}},
+                },
+            },
             "/v1/producer-compatibility": {
                 "get": {
                     "summary": "Read producer compatibility and optional authenticated consumer binding",
@@ -7322,6 +7340,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "validation_controls": ["1.0", "1.1"],
                         "delivery_revision_validation": ["1.0"],
                         "bounded_merge_delegation": ["1.0"],
+                        "effect_request": ["1.0"], "effect_result": ["1.0"],
+                        "terminal_evidence": [submission_service.TERMINAL_EVIDENCE_CONTRACT_VERSION, "1.5"],
                     }
                     declaration["authentication"] = {
                         "consumer_id": consumer_id,
@@ -7580,6 +7600,27 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except sqlite3.Error:
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"}, cache_control="no-store")
             return
+        effect_readback = re.fullmatch(r"/v1/projects/([^/]+)/submissions/([^/]+)/effect-result", request.path)
+        if effect_readback:
+            from . import effect_readback as effect_result_service
+            project_id, submission_id = effect_readback.groups()
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    consumer = _authenticated_consumer(connection, token, project_id)
+                    if consumer is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"})
+                        return
+                    result = effect_result_service.read(connection, project_id=project_id,
+                        submission_id=submission_id, consumer_id=consumer)
+                self._send(404 if result is None else 200,
+                           {"error": "SUBMISSION_NOT_FOUND"} if result is None else result, cache_control="no-store")
+            except (ValueError, OSError, TypeError, KeyError):
+                self._send(409, {"error": "EFFECT_RESULT_UNAVAILABLE"}, cache_control="no-store")
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"}, cache_control="no-store")
+            return
         readback = re.fullmatch(r"/v1/projects/([^/]+)/submissions/([^/]+)", request.path)
         if readback:
             project_id, submission_id = readback.groups()
@@ -7614,11 +7655,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             token = authorization[7:] if authorization.startswith("Bearer ") else None
             try:
                 with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
-                    if _authenticated_consumer(connection, token, project_id) is None:
+                    consumer = _authenticated_consumer(connection, token, project_id)
+                    if consumer is None:
                         self._send(401, {"error": "UNAUTHENTICATED"})
                         return
                     payload = submission_service.producer_evidence_artifact(
-                        connection, project_id=project_id, artifact_id=artifact_id,
+                        connection, project_id=project_id, artifact_id=artifact_id, consumer_id=consumer,
                     )
                 if payload is None:
                     self._send(404, {"error": "EVIDENCE_ARTIFACT_NOT_FOUND"})

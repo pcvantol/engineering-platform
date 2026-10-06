@@ -3120,6 +3120,15 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         self._dispatch_guard_enforced = True
         objective = prompt_path.read_text(encoding="utf-8")
         state = self.store.load(run_id) if resume else None
+        if self.store.central_database is not None and run_id is not None:
+            accepted_effect = load_submission_for_run(self.root, run_id, central_database=self.store.central_database)
+            constraints = accepted_effect.get("constraints") if isinstance(accepted_effect, dict) else None
+            if isinstance(constraints, dict) and "effect_contract" in constraints:
+                from .effect_execution import run as run_effect_execution
+                return run_effect_execution(self, prompt_path, run_id, accepted_effect,
+                                            resume=resume, owner_authorized=owner_authorized)
+            if state is not None and state.effect_execution is not None:
+                raise RunnerError("Accepted effect authority is unavailable; legacy execution is forbidden.")
         if managed_candidate is not None and not resume and run_id is not None:
             if run_id in self.store.run_ids():
                 raise RunnerError("Managed adoption of an existing run requires explicit resume; budgets cannot be reset.")
@@ -4536,7 +4545,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                     and self.repository.remote_main_contains(self.root, merged.merge_commit)):
                 confirmed = replace(attempted, delegated_merge_actor_reference=current_grant.actor_reference)
                 self.store.save(confirmed)
-                return self._poll(confirmed)
+                return confirmed if confirmed.effect_execution is not None else self._poll(confirmed)
             return self._save_operator_merge_wait(replace(
                 attempted, phase="WAIT_FOR_OPERATOR_MERGE", next_action="verify_delegated_merge_outcome",
                 terminal_condition="delegated_merge_outcome_uncertain",

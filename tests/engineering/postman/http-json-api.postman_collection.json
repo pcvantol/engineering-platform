@@ -33,6 +33,23 @@
       "event": [{"listen": "test", "script": {"exec": ["pm.test('producer compatibility is available', () => pm.response.to.have.status(200));"]}}]
     },
     {
+      "name": "Effect result requires producer credential",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/projects/:project_id/submissions/:submission_id/effect-result"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('effect result requires producer credential', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "Repository authority requires exact headers",
       "request": {"method": "GET", "url": "{{baseUrl}}/v1/projects/:project_id/repositories/:repository_id/consumer-authority"},
       "event": [{"listen": "test", "script": {"exec": ["pm.test('repository authority requires exact headers', () => pm.response.to.have.status(400));"]}}]

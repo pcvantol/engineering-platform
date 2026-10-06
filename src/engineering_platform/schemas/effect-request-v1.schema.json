@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/effect-request-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "mode",
+    "delivery",
+    "source_revision",
+    "read_paths",
+    "write_paths",
+    "criteria"
+  ],
+  "properties": {
+    "contract_version": {
+      "enum": [
+        "1.0"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "READ_ONLY_ASSESSMENT",
+        "DOCUMENTATION_ONLY",
+        "ARCHITECTURE_DESIGN_ONLY",
+        "BOUNDED_REPOSITORY_CHANGE"
+      ]
+    },
+    "delivery": {
+      "enum": [
+        "EVIDENCE_ONLY",
+        "GIT"
+      ]
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "read_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240,
+        "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+      },
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "write_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240,
+        "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+      },
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "description"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 20,
+            "maxLength": 1000
+          }
+        }
+      },
+      "minItems": 1,
+      "maxItems": 16
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "delivery": {
+            "const": "EVIDENCE_ONLY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "READ_ONLY_ASSESSMENT",
+              "ARCHITECTURE_DESIGN_ONLY"
+            ]
+          },
+          "write_paths": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "DOCUMENTATION_ONLY",
+              "ARCHITECTURE_DESIGN_ONLY",
+              "BOUNDED_REPOSITORY_CHANGE"
+            ]
+          },
+          "write_paths": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

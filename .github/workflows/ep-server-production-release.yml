@@ -77,7 +77,11 @@ jobs:
           PY
           )" = "${{ needs.release-context.outputs.version }}"
       - name: Install release qualification tools
-        run: python3 -m pip install build coverage pip-audit 'bandit[toml]' cyclonedx-bom twine
+        run: python3 -m pip install build coverage jsonschema==4.25.1 pip-audit 'bandit[toml]' cyclonedx-bom twine
+      - name: Install integrity-pinned FME sandbox qualification runtime
+        run: |
+          npm ci --ignore-scripts
+          echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Build exact production distributions
         env:
           ENGINEERING_PLATFORM_RELEASE_MODE: production

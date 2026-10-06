@@ -78,6 +78,7 @@ CASES: tuple[Case, ...] = (
     Case("Repository authority requires exact headers", "GET", "/v1/projects/postman-project/repositories/postman-repository/consumer-authority", 400),
     Case("Submission requires credential", "POST", "/v1/projects/postman-project/submissions", 401, "{}"),
     Case("Submission readback requires credential", "GET", "/v1/projects/postman-project/submissions/missing", 401),
+    Case("Effect result requires producer credential", "GET", "/v1/projects/postman-project/submissions/missing/effect-result", 401),
     Case("Evidence artifact requires credential", "GET", "/v1/projects/postman-project/artifacts/terminal-evidence:missing", 401),
     Case("Agent pairing rejects malformed request", "POST", "/v1/agent/pair", 400, "{}"),
     Case("Agent registration requires credential", "POST", "/v1/agent/register", 401, "{}"),

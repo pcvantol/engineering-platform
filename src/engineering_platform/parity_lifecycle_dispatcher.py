@@ -559,7 +559,10 @@ class ParityLifecycleDispatcher:
         """Persist canonical input and run the standalone admission checks."""
         # The preserved host preflight requires the standard runtime layout.
         # Reuse its product bootstrap rather than creating a P-A-specific one.
-        provision_runtime_workspace(repository_root)
+        from .effect_contract import parse as parse_effect_contract
+        effects = parse_effect_contract(candidate.constraints)
+        if effects is None:
+            provision_runtime_workspace(repository_root)
         prompt.write_text(candidate.prompt, encoding="utf-8")
         now = _utcnow()
         canonical_submission_id = record_submission(
@@ -593,6 +596,16 @@ class ParityLifecycleDispatcher:
             fresh_submission=candidate.retry_parent_run_id is None,
             retry_parent_run_id=candidate.retry_parent_run_id, resume_parent_run_id=None, recorded_at=now,
         )
+        if effects is not None:
+            from .effect_execution import preflight as effect_preflight
+            result = effect_preflight(repository_root, central_database.path(candidate.context.data_root), run_id, effects)
+            decision, _ = _record_provider_free_admission(
+                repository_root, run_id=run_id, submission_id=canonical_submission_id,
+                execution_mode=candidate.execution_mode, results=(result,),
+            )
+            if decision != "PASS":
+                raise ParityLifecycleDispatchError("EFFECT_ADMISSION_BLOCKED")
+            return
         host = execute_host_preflight(repository_root, run_id=run_id)
         revision_binding = parse_repository_revision_binding(candidate.constraints)
         workspace = execute_workspace_preflight(
@@ -749,45 +762,46 @@ class ParityLifecycleDispatcher:
                 created_at=_utcnow(), run_id=state.run_id,
                 central_database=central_database.path(data_root), artifact_root=data_root / "artifacts",
             )
-            try:
-                analysis = analyze_terminal_report(
-                    repository_root,
-                    state.run_id,
-                    report,
-                    output_directory=(
-                        data_root / "artifacts" / "report-analysis" / state.run_id / uuid4().hex
-                    ),
-                )
-                artifact_id = f"report-analysis:{state.run_id}:{uuid4().hex}"
-                record_artifact(
-                    repository_root,
-                    analysis,
-                    artifact_id=artifact_id,
-                    artifact_type="ADVISORY_REPORT_ANALYSIS",
-                    content_type="text/markdown",
-                    created_at=_utcnow(),
-                    run_id=state.run_id,
-                    ep_run_id=state.run_id,
-                    central_database=central_database.path(data_root),
-                    artifact_root=data_root / "artifacts",
-                )
-                log_event(
-                    _lifecycle_logger(data_root),
-                    logging.INFO,
-                    "lifecycle_report_analysis_available",
-                    run_id=state.run_id,
-                    context={"artifact_id": artifact_id},
-                )
-            except (EngineeringStorageError, OSError, sqlite3.DatabaseError) as error:
-                # AI analysis is advisory.  An unavailable analysis may never
-                # rewrite an already-terminal Engineering outcome.
-                log_event(
-                    _lifecycle_logger(data_root),
-                    logging.WARNING,
-                    "lifecycle_report_analysis_unavailable",
-                    run_id=state.run_id,
-                    diagnostic=type(error).__name__,
-                )
+            if state.effect_execution is None:
+                try:
+                    analysis = analyze_terminal_report(
+                        repository_root,
+                        state.run_id,
+                        report,
+                        output_directory=(
+                            data_root / "artifacts" / "report-analysis" / state.run_id / uuid4().hex
+                        ),
+                    )
+                    artifact_id = f"report-analysis:{state.run_id}:{uuid4().hex}"
+                    record_artifact(
+                        repository_root,
+                        analysis,
+                        artifact_id=artifact_id,
+                        artifact_type="ADVISORY_REPORT_ANALYSIS",
+                        content_type="text/markdown",
+                        created_at=_utcnow(),
+                        run_id=state.run_id,
+                        ep_run_id=state.run_id,
+                        central_database=central_database.path(data_root),
+                        artifact_root=data_root / "artifacts",
+                    )
+                    log_event(
+                        _lifecycle_logger(data_root),
+                        logging.INFO,
+                        "lifecycle_report_analysis_available",
+                        run_id=state.run_id,
+                        context={"artifact_id": artifact_id},
+                    )
+                except (EngineeringStorageError, OSError, sqlite3.DatabaseError) as error:
+                    # AI analysis is advisory.  An unavailable analysis may never
+                    # rewrite an already-terminal Engineering outcome.
+                    log_event(
+                        _lifecycle_logger(data_root),
+                        logging.WARNING,
+                        "lifecycle_report_analysis_unavailable",
+                        run_id=state.run_id,
+                        diagnostic=type(error).__name__,
+                    )
         # A terminal history row and the producer-facing terminal artifact are
         # independent durable projections.  Reconciliation must repair the
         # latter even when the former was already indexed by an older runtime.
