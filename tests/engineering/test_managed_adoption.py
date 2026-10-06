@@ -148,7 +148,7 @@ class AdoptionLifecycleTests(unittest.TestCase):
                 self.assertEqual(github.creates, 1)
                 self.stop_host(resumed)
 
-    def test_recovered_adopted_repair_consumes_same_reservation_then_qualifies_new_sha(self):
+    def recovered_repair_fixture(self, *, returned_pr=None):
         from engineering_platform.provider_recovery import (
             create_recovery_available, persist_recovery_agent_result, transition_recovery_state,
         )
@@ -171,14 +171,20 @@ class AdoptionLifecycleTests(unittest.TestCase):
         self.git("add", "README.md")
         self.git("commit", "-qm", "same reserved repair")
         repaired = self.git("rev-parse", "HEAD")
-        recovery = create_recovery_available(self.root, run_id="adopt-run", triggering_invocation_id="interrupted-repair",
+        original = runner._persist_provider_invocation(reserved, phase="REPAIR", role="agent")
+        self.assertIsNotNone(original)
+        recovery = create_recovery_available(self.root, run_id="adopt-run", triggering_invocation_id=original,
             lifecycle_phase="REPAIR_AGENT", branch="codex/existing", worktree_identity=str(self.root), lease_id=None,
             central_database=self.database)
         reference = persist_recovery_agent_result(self.root, run_id="adopt-run", invocation_id=recovery["replacement_invocation_id"],
-            result=AgentResult("COMPLETE", "codex/existing", commit_sha=repaired), central_database=self.database,
+            result=AgentResult("COMPLETE", "codex/existing", pull_request=returned_pr, commit_sha=repaired), central_database=self.database,
             artifact_root=self.data / "artifacts")
         self.assertTrue(transition_recovery_state(self.root, run_id="adopt-run", expected="RECOVERY_AVAILABLE", target="RECOVERED",
             result="SUCCESS", result_evidence_ref=reference, central_database=self.database))
+        return agent, github, reserved, repaired
+
+    def test_recovered_adopted_repair_consumes_same_reservation_then_qualifies_new_sha(self):
+        agent, github, reserved, repaired = self.recovered_repair_fixture()
         resumed = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
         self.addCleanup(self.stop_host, resumed)
         after = resumed.run(self.prompt, run_id="adopt-run", resume=True)
@@ -187,6 +193,8 @@ class AdoptionLifecycleTests(unittest.TestCase):
         self.assertEqual(len(after.repair_audit), 1)
         self.assertEqual(after.repair_audit[0]["repair_id"], reserved.repair_audit[0]["repair_id"])
         self.assertEqual(after.repair_audit[0]["commit_sha"], repaired)
+        self.assertTrue(any(item["commit_sha"] == repaired and item["phase"] == "REPAIR_AGENT"
+                            and item["description"] == "pull_request_repair_commit_verified" for item in after.commit_evidence))
         self.assertEqual(after.publication_intent["candidate_sha"], repaired)
         self.assertEqual(after.assurance_profile["candidate_sha"], repaired)
         self.assertEqual(after.managed_candidate_adoption, self.selection)
@@ -207,6 +215,81 @@ class AdoptionLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "project binding is unavailable"):
             verify_selection(selection=selection, state=state, root=self.root, repository=self.repository,
                              central_database=self.database, owner_authorized=True)
+
+    def unbind(self):
+        from engineering_platform.local_repository_binding import unbind_local_repository
+        with sqlite_connection(self.database) as connection:
+            unbind_local_repository(connection, project_id="project", repository_id="repo")
+
+    def test_unbound_prepared_publication_cannot_create(self):
+        agent, github = self.lifecycle_adapters()
+        runner = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        execute = self.transport.execute
+        def interrupted_transport(root, *args):
+            if "ls-remote" in args:
+                raise SystemExit("external Git transport interrupted")
+            return execute(root, *args)
+        with patch.object(self.transport, "execute", side_effect=interrupted_transport):
+            try:
+                with self.assertRaisesRegex(SystemExit, "external Git transport"):
+                    runner.run(self.prompt, run_id="adopt-run", owner_authorized=True, managed_candidate=self.selection)
+            finally:
+                self.stop_host(runner)
+        self.assertEqual(self.store.load("adopt-run").publication_intent["status"], "PREPARED")
+        self.unbind()
+        resumed = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        after = resumed.run(self.prompt, run_id="adopt-run", resume=True)
+        self.assertEqual((after.phase, after.next_action), ("BLOCKED", "managed_candidate_adoption_invalid"))
+        self.assertEqual(github.creates, 0)
+
+    def test_unbound_recovered_repair_with_pr_cannot_revalidate_or_publish(self):
+        agent, github, _, _ = self.recovered_repair_fixture(returned_pr=71)
+        self.unbind()
+        resumed = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        self.addCleanup(self.stop_host, resumed)
+        after = resumed.run(self.prompt, run_id="adopt-run", resume=True)
+        self.assertEqual((after.phase, after.next_action), ("BLOCKED", "managed_candidate_adoption_invalid"))
+        self.assertEqual((len(agent.prompts), github.creates, after.pull_request), (1, 0, None))
+        self.assertFalse(after.assurance_reviews)
+
+    def test_adopted_repair_cannot_bypass_durable_publication_with_provider_pr(self):
+        agent, github, _, _ = self.recovered_repair_fixture(returned_pr=71)
+        resumed = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        self.addCleanup(self.stop_host, resumed)
+        after = resumed.run(self.prompt, run_id="adopt-run", resume=True)
+        self.assertEqual((after.phase, after.next_action), ("BLOCKED", "managed_repair_publication_requires_host"))
+        self.assertEqual((len(agent.prompts), github.creates, after.pull_request), (1, 0, None))
+
+    def test_old_repair_receipt_cannot_redirect_validation_or_the_next_repair_round(self):
+        agent, github, _, repaired = self.recovered_repair_fixture()
+        invoke = agent.invoke
+        def interrupted_validation(root, prompt):
+            self.assertTrue(prompt)
+            if "Local repository validation gate" in prompt:
+                raise SystemExit("external validation provider interrupted")
+            return invoke(root, prompt)
+        resumed = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        with patch.object(agent, "invoke", side_effect=interrupted_validation):
+            try:
+                with self.assertRaisesRegex(SystemExit, "external validation provider"):
+                    resumed.run(self.prompt, run_id="adopt-run", resume=True)
+            finally:
+                self.stop_host(resumed)
+        checkpoint = self.store.load("adopt-run")
+        self.assertEqual((checkpoint.phase, checkpoint.repair_iterations), ("LOCAL_REPOSITORY_VALIDATION", 1))
+        restarted = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        self.addCleanup(self.stop_host, restarted)
+        after = restarted.run(self.prompt, run_id="adopt-run", resume=True)
+        self.assertEqual(after.phase, "WAIT_FOR_OPERATOR_MERGE", after)
+        self.assertEqual(after.publication_intent["candidate_sha"], repaired)
+        self.assertEqual((after.repair_iterations, github.creates), (1, 1))
+        # A later reserved round must invoke its own repair prompt, never
+        # consume the completed earlier replacement merely because phase agrees.
+        with self.assertRaisesRegex(SystemExit, "external provider handoff"):
+            restarted._repair(after, "quality failed. Correct the new bounded finding.")
+        self.assertEqual(self.store.load("adopt-run").repair_iterations, 2)
+        self.assertIn("Repair objective: quality failed.", agent.prompts[-1])
+        self.assertTrue(all(agent.prompts))
 
     def test_typed_owner_adoption_validates_reviews_and_recovers_lost_ack(self):
         selection = self.selection

@@ -53,6 +53,13 @@ reservation before checking the new candidate and repeating current validation
 and both reviews. Historical adoption/publication identities remain attached
 when the run advances to Finalization or Reconciliation; their own recovery
 routes continue without re-entering first implementation publication.
+Each repair and publication continuation re-reads the installation owner and
+canonical project/repository binding. An unbind or authority withdrawal blocks
+before any further validation/review dispatch or publication. An adopted repair
+returns a committed candidate only; a provider-supplied first PR is rejected so
+it cannot bypass the host's current assurance and durable publication boundary.
+Recovered repair results match both the current phase and their original
+provider-invocation repair ordinal; an older receipt cannot drive a later round.
 
 ## Host-owned first publication
 

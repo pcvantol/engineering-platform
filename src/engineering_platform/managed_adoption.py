@@ -51,26 +51,8 @@ def profile_digest(root: Path, candidate_sha: str, repair_ordinal: int) -> str:
     return digest
 
 
-def verify_selection(*, selection: object, state, root: Path, repository, central_database: Path | None,
-                     owner_authorized: bool):
-    """Require actual owner CLI authority, exact local project and run lineage.
-
-    A producer-supplied boolean or prompt cannot select this path. The normal
-    execution-host entrypoint supplies the local owner flag separately, and
-    resumes retain the same immutable selection and the existing run budget.
-    """
-    try:
-        selected = parse_selection(selection)
-    except ValueError as error:
-        raise RunnerError(str(error)) from error
-    previous = state.managed_candidate_adoption
-    if (not owner_authorized or not state.owner_authorized or state.execution_mode != "MANAGED"
-            or state.action_intent != "MUTATING_DELIVERY" or state.transaction_kind != "IMPLEMENTATION"
-            or state.terminal or state.pull_request is not None or state.publication_intent is not None
-            or selected["run_id"] != state.run_id or selected["repository"] != state.repository
-            or (previous is not None and selected != previous)
-            or (previous is None and selected["repair_ordinal"] != state.repair_iterations)):
-        raise RunnerError("Managed adoption authority or run lineage is invalid.")
+def _verify_owner_binding(*, selected, state, root: Path, central_database: Path | None) -> str:
+    """Re-read revocable installation and canonical target authority."""
     if central_database is None or not central_database.is_file():
         raise RunnerError("Managed adoption requires the selected CENTRAL project binding.")
     try:
@@ -102,6 +84,39 @@ def verify_selection(*, selection: object, state, root: Path, repository, centra
         raise RunnerError("Managed adoption project or repository binding differs from the selected checkout.")
     if foreign is not None:
         raise RunnerError("Managed adoption candidate belongs to another run or active writer.")
+    return actor
+
+
+def verify_continuation(*, state, root: Path, central_database: Path | None) -> None:
+    """A durable adoption receipt cannot replace current owner/target authority."""
+    selected = parse_selection(state.managed_candidate_adoption)
+    if (not state.owner_authorized or not state.managed_adoption_actor
+            or selected["run_id"] != state.run_id or selected["repository"] != state.repository):
+        raise RunnerError("Managed adoption continuation authority is invalid.")
+    _verify_owner_binding(selected=selected, state=state, root=root, central_database=central_database)
+
+
+def verify_selection(*, selection: object, state, root: Path, repository, central_database: Path | None,
+                     owner_authorized: bool):
+    """Require actual owner CLI authority, exact local project and run lineage.
+
+    A producer-supplied boolean or prompt cannot select this path. The normal
+    execution-host entrypoint supplies the local owner flag separately, and
+    resumes retain the same immutable selection and the existing run budget.
+    """
+    try:
+        selected = parse_selection(selection)
+    except ValueError as error:
+        raise RunnerError(str(error)) from error
+    previous = state.managed_candidate_adoption
+    if (not owner_authorized or not state.owner_authorized or state.execution_mode != "MANAGED"
+            or state.action_intent != "MUTATING_DELIVERY" or state.transaction_kind != "IMPLEMENTATION"
+            or state.terminal or state.pull_request is not None or state.publication_intent is not None
+            or selected["run_id"] != state.run_id or selected["repository"] != state.repository
+            or (previous is not None and selected != previous)
+            or (previous is None and selected["repair_ordinal"] != state.repair_iterations)):
+        raise RunnerError("Managed adoption authority or run lineage is invalid.")
+    actor = _verify_owner_binding(selected=selected, state=state, root=root, central_database=central_database)
     observed = repository.inspect(root)
     expected_sha = selected["candidate_sha"]
     if previous is not None and state.repair_iterations != selected["repair_ordinal"]:

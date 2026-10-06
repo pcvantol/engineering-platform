@@ -1206,6 +1206,11 @@ class EngineeringRunner:
             return None
         return plan
 
+    def _verify_adoption_continuation(self, state: TransactionState) -> None:
+        if state.managed_candidate_adoption is not None and state.transaction_kind == "IMPLEMENTATION":
+            from .managed_adoption import verify_continuation
+            verify_continuation(state=state, root=self.root, central_database=self.store.central_database)
+
     def _accept_repair_pull_request(
         self, repair: TransactionState, result: AgentResult, plan: dict[str, str],
     ) -> tuple[TransactionState, AgentResult] | TransactionState:
@@ -1248,6 +1253,9 @@ class EngineeringRunner:
             return repair, replace(result, pull_request=int(reserved))
         if result.pull_request is None:
             return repair, result
+        if repair.managed_candidate_adoption is not None:
+            return self._save_terminal(repair, "BLOCKED", "managed_repair_publication_requires_host",
+                                       "An adopted repair may return only its candidate; first publication requires the durable host gate.")
         if plan.get("first_pr_authorized") != "yes":
             return self._save_terminal(repair, "BLOCKED", "repair_scope_intent_missing", "Repair did not have recorded authority to bind a first pull request.")
         # A checkpoint may have crossed the durable first-PR boundary before
@@ -1290,6 +1298,10 @@ class EngineeringRunner:
 
     def _advance_after_repair_agent_result(self, repair: TransactionState, result: AgentResult) -> TransactionState:
         """Revalidate and re-review every repaired candidate before delivery."""
+        try:
+            self._verify_adoption_continuation(repair)
+        except RunnerError as error:
+            return self._save_terminal(repair, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         plan = self._repair_plan(repair)
         if plan is None:
             return self._save_terminal(repair, "BLOCKED", "repair_plan_missing", "Repair result cannot be resumed without its persisted repair plan.")
@@ -1977,6 +1989,26 @@ class EngineeringRunner:
             complete_phase(self.root, parent)
         return result
 
+    def _recovered_result_matches_state(self, state: TransactionState, recovery: object) -> bool:
+        """Bind a recovered result to its actual phase and repair reservation."""
+        if (not isinstance(recovery, dict) or recovery.get("state") != "RECOVERED"
+                or recovery.get("lifecycle_phase") != state.phase
+                or state.next_action == "publish_first_implementation_pull_request"):
+            return False
+        if state.phase == "REPAIR_AGENT":
+            connection = (sqlite3.connect(self.store.central_database) if self.store.central_database else open_storage(self.root))
+            try:
+                row = connection.execute(
+                    "SELECT retry_ordinal FROM provider_invocations WHERE run_id=? AND invocation_id=?",
+                    (state.run_id, recovery.get("triggering_invocation_id")),
+                ).fetchone()
+            finally:
+                connection.close()
+            if row is None or row[0] > state.repair_iterations or self._repair_plan(state) is None:
+                raise RunnerError("Recovered repair lacks its original reservation identity.")
+            return row[0] == state.repair_iterations
+        return True
+
     def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
         """Consume the durable recovery controller around individual attempts.
 
@@ -2029,16 +2061,7 @@ class EngineeringRunner:
                 if isinstance(completed_recovery, dict):
                     self._project_durable_recovery(state, completed_recovery)
                 return result
-            if (
-                isinstance(recovery, dict)
-                and recovery.get("state") == "RECOVERED"
-                and recovery.get("lifecycle_phase") == state.phase
-                # EXECUTE_AGENT contains two distinct product dispatches:
-                # implementation and the later immutable PR publication.
-                # A recovered implementation result (necessarily no PR for
-                # a new run) must never be replayed as publication evidence.
-                and state.next_action != "publish_first_implementation_pull_request"
-            ):
+            if self._recovered_result_matches_state(state, recovery):
                 replacement_id = recovery.get("replacement_invocation_id")
                 if (
                     recovery.get("lifecycle_phase") != state.phase
@@ -2825,6 +2848,10 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         """
         if state.execution_mode == "GENESIS" or state.pull_request or implementation.pull_request:
             return state, implementation
+        try:
+            self._verify_adoption_continuation(state)
+        except RunnerError as error:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error)), implementation
         if not self._current_local_validation_passes(state):
             return self._save_terminal(
                 state, "BLOCKED", "implementation_publication_assurance_required",
@@ -3252,11 +3279,9 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             raise RunnerError("Codex CLI is not installed or invokable")
         self._verify_engineering_platform()
         recovery_snapshot = self._recovery_state(state.run_id)
-        recovered_resume = (
-            isinstance(recovery_snapshot, dict)
-            and recovery_snapshot.get("state") == "RECOVERED"
-            and recovery_snapshot.get("lifecycle_phase") in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT"}
-        )
+        recovered_resume = self._recovered_result_matches_state(state, recovery_snapshot) and state.phase in {
+            "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT",
+        }
         try:
             persisted_submission = load_submission_for_run(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
@@ -3470,7 +3495,13 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             state = self._record_agent_execution_time(state)
             state = self._record_validation_evidence(state, result)
             state = self._record_verified_result_commit(
-                state, result, phase=str(recovery_snapshot["lifecycle_phase"]), description="recovered_agent_commit_verified",
+                state, result, phase=str(recovery_snapshot["lifecycle_phase"]), description={
+                    "EXECUTE_AGENT": "implementation_agent_commit_verified",
+                    "QUALITY_CONTROL_AGENT": "quality_control_commit_verified",
+                    "REPAIR_AGENT": "pull_request_repair_commit_verified",
+                    "FINALIZE_AGENT": "finalization_commit_verified",
+                    "RECONCILE_AGENT": "end_reconciliation_commit_verified",
+                }[str(recovery_snapshot["lifecycle_phase"])],
             )
             return self._advance_after_recovered_provider_result(
                 state, result, evidence, str(recovery_snapshot["lifecycle_phase"]),
@@ -4519,6 +4550,10 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             return None
 
     def _repair(self, state: TransactionState, objective: str) -> TransactionState:
+        try:
+            self._verify_adoption_continuation(state)
+        except RunnerError as error:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         if state.repair_iterations >= MAX_TOTAL_REPAIR_ROUNDS_PER_RUN:
             return self._save_terminal(
                 state, "BLOCKED", "repair_budget_exhausted",
@@ -4550,6 +4585,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             "repair_base": "main",
             "first_pr_authorized": "yes" if (
                 state.pull_request is None and state.owner_authorized
+                and state.managed_candidate_adoption is None
                 and state.transaction_kind == "IMPLEMENTATION" and state.branch not in {None, "main"}
             ) else "no",
         })
@@ -4571,6 +4607,9 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 )
                 + (
                     f"\n\nRepair objective: {objective}"
+                    + ("\nAn adopted candidate repair may commit the bounded changes but must not push or create a pull request; the host publishes after current validation and both reviews."
+                       if state.managed_candidate_adoption is not None and state.pull_request is None else "")
+                    +
                     "\n\nIntegral repair method: resolve every listed open finding as one coherent change. "
                     "Reassess the complete branch against main; trace each changed contract, persistent resource "
                     "and lifecycle state through callers, consumers, startup, shutdown, maintenance, recovery and cleanup. "
