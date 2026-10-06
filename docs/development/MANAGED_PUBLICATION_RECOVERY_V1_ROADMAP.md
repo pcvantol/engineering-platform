@@ -195,8 +195,12 @@ cleaned by the harness; no persistent EP test instance was provisioned.
 merge and exact-main receipt above. This documentary finalization is NO_BUMP.
 
 FIE-10 is the bounded producer compatibility join to L3. This receipt does not
-qualify Forge's complete FCI suite or the separate FME effect/report positives;
-the latter remain unqualified pending the specific execution-scope decision in
-[#142](https://github.com/pcvantol/forge/issues/142#issuecomment-6013598818).
+qualify Forge's complete FCI suite or, by itself, the separate FME effect/report
+positives. The owner subsequently approved that bounded extension under this
+same assignment and source writer. Its separate
+[FME source/main/installed qualification](../engineering/BOUNDED_EFFECT_EXECUTION_V1.md#completed-producer-delivery--2026-10-06)
+and pinned HTTP captures now supply that producer contract at 2.3.110.
+This does not reopen MPR or replace its historical receipts. Total assignment
+correction consumption is three after the FME extension, without replenishment.
 The GP assignment and PR #175 stay closed. No subsequent Mission, subagent
 programme, release or operational installation is started by this closure.

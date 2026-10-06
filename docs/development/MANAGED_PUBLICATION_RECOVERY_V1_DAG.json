@@ -133,5 +133,21 @@
       "disposition": "NONBLOCKING_NFR-TDE-001"
     },
     "finalization_version_effect": "NO_BUMP"
+  },
+  "fme_extension": {
+    "status": "QUALIFIED_ON_MAIN",
+    "assignment": "L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006",
+    "version": "2.3.110",
+    "request": "https://github.com/pcvantol/forge/issues/142#issuecomment-6012266264",
+    "approved_pickup": "https://github.com/pcvantol/forge/issues/142#issuecomment-6014921887",
+    "pull_request": 340,
+    "protected_main": "ff2f5072bcf5df7aa2828dde0b2d1b0a6ad32433",
+    "reviewed_candidate": "cbf76eb1c525fbc9934fa450cca09d9e3f0ceae7",
+    "installed_receipt": "https://github.com/pcvantol/engineering-platform/pull/340#issuecomment-6018236216",
+    "contract": "docs/engineering/BOUNDED_EFFECT_EXECUTION_V1.md",
+    "fixtures_manifest": "docs/engineering/fixtures/fme-producer-v1/manifest.json",
+    "total_assignment_correction_rounds_consumed": 3,
+    "l3_execution": "STATEFUL_HTTP_SIMULATOR_ONLY",
+    "scope": "Four existing FME modes with explicit supported/unsupported boundaries; no new assignment, engine or live EP environment."
   }
 }

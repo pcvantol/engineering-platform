@@ -1,0 +1,32 @@
+{
+  "corrupt_result": {
+    "body": {
+      "error": "EFFECT_RESULT_UNAVAILABLE"
+    },
+    "status": 409
+  },
+  "foreign_producer": {
+    "body": {
+      "error": "SUBMISSION_NOT_FOUND"
+    },
+    "status": 404
+  },
+  "invalid_credential": {
+    "body": {
+      "error": "UNAUTHENTICATED"
+    },
+    "status": 401
+  },
+  "missing_result": {
+    "body": {
+      "error": "EFFECT_RESULT_UNAVAILABLE"
+    },
+    "status": 409
+  },
+  "unsupported_request": {
+    "body": {
+      "error": "INVALID_EFFECT_CONTRACT"
+    },
+    "status": 400
+  }
+}

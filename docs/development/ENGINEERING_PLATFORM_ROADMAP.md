@@ -1,12 +1,14 @@
 # Engineering Platform Roadmap
 
-## Approved FME extension — existing L2 assignment, 2026-10-06
+## Qualified FME extension — existing L2 assignment, 2026-10-06
 
 [Bounded effect execution V1](../engineering/BOUNDED_EFFECT_EXECUTION_V1.md)
 implements useful assessment reports, documentation/design output and explicit
-bounded repository changes in the existing runner. Status is IMPLEMENTED /
-QUALIFYING at 2.3.110; independent review, protected-main and installed evidence
-remain required. This extends the existing r31 source-writer assignment. MPR
+bounded repository changes in the existing runner. Status is QUALIFIED_ON_MAIN
+at 2.3.110, with independent reviews, protected main and exact-main installed
+evidence. The owning contract includes source/schema/digest-pinned HTTP captures
+for L3's simulator and explicit unsupported consumer boundaries.
+This completes the approved extension under the existing r31 assignment. MPR
 and GP remain complete; r30 dependencies/holds and historical #175 stay intact.
 
 ## Progress-aware provider deadlines V2

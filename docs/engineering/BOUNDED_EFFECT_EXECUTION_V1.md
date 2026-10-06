@@ -1,6 +1,6 @@
 # Bounded effect execution and result evidence V1
 
-**Status:** IMPLEMENTED / qualification in progress; main and installed acceptance pending.
+**Status:** QUALIFIED_ON_MAIN / source and noneditable installed qualification complete.
 **Package:** 2.3.110. **Owner:** LANE_2_WORK, existing EP source writer.
 **Assignment:** `L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006`.
 
@@ -184,8 +184,53 @@ does not alter product permissions; all filesystem/network denial tests remain
 mandatory. The runner setup addresses Ubuntu's
 [AppArmor user-namespace restriction](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007).
 
-Complete-suite/module coverage, security, OpenAPI/Postman, independent reviews,
-protected merge and installed-wheel evidence are required before closure.
-L3 continues with its EP-HTTP simulator, without EP imports or a live EP test
-environment. Final main/installed receipts must replace this in-progress status;
-source-only evidence is not installation or publication evidence.
+## Completed producer delivery — 2026-10-06
+
+[PR #340](https://github.com/pcvantol/engineering-platform/pull/340) merged through
+the normal protected route to **`ff2f5072bcf5df7aa2828dde0b2d1b0a6ad32433`**.
+Tree `ca5669c3b7df75e7d19742fee046a494060e94df` is identical to independently
+reviewed candidate `cbf76eb1c525fbc9934fa450cca09d9e3f0ceae7`.
+The [exact-head review and source receipt](https://github.com/pcvantol/engineering-platform/pull/340#issuecomment-6018046195)
+and [protected-main installed receipt](https://github.com/pcvantol/engineering-platform/pull/340#issuecomment-6018236216)
+bind the completed evidence chain.
+
+| Gate | Observed result |
+| --- | --- |
+| Complete local suite, Python 3.14.8 | 2,243 discovered; 2,241 passed, two existing skips |
+| Changed production executable-line coverage | All 19 files strictly >80.2%; minimum 83.0488289% |
+| Existing module coverage contract | All 163 modules >=80.2% combined; minimum 80.3203661%, aggregate 84.8195205% |
+| Independent exact-head Quality and Security | PASS; earlier findings closed, all subsequent platform deltas reviewed; total assignment correction consumption remains three |
+| Hosted Linux qualification | [Run 37474472062](https://github.com/pcvantol/engineering-platform/actions/runs/37474472062) PASS: native containment/admission, 2,261-test suite (2,260 passed/one existing skip), installed matrices, 2,243-test coverage run (2,242 passed/one existing skip), all module gates and 84.79% aggregate |
+| Browser and product gates | Four browser shards, localization, HTTP/OpenAPI/Postman, CodeQL/security, projection/version, Trusted Delivery technical gate and exact-head supported Owner Authorization PASS |
+| Exact-main noneditable wheel | 187 package files byte-equal to wheel and committed source; Python 3.14.8, outside checkout |
+| Exact-main installed FME/MPR | 65 tests PASS; all three actual new-process repair recovery scenarios PASS, one PR/one repair/six provider invocations, unchanged target and idempotent resume |
+| Exact-main version readback | 15 source/installed components agree on 2.3.110 |
+| Actual TDE observation | Assessment FAIL / repository qualification FAILED, coverage unavailable; existing nonblocking NFR-TDE-001, never policy PASS |
+
+Exact implementation-main wheel SHA-256:
+`e2383703217f2071ff55c3ef3661acab6f7d774a7270052c3c7f5e0ce4d5986a`.
+Sdist SHA-256:
+`4961978307648265a3fc0bccf57e69ce792971f3c1421d555f6ea75944d2c178`.
+The ordinary documentary finalization is `NO_BUMP`; its PR carries the further
+exact-final-main build/install receipt after its own protected merge.
+
+## L3 HTTP simulator handoff
+
+[Installed producer captures](fixtures/fme-producer-v1/README.md) are pinned to
+qualified producer `ff2f5072bcf5df7aa2828dde0b2d1b0a6ad32433` / 2.3.110.
+The manifest contains exact schema, serializer and capture SHA-256 digests.
+The five supported mode/delivery combinations contain actual request,
+acceptance, NOT_STARTED, qualified report and terminal1.5 responses. Git cases
+also retain an unqualified pre-merge response. Actual errors include invalid
+credentials, foreign producer, unsupported request and corrupt/missing report.
+The captures label the external provider/Git/GitHub fixtures explicitly; EP's
+HTTP serializer, CENTRAL, dispatcher, runner, controls, native sandbox,
+publication persistence and readback are real installed services.
+
+`AVAILABLE_TO_CONSUMER=TRUE` for this bounded producer contract. L3 retains its
+stateful EP HTTP simulator and independently qualifies Forge's intake,
+observation and completion behavior. This producer delivery does not claim
+Forge's whole FCI suite is complete and requires no EP import or live instance.
+The supported and unsupported boundaries above remain part of the contract.
+GP, MPR, historical #175 and r30/native hold dispositions remain unchanged;
+closure starts no new Mission, public release or operational installation.
