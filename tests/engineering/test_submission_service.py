@@ -214,7 +214,7 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         return payload
 
     def test_identity_readback_recovers_one_accepted_forge_submission_without_reposting(self) -> None:
-        payload = self.forge_payload("lost-ack")
+        payload = self.forge_planning_context_payload("lost-ack")
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             forge_credential = submission_service.issue_consumer_credential(
                 connection, consumer_id="forge", project_id="djconnect",
