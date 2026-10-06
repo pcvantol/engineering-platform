@@ -110,7 +110,7 @@ def main():
         subprocess.run([str(python), "-m", "pip", "install", "--no-deps", str(wheel)], check=True)
         runner = work / "runner"
         (runner / "tests/engineering").mkdir(parents=True)
-        for relative in ("tests/__init__.py", "tests/engineering/__init__.py", "tests/engineering/harness_isolation.py",
+        for relative in ("tests/engineering/__init__.py", "tests/engineering/harness_isolation.py",
                          "tests/engineering/test_execution_host.py", "tests/engineering/test_managed_adoption.py",
                          "tests/engineering/test_managed_publication.py", "tests/engineering/mpr_process_worker.py"):
             shutil.copy2(source / relative, runner / relative)
