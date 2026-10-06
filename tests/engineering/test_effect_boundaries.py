@@ -27,6 +27,47 @@ from tests.engineering import test_effect_execution as fixtures
 class EffectControlTests(unittest.TestCase):
     setUp = fixtures.EffectWorkspaceTests.setUp
 
+    def test_native_runtime_grants_only_the_reexecuted_file(self):
+        package = self.base / "node_modules/@openai/codex"
+        (package / "bin").mkdir(parents=True)
+        launcher = package / "bin/codex.js"
+        launcher.write_text("// qualified npm layout fixture\n")
+        selected = self.base / "selected-codex"
+        selected.symlink_to(launcher)
+        platforms = (("Linux", "x86_64", "linux-x64", "x86_64-unknown-linux-musl"),
+                     ("Linux", "aarch64", "linux-arm64", "aarch64-unknown-linux-musl"),
+                     ("Darwin", "x86_64", "darwin-x64", "x86_64-apple-darwin"),
+                     ("Darwin", "arm64", "darwin-arm64", "aarch64-apple-darwin"))
+        for system, machine, name, triple in platforms:
+            for bundled in (False, True):
+                installation = package if bundled else package.parent / ("codex-" + name)
+                binary = installation / "vendor" / triple / "bin/codex"
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.write_text("#!/bin/sh\nexit 0\n")
+                binary.chmod(0o700)
+                with self.subTest(system=system, machine=machine, bundled=bundled), \
+                        patch.object(workspace.platform, "system", return_value=system), \
+                        patch.object(workspace.platform, "machine", return_value=machine):
+                    import tomllib
+                    options = workspace.sandbox_options(self.target, runtime=selected)
+                    grants = tomllib.loads(options[1])["permissions"]["ep-effects"]["filesystem"]
+                    self.assertEqual(grants[str(binary)], "read")
+                    for directory in (binary.parent, installation, package.parent, self.base):
+                        self.assertNotIn(str(directory), grants)
+                    self.assertNotIn(str(launcher), grants)
+                binary.unlink()
+        with patch.object(workspace.platform, "system", return_value="unsupported"):
+            with self.assertRaisesRegex(contract.EffectContractError, "RUNTIME_UNAVAILABLE"):
+                workspace.native_runtime_file(selected)
+        with self.assertRaises(FileNotFoundError):
+            workspace.native_runtime_file(selected)
+        direct = self.base / "native-codex"
+        direct.write_text("fixture")
+        with self.assertRaisesRegex(contract.EffectContractError, "RUNTIME_UNAVAILABLE"):
+            workspace.native_runtime_file(direct)
+        direct.chmod(0o700)
+        self.assertEqual(workspace.native_runtime_file(direct), direct)
+
     def envelope(self):
         source = self.base / "input"
         effects = effect(source_revision=self.revision)

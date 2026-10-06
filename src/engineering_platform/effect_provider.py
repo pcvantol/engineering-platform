@@ -42,7 +42,9 @@ def policy(client: object, root: Path) -> tuple[str, ...]:
         raise EffectContractError("EFFECT_TOOL_POLICY_UNAVAILABLE") from error
     # A fresh profile name cannot inherit a user's same-named profile roots.
     name = "ep-effects-" + uuid.uuid4().hex
-    options = tuple(item.replace("ep-effects", name) for item in sandbox_options(root))
+    installation = getattr(client.provider, "managed_installation_path", lambda: None)()
+    runtime = Path(installation) / "bin" / "codex" if installation is not None else None
+    options = tuple(item.replace("ep-effects", name) for item in sandbox_options(root, runtime=runtime))
     result = ("--strict-config", "-c", f'default_permissions="{name}"', *options,
               "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
               "-c", "orchestrator.mcp.enabled=false", "-c", "cloud.skills.enabled=false",

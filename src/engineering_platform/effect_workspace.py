@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shlex
 import shutil
 import signal
@@ -186,8 +187,34 @@ def verify_snapshot(root: Path, manifest: dict[str, str]) -> None:
         raise EffectContractError("EFFECT_SNAPSHOT_SCOPE_CHANGED")
 
 
+def native_runtime_file(launcher: Path) -> Path:
+    """Grant one executable, including the qualified npm launcher's native child.
+
+    Linux re-executes this binary inside its mount namespace. Granting the
+    launcher or its containing installation would either miss that child or
+    expose unrelated files. Unknown npm layouts remain unavailable.
+    """
+    binary = launcher.resolve(strict=True)
+    if binary.name == "codex.js":
+        target = {
+            ("Linux", "x86_64"): ("linux-x64", "x86_64-unknown-linux-musl"),
+            ("Linux", "aarch64"): ("linux-arm64", "aarch64-unknown-linux-musl"),
+            ("Darwin", "x86_64"): ("darwin-x64", "x86_64-apple-darwin"),
+            ("Darwin", "arm64"): ("darwin-arm64", "aarch64-apple-darwin"),
+        }.get((platform.system(), platform.machine()))
+        if target is None or binary.parent.name != "bin" or binary.parent.parent.name != "codex":
+            raise EffectContractError("EFFECT_SANDBOX_RUNTIME_UNAVAILABLE")
+        package = binary.parent.parent
+        split = package.parent / ("codex-" + target[0]) / "vendor" / target[1] / "bin" / "codex"
+        bundled = package / "vendor" / target[1] / "bin" / "codex"
+        binary = (split if split.is_file() else bundled).resolve(strict=True)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise EffectContractError("EFFECT_SANDBOX_RUNTIME_UNAVAILABLE")
+    return binary
+
+
 def sandbox_options(root: Path, *, scratch: Path | None = None,
-                    readable: tuple[Path, ...] = ()) -> tuple[str, ...]:
+                    readable: tuple[Path, ...] = (), runtime: Path | None = None) -> tuple[str, ...]:
     disposable = scratch is not None and root.resolve().is_relative_to(scratch.resolve())
     filesystem = {":minimal": "read", str(root.resolve()): "write" if disposable else "read"}
     # The selected installed Python runtime may live outside OS runtime roots.
@@ -198,6 +225,8 @@ def sandbox_options(root: Path, *, scratch: Path | None = None,
         filesystem[str(scratch.resolve())] = "write"
     for path in readable:
         filesystem[str(path.resolve())] = "read"
+    if runtime is not None:
+        filesystem[str(native_runtime_file(runtime))] = "read"
     entries = ",".join(f"{json.dumps(key)}={json.dumps(value)}" for key, value in filesystem.items())
     return ("-c", f"permissions.ep-effects.filesystem={{{entries}}}",
             "-c", "permissions.ep-effects.network.enabled=false")
@@ -218,7 +247,8 @@ def sandbox_command(root: Path, command: tuple[str, ...], *, scratch: Path | Non
     if executable < len(command) and command[executable] == sys.executable:
         command = (*command[:executable], str(Path(sys.executable).resolve()), *command[executable + 1:])
     name = "ep-effects-" + uuid.uuid4().hex
-    options = tuple(item.replace("ep-effects", name) for item in sandbox_options(root, scratch=scratch, readable=readable))
+    options = tuple(item.replace("ep-effects", name) for item in sandbox_options(
+        root, scratch=scratch, readable=readable, runtime=Path(binary)))
     return (binary, "sandbox", "-P", name, *options,
             "-C", str(root), "--", *command)
 

@@ -162,7 +162,7 @@ class EffectWorkspaceTests(unittest.TestCase):
 for path in sys.argv[1:]:
     try:
         with open(path, 'w') as handle: handle.write('forbidden')
-    except PermissionError: pass
+    except (PermissionError, FileNotFoundError): pass
     else: raise SystemExit('write was allowed')
 try:
     socket.create_connection(('127.0.0.1', 1), timeout=1)

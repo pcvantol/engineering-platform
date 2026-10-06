@@ -102,7 +102,7 @@ def preflight(root: Path, database: Path, run_id: str, effects: dict[str, object
     probe_code = """import errno, os, socket, sys
 try:
     descriptor = os.open(sys.argv[1], os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-except PermissionError:
+except (PermissionError, FileNotFoundError):
     pass
 else:
     os.close(descriptor)

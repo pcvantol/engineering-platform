@@ -119,6 +119,12 @@ are disabled. The host provider may contact its model; tools cannot. Admission
 runs a real negative sandbox probe. Unavailable enforcement has no permissive
 fallback.
 
+The native runtime executable receives an exact-file read grant, including the
+qualified npm launcher's platform binary. Linux requires that binary for its
+in-sandbox re-execution. Installation directories and sibling files receive no
+grant. Outside-scope paths may be hidden by Linux mount isolation or denied by
+macOS; both prevent access, and the network probe still requires sandbox denial.
+
 Validators execute real sandbox children with owned candidate/result reads,
 private scratch writes and no inherited credentials or ambient Git/Python
 configuration. On macOS the selected interpreter's resolved binary avoids a
