@@ -39,7 +39,8 @@ scope header remains the side-effect-free `v1.0` declaration.
 The authenticated `v1.1` declaration also lists
 `contracts.validation_controls: ["1.0", "1.1"]` and
 `contracts.delivery_revision_validation: ["1.0"]`, plus
-`contracts.bounded_merge_delegation: ["1.0"]`. These declare that this
+`contracts.bounded_merge_delegation: ["1.0"]` and
+`contracts.submission_identity_readback: ["1.0"]`. These declare that this
 installed host can publish canonical control receipts and run required controls
 on the final delivered revision. The public `v1.0` declaration keeps its
 historical exact shape.
@@ -83,6 +84,54 @@ SUBMISSION_NOT_FOUND` when the submission is absent from that exact project.
 The latter intentionally includes cross-project identities.  The endpoint
 never reads a Forge checkout, browser session, Console HTML, logs, or consumer
 storage.
+
+## Lost acknowledgement recovery by durable submission identity
+
+An HTTP client that sent a Forge submission but lost the response has no
+`submission_id`. Its supported no-create recovery route is:
+
+```http
+GET /v1/projects/{project_id}/submissions/by-identity
+Authorization: Bearer <the same EP-issued consumer credential>
+EP-Submission-Identity-Contract: 1.0
+EP-Producer-Readback-Contract: 1.3
+EP-Repository-ID: <exact accepted repository_id>
+EP-Correlation-ID: <exact accepted correlation_id>
+Idempotency-Key: <exact accepted idempotency_key>
+EP-Accepted-Request-Digest: sha256:<64 lowercase hex>
+```
+
+The authenticated consumer must equal the accepted submission's producer ID.
+All six identity headers are required. EP looks up the one project/key binding,
+then checks consumer, repository, correlation, HTTP Forge provenance and both
+the immutable acceptance receipt and current producer readback against the
+request digest. It returns `contract_version: "1.0"`, the bound `identity`,
+original `receipt`, and the selected existing v1.2/v1.3 `readback`. The latter
+contains the recovered submission ID and, once claimed, the existing run and
+terminal-evidence references. Readback performs no new POST, queue admission,
+provider invocation, or repair-budget transition. A second process may use the
+same request and receive the same result.
+
+The caller computes `EP-Accepted-Request-Digest` from its original normalized
+accepted request: SHA-256 of UTF-8 JSON with sorted object keys, compact
+separators, Unicode preserved, and exactly one final newline. The JSON object
+has keys `repository_id`, `producer` (`id`, `type`, `version`), `prompt_digest`
+(lowercase SHA-256 hex of the normalized prompt), `constraints`,
+`correlation_id`, `mission_id`, and `engineering_action_id`. Project,
+idempotency key and transport metadata are separately bound by the lookup and
+are not members of this digest. Normalized prompt line endings are LF. The
+response's receipt and readback must both repeat the computed digest exactly.
+
+An absent key or another producer's row returns `404
+SUBMISSION_IDENTITY_NOT_FOUND`. A matching key with wrong repository,
+correlation, request digest, non-HTTP/non-Forge provenance or missing retained
+receipt returns `409 SUBMISSION_IDENTITY_CONFLICT`; multiple rows return `409
+SUBMISSION_IDENTITY_AMBIGUOUS`. An unsupported identity or producer-readback
+version returns `409 SUBMISSION_IDENTITY_CONTRACT_UNSUPPORTED`. An incomplete
+header set returns `400 SUBMISSION_IDENTITY_REQUEST_INCOMPLETE`, a malformed
+digest returns `400 SUBMISSION_IDENTITY_DIGEST_INVALID`, an invalid bearer
+returns `401 UNAUTHENTICATED`, and unavailable CENTRAL returns `503
+CENTRAL_UNAVAILABLE`. The route sets `Cache-Control: no-store`.
 
 ## Response identity and evidence
 

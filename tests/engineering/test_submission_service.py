@@ -213,6 +213,124 @@ class CanonicalSubmissionServiceTest(unittest.TestCase):
         })
         return payload
 
+    def test_identity_readback_recovers_one_accepted_forge_submission_without_reposting(self) -> None:
+        payload = self.forge_payload("lost-ack")
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            forge_credential = submission_service.issue_consumer_credential(
+                connection, consumer_id="forge", project_id="djconnect",
+            )["credential"]
+            foreign_credential = submission_service.issue_consumer_credential(
+                connection, consumer_id="other-producer", project_id="djconnect",
+            )["credential"]
+        server.start(self.root)
+        endpoint = f"http://127.0.0.1:{self.port}/v1/projects/djconnect/submissions"
+        with urlopen(Request(
+            endpoint, data=json.dumps(payload).encode(), method="POST",
+            headers={"Authorization": f"Bearer {forge_credential}", "Content-Type": "application/json"},
+        )) as response:  # nosec B310
+            accepted = json.load(response)
+        # A lost HTTP acknowledgement leaves the caller with only its durable
+        # request identity. The test deliberately discards the submission ID
+        # until the identity readback returns it.
+        digest = accepted["receipt"]["accepted_request_digest"]
+        readback_url = endpoint + "/by-identity"
+        headers = {
+            "Authorization": f"Bearer {forge_credential}",
+            "EP-Submission-Identity-Contract": "1.0",
+            "EP-Producer-Readback-Contract": "1.3",
+            "EP-Repository-ID": "djconnect",
+            "EP-Correlation-ID": payload["correlation_id"],
+            "Idempotency-Key": payload["idempotency_key"],
+            "EP-Accepted-Request-Digest": digest,
+        }
+
+        def read(request_headers: dict[str, str]) -> tuple[int, dict[str, object]]:
+            try:
+                with urlopen(Request(readback_url, headers=request_headers)) as response:  # nosec B310
+                    return response.status, json.load(response)
+            except HTTPError as error:
+                with error:
+                    return error.code, json.load(error)
+
+        status, recovered = read(headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(recovered["contract_version"], "1.0")
+        self.assertEqual(recovered["receipt"], accepted["receipt"])
+        self.assertEqual(recovered["readback"]["contract_version"], "1.3")
+        self.assertEqual(recovered["readback"]["submission"]["id"], accepted["submission_id"])
+        self.assertEqual(recovered["readback"]["submission"]["accepted_request_digest"], digest)
+        self.assertIsNone(recovered["readback"]["run"])
+        for changed, expected_status, expected_error in (
+            ({"Authorization": f"Bearer {foreign_credential}"}, 404, "SUBMISSION_IDENTITY_NOT_FOUND"),
+            ({"EP-Repository-ID": "wrong-repository"}, 409, "SUBMISSION_IDENTITY_CONFLICT"),
+            ({"EP-Correlation-ID": "wrong-correlation"}, 409, "SUBMISSION_IDENTITY_CONFLICT"),
+            ({"EP-Accepted-Request-Digest": "sha256:" + "0" * 64}, 409, "SUBMISSION_IDENTITY_CONFLICT"),
+            ({"Idempotency-Key": "missing"}, 404, "SUBMISSION_IDENTITY_NOT_FOUND"),
+            ({"EP-Producer-Readback-Contract": "1.4"}, 409, "SUBMISSION_IDENTITY_CONTRACT_UNSUPPORTED"),
+            ({"EP-Submission-Identity-Contract": "2.0"}, 409, "SUBMISSION_IDENTITY_CONTRACT_UNSUPPORTED"),
+            ({"EP-Accepted-Request-Digest": "not-a-digest"}, 400, "SUBMISSION_IDENTITY_DIGEST_INVALID"),
+        ):
+            self.assertEqual(read({**headers, **changed}), (expected_status, {"error": expected_error}))
+        self.assertEqual(read({**headers, "Authorization": "Bearer wrong"}), (401, {"error": "UNAUTHENTICATED"}))
+        without_key = dict(headers)
+        del without_key["Idempotency-Key"]
+        self.assertEqual(read(without_key), (400, {"error": "SUBMISSION_IDENTITY_REQUEST_INCOMPLETE"}))
+        server.stop(self.root)
+        server.start(self.root)
+        self.assertEqual(read(headers), (200, recovered))
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM ep_submissions").fetchone()[0], 1)
+
+    def test_identity_readback_fails_closed_on_ambiguous_or_missing_receipt(self) -> None:
+        database = self.root / server.SERVER_DATABASE_FILENAME
+        with sqlite_connection(database) as connection:
+            first = submission_service.submit(
+                connection,
+                submission_service.request_from_mapping("djconnect", self.forge_payload("first"), transport="HTTP"),
+                authenticated_consumer_id="forge",
+            )
+            second = submission_service.submit(
+                connection,
+                submission_service.request_from_mapping("djconnect", self.forge_payload("second"), transport="HTTP"),
+                authenticated_consumer_id="forge",
+            )
+            query = {
+                "project_id": "djconnect", "consumer_id": "forge",
+                "repository_id": "djconnect", "correlation_id": "forge-correlation-first",
+                "idempotency_key": "first",
+                "accepted_request_digest": first.receipt["accepted_request_digest"],
+                "contract_version": "1.0", "readback_version": "1.3",
+            }
+            legacy_payload = self.forge_payload("legacy")
+            legacy_provenance = legacy_payload["constraints"]["forge_execution"]
+            legacy_provenance["contract_version"] = "1.0"
+            del legacy_provenance["producer_contract_version"]
+            del legacy_provenance["forge_application_version"]
+            legacy = submission_service.submit(
+                connection,
+                submission_service.request_from_mapping("djconnect", legacy_payload, transport="HTTP"),
+                authenticated_consumer_id="forge",
+            )
+            self.assertIsNone(legacy.receipt)
+            legacy_readback = submission_service.producer_readback(
+                connection, project_id="djconnect", submission_id=legacy.submission_id,
+            )
+            with self.assertRaisesRegex(submission_service.SubmissionError, "SUBMISSION_IDENTITY_CONFLICT"):
+                submission_service.producer_readback_by_identity(connection, **{
+                    **query, "correlation_id": "forge-correlation-legacy",
+                    "idempotency_key": "legacy",
+                    "accepted_request_digest": legacy_readback["submission"]["accepted_request_digest"],
+                })
+            connection.execute("SAVEPOINT identity_ambiguity_fixture")
+            try:
+                connection.execute("DROP INDEX ep_submissions_idempotency_lookup")
+                connection.execute("UPDATE ep_submissions SET idempotency_key='first' WHERE submission_id=?", (second.submission_id,))
+                with self.assertRaisesRegex(submission_service.SubmissionError, "SUBMISSION_IDENTITY_AMBIGUOUS"):
+                    submission_service.producer_readback_by_identity(connection, **query)
+            finally:
+                connection.execute("ROLLBACK TO identity_ambiguity_fixture")
+                connection.execute("RELEASE identity_ambiguity_fixture")
+
     def forge_action_context_payload(self, key: str = "forge-action-context") -> dict[str, object]:
         payload = self.forge_payload(key)
         provenance = payload["constraints"]["forge_execution"]  # type: ignore[index]

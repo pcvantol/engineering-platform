@@ -769,6 +769,7 @@ def issue_development_consumer_credential(
 
 
 PRODUCER_READBACK_CONTRACT_VERSION = "1.2"
+SUBMISSION_IDENTITY_READBACK_CONTRACT_VERSION = "1.0"
 TERMINAL_EVIDENCE_CONTRACT_VERSION = "1.4"
 _TERMINAL_OUTCOMES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
@@ -1673,6 +1674,70 @@ def producer_readback(
         },
         "provenance": {"status": provenance_status, "forge_execution": constraints.get("forge_execution")},
         "disposition": disposition, "run": run, "result": result, "evidence": evidence,
+    }
+
+
+def producer_readback_by_identity(
+    connection: sqlite3.Connection, *, project_id: str, consumer_id: str,
+    repository_id: str, correlation_id: str, idempotency_key: str,
+    accepted_request_digest: str, contract_version: str,
+    readback_version: str,
+) -> dict[str, object]:
+    """Recover one accepted Forge POST through its original durable identity.
+
+    This is an observational lookup.  The caller must already hold the exact
+    consumer, project, repository, correlation, idempotency and request-digest
+    identity; no submission or lifecycle transition is performed here.
+    """
+    if contract_version != SUBMISSION_IDENTITY_READBACK_CONTRACT_VERSION or readback_version not in {"1.2", "1.3"}:
+        raise SubmissionError("SUBMISSION_IDENTITY_CONTRACT_UNSUPPORTED", 409)
+    for field, value in (
+        ("project_id", project_id), ("consumer_id", consumer_id),
+        ("repository_id", repository_id), ("correlation_id", correlation_id),
+        ("idempotency_key", idempotency_key),
+    ):
+        _token(value, field)
+    if not isinstance(accepted_request_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", accepted_request_digest) is None:
+        raise SubmissionError("SUBMISSION_IDENTITY_DIGEST_INVALID", 400)
+    rows = connection.execute(
+        """SELECT submission_id,repository_id,producer_id,producer_type,transport,correlation_id
+             FROM ep_submissions WHERE project_id=? AND idempotency_key=? LIMIT 2""",
+        (project_id, idempotency_key),
+    ).fetchall()
+    if not rows:
+        raise SubmissionError("SUBMISSION_IDENTITY_NOT_FOUND", 404)
+    if len(rows) != 1:
+        raise SubmissionError("SUBMISSION_IDENTITY_AMBIGUOUS", 409)
+    submission_id, stored_repository, producer_id, producer_type, transport, stored_correlation = rows[0]
+    # The bearer-derived consumer is authoritative. A project peer cannot use
+    # a guessed idempotency key to discover another producer's submission.
+    if producer_id != consumer_id:
+        raise SubmissionError("SUBMISSION_IDENTITY_NOT_FOUND", 404)
+    if (stored_repository != repository_id or stored_correlation != correlation_id
+            or producer_type != "FORGE" or transport != "HTTP"):
+        raise SubmissionError("SUBMISSION_IDENTITY_CONFLICT", 409)
+    receipt = _forge_submission_receipt(
+        connection, project_id=project_id, submission_id=str(submission_id),
+    )
+    projection = producer_readback(
+        connection, project_id=project_id, submission_id=str(submission_id),
+        contract_version=readback_version,
+    )
+    if (receipt is None or projection is None
+            or receipt.get("accepted_request_digest") != accepted_request_digest
+            or projection["submission"].get("accepted_request_digest") != accepted_request_digest
+            or projection["producer"].get("id") != consumer_id
+            or projection["correlation"].get("correlation_id") != correlation_id):
+        raise SubmissionError("SUBMISSION_IDENTITY_CONFLICT", 409)
+    return {
+        "contract_version": SUBMISSION_IDENTITY_READBACK_CONTRACT_VERSION,
+        "identity": {
+            "project_id": project_id, "repository_id": repository_id,
+            "consumer_id": consumer_id, "correlation_id": correlation_id,
+            "accepted_request_digest": accepted_request_digest,
+        },
+        "receipt": receipt,
+        "readback": projection,
     }
 
 

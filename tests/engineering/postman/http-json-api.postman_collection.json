@@ -88,6 +88,14 @@
         "url": "{{baseUrl}}/v1/projects/:project_id/submissions/:submission_id"
       },
       "event": [{"listen": "test", "script": {"exec": ["pm.test('credential is required', () => pm.response.to.have.status(401));"]}}]
+    },
+    {
+      "name": "Submission identity recovery rejects missing credential",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/projects/:project_id/submissions/by-identity"
+      },
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('identity recovery requires a credential', () => pm.response.to.have.status(401));"]}}]
     }
   ]
 }
