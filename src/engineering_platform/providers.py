@@ -567,7 +567,13 @@ class GitProvider(LocalProcessProvider):
     """Local Git provider, deliberately separate from the GitHub API provider."""
 
     def execute(self, root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-        return super().execute(root, args)
+        # Observations must neither refresh an index, invoke a configured
+        # fsmonitor, fetch promised objects nor reinterpret exact object IDs.
+        # Explicit fetch/push and mandatory Git locks retain their semantics.
+        if args and args[0] == "git":
+            args = ("git", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false", *args[1:])
+        return super().execute(root, args, environment=os.environ | {
+            "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"})
 
     def command(self, root: Path, *args: str) -> str:
         """Run Git and expose its bounded text result to repository orchestration."""

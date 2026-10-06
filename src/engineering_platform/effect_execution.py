@@ -21,6 +21,8 @@ from . import effect_evidence, effect_provider, effect_state, effect_validation,
 from .agent_state import TransactionState, verified_commit_evidence_record
 from .capability_review import ReviewerSelection, mandatory_assessment, mandatory_coverage_surfaces
 from .execution_lease import LeaseHeartbeat, acquire, reconcile_stale, release
+from .execution_errors import RunnerError
+from .execution_models import AgentResult
 from .execution_repository import SubprocessRepositoryClient
 from .live_status import owned_output, write_live_status
 from .managed_publication import PublicationRecovery, publish_candidate
@@ -185,15 +187,19 @@ def _load_result(directory: Path, state: TransactionState) -> dict[str, object]:
 def _candidate(directory: Path, root: Path, state: TransactionState, result: dict[str, object]) -> tuple[Path, str]:
     attempt = state.effect_execution["attempts"][-1]
     destination = directory / f"delivery-{attempt['ordinal']}"
-    branch = f"codex/effect-{state.run_id}-{attempt['ordinal']}"
+    branch = (state.publication_intent["branch"] if state.publication_intent is not None
+              else f"codex/effect-{state.run_id}-{attempt['ordinal']}")
     revision = state.effect_execution["contract"]["source_revision"]
+    previous = state.effect_execution["attempts"][-2] if state.publication_intent and attempt["ordinal"] else None
+    parent = previous["candidate_sha"] if previous else revision
+    clone_source = directory / f"delivery-{previous['ordinal']}" if previous else root
     if not destination.exists():
-        workspace.git(directory, "clone", "--no-local", "--no-hardlinks", "--no-checkout", "--", str(root), str(destination))
+        workspace.git(directory, "clone", "--no-local", "--no-hardlinks", "--no-checkout", "--", str(clone_source), str(destination))
         workspace.git(destination, "config", "core.hooksPath", "/dev/null")
         workspace.git(destination, "config", "user.name", "Engineering Platform")
         workspace.git(destination, "config", "user.email", "engineering-platform@users.noreply.github.com")
         workspace.git(destination, "remote", "set-url", "origin", f"https://github.com/{state.repository}.git")
-        workspace.git(destination, "checkout", "-b", branch, revision)
+        workspace.git(destination, "checkout", "-B", branch, revision)
         for item in result["files"]:
             workspace.write_file(destination, item["path"], item["content"].encode("utf-8"))
             blob = workspace.git(destination, "hash-object", "-w", "--stdin", input_bytes=item["content"].encode()).decode().strip()
@@ -201,7 +207,7 @@ def _candidate(directory: Path, root: Path, state: TransactionState, result: dic
         tree = workspace.git(destination, "write-tree").decode().strip()
         if tree == workspace.git(destination, "rev-parse", f"{revision}^{{tree}}").decode().strip():
             raise contract.EffectContractError("EFFECT_GIT_OUTPUT_UNCHANGED")
-        commit = workspace.git(destination, "commit-tree", tree, "-p", revision,
+        commit = workspace.git(destination, "commit-tree", tree, "-p", parent,
                                input_bytes=f"Bounded effect result for {state.run_id}\n".encode()).decode().strip()
         workspace.git(destination, "update-ref", f"refs/heads/{branch}", commit, revision)
     evidence = SubprocessRepositoryClient().inspect(destination)
@@ -268,8 +274,14 @@ def _controls(host, state, directory, delivery):
         scratch.mkdir(mode=0o700, exist_ok=True)
         environment = workspace.child_environment() | {
             "PYTHONPATH": os.pathsep.join((str(package), *site.getsitepackages())), "TMPDIR": str(scratch)}
+        baseline = None
+        if authority != "host_control":
+            cwd, baseline = workspace.validation_copy(cwd, scratch)
+            environment["PATH"] = str(scratch / "bin") + os.pathsep + environment["PATH"]
         exit_code = workspace.run_control(workspace.sandbox_command(cwd, command, scratch=scratch, readable=(directory, package)),
                                           environment)
+        if baseline is not None and not workspace.validation_unchanged(cwd, baseline):
+            exit_code = 125
         ended = now()
         record_validation_command_terminal(host.root, run_id=state.run_id, command_id=command_id, completed_at=ended,
             exit_code=exit_code, central_database=host.store.central_database)
@@ -375,6 +387,7 @@ def _execute(host, state, directory, prompt_path, accepted):
                 "objective": prompt_path.read_text(), "effect_contract": effects, "binding": checkpoint["identity"],
                 "source_manifest": checkpoint["manifest"], "prior_reviews": [item["reviews"] for item in prior],
                 "prior_controls": [item["controls"] for item in prior],
+                "repair_context": list(state.repair_audit),
             })
             _provider_receipt(host, state, "implementation", invocation, attempt["started_at"], ordinal * 3 + 1)
             result = contract.validate_result(effects, result, set(checkpoint["manifest"]))
@@ -392,7 +405,15 @@ def _execute(host, state, directory, prompt_path, accepted):
         if effects["delivery"] == "GIT":
             delivery, sha = _candidate(directory, host.root, state, envelope["result"])
             state = _update_attempt(host, state, candidate_sha=sha)
-            state = _save(host, state, branch=f"codex/effect-{state.run_id}-{state.repair_iterations}", implementation_head_sha=sha)
+            branch = (state.publication_intent["branch"] if state.publication_intent is not None
+                      else f"codex/effect-{state.run_id}-{state.repair_iterations}")
+            state = _save(host, state, branch=branch, implementation_head_sha=sha)
+        if state.repair_audit and state.repair_audit[-1]["outcome"] == "planned":
+            plan = state.repair_audit[-1]
+            state = host._record_repair_audit(state, failed_checks=plan["failed_checks"], objective=plan["proposed_action"],
+                result=AgentResult("COMPLETE", commit_sha=state.effect_execution["attempts"][-1]["candidate_sha"],
+                                   diagnostic=envelope["result"]["summary"]), outcome="submitted_for_recheck")
+            state = _save(host, state)
         state = _save(host, state, phase="LOCAL_REPOSITORY_VALIDATION", next_action="validate_effect_result")
         state, profile_digest = _controls(host, state, directory, delivery)
         state = _reviews(host, state, directory, envelope, profile_digest, options)
@@ -400,16 +421,31 @@ def _execute(host, state, directory, prompt_path, accepted):
         effect_evidence.verify(host.store.central_database, state.effect_execution, directory)
         passed = effect_evidence.qualified(state.effect_execution)
         if not passed:
-            if state.repair_iterations >= 3:
-                return _save(host, state, phase="FAILED", terminal=True, next_action="effect_repair_budget_exhausted")
-            state = _save(host, state, repair_iterations=state.repair_iterations + 1, phase="REPAIR_AGENT", next_action="repair_bounded_effects")
+            origin = next((item["reviewer"] for item in attempt["reviews"] if item["status"] != "PASS"), "validation")
+            state = _repair(host, state, origin, "Required effect controls or independent review failed.")
+            if state.terminal:
+                return state
             continue
         binding(host.store.central_database, host.root, state.run_id, effects)
         _load_result(directory, state)
         if effects["delivery"] == "EVIDENCE_ONLY":
             return _save(host, state, phase="COMPLETE", terminal=True, next_action="effect_report_qualified",
                          terminal_condition="effect_report_qualified")
-        return _publish(host, state, directory, delivery, profile_digest)
+        state = _publish(host, state, directory, delivery, profile_digest)
+        if state.phase != "REPAIR_AGENT":
+            return state
+
+
+def _repair(host, state, origin, objective):
+    if state.repair_iterations >= 3:
+        return _save(host, state, phase="FAILED", terminal=True, next_action="effect_repair_budget_exhausted")
+    state = replace(state, repair_iterations=state.repair_iterations + 1)
+    state = host._record_repair_audit(state, failed_checks=objective, objective=objective, result=None, outcome="planned")
+    record = {**state.repair_audit[-1], "repair_id": f"repair:{state.run_id}:{state.repair_iterations}",
+              "origin": origin, "input_candidate_sha": state.effect_execution["attempts"][-1]["candidate_sha"] or "not_recorded",
+              "dispatch_id": f"{state.run_id}:effect:{state.repair_iterations}"}
+    return _save(host, state, repair_audit=(*state.repair_audit[:-1], record),
+                 phase="REPAIR_AGENT", next_action="repair_bounded_effects")
 
 
 def _reviews(host, state, directory, envelope, profile_digest, options):
@@ -454,9 +490,11 @@ def _reviews(host, state, directory, envelope, profile_digest, options):
         _load_result(directory, state)
         assessment = mandatory_assessment(observed, delivery_role="EFFECT_RESULT", prior_finding_ids=prior_ids)
         findings, coverage, dispositions = assessment or ((), (), ())
-        normalized = [{**finding, "fingerprint": contract.digest(finding), "blocking": True,
-                       "disposition": "OPEN"} for finding in findings]
-        passed = (assessment is not None and not findings
+        normalized = [{**finding, "fingerprint": contract.digest(finding),
+                       "blocking": finding["severity"] in {"HIGH", "CRITICAL"},
+                       "disposition": "OPEN" if finding["severity"] in {"HIGH", "CRITICAL"} else "NON_BLOCKING"}
+                      for finding in findings]
+        passed = (assessment is not None and not any(item["blocking"] for item in normalized)
                   and all(item["disposition"] == "RESOLVED" for item in dispositions)
                   and all(item["status"] == "REVIEWED" and item["evidence_ref"].startswith(subject["subject_digest"])
                           for item in coverage))
@@ -495,6 +533,20 @@ def _publish(host, state, directory, delivery, profile_digest):
         state = _save(host, state, pull_request=number, implementation_pull_request=number,
                       implementation_branch=state.branch, phase="WAIT_FOR_OPERATOR_MERGE", next_action="wait_for_protected_merge")
     observed = host.github.pull_request(state.pull_request)
+    if (observed.state == "OPEN" and observed.head_sha != attempt["candidate_sha"]
+            and observed.head_branch == state.branch and observed.base_branch == "main"
+            and observed.head_sha in {item["input_candidate_sha"] for item in state.repair_audit
+                                      if item.get("origin") == "hosted"}):
+        try:
+            host.repository.publish_candidate_branch(delivery, state.repository, state.branch, attempt["candidate_sha"],
+                                                     expected_previous_sha=observed.head_sha)
+        except RunnerError:
+            # An acknowledgement can be lost after a successful compare-and-set.
+            # Readback is authoritative; the same expected-old lease is safe on resume.
+            observed = host.github.pull_request(state.pull_request)
+            if observed.head_sha != attempt["candidate_sha"]:
+                return _save(host, state, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="verify_effect_repair_publication")
+        observed = host.github.pull_request(state.pull_request)
     if (observed.head_sha != attempt["candidate_sha"] or observed.head_branch != state.branch
             or observed.base_branch != "main"):
         raise contract.EffectContractError("EFFECT_PUBLICATION_IDENTITY_CHANGED")
@@ -502,7 +554,9 @@ def _publish(host, state, directory, delivery, profile_digest):
         if observed.is_draft:
             host.github.ready(state.pull_request)
             observed = host.github.pull_request(state.pull_request)
-        delegated = host._attempt_delegated_merge(state, observed)
+        if observed.checks_terminal and not observed.checks_passed:
+            return _repair(host, state, "hosted", "Required hosted checks failed: " + ", ".join(observed.failed_checks))
+        delegated = host._attempt_delegated_merge(state, observed, delivery_root=delivery)
         if delegated is not None:
             state = delegated
             observed = host.github.pull_request(state.pull_request)

@@ -6,6 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import site
 import sys
 from urllib.parse import unquote, urlsplit
 
@@ -31,14 +32,27 @@ def repository_command(root: Path) -> tuple[str, ...]:
     try:
         raw = json.loads((root / ".engineering-platform/repository.json").read_text())
         validation = raw["validation"]
-        if validation["kind"] != "command" or not isinstance(validation["entrypoint"], str):
+        if validation["kind"] not in {"command", "script"} or not isinstance(validation["entrypoint"], str):
             raise ValueError("invalid validation")
         command = shlex.split(validation["entrypoint"])
         if not command or any(token in {";", "&&", "||", "|", ">", "<"} for token in command):
             raise ValueError("invalid command")
+        assignments = []
+        while command and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", command[0], re.DOTALL):
+            assignment = command.pop(0)
+            key, value = assignment.split("=", 1)
+            if key == "PYTHONPATH":
+                # Preserve the owning source selection and the selected
+                # runtime's dependencies when its resolved binary is used.
+                value = ":".join((value, *site.getsitepackages()))
+            elif key in {"PATH", "HOME", "TMPDIR"} or key.startswith(("GIT_", "CODEX_", "LD_", "DYLD_")):
+                raise ValueError("validation cannot replace host isolation settings")
+            assignments.append(key + "=" + value)
+        if not command:
+            raise ValueError("validation executable is missing")
         if command[0] in {"python", "python3"}:
             command[0] = sys.executable
-        return tuple(command)
+        return tuple((["/usr/bin/env", *assignments] if assignments else []) + command)
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise EffectContractError("EFFECT_REQUIRED_VALIDATION_UNAVAILABLE") from error
 

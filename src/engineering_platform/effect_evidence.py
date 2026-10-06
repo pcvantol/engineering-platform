@@ -121,7 +121,9 @@ def verify(database: Path, checkpoint: dict[str, object], directory: Path) -> No
                              for prior in previous["reviews"] if prior["reviewer"] == role
                              for finding in prior["findings"] if finding["blocking"]}
                 surfaces = mandatory_coverage_surfaces(role, "EFFECT_RESULT")
-                if (review["findings"] or len(review["coverage"]) != len(surfaces)
+                if (any(item.get("blocking") is not False or item.get("severity") not in {"LOW", "MEDIUM"}
+                        or item.get("disposition") != "NON_BLOCKING" for item in review["findings"])
+                        or len(review["coverage"]) != len(surfaces)
                         or {item.get("surface") for item in review["coverage"]} != set(surfaces)
                         or any(item.get("status") != "REVIEWED" or not str(item.get("evidence_ref", "")).startswith(
                             expected_subject["subject_digest"]) for item in review["coverage"])

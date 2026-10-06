@@ -10,7 +10,8 @@ bind that approval to the [Forge contract request](https://github.com/pcvantol/f
 MPR remains completed at 2.3.109, GP remains closed, and historical #175 remains
 closed/unmerged. The r30 dependency/hold dispositions remain applicable. There
 is no new assignment, writer, engine, queue, live EP environment, publication
-canary or public release. The two consumed assignment correction rounds remain.
+canary or public release. The two previously consumed assignment correction
+rounds remain counted; the FME review corrections use the third and final round.
 
 ## Composition and required controls
 
@@ -26,7 +27,7 @@ fall back to it.
 | `READ_ONLY_ASSESSMENT` | `EVIDENCE_ONLY`, explicit empty writes | Source binding, result integrity, scope containment, source-backed criterion report |
 | `DOCUMENTATION_ONLY` | Approved document paths, `GIT` | Four report controls plus document content, local links and schema |
 | `ARCHITECTURE_DESIGN_ONLY` | Explicit `EVIDENCE_ONLY` or `GIT` | Document controls plus alternatives, boundaries, decision and open questions |
-| `BOUNDED_REPOSITORY_CHANGE` | Explicit ordinary file scope, `GIT` | Four report controls plus the repository's committed command validator |
+| `BOUNDED_REPOSITORY_CHANGE` | Explicit ordinary file scope, `GIT` | Four report controls plus the repository's committed command/script validator |
 
 Docs/design do not acquire an arbitrary application build requirement. An
 explicit existing registry profile adds its complete controls, frozen before
@@ -34,6 +35,20 @@ execution. Proposed configuration cannot weaken that baseline. Evidence-only
 with an explicit repository profile, additional post-merge control tokens, and
 parallel-Action/Genesis composition are unsupported in V1 and reject explicitly.
 Skipped, unavailable or failed required controls cannot become PASS.
+
+Owning command environment assignments and script entrypoints are interpreted
+as arguments without a shell wrapper. Validators receive a disposable copy
+for temporary build/test outputs; original files and Git metadata in that copy
+must still match afterwards, while the delivery candidate remains read-only.
+The owning declaration cannot override host isolation or Git safety settings.
+The selected Python runtime supplies script launchers and dependency paths.
+
+**Supported boundary:** hermetic consumer validators are qualified. The current
+full EP and Forge validators include host-loopback HTTP tests; their complete
+execution is unsupported by this no-network validator profile. Those controls
+fail rather than being skipped or replaced by a weaker profile. This document
+does not qualify those default validators as executable FME consumers. A future
+isolated loopback capability requires its own implementation and qualification.
 
 ## Public producer contracts
 
@@ -88,7 +103,10 @@ simulator cannot invent fields or turn an unsupported contract into success.
 The provider receives only approved committed regular files in a private
 snapshot outside the target. Git metadata, untracked/ignored files and links
 are excluded. Source is bounded to 8 MiB total and 1 MiB/file; output JSON to
-1 MiB. Detectable token formats, credential assignments/URLs and private keys
+1 MiB. Blob sizes are checked before reading their bodies. Git observations
+disable replacement objects, lazy fetch, fsmonitor and automatic index refresh;
+missing promised objects block without contacting a remote or writing target
+metadata. Detectable token formats, credential assignments/URLs and private keys
 reject before persistence. Scoped reads and mandatory Security review remain
 necessary: this is not a universal secret detector.
 
@@ -123,7 +141,11 @@ For Git output, only the host applies proposals in its owned checkout. It checks
 exact paths/bytes, creates a commit without hooks/filters, validates and reviews,
 then uses MPR publication. Uncertain publication performs exact readback before
 any retry. Existing protected merge/delegation gates apply, followed by verified
-main ancestry and merged bytes. Finalization cannot silently invoke a provider
+main ancestry and merged bytes in the owned delivery checkout. Failed hosted
+checks consume the same persisted repair budget and advance the same PR through
+an exact expected-head lease. Lost acknowledgements recover by readback; the
+initial immutable MPR publication intent is retained. Non-blocking review
+observations retain their disposition. Finalization cannot silently invoke a provider
 with broader effects.
 
 ## Recovery and qualification
@@ -136,12 +158,18 @@ run; prior blockers need explicit dispositions. A start without durable result
 blocks as uncertain instead of replaying. Completed resume verifies evidence
 without invoking providers. Forge owns any successor or approved scope change.
 
-The owning tests are `test_effect_execution`, `test_effect_boundaries` and
-`test_effect_recovery`. They use actual HTTP, CENTRAL, dispatcher, runner, Git
+The owning tests are `test_effect_execution`, `test_effect_boundaries`,
+`test_effect_recovery` and `test_effect_integration`. They use actual HTTP, CENTRAL, dispatcher, runner, Git
 objects, controls, sandbox and new processes. Only external provider/GitHub
 transports are fixtures. A separate real-CLI test replaces only model HTTP and
 attempts forbidden tool reads/writes/network/escalation with dangerous inherited
 user configuration. Required native enforcement is not skipped into PASS.
+
+Disposable GitHub-hosted Linux qualification enables user-namespace creation
+before the native sandbox starts. The setup script refuses other hosts and
+does not alter product permissions; all filesystem/network denial tests remain
+mandatory. The runner setup addresses Ubuntu's
+[AppArmor user-namespace restriction](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007).
 
 Complete-suite/module coverage, security, OpenAPI/Postman, independent reviews,
 protected merge and installed-wheel evidence are required before closure.

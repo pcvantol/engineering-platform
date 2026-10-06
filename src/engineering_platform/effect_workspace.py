@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import stat
@@ -20,12 +21,17 @@ def child_environment() -> dict[str, str]:
     return {"PATH": os.defpath + ":/opt/homebrew/bin:/usr/local/bin",
             "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
-            "GIT_OPTIONAL_LOCKS": "0", "PYTHONDONTWRITEBYTECODE": "1"}
+            "GIT_CONFIG_COUNT": "3", "GIT_CONFIG_KEY_0": "diff.autoRefreshIndex", "GIT_CONFIG_VALUE_0": "false",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor", "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "core.hooksPath", "GIT_CONFIG_VALUE_2": "/dev/null",
+            "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1", "PYTHONDONTWRITEBYTECODE": "1"}
 
 
 def git(root: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     completed = subprocess.run(
         ("git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+         "-c", "diff.autoRefreshIndex=false",
          "-c", "protocol.ext.allow=never", *args), cwd=root, input=input_bytes,
         env=child_environment(), capture_output=True, timeout=120, check=False,
     )
@@ -145,9 +151,12 @@ def snapshot(target: Path, destination: Path, contract: dict[str, object]) -> di
         mode, kind, object_id = metadata.decode("ascii").split()
         if kind != "blob" or mode != "100644" or path.casefold() in seen:
             raise EffectContractError("UNSAFE_EFFECT_SOURCE")
+        size = int(git(target, "cat-file", "-s", object_id).decode("ascii").strip())
+        if size < 0 or size > 1_048_576 or total + size > 8_388_608:
+            raise EffectContractError("EFFECT_SOURCE_LIMIT")
         content = git(target, "cat-file", "blob", object_id)
-        total += len(content)
-        if total > 8_388_608 or len(content) > 1_048_576 or b"\x00" in content:
+        total += size
+        if len(content) != size or b"\x00" in content:
             raise EffectContractError("EFFECT_SOURCE_LIMIT")
         require_redacted(content.decode("utf-8"))
         write_file(destination, path, content)
@@ -179,7 +188,8 @@ def verify_snapshot(root: Path, manifest: dict[str, str]) -> None:
 
 def sandbox_options(root: Path, *, scratch: Path | None = None,
                     readable: tuple[Path, ...] = ()) -> tuple[str, ...]:
-    filesystem = {":minimal": "read", str(root.resolve()): "read"}
+    disposable = scratch is not None and root.resolve().is_relative_to(scratch.resolve())
+    filesystem = {":minimal": "read", str(root.resolve()): "write" if disposable else "read"}
     # The selected installed Python runtime may live outside OS runtime roots.
     for prefix in {sys.base_prefix, sys.prefix}:
         filesystem[str(Path(prefix).absolute())] = "read"
@@ -200,12 +210,53 @@ def sandbox_command(root: Path, command: tuple[str, ...], *, scratch: Path | Non
         raise EffectContractError("EFFECT_SANDBOX_UNAVAILABLE")
     # Execute the granted runtime directly; a venv symlink chain can traverse
     # ungranted intermediate installation paths even when its target is safe.
-    if command and command[0] == sys.executable:
-        command = (str(Path(sys.executable).resolve()), *command[1:])
+    executable = 0
+    if command and command[0] == "/usr/bin/env":
+        executable = 1
+        while executable < len(command) and "=" in command[executable]:
+            executable += 1
+    if executable < len(command) and command[executable] == sys.executable:
+        command = (*command[:executable], str(Path(sys.executable).resolve()), *command[executable + 1:])
     name = "ep-effects-" + uuid.uuid4().hex
     options = tuple(item.replace("ep-effects", name) for item in sandbox_options(root, scratch=scratch, readable=readable))
     return (binary, "sandbox", "-P", name, *options,
             "-C", str(root), "--", *command)
+
+
+def validation_copy(delivery: Path, scratch: Path) -> tuple[Path, dict[str, object]]:
+    """Give the validator disposable build outputs, never candidate writes."""
+    candidate = scratch / "candidate"
+    shutil.copytree(delivery, candidate, symlinks=True)
+    baseline = validation_manifest(candidate)
+    binaries = scratch / "bin"
+    binaries.mkdir()
+    for name in ("python", "python3"):
+        launcher = binaries / name
+        launcher.write_text("#!/bin/sh\nexec " + shlex.quote(str(Path(sys.executable).resolve())) + " \"$@\"\n")
+        launcher.chmod(0o700)
+    return candidate, baseline
+
+
+def validation_manifest(root: Path) -> dict[str, object]:
+    result = {}
+    for path in root.rglob("*"):
+        metadata = path.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if stat.S_ISLNK(metadata.st_mode):
+            fingerprint = os.readlink(path)
+        elif stat.S_ISREG(metadata.st_mode):
+            fingerprint = hashlib.sha256(path.read_bytes()).hexdigest()
+        else:
+            raise EffectContractError("UNSAFE_EFFECT_VALIDATION_OUTPUT")
+        result[str(path.relative_to(root))] = (metadata.st_mode, fingerprint)
+    return result
+
+
+def validation_unchanged(root: Path, baseline: dict[str, object]) -> bool:
+    current = validation_manifest(root)
+    return (all(current.get(path) == value for path, value in baseline.items())
+            and not any(path.startswith(".git/") and path not in baseline for path in current))
 
 
 def run_control(command: tuple[str, ...], environment: dict[str, str], *, timeout: int = 1800) -> int:

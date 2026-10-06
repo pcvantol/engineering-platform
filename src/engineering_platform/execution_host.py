@@ -3124,6 +3124,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             accepted_effect = load_submission_for_run(self.root, run_id, central_database=self.store.central_database)
             constraints = accepted_effect.get("constraints") if isinstance(accepted_effect, dict) else None
             if isinstance(constraints, dict) and "effect_contract" in constraints:
+                self._verify_engineering_platform()
                 from .effect_execution import run as run_effect_execution
                 return run_effect_execution(self, prompt_path, run_id, accepted_effect,
                                             resume=resume, owner_authorized=owner_authorized)
@@ -4384,9 +4385,11 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
 
     def _attempt_delegated_merge(
         self, state: TransactionState, observed_pr: PullRequestEvidence,
+        *, delivery_root: Path | None = None,
     ) -> TransactionState | None:
         """Consume a live scoped owner grant only after exact protected gates pass."""
         attempted: TransactionState | None = None
+        git_root = delivery_root if delivery_root is not None else self.root
         if (not state.owner_authorized or state.execution_mode != "MANAGED"
                 or self.store.central_database is None or state.merge_delegation_id is None):
             return None
@@ -4491,7 +4494,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             if (not isinstance(qualified_base, str)
                     or re.fullmatch(r"[0-9a-f]{40}", qualified_base) is None
                     or (autonomous_profile and (state.assurance_profile or {}).get("base_sha") != qualified_base)
-                    or self.repository.protected_main_revision(self.root) != qualified_base):
+                    or self.repository.protected_main_revision(git_root) != qualified_base):
                 return None
             with sqlite_connection(self.store.central_database) as connection:
                 current_grant = merge_delegation.load(connection, state.merge_delegation_id)
@@ -4538,11 +4541,11 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                     raise ValueError("merge authority changed before the external call")
                 self.github.merge(fresh.number, expected_head_sha=expected_head)
             merged = self.github.pull_request(fresh.number)
-            self.repository.refresh_main_reference(self.root)
+            self.repository.refresh_main_reference(git_root)
             if (merged.state == "MERGED" and merged.head_sha == expected_head
                     and isinstance(merged.merge_commit, str)
                     and re.fullmatch(r"[0-9a-f]{40}", merged.merge_commit)
-                    and self.repository.remote_main_contains(self.root, merged.merge_commit)):
+                    and self.repository.remote_main_contains(git_root, merged.merge_commit)):
                 confirmed = replace(attempted, delegated_merge_actor_reference=current_grant.actor_reference)
                 self.store.save(confirmed)
                 return confirmed if confirmed.effect_execution is not None else self._poll(confirmed)

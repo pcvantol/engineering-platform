@@ -81,6 +81,7 @@ jobs:
         run: |
           npm ci --ignore-scripts
           echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+          bash tools/qualification/prepare_ci_native_sandbox.sh
       - name: Import, bytecode and qualification smoke
         run: |
           python3 -c "import engineering_platform, engineering_platform.execution_host"

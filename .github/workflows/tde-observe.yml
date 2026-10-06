@@ -28,6 +28,7 @@ jobs:
           python -m pip install --upgrade pip coverage jsonschema==4.25.1
           npm ci --ignore-scripts
           export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
+          bash tools/qualification/prepare_ci_native_sandbox.sh
           mkdir -p artifacts tde-observe
           set +e
           coverage run --branch -m unittest discover -s tests/engineering

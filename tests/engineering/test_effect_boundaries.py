@@ -84,7 +84,9 @@ class EffectControlTests(unittest.TestCase):
         path = self.target / ".engineering-platform/repository.json"
         path.parent.mkdir()
         for validation in ({}, {"kind": "none"}, {"kind": "command", "entrypoint": ""},
-                           {"kind": "command", "entrypoint": "python ok.py && bypass"}):
+                           {"kind": "command", "entrypoint": "python ok.py && bypass"},
+                           {"kind": "command", "entrypoint": "PYTHONPATH=src"},
+                           {"kind": "script", "entrypoint": "GIT_NO_REPLACE_OBJECTS=0 bash scripts/validate.sh"}):
             path.write_text(json.dumps({"validation": validation}))
             with self.subTest(validation=validation), self.assertRaises(contract.EffectContractError):
                 effect_validation.repository_command(self.target)

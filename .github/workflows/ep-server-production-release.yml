@@ -82,6 +82,7 @@ jobs:
         run: |
           npm ci --ignore-scripts
           echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+          bash tools/qualification/prepare_ci_native_sandbox.sh
       - name: Build exact production distributions
         env:
           ENGINEERING_PLATFORM_RELEASE_MODE: production
