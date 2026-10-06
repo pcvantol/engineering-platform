@@ -56,9 +56,13 @@ SA-OBS -> SA-SEL
 ```
 
 `SA-PUBLICATION-CONTRACT` is an external evidence gate owned by EP, not another
-implementation node. Its current owning future-work lane is
+implementation node. Its owning capability is
 `EP_MANAGED_PUBLICATION_RECOVERY_V1`; the qualification milestone is
-`MPR-Q`. Its qualification is REQUIRED_EVIDENCE_UNVERIFIED in this graph.
+`MPR-Q`. The gate is QUALIFIED_EVIDENCE_AVAILABLE from EP 2.3.109, protected
+main `66433d7a2260397ec438a3052acae8ef50a84022`, with the
+[exact-main installed receipt](https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013731687).
+This updates the external evidence reference only; SA nodes remain PLANNED
+and no SA execution is selected.
 Before `SA-PUB` activation, verify the exact qualified current-main
 source/artifact and `MPR-Q` evidence. Closed, unmerged PR #175 is historical
 design evidence only. A local candidate, handoff, old PR workflow or this

@@ -31,45 +31,107 @@
     {
       "id": "MPR-ADOPT",
       "kind": "implementation",
-      "status": "IMPLEMENTED_PENDING_QUALIFICATION",
+      "status": "QUALIFIED_ON_MAIN",
       "depends_on": [
         "MPR-0"
       ],
       "delivery": "Typed exact existing-candidate adoption into the Managed lifecycle",
-      "acceptance": "Explicit branch+SHA+authority; no implementation replay; current validation and independent Q/S on the exact candidate; repair lineage/budget preserved; stale or mutated candidate fails closed."
+      "acceptance": "Explicit branch+SHA+authority; no implementation replay; current validation and independent Q/S on the exact candidate; repair lineage/budget preserved; stale or mutated candidate fails closed.",
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013731687"
+      ]
     },
     {
       "id": "MPR-PUBREC",
       "kind": "implementation",
-      "status": "IMPLEMENTED_PENDING_QUALIFICATION",
+      "status": "QUALIFIED_ON_MAIN",
       "depends_on": [
         "MPR-0"
       ],
       "delivery": "Deterministic duplicate-safe first-PR publication recovery",
-      "acceptance": "Pre-create and uncertain-result GitHub readback; exact open draft/base/head reconciliation; mismatch/ambiguity blocks; crash/timeout resume never creates a duplicate or replays implementation."
+      "acceptance": "Pre-create and uncertain-result GitHub readback; exact open draft/base/head reconciliation; mismatch/ambiguity blocks; crash/timeout resume never creates a duplicate or replays implementation.",
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013731687"
+      ]
     },
     {
       "id": "MPR-QBUILD",
       "kind": "implementation",
-      "status": "IMPLEMENTED_PENDING_QUALIFICATION",
+      "status": "QUALIFIED_ON_MAIN",
       "depends_on": [
         "MPR-0"
       ],
       "delivery": "Build qualification artifacts from exact committed source",
-      "acceptance": "Dirty tracked source fails; isolated committed HEAD materialization drives wheel/sdist and installed qualification; ignored/untracked checkout residue cannot affect qualified bytes."
+      "acceptance": "Dirty tracked source fails; isolated committed HEAD materialization drives wheel/sdist and installed qualification; ignored/untracked checkout residue cannot affect qualified bytes.",
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013731687"
+      ]
     },
     {
       "id": "MPR-Q",
       "kind": "qualification",
-      "status": "IN_PROGRESS",
+      "status": "QUALIFIED_ON_MAIN",
       "depends_on": [
         "MPR-ADOPT",
         "MPR-PUBREC",
         "MPR-QBUILD"
       ],
       "delivery": "Integrated source and installed-artifact qualification",
-      "acceptance": "Current-main evidence proves adoption, publication recovery/idempotence and committed-source build hardening; historical #175 evidence is not promoted."
+      "acceptance": "Current-main evidence proves adoption, publication recovery/idempotence and committed-source build hardening; historical #175 evidence is not promoted.",
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013731687"
+      ]
     }
   ],
-  "assignment": "L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006"
+  "assignment": "L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006",
+  "status": "COMPLETE",
+  "completion_evidence": {
+    "pull_request": 338,
+    "protected_main": "66433d7a2260397ec438a3052acae8ef50a84022",
+    "tree": "82fdae186b4fbba572a2fe0565eafd23f45385b1",
+    "version": "2.3.109",
+    "reviewed_candidate": "862d8f0d70e760a2b61f9bfe7d5410bff0a73c6f",
+    "quality_review": "https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013459647",
+    "security_review": "https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013450339",
+    "review_correction_rounds_consumed": 2,
+    "validation_run": "https://github.com/pcvantol/engineering-platform/actions/runs/37443655086",
+    "installed_receipt": "https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013731687",
+    "python": "3.14.8",
+    "installation": "NONEDITABLE_OUTSIDE_CHECKOUT",
+    "wheel_sha256": "63988e900c72b9baf2267e0fa7f2a5c64f48e01002777fa71570da6d0b6da819",
+    "sdist_sha256": "b4acfde43d1131888d610c7141b0edbef97678f50b5a7f4d6636d7703119a896",
+    "source_tests": {
+      "discovered": 2200,
+      "passed": 2198,
+      "existing_skips": 2
+    },
+    "changed_production_min_executable_line_pct": 82.72334621504888,
+    "all_155_production_module_coverage_gates": "PASS",
+    "aggregate_combined_coverage_pct": 84.47379513840102,
+    "installed_mpr_tests": 22,
+    "installed_fie10_tests": 34,
+    "process_crash_restart": "PASS",
+    "live_lease_refusal": "PASS",
+    "lease_expiry": "NATURAL",
+    "repeated_resume": "PASS",
+    "github_creates": 1,
+    "initial_implementation_invocations": 0,
+    "identity_and_repair_budget_preserved": true,
+    "external_adapters": [
+      "provider_and_credentials",
+      "GitHub_PR_transport",
+      "GitHub_Git_transport_to_local_bare_origin"
+    ],
+    "live_publication_canary": false,
+    "persistent_test_instance": false,
+    "test_resource_cleanup": "PASS",
+    "tde": {
+      "workflow": "SUCCESS",
+      "assessment": "FAIL",
+      "repository_qualification": "FAILED",
+      "coverage": "UNAVAILABLE",
+      "disposition": "NONBLOCKING_NFR-TDE-001"
+    },
+    "finalization_version_effect": "NO_BUMP"
+  }
 }

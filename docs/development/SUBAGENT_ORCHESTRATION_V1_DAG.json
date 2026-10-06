@@ -18,13 +18,17 @@
       "id": "SA-PUBLICATION-CONTRACT",
       "owner": "engineering-platform",
       "kind": "external_evidence_gate",
-      "status": "REQUIRED_EVIDENCE_UNVERIFIED",
+      "status": "QUALIFIED_EVIDENCE_AVAILABLE",
       "depends_on": [],
       "owning_work": "EP_MANAGED_PUBLICATION_RECOVERY_V1",
       "requirement": "Require qualified MPR-Q evidence from the current-main Managed publication recovery contract before SA-PUB activation; closed unmerged PR #175 is historical design evidence only.",
-      "evidence": [],
+      "evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013731687"
+      ],
       "roadmap": "MANAGED_PUBLICATION_RECOVERY_V1_ROADMAP.md",
-      "qualification_milestone": "MPR-Q"
+      "qualification_milestone": "MPR-Q",
+      "qualified_source": "66433d7a2260397ec438a3052acae8ef50a84022",
+      "activation_authority": false
     }
   ],
   "nodes": [
