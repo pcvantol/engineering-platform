@@ -1347,7 +1347,7 @@ class EngineeringRunner:
             return reviewed
         if reviewed.pull_request is None and reviewed.owner_authorized:
             reviewed, reviewed_result = self._publish_first_implementation_pull_request(reviewed, reviewed_result)
-            if reviewed.terminal:
+            if reviewed.terminal or reviewed_result.pull_request is None:
                 return reviewed
         try:
             evidence = self.repository.inspect(self.root)
@@ -2824,41 +2824,62 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         profile = state.assurance_profile or {}
         if not before.clean or before.branch != implementation.branch or before.head_sha != profile.get("candidate_sha"):
             return self._save_terminal(state, "BLOCKED", "implementation_publication_candidate_changed", "The reviewed candidate changed before first PR publication."), implementation
-        publication = replace(state, phase="EXECUTE_AGENT", next_action="publish_first_implementation_pull_request")
-        self.store.save(publication)
-        prompt = assemble_prompt(Path(publication.prompt_path), publication, managed_target=self.root) + """
+        from .managed_publication import PublicationRecovery, publish_candidate
+        publication = replace(state, branch=implementation.branch)
+        try:
+            publication, number = publish_candidate(
+                state=publication, store=self.store, root=self.root,
+                repository=self.repository, github=self.github,
+            )
+        except PublicationRecovery as error:
+            if not error.pending:
+                return self._save_terminal(error.state, "BLOCKED", str(error),
+                                           "First publication requires an explicit recovery disposition for conflicting evidence."), implementation
+            waiting = replace(error.state, phase="WAIT_FOR_TERMINAL_EVIDENCE",
+                              next_action="read_publication_receipt", terminal=False,
+                              diagnostic="Publication acknowledgement is unresolved; resume reads the exact remote identity without another create.")
+            return self._save_operator_merge_wait(waiting), implementation
+        return publication, replace(implementation, pull_request=number)
 
-First implementation pull-request publication gate:
-- The Execution Host has already recorded passing local validation plus independent quality and security assurance for the exact current candidate.
-- Do not edit files, index, commits, branch, tests, configuration, or evidence. Do not merge, release, or change repository settings.
-- Create exactly one draft implementation pull request for the existing bounded branch and current HEAD. Return that existing branch, the GitHub pull-request number and the unchanged current commit SHA.
-"""
+    def _resume_first_publication(self, state: TransactionState, prompt_path: Path) -> TransactionState:
+        """Recover under the existing run lease before any implementation replay."""
+        if Path(state.prompt_path) != prompt_path:
+            raise RunnerError("checkpoint conflicts with current prompt")
+        self._verify_engineering_platform()
+        reconcile_stale(self.root, central_database=self.store.central_database)
         try:
-            published = self._invoke_agent_with_timing(publication, prompt)
-            publication = self._record_agent_execution_time(publication)
-        except (CodexInvocationError, ProviderReadinessBlocked) as error:
-            if isinstance(error, ProviderReadinessBlocked):
-                return error.state, implementation
-            return self._terminalize_provider_invocation_error(publication, error), implementation
+            self.active_lease = acquire_lease(
+                self.root, state.run_id, identity=self.host_identity,
+                instance_id=self.host_instance_id, process_id=os.getpid(), central_database=self.store.central_database,
+            )
+        except LeaseConflictError as error:
+            raise RunnerError("active-run ownership conflict; publication recovery is refused") from error
+        self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
+        self.lease_heartbeat.start()
         try:
-            after = self.repository.inspect(self.root)
-        except RunnerError:
-            after = None
-        failures = []
-        if published.terminal_state != "COMPLETE": failures.append("provider_not_complete")
-        if not published.pull_request: failures.append("missing_pull_request")
-        if published.branch != before.branch: failures.append("branch_mismatch")
-        if published.commit_sha != before.head_sha: failures.append("candidate_sha_mismatch")
-        if after is None: failures.append("candidate_unavailable_after_publication")
-        elif not after.clean: failures.append("candidate_dirty_after_publication")
-        elif after.branch != before.branch: failures.append("branch_changed_after_publication")
-        elif after.head_sha != before.head_sha: failures.append("candidate_changed_after_publication")
-        if failures:
-            return self._save_terminal(
-                publication, "BLOCKED", "implementation_publication_evidence_invalid",
-                "First implementation PR publication changed or failed to identify the reviewed candidate: " + ", ".join(failures) + ".",
-            ), implementation
-        return publication, published
+            # Reload only after exclusive admission: a simultaneous resume may
+            # have completed while this caller was inspecting the checkpoint.
+            state = self.store.load(state.run_id)
+            if state.terminal:
+                return state
+            if state.pull_request is not None:
+                return self._poll(state)
+            state = self._provider_readiness_gate(state, require_codex=False, require_github=True)
+            if state.next_action == "provider_auth_repair_required":
+                return state
+            intent = state.publication_intent
+            result = AgentResult("COMPLETE", str(intent["branch"]), commit_sha=str(intent["candidate_sha"]))
+            state, result = self._publish_first_implementation_pull_request(state, result)
+            if state.terminal or result.pull_request is None:
+                return state
+            return self._continue_after_quality_control(state, result, self.repository.inspect(self.root))
+        finally:
+            if self.active_lease is not None:
+                if self.lease_heartbeat is not None:
+                    self.active_lease = self.lease_heartbeat.stop()
+                    self.lease_heartbeat = None
+                release_lease(self.root, self.active_lease, central_database=self.store.central_database)
+                self.active_lease = None
 
     def _reject_historical_agent_pull_request(
         self, state: TransactionState
@@ -2994,7 +3015,7 @@ First implementation pull-request publication gate:
                 return state
             if state.owner_authorized:
                 state, result = self._publish_first_implementation_pull_request(state, result)
-                if state.terminal:
+                if state.terminal or result.pull_request is None:
                     return state
         return self._continue_after_quality_control(state, result, evidence)
 
@@ -3050,14 +3071,24 @@ First implementation pull-request publication gate:
         resume: bool = False,
         owner_authorized: bool = False,
         transaction_kind: str = "IMPLEMENTATION",
+        managed_candidate: dict[str, object] | None = None,
     ) -> TransactionState:
         # Private helpers remain directly testable, while every public runner
         # invocation enforces the admission boundary before provider dispatch.
         self._dispatch_guard_enforced = True
         objective = prompt_path.read_text(encoding="utf-8")
         state = self.store.load(run_id) if resume else None
+        if managed_candidate is not None and not resume and run_id is not None:
+            if run_id in self.store.run_ids():
+                raise RunnerError("Managed adoption of an existing run requires explicit resume; budgets cannot be reset.")
+        if (state is not None and managed_candidate is not None
+                and state.managed_candidate_adoption is not None
+                and managed_candidate != state.managed_candidate_adoption):
+            raise RunnerError("Managed adoption selection conflicts with the durable checkpoint.")
         if resume and state is not None and dismissal_for_run(self.root, state.run_id):
             raise RunnerError("This execution has already been dismissed and cannot be resumed.")
+        if state is not None and state.publication_intent is not None and state.pull_request is None:
+            return state if state.terminal else self._resume_first_publication(state, prompt_path)
         if (
             state is not None
             and state.phase in {"WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"}
@@ -3267,6 +3298,7 @@ First implementation pull-request publication gate:
             if state.phase != "INITIALIZE":
                 raise RunnerError("checkpoint action intent conflicts with the producer execution context")
             state = replace(state, action_intent=context.action_intent)
+        adoption_selection = managed_candidate if managed_candidate is not None else state.managed_candidate_adoption
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
         qualification_control_wait = getattr(self.agent, "wait_for_controlled_interruption_arm", None)
@@ -3372,7 +3404,7 @@ First implementation pull-request publication gate:
         self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
-        if recovered_resume:
+        if recovered_resume and adoption_selection is None:
             self._heartbeat()
             if revision_binding is not None and context.execution_mode == "MANAGED":
                 recovered_head = self.repository.inspect(self.root)
@@ -3425,7 +3457,18 @@ First implementation pull-request publication gate:
         # Synchronization is a host-owned admission step.  Do it while this
         # run owns the lease so agents never race each other for index.lock,
         # and so the bounded retry policy in the repository client is used.
-        if context.execution_mode == "MANAGED":
+        if adoption_selection is not None:
+            from .managed_adoption import verify_selection
+            try:
+                state = verify_selection(
+                    selection=adoption_selection, state=state, root=self.root, repository=self.repository,
+                    central_database=self.store.central_database,
+                    owner_authorized=owner_authorized or (resume and state.managed_candidate_adoption is not None and state.owner_authorized),
+                )
+            except RunnerError as error:
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
+            self.store.save(state)
+        elif context.execution_mode == "MANAGED":
             try:
                 # An exact pin is prepared by the owning repository client
                 # under this lease. It may fast forward only to that SHA,
@@ -3483,6 +3526,21 @@ First implementation pull-request publication gate:
         )
         if admission_error is not None:
             return self._save_terminal(state, "BLOCKED", "deterministic_admission", admission_error)
+        if adoption_selection is not None:
+            # An adopted candidate enters the existing validation and Q/S
+            # gates directly. It never invokes the initial implementation
+            # provider or synchronizes away the selected branch.
+            result = AgentResult("COMPLETE", state.branch, commit_sha=self.repository.inspect(self.root).head_sha)
+            if self._current_local_validation_passes(state):
+                if not self._current_assurance_passes(state):
+                    state, result = self._run_quality_assurance(state, result)
+                    if state.terminal or state.phase == "REPAIR_AGENT":
+                        return state
+                state, result = self._publish_first_implementation_pull_request(state, result)
+                if state.terminal or result.pull_request is None:
+                    return state
+                return self._continue_after_quality_control(state, result, self.repository.inspect(self.root))
+            return self._advance_after_primary_agent_result(state, result, self.repository.inspect(self.root))
         if state.action_intent == "VALIDATION_ONLY":
             state = self._bind_validation_only_profile(state, producer_context)
             if state.terminal:
@@ -5198,6 +5256,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="storage schema admitted by the watcher that spawned this run",
     )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--adopt-candidate", type=Path,
+                        help="typed Managed candidate selection JSON; requires actual owner authorization and CENTRAL binding")
     parser.add_argument(
         "--owner-authorized",
         action="store_true",
@@ -5246,6 +5306,10 @@ def main(argv: list[str] | None = None) -> int:
         runtime = PlatformConfiguration.load(root).resolver(root).resolve_runtime()
     except PlatformConfigurationError:
         runtime = None
+    try:
+        github_repository = SubprocessRepositoryClient().trusted_origin_identity(root)
+    except RunnerError:
+        github_repository = None
     runner = EngineeringRunner(
         root,
         StateStore(
@@ -5254,7 +5318,7 @@ def main(argv: list[str] | None = None) -> int:
             emit_local_projection=False,
         ),
         SubprocessRepositoryClient(),
-        GhCliClient(),
+        GhCliClient(repository=github_repository),
         CodexCliClient(CodexCliProvider(str(runtime)) if runtime is not None else CodexCliProvider()),
         compatibility=compatibility,
     )
@@ -5264,12 +5328,17 @@ def main(argv: list[str] | None = None) -> int:
     lifecycle_context = {"application_version": CURRENT_PLATFORM_VERSION, "target_component": "lifecycle_worker"}
     try:
         with shutdown_signal_logging(logger, lifecycle_context):
+            try:
+                managed_candidate = json.loads(args.adopt_candidate.read_text(encoding="utf-8")) if args.adopt_candidate else None
+            except (OSError, ValueError) as error:
+                raise RunnerError("Managed adoption selection could not be read.") from error
             state = runner.run(
                 prompt_path,
                 args.run_id,
                 args.resume,
                 args.owner_authorized,
                 args.transaction_kind,
+                managed_candidate=managed_candidate,
             )
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")

@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "increment": "EP_MANAGED_PUBLICATION_RECOVERY_V1",
-  "documentary_only": true,
-  "execution_authority": false,
+  "documentary_only": false,
+  "execution_authority": "https://github.com/pcvantol/forge/issues/142#issuecomment-6011925204",
   "automatic_dispatch": false,
-  "version_change": "NO_BUMP",
+  "version_change": "2.3.109",
   "source_repository": "pcvantol/engineering-platform",
   "historical_source": {
     "pull_request": 175,
@@ -31,7 +31,7 @@
     {
       "id": "MPR-ADOPT",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "IMPLEMENTED_PENDING_QUALIFICATION",
       "depends_on": [
         "MPR-0"
       ],
@@ -41,7 +41,7 @@
     {
       "id": "MPR-PUBREC",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "IMPLEMENTED_PENDING_QUALIFICATION",
       "depends_on": [
         "MPR-0"
       ],
@@ -51,7 +51,7 @@
     {
       "id": "MPR-QBUILD",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "IMPLEMENTED_PENDING_QUALIFICATION",
       "depends_on": [
         "MPR-0"
       ],
@@ -61,7 +61,7 @@
     {
       "id": "MPR-Q",
       "kind": "qualification",
-      "status": "PLANNED",
+      "status": "IN_PROGRESS",
       "depends_on": [
         "MPR-ADOPT",
         "MPR-PUBREC",
@@ -70,5 +70,6 @@
       "delivery": "Integrated source and installed-artifact qualification",
       "acceptance": "Current-main evidence proves adoption, publication recovery/idempotence and committed-source build hardening; historical #175 evidence is not promoted."
     }
-  ]
+  ],
+  "assignment": "L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006"
 }

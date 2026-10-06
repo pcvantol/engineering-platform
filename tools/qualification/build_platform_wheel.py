@@ -109,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         environment = os.environ.copy()
         environment.pop("PYTHONPATH", None)
         environment.pop("PYTHONHOME", None)
+        environment["SOURCE_DATE_EPOCH"] = _git(root, "show", "-s", "--format=%ct", head)
         if args.sdist:
             subprocess.run((sys.executable, "-m", "build", "--outdir", str(build_directory), str(source)), check=True, cwd=source.parent, env=environment)
         else:
@@ -126,8 +127,9 @@ def main(argv: list[str] | None = None) -> int:
     wheel = wheel_directory / wheel_name
     if args.install_python is not None:
         subprocess.run((str(args.install_python), "-m", "pip", "install", "--no-deps", "--upgrade", "--force-reinstall", str(wheel)), check=True)
-    if hashlib.sha256(wheel.read_bytes()).hexdigest() != digests[wheel_name]:
-        raise RuntimeError("qualification wheel changed after the committed-source build")
+    for name in names:
+        if hashlib.sha256((wheel_directory / name).read_bytes()).hexdigest() != digests[name]:
+            raise RuntimeError("qualification artifact changed after the committed-source build")
     print(f"EP_WHEEL_BUILD=PASS version={version} source={head} tree={tree} wheel={wheel} wheel_sha256={digests[wheel_name]}")
     if args.sdist:
         print(f"EP_SDIST_BUILD=PASS sdist={wheel_directory / names[1]} sdist_sha256={digests[names[1]]}")

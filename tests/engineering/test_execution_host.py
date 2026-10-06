@@ -20,6 +20,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import call, patch
 
+from engineering_platform.managed_publication import PublicationCandidate
 from engineering_platform.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic, verified_commit_evidence_record
 from engineering_platform.storage import (
     ENGINEERING_STORAGE_SCHEMA_VERSION,
@@ -164,6 +165,10 @@ class FakeRepository:
     def workspace_operation_active(self, root: Path) -> bool:
         return self.operation_active
 
+    def publish_candidate_branch(self, root: Path, repository: str, branch: str, sha: str) -> None:
+        if self.evidence != RepositoryEvidence(repository, branch, sha, True, self.evidence.main_contains_head):
+            raise RunnerError("candidate mismatch")
+
     def synchronize_main(self, root: Path) -> None:
         self.synchronize_calls.append(root)
         if self.synchronize_error:
@@ -193,6 +198,18 @@ class FakeGitHub:
         self.ready_calls: list[int] = []
         self.merge_calls: list[int] = []
         self.markdown_normalization_calls: list[int] = []
+        self.publication_creates = 0
+        self.publication_listing = []
+
+    def publication_candidates(self, repository: str, branch: str):
+        return self.publication_listing
+
+    def create_draft_publication(self, repository, branch, base, title, body):
+        self.publication_creates += 1
+        evidence = self.responses[0]
+        self.publication_listing = [PublicationCandidate(
+            evidence.number, repository, repository, branch, base, evidence.head_sha, "OPEN", True,
+        )]
 
     def pull_request(self, number: int) -> PullRequestEvidence:
         response = self.responses[min(self.calls, len(self.responses) - 1)]
@@ -611,7 +628,7 @@ class ClientContractTest(unittest.TestCase):
             agent = DeliveryAgent()
             github = FakeGitHub([
                 PullRequestEvidence(
-                    701, "OPEN", True, True, head_branch=branch, base_branch="main"
+                    701, "OPEN", True, True, head_branch=branch, base_branch="main", head_sha=commit
                 )
             ])
             first_host = EngineeringRunner(
@@ -640,7 +657,8 @@ class ClientContractTest(unittest.TestCase):
                 any(item["commit_sha"] == commit for item in persisted.commit_evidence)
             )
             self.assertEqual(persisted.pull_request, 701)
-            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(agent.pr_create_calls, 0)
+            self.assertEqual(github.publication_creates, 1)
             self.assertEqual(github.ready_calls, [701])
             self.assertNotIn("Retry-Of:", prompt.read_text(encoding="utf-8"))
 
@@ -666,7 +684,8 @@ class ClientContractTest(unittest.TestCase):
             self.assertEqual(resumed.commit_evidence, persisted.commit_evidence)
             self.assertEqual(resumed.pull_request, persisted.pull_request)
             self.assertEqual(resumed.phase, "WAIT_FOR_OPERATOR_MERGE")
-            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(agent.pr_create_calls, 0)
+            self.assertEqual(github.publication_creates, 1)
             self.assertEqual(resumed_agent.prompts, [])
             self.assertEqual(
                 [path.stem for path in resumed_store.directory.glob("*.json")],
@@ -693,7 +712,8 @@ class ClientContractTest(unittest.TestCase):
             self.assertEqual(second_restart.commit_evidence, persisted.commit_evidence)
             self.assertEqual(second_restart.pull_request, persisted.pull_request)
             self.assertEqual(second_restart.phase, "WAIT_FOR_OPERATOR_MERGE")
-            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(agent.pr_create_calls, 0)
+            self.assertEqual(github.publication_creates, 1)
             self.assertEqual(github.ready_calls, [701])
             self.assertEqual(second_agent.prompts, [])
 
@@ -3762,7 +3782,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(len(agent.prompts), 1)
         self.assertEqual([review["status"] for review in state.assurance_reviews], ["PASS", "PASS"])
 
-    def test_first_implementation_publication_is_a_separate_post_assurance_dispatch(self) -> None:
+    def test_first_implementation_publication_is_host_owned_after_assurance(self) -> None:
         """The product gate, not provider wording, owns first PR creation."""
         sha = "a" * 40
         validation_profile_digest = self._record_strict_passing_profile(
@@ -3775,18 +3795,19 @@ class LocalAgentRunnerTest(unittest.TestCase):
                          "profile_digest": profile["digest"], "invocation_id": f"{role}-1",
                          "findings": [], "contract_version": "1.0", "started_at": "now", "completed_at": "now"}
                         for role in ("quality", "security"))
-        agent = SequencedFakeAgent([AgentResult("COMPLETE", "main", 71, commit_sha=sha)])
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        agent = SequencedFakeAgent([AgentResult("COMPLETE", "codex/publish", 71, commit_sha=sha)])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(branch="codex/publish"), FakeGitHub([PullRequestEvidence(71, "OPEN", True, True, head_sha=sha)]), agent, lambda _: None)
         state = TransactionState("publication-gate", "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT",
-                                 branch="main", owner_authorized=True,
+                                 branch="codex/publish", owner_authorized=True,
                                  local_validation_audit=({"outcome": "validated"},),
                                  assurance_profile=profile, assurance_reviews=reviews)
         published, result = runner._publish_first_implementation_pull_request(
-            state, AgentResult("COMPLETE", "main", commit_sha=sha)
+            state, AgentResult("COMPLETE", "codex/publish", commit_sha=sha)
         )
         self.assertFalse(published.terminal)
         self.assertEqual(result.pull_request, 71)
-        self.assertIn("First implementation pull-request publication gate", agent.prompts[0])
+        self.assertEqual(agent.prompts, [])
+        self.assertEqual(runner.github.publication_creates, 1)
 
     def test_malformed_mandatory_review_is_unresolved_not_an_empty_pass(self) -> None:
         class MalformedReviewer(FakeAgent):
@@ -4434,8 +4455,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(advanced.phase, "WAIT_FOR_OPERATOR_MERGE")
         self.assertEqual(advanced.pull_request, 82)
-        self.assertEqual(len(agent.prompts), 3)
-        self.assertIn("First implementation pull-request publication gate", agent.prompts[-1])
+        self.assertEqual(len(agent.prompts), 2)
+        self.assertEqual(runner.github.publication_creates, 1)
 
     def test_repair_with_bound_pr_rejects_a_different_returned_pr(self) -> None:
         state = TransactionState("repair-preserve-pr", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/repair", pull_request=17)

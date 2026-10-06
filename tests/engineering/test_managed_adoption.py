@@ -1,0 +1,187 @@
+"""Real Git, CENTRAL, validation and lifecycle; only external providers adapt."""
+from __future__ import annotations
+
+from dataclasses import replace
+from contextlib import redirect_stdout
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from engineering_platform import server
+from engineering_platform.agent_state import StateStore, StateError, TransactionState
+from engineering_platform.execution_host import EngineeringRunner
+from engineering_platform.execution_models import AgentResult, PullRequestEvidence
+from engineering_platform.execution_repository import SubprocessRepositoryClient
+from engineering_platform.managed_adoption import parse_selection, profile_digest, verify_selection
+from engineering_platform.managed_publication import PublicationCandidate
+from engineering_platform.providers import GitProvider
+from engineering_platform.storage import load_validation_context, sqlite_connection
+from tests.engineering.test_execution_host import FakeAgent, mandatory_review_result
+
+
+class LocalGitHubTransport(GitProvider):
+    """Redirect only remote Git transport to a real isolated bare repository."""
+    def __init__(self, remote): self.remote = remote
+    def execute(self, root, *args):
+        if len(args) > 1 and args[0] == "git" and args[1] in {"fetch", "push", "ls-remote"}:
+            args = ("git", "-c", f"url.{self.remote}.insteadOf=https://github.com/qualification/managed", *args[1:])
+        return super().execute(root, *args)
+
+
+class AdoptionLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.area = Path(self.temp.name)
+        self.root, self.remote, self.data = self.area / "repo", self.area / "remote.git", self.area / "central"
+        self.root.mkdir()
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "qualification@example.invalid")
+        self.git("config", "user.name", "MPR qualification")
+        (self.root / "BOOTSTRAP.md").write_text("# Qualification\n")
+        (self.root / ".gitignore").write_text(".engineering/\n__pycache__/\n")
+        (self.root / "README.md").write_text("# Before\n")
+        (self.root / "tests").mkdir()
+        (self.root / "tests/test_docs.py").write_text(
+            "import unittest\nfrom pathlib import Path\nclass Documentation(unittest.TestCase):\n"
+            "    def test_heading(self):\n        self.assertTrue(Path('README.md').read_text().startswith('# '))\n")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main(["bootstrap-topology", "--data-root", str(self.data), "--project-id", "project", "--repository-id", "repo"]), 0)
+            self.assertEqual(server.main(["provision-declaration", "--data-root", str(self.data), "--project-id", "project", "--repository-id", "repo", "--path", str(self.root)]), 0)
+        self.git("add", ".")
+        self.git("commit", "-qm", "baseline")
+        self.base = self.git("rev-parse", "HEAD")
+        subprocess.run(("git", "init", "-q", "--bare", str(self.remote)), check=True)
+        self.git("remote", "add", "origin", "https://github.com/qualification/managed")
+        self.transport = LocalGitHubTransport(self.remote)
+        self.transport.command(self.root, "git", "push", "-u", "origin", "main")
+        self.git("switch", "-qc", "codex/existing")
+        (self.root / "README.md").write_text("# Candidate\n\nExisting authored documentation.\n")
+        self.git("add", "README.md")
+        self.git("commit", "-qm", "existing candidate")
+        self.sha = self.git("rev-parse", "HEAD")
+        self.repository = SubprocessRepositoryClient(self.transport)
+        self.database = self.data / server.SERVER_DATABASE_FILENAME
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main(["bind-repository", "--data-root", str(self.data), "--project-id", "project", "--repository-id", "repo", "--path", str(self.root)]), 0)
+        self.prompt = self.area / "prompt.md"
+        self.prompt.write_text("Continue the selected existing documentation candidate through current validation and independent assurance.\n")
+        self.store = StateStore(self.root / ".engineering/engineering-runs", central_database=self.database, emit_local_projection=False)
+        self.selection = {"version": "1.0", "project_id": "project", "repository_id": "repo", "repository": "qualification/managed",
+                          "branch": "codex/existing", "candidate_sha": self.sha, "base_sha": self.base, "run_id": "adopt-run",
+                          "repair_ordinal": 0, "validation_profile_digest": profile_digest(self.root, self.sha, 0)}
+        self.readiness = patch("engineering_platform.execution_host.provider_readiness_failures", return_value=())
+        self.readiness.start()
+        self.addCleanup(self.readiness.stop)
+
+    def git(self, *args):
+        return subprocess.run(("git", *args), cwd=self.root, check=True, text=True, capture_output=True).stdout.strip()
+
+    def test_typed_owner_adoption_validates_reviews_and_recovers_lost_ack(self):
+        selection = self.selection
+        class AssuranceAgent(FakeAgent):
+            def invoke(self, root, prompt):
+                if "Local repository validation gate" not in prompt:
+                    raise AssertionError("initial implementation must never replay")
+                self.prompts.append(prompt)
+                return AgentResult("COMPLETE", selection["branch"], commit_sha=selection["candidate_sha"])
+            def review(self, root, selected, objective, evidence=None):
+                return mandatory_review_result(selected.reviewer, objective)
+        class GitHub:
+            def __init__(self): self.candidates, self.creates = [], 0
+            def publication_candidates(self, *args): return self.candidates
+            def create_draft_publication(inner, *args):
+                inner.creates += 1
+                inner.candidates = [PublicationCandidate(71, "qualification/managed", "qualification/managed", selection["branch"], "main", selection["candidate_sha"], "OPEN", True)]
+                raise SystemExit("accepted, crash before receipt")
+            def pull_request(self, number):
+                return PullRequestEvidence(number, "OPEN", True, True, head_branch=selection["branch"], base_branch="main", head_sha=selection["candidate_sha"])
+            def ready(self, number): pass
+            def normalize_markdown_body(self, number): return False
+        agent, github = AssuranceAgent(AgentResult("COMPLETE")), GitHub()
+        runner = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        try:
+            with self.assertRaises(SystemExit):
+                runner.run(self.prompt, run_id="adopt-run", owner_authorized=True, managed_candidate=self.selection)
+        finally:
+            if runner.lease_heartbeat:
+                from engineering_platform.execution_lease import release
+                release(self.root, runner.lease_heartbeat.stop(), central_database=self.database)
+                runner.active_lease = runner.lease_heartbeat = None
+        checkpoint = self.store.load("adopt-run")
+        self.assertEqual(checkpoint.publication_intent["status"], "CREATE_UNCERTAIN")
+        self.assertEqual([item["status"] for item in checkpoint.assurance_reviews], ["PASS", "PASS"])
+        validation = load_validation_context(self.root, "adopt-run", central_database=self.database)
+        self.assertEqual(validation["candidate_sha"], self.sha)
+        self.assertTrue(all(item["result"] == "PASS" for item in validation["controls"].values()))
+        restarted = EngineeringRunner(self.root, StateStore(self.store.directory, central_database=self.database, emit_local_projection=False), self.repository, github, agent, lambda _: None)
+        result = restarted.run(self.prompt, run_id="adopt-run", resume=True)
+        self.assertEqual(result.pull_request, 71)
+        self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(github.creates, 1)
+        self.assertEqual(len(agent.prompts), 1)
+        self.assertEqual(result.managed_candidate_adoption, self.selection)
+        self.assertEqual((result.repair_iterations, self.git("rev-parse", "HEAD")), (0, self.sha))
+
+    def test_selection_rejects_foreign_stale_changed_authority_and_lineage(self):
+        state = TransactionState("adopt-run", "qualification/managed", str(self.prompt), "INITIALIZE", owner_authorized=True)
+        def verify(selection, candidate=state, authority=True):
+            return verify_selection(selection=selection, state=candidate, root=self.root, repository=self.repository,
+                                    central_database=self.database, owner_authorized=authority)
+        accepted = verify(self.selection)
+        self.assertEqual(accepted.managed_candidate_adoption, self.selection)
+        for change in ({"run_id": "other"}, {"project_id": "foreign"}, {"repository_id": "foreign"},
+                       {"repository": "foreign/repo"}, {"branch": "codex/other"}, {"candidate_sha": "b" * 40},
+                       {"base_sha": "c" * 40}, {"repair_ordinal": 1}, {"validation_profile_digest": "sha256:" + "d" * 64}):
+            with self.subTest(change=change), self.assertRaises(RuntimeError): verify({**self.selection, **change})
+        with self.assertRaises(RuntimeError): verify(self.selection, authority=False)
+        with self.assertRaises(RuntimeError): verify(self.selection, replace(state, owner_authorized=False))
+        with self.assertRaises(RuntimeError): verify(self.selection, replace(accepted, repair_iterations=1))
+        with patch("engineering_platform.platform_admin.os.geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(RuntimeError, "actual installation owner"): verify(self.selection)
+        other = replace(state, run_id="another-run", branch="codex/existing")
+        self.store.save(other)
+        with self.assertRaisesRegex(RuntimeError, "another run"): verify(self.selection)
+        (self.root / "README.md").write_text("changed without commit")
+        with self.assertRaises(RuntimeError): verify(self.selection)
+        self.assertEqual(self.git("branch", "--show-current"), "codex/existing")
+
+    def test_schema_and_immutable_checkpoint_protect_selection(self):
+        for change in ({"version": "2"}, {"candidate_sha": "short"}, {"branch": "main"},
+                       {"repair_ordinal": True}, {"run_id": "invalid id"}, {"owner_authorized": True}):
+            with self.subTest(change=change), self.assertRaises(ValueError): parse_selection({**self.selection, **change})
+        state = TransactionState("adopt-run", "qualification/managed", str(self.prompt), "INITIALIZE", owner_authorized=True,
+                                 managed_candidate_adoption=self.selection, managed_adoption_actor=f"local-uid:{os.geteuid()}")
+        self.store.save(state)
+        self.assertEqual(self.store.load("adopt-run").managed_candidate_adoption, self.selection)
+        with self.assertRaises(StateError): self.store.save(replace(state, managed_candidate_adoption=None))
+
+    def test_read_only_selection_command_and_same_run_repair_lineage(self):
+        from engineering_platform.managed_adoption import main
+        stream = io.StringIO()
+        with patch("sys.argv", ["managed-adoption", "--project-id", "project", "--repository-id", "repo", "--run-id", "adopt-run"]), \
+                patch("engineering_platform.execution_repository.SubprocessRepositoryClient", return_value=self.repository), \
+                patch("pathlib.Path.cwd", return_value=self.root), redirect_stdout(stream):
+            main()
+        self.assertEqual(json.loads(stream.getvalue()), self.selection)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        (self.root / "README.md").write_text("# Repaired candidate\n")
+        self.git("add", "README.md")
+        self.git("commit", "-qm", "bounded repair")
+        repaired = self.git("rev-parse", "HEAD")
+        state = TransactionState("adopt-run", "qualification/managed", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION",
+                                 owner_authorized=True, managed_candidate_adoption=self.selection,
+                                 repair_iterations=1, implementation_head_sha=repaired,
+                                 repair_audit=({"iteration": "1", "commit_sha": repaired},))
+        accepted = verify_selection(selection=self.selection, state=state, root=self.root, repository=self.repository,
+                                    central_database=self.database, owner_authorized=True)
+        self.assertEqual(accepted.repair_iterations, 1)
+        self.assertEqual(accepted.managed_candidate_adoption, self.selection)
+
+
+if __name__ == "__main__": unittest.main()

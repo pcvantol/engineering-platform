@@ -24,6 +24,7 @@ PHASES = frozenset({"INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "LOCAL_R
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_DIAGNOSTIC_LENGTH = 500
 _TRANSIENT_CHECKPOINT_DELAYS = (0.02,)
+_UNSPECIFIED = object()
 MAX_COMMIT_EVIDENCE_RECORDS = 48
 COMMIT_EVIDENCE_FIELDS = frozenset({"phase", "observed_at", "commit_sha", "description"})
 COMMIT_EVIDENCE_TIMESTAMP_PATTERN = re.compile(
@@ -179,6 +180,9 @@ class TransactionState:
     # This is checkpoint data, not a database migration: old rows simply read
     # with an empty ledger.
     provider_recovery_attempts: tuple[dict[str, str], ...] = ()
+    publication_intent: dict[str, object] | None = None
+    managed_candidate_adoption: dict[str, object] | None = None
+    managed_adoption_actor: str | None = None
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -225,6 +229,9 @@ class TransactionState:
             "admission_completed_at": None,
             "admission_evidence_source": None,
             "provider_recovery_attempts": (),
+            "publication_intent": None,
+            "managed_candidate_adoption": None,
+            "managed_adoption_actor": None,
         }
         if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
             raw = {**defaults, **raw}
@@ -259,6 +266,30 @@ class TransactionState:
             raise StateError("checkpoint fields are invalid") from error
         if state.schema_version != SCHEMA_VERSION:
             raise StateError("unsupported checkpoint schema version")
+        if state.publication_intent is not None:
+            from .managed_publication import validate_intent
+            try:
+                validate_intent(state.publication_intent)
+            except ValueError as error:
+                raise StateError(str(error)) from error
+            if (state.publication_intent["run_id"] != state.run_id
+                    or state.publication_intent["repository"] != state.repository):
+                raise StateError("publication intent conflicts with checkpoint identity")
+        if state.managed_candidate_adoption is not None:
+            from .managed_adoption import parse_selection
+            try:
+                selected = parse_selection(state.managed_candidate_adoption)
+            except ValueError as error:
+                raise StateError(str(error)) from error
+            if selected["run_id"] != state.run_id or selected["repository"] != state.repository:
+                raise StateError("adoption selection conflicts with checkpoint identity")
+            if state.managed_adoption_actor is None:
+                raise StateError("adoption selection requires an installation owner identity")
+        if state.managed_adoption_actor is not None and (
+            state.managed_candidate_adoption is None or not isinstance(state.managed_adoption_actor, str)
+            or re.fullmatch(r"local-uid:[0-9]+", state.managed_adoption_actor) is None
+        ):
+            raise StateError("adoption owner identity is invalid")
         if not RUN_ID_PATTERN.fullmatch(state.run_id):
             raise StateError("checkpoint run_id is invalid")
         if not all(isinstance(value, str) and value for value in (state.repository, state.prompt_path, state.phase, state.next_action, state.terminal_condition)):
@@ -681,7 +712,7 @@ class StateStore:
         except (TypeError, json.JSONDecodeError) as error:
             raise StateError("canonical checkpoint is corrupt") from error
 
-    def save(self, state: TransactionState) -> Path:
+    def save(self, state: TransactionState, *, expected_publication_intent: object = _UNSPECIFIED) -> Path:
         path = self.path_for(state.run_id)
         canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
         previous_phase: str | None = None
@@ -693,9 +724,23 @@ class StateStore:
                 connection = self._open(create=True)
                 connection.execute("BEGIN IMMEDIATE")
                 prior = connection.execute(
-                    "SELECT phase FROM engineering_transactions WHERE run_id=?", (state.run_id,)
+                    "SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (state.run_id,)
                 ).fetchone()
                 previous_phase = str(prior[0]) if prior is not None else None
+                previous_intent = json.loads(prior[1]).get("publication_intent") if prior else None
+                prior_adoption = json.loads(prior[1]).get("managed_candidate_adoption") if prior else None
+                if prior_adoption is not None and prior_adoption != state.managed_candidate_adoption:
+                    raise StateError("managed candidate adoption cannot be replaced or erased")
+                prior_actor = json.loads(prior[1]).get("managed_adoption_actor") if prior else None
+                if prior_actor is not None and prior_actor != state.managed_adoption_actor:
+                    raise StateError("managed adoption owner cannot be replaced or erased")
+                if expected_publication_intent is not _UNSPECIFIED and previous_intent != expected_publication_intent:
+                    raise StateError("publication intent changed concurrently; reload its canonical checkpoint")
+                from .managed_publication import validate_transition
+                try:
+                    validate_transition(previous_intent, state.publication_intent)
+                except ValueError as error:
+                    raise StateError(str(error)) from error
                 connection.execute(
                     "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) "
                     "ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload,phase=excluded.phase,updated_at=excluded.updated_at",
