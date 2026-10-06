@@ -5,11 +5,12 @@
 [Bounded effect execution V1](../engineering/BOUNDED_EFFECT_EXECUTION_V1.md)
 implements useful assessment reports, documentation/design output and explicit
 bounded repository changes in the existing runner. Status is QUALIFIED_ON_MAIN
-at 2.3.110, with independent reviews, protected main and exact-main installed
+at 2.3.111, with independent reviews, protected main and exact-main installed
 evidence. The owning contract includes source/schema/digest-pinned HTTP captures
 for L3's simulator and explicit unsupported consumer boundaries.
-A concrete FIE-24 profile-digest readback follow-up is now implemented / qualifying
-at 2.3.111 within the same r31 assignment; see the owning contract. MPR
+The FIE-24 profile-digest readback follow-up is qualified on protected main and
+installed at2.3.111, with pinned1.1/1.6 captures. This completes the producer
+boundary within the same r31 assignment; see the owning contract. MPR
 and GP remain complete; r30 dependencies/holds and historical #175 stay intact.
 
 ## Progress-aware provider deadlines V2

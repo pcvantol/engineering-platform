@@ -1,0 +1,779 @@
+{
+  "acceptance": {
+    "admission": "ADMITTED",
+    "created_at": "2026-10-06T16:23:27.222082+00:00",
+    "duplicate": false,
+    "lifecycle": {
+      "admission": "ADMITTED",
+      "execution": "NOT_DISPATCHED",
+      "producer_id": "cli",
+      "submission": "ACCEPTED",
+      "transport": "HTTP",
+      "version": "1"
+    },
+    "project_id": "djconnect",
+    "repository_id": "djconnect",
+    "state": "QUEUED",
+    "submission_id": "sub-d29153ccc5b1bde859e0c98f10f48dd5",
+    "transport": "HTTP"
+  },
+  "before_dispatch": {
+    "contract_version": "1.1",
+    "effect_qualified": false,
+    "outcome": "NOT_STARTED"
+  },
+  "effect_result": {
+    "artifact": {
+      "content": {
+        "artifact_type": "EP_EFFECT_RESULT",
+        "binding": {
+          "accepted_request_digest": "sha256:1d24eeac237a7862bcaa8bc398e9a8712bae1b0bcfc2a506d64de5f358fd424b",
+          "correlation_id": "fixture-correlation-read_only_assessment-evidence_only",
+          "engineering_action_id": "fixture-action-read_only_assessment-evidence_only",
+          "mission_id": null,
+          "producer_id": "cli",
+          "producer_type": "CLI",
+          "producer_version": null,
+          "project_id": "djconnect",
+          "repository": "fixture/djconnect",
+          "repository_id": "djconnect",
+          "run_id": "inbox-3ab913be50144503a6f58a782d2e54f3",
+          "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+          "submission_id": "sub-d29153ccc5b1bde859e0c98f10f48dd5"
+        },
+        "contract": {
+          "contract_version": "1.0",
+          "criteria": [
+            {
+              "description": "Explain the deployment boundary with source evidence.",
+              "id": "criterion-1"
+            }
+          ],
+          "delivery": "EVIDENCE_ONLY",
+          "mode": "READ_ONLY_ASSESSMENT",
+          "read_paths": [
+            "docs/"
+          ],
+          "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+          "write_paths": []
+        },
+        "contract_digest": "15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+        "contract_version": "1.0",
+        "invocation_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0",
+        "repair_ordinal": 0,
+        "result": {
+          "criteria": [
+            {
+              "analysis": "The architecture record confines deployment to the operator-owned boundary.",
+              "id": "criterion-1",
+              "source_paths": [
+                "docs/design.md"
+              ],
+              "status": "SATISFIED"
+            }
+          ],
+          "files": [],
+          "summary": "The deployment boundary is explained using the committed architecture record."
+        },
+        "source_manifest": {
+          "docs/design.md": "6aaa5a0871345822e7c26654c74a8e7258db803d617e6a21c97a374dd2420bc3"
+        },
+        "source_manifest_digest": "1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1"
+      },
+      "content_type": "application/json",
+      "digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+      "digest_algorithm": "sha256",
+      "id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0"
+    },
+    "assurance_reviews": [
+      {
+        "completed_at": "2026-10-06T16:23:28.813519+00:00",
+        "contract_version": "3.0",
+        "coverage": [
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "approved_criteria"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "source_evidence"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "meaningful_result"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "output_scope"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "document_design_content"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "validation_controls"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "restart_identity"
+          }
+        ],
+        "finding_dispositions": [],
+        "findings": [],
+        "invocation_id": "inbox-3ab913be50144503a6f58a782d2e54f3:quality:effect:0",
+        "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+        "reviewer": "quality",
+        "started_at": "2026-10-06T16:23:28.793430+00:00",
+        "status": "PASS",
+        "subject": {
+          "binding_digest": "sha256:e6a865c85b1cf07682bfce35c5a7613ffd56db9b3339eebfc1bf5c6c9ffca566",
+          "candidate_revision": null,
+          "criteria_digest": "sha256:939595e7d6cb848414e87ea63e8c096a0a43a4dd7172822dc8e10b85128232fd",
+          "effect_contract_digest": "sha256:15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+          "repair_ordinal": 0,
+          "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+          "source_snapshot_digest": "sha256:1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1",
+          "subject_digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+          "subject_id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+          "subject_kind": "REPORT_ARTIFACT"
+        }
+      },
+      {
+        "completed_at": "2026-10-06T16:23:28.911981+00:00",
+        "contract_version": "3.0",
+        "coverage": [
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "approved_criteria"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "source_evidence"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "authority_scope"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "sensitive_data"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "containment"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "artifact_integrity"
+          },
+          {
+            "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "status": "REVIEWED",
+            "surface": "restart_identity"
+          }
+        ],
+        "finding_dispositions": [],
+        "findings": [],
+        "invocation_id": "inbox-3ab913be50144503a6f58a782d2e54f3:security:effect:0",
+        "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+        "reviewer": "security",
+        "started_at": "2026-10-06T16:23:28.891068+00:00",
+        "status": "PASS",
+        "subject": {
+          "binding_digest": "sha256:e6a865c85b1cf07682bfce35c5a7613ffd56db9b3339eebfc1bf5c6c9ffca566",
+          "candidate_revision": null,
+          "criteria_digest": "sha256:939595e7d6cb848414e87ea63e8c096a0a43a4dd7172822dc8e10b85128232fd",
+          "effect_contract_digest": "sha256:15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+          "repair_ordinal": 0,
+          "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+          "source_snapshot_digest": "sha256:1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1",
+          "subject_digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+          "subject_id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+          "subject_kind": "REPORT_ARTIFACT"
+        }
+      }
+    ],
+    "contract_version": "1.1",
+    "delivery": {
+      "kind": "EVIDENCE_ONLY",
+      "pull_request": null,
+      "revision": null
+    },
+    "effect_qualified": true,
+    "outcome": "COMPLETE",
+    "repair_rounds": {
+      "maximum": 3,
+      "used": 0
+    },
+    "subject": {
+      "binding_digest": "sha256:e6a865c85b1cf07682bfce35c5a7613ffd56db9b3339eebfc1bf5c6c9ffca566",
+      "candidate_revision": null,
+      "criteria_digest": "sha256:939595e7d6cb848414e87ea63e8c096a0a43a4dd7172822dc8e10b85128232fd",
+      "effect_contract_digest": "sha256:15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+      "repair_ordinal": 0,
+      "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+      "source_snapshot_digest": "sha256:1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1",
+      "subject_digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+      "subject_id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+      "subject_kind": "REPORT_ARTIFACT"
+    },
+    "terminal": true,
+    "validation_controls": [
+      {
+        "authority": "host_control",
+        "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:0",
+        "completed_at": "2026-10-06T16:23:28.115227+00:00",
+        "exit_code": 0,
+        "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+        "started_at": "2026-10-06T16:23:27.968562+00:00",
+        "status": "PASS",
+        "validation_id": "effect_source_binding"
+      },
+      {
+        "authority": "host_control",
+        "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:1",
+        "completed_at": "2026-10-06T16:23:28.309183+00:00",
+        "exit_code": 0,
+        "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+        "started_at": "2026-10-06T16:23:28.160649+00:00",
+        "status": "PASS",
+        "validation_id": "effect_output_integrity"
+      },
+      {
+        "authority": "host_control",
+        "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:2",
+        "completed_at": "2026-10-06T16:23:28.496219+00:00",
+        "exit_code": 0,
+        "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+        "started_at": "2026-10-06T16:23:28.351430+00:00",
+        "status": "PASS",
+        "validation_id": "effect_scope_containment"
+      },
+      {
+        "authority": "host_control",
+        "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:3",
+        "completed_at": "2026-10-06T16:23:28.683564+00:00",
+        "exit_code": 0,
+        "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+        "started_at": "2026-10-06T16:23:28.536141+00:00",
+        "status": "PASS",
+        "validation_id": "report_criteria_contract"
+      }
+    ],
+    "validation_profile": {
+      "controls": [
+        [
+          "effect_source_binding",
+          "host_control"
+        ],
+        [
+          "effect_output_integrity",
+          "host_control"
+        ],
+        [
+          "effect_scope_containment",
+          "host_control"
+        ],
+        [
+          "report_criteria_contract",
+          "host_control"
+        ]
+      ],
+      "subject": {
+        "binding_digest": "sha256:e6a865c85b1cf07682bfce35c5a7613ffd56db9b3339eebfc1bf5c6c9ffca566",
+        "candidate_revision": null,
+        "criteria_digest": "sha256:939595e7d6cb848414e87ea63e8c096a0a43a4dd7172822dc8e10b85128232fd",
+        "effect_contract_digest": "sha256:15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+        "repair_ordinal": 0,
+        "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+        "source_snapshot_digest": "sha256:1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1",
+        "subject_digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+        "subject_id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+        "subject_kind": "REPORT_ARTIFACT"
+      },
+      "validation_bindings": [],
+      "version": "effect-validation@1.0"
+    }
+  },
+  "fixture_kind": "actual_installed_producer_capture_with_external_transport_fixtures",
+  "producer_source_sha": "bc2e8d6800cc64ef44990ce9412d6b9c1c8824ff",
+  "producer_version": "2.3.111",
+  "request": {
+    "constraints": {
+      "effect_contract": {
+        "contract_version": "1.0",
+        "criteria": [
+          {
+            "description": "Explain the deployment boundary with source evidence.",
+            "id": "criterion-1"
+          }
+        ],
+        "delivery": "EVIDENCE_ONLY",
+        "mode": "READ_ONLY_ASSESSMENT",
+        "read_paths": [
+          "docs/"
+        ],
+        "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+        "write_paths": []
+      }
+    },
+    "correlation_id": "fixture-correlation-read_only_assessment-evidence_only",
+    "engineering_action_id": "fixture-action-read_only_assessment-evidence_only",
+    "producer": {
+      "id": "cli",
+      "type": "CLI"
+    },
+    "prompt": "Assess the deployment boundary from the committed architecture record.",
+    "repository_id": "djconnect"
+  },
+  "terminal_evidence": {
+    "artifact_type": "EP_TERMINAL_EVIDENCE",
+    "assurance": {
+      "findings": {
+        "artifact": null,
+        "open_blocking": 0,
+        "open_non_blocking": 0
+      },
+      "profile": null,
+      "quality_review": "NOT_RECORDED",
+      "repair_rounds": {
+        "maximum": 3,
+        "used": 0
+      },
+      "security_review": "NOT_RECORDED",
+      "status": "NOT_RECORDED"
+    },
+    "contract_version": "1.6",
+    "correlation": {
+      "correlation_id": "fixture-correlation-read_only_assessment-evidence_only",
+      "engineering_action_id": "fixture-action-read_only_assessment-evidence_only",
+      "mission_id": null
+    },
+    "delivery": {
+      "revision": null,
+      "status": "NOT_DELIVERED"
+    },
+    "effect_result": {
+      "assurance_reviews": [
+        {
+          "completed_at": "2026-10-06T16:23:28.813519+00:00",
+          "contract_version": "3.0",
+          "coverage": [
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "approved_criteria"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "source_evidence"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "meaningful_result"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "output_scope"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "document_design_content"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "validation_controls"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "restart_identity"
+            }
+          ],
+          "finding_dispositions": [],
+          "findings": [],
+          "invocation_id": "inbox-3ab913be50144503a6f58a782d2e54f3:quality:effect:0",
+          "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+          "reviewer": "quality",
+          "started_at": "2026-10-06T16:23:28.793430+00:00",
+          "status": "PASS",
+          "subject": {
+            "binding_digest": "sha256:e6a865c85b1cf07682bfce35c5a7613ffd56db9b3339eebfc1bf5c6c9ffca566",
+            "candidate_revision": null,
+            "criteria_digest": "sha256:939595e7d6cb848414e87ea63e8c096a0a43a4dd7172822dc8e10b85128232fd",
+            "effect_contract_digest": "sha256:15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+            "repair_ordinal": 0,
+            "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+            "source_snapshot_digest": "sha256:1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1",
+            "subject_digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "subject_id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+            "subject_kind": "REPORT_ARTIFACT"
+          }
+        },
+        {
+          "completed_at": "2026-10-06T16:23:28.911981+00:00",
+          "contract_version": "3.0",
+          "coverage": [
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "approved_criteria"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "source_evidence"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "authority_scope"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "sensitive_data"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "containment"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "artifact_integrity"
+            },
+            {
+              "evidence_ref": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+              "status": "REVIEWED",
+              "surface": "restart_identity"
+            }
+          ],
+          "finding_dispositions": [],
+          "findings": [],
+          "invocation_id": "inbox-3ab913be50144503a6f58a782d2e54f3:security:effect:0",
+          "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+          "reviewer": "security",
+          "started_at": "2026-10-06T16:23:28.891068+00:00",
+          "status": "PASS",
+          "subject": {
+            "binding_digest": "sha256:e6a865c85b1cf07682bfce35c5a7613ffd56db9b3339eebfc1bf5c6c9ffca566",
+            "candidate_revision": null,
+            "criteria_digest": "sha256:939595e7d6cb848414e87ea63e8c096a0a43a4dd7172822dc8e10b85128232fd",
+            "effect_contract_digest": "sha256:15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+            "repair_ordinal": 0,
+            "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+            "source_snapshot_digest": "sha256:1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1",
+            "subject_digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+            "subject_id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+            "subject_kind": "REPORT_ARTIFACT"
+          }
+        }
+      ],
+      "contract_version": "1.1",
+      "delivery": {
+        "kind": "EVIDENCE_ONLY",
+        "pull_request": null,
+        "revision": null
+      },
+      "effect_qualified": true,
+      "outcome": "COMPLETE",
+      "repair_rounds": {
+        "maximum": 3,
+        "used": 0
+      },
+      "subject": {
+        "binding_digest": "sha256:e6a865c85b1cf07682bfce35c5a7613ffd56db9b3339eebfc1bf5c6c9ffca566",
+        "candidate_revision": null,
+        "criteria_digest": "sha256:939595e7d6cb848414e87ea63e8c096a0a43a4dd7172822dc8e10b85128232fd",
+        "effect_contract_digest": "sha256:15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+        "repair_ordinal": 0,
+        "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+        "source_snapshot_digest": "sha256:1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1",
+        "subject_digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+        "subject_id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+        "subject_kind": "REPORT_ARTIFACT"
+      },
+      "terminal": true,
+      "validation_controls": [
+        {
+          "authority": "host_control",
+          "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:0",
+          "completed_at": "2026-10-06T16:23:28.115227+00:00",
+          "exit_code": 0,
+          "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+          "started_at": "2026-10-06T16:23:27.968562+00:00",
+          "status": "PASS",
+          "validation_id": "effect_source_binding"
+        },
+        {
+          "authority": "host_control",
+          "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:1",
+          "completed_at": "2026-10-06T16:23:28.309183+00:00",
+          "exit_code": 0,
+          "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+          "started_at": "2026-10-06T16:23:28.160649+00:00",
+          "status": "PASS",
+          "validation_id": "effect_output_integrity"
+        },
+        {
+          "authority": "host_control",
+          "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:2",
+          "completed_at": "2026-10-06T16:23:28.496219+00:00",
+          "exit_code": 0,
+          "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+          "started_at": "2026-10-06T16:23:28.351430+00:00",
+          "status": "PASS",
+          "validation_id": "effect_scope_containment"
+        },
+        {
+          "authority": "host_control",
+          "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:3",
+          "completed_at": "2026-10-06T16:23:28.683564+00:00",
+          "exit_code": 0,
+          "profile_digest": "sha256:66a6936edb04cc1d293caa882625a1a30264372f99b9e0d735f910a0c5684385",
+          "started_at": "2026-10-06T16:23:28.536141+00:00",
+          "status": "PASS",
+          "validation_id": "report_criteria_contract"
+        }
+      ],
+      "validation_profile": {
+        "controls": [
+          [
+            "effect_source_binding",
+            "host_control"
+          ],
+          [
+            "effect_output_integrity",
+            "host_control"
+          ],
+          [
+            "effect_scope_containment",
+            "host_control"
+          ],
+          [
+            "report_criteria_contract",
+            "host_control"
+          ]
+        ],
+        "subject": {
+          "binding_digest": "sha256:e6a865c85b1cf07682bfce35c5a7613ffd56db9b3339eebfc1bf5c6c9ffca566",
+          "candidate_revision": null,
+          "criteria_digest": "sha256:939595e7d6cb848414e87ea63e8c096a0a43a4dd7172822dc8e10b85128232fd",
+          "effect_contract_digest": "sha256:15ff2344945d0152123f8e4db0e2a6ab507c7046d55d16305c3172d4e743b479",
+          "repair_ordinal": 0,
+          "source_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+          "source_snapshot_digest": "sha256:1cc66d3b6954e74e0af7aeb8453c4dc15e86f6b1a0204b3d79338476101471b1",
+          "subject_digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+          "subject_id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+          "subject_kind": "REPORT_ARTIFACT"
+        },
+        "validation_bindings": [],
+        "version": "effect-validation@1.0"
+      }
+    },
+    "host_execution": {
+      "contract_version": "1.0",
+      "start": {
+        "checkout_identity_digest": "sha256:f78fdabb9fcba344e9f5f551683d0a433980e35f48b41eede43719d210e0fd0b",
+        "inventory_digest": "sha256:8abf442ae4b8954a62da4954869fc68c87390709e4e58447511675b3a1701728",
+        "status": "AVAILABLE",
+        "target_branch": "main",
+        "target_commit": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+        "tracked_file_count": 4
+      },
+      "terminal": {
+        "activity": {
+          "host_validation_actions": 4,
+          "provider_invocations": 3
+        },
+        "diff": {
+          "created": 0,
+          "deleted": 0,
+          "modified": 0,
+          "renamed": 0
+        },
+        "inventory_digest": "sha256:8abf442ae4b8954a62da4954869fc68c87390709e4e58447511675b3a1701728",
+        "status": "AVAILABLE",
+        "tracked_file_count": 4,
+        "worktree_state": "CLEAN"
+      }
+    },
+    "producer": {
+      "id": "cli",
+      "type": "CLI",
+      "version": null
+    },
+    "provenance": null,
+    "references": {
+      "finalization": null,
+      "quality": [],
+      "repair": [],
+      "validation": []
+    },
+    "report": {
+      "content_type": "application/json",
+      "digest": "sha256:5b6cbe0c7ea4142f4afea72e3502df66e57de03df21ca4a0e5651c2e6aaf487d",
+      "digest_algorithm": "sha256",
+      "id": "effect-result:inbox-3ab913be50144503a6f58a782d2e54f3:0",
+      "readback_path": "/v1/projects/djconnect/submissions/sub-d29153ccc5b1bde859e0c98f10f48dd5/effect-result"
+    },
+    "repository": {
+      "baseline_transition": {
+        "allowed_to": null,
+        "from": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+        "status": "EXACT",
+        "to": "4f1772ee6313a8a31c2a721ce59d122fa4903444"
+      },
+      "candidate": null,
+      "execution_baseline": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+      "id": "djconnect",
+      "requested_revision": "4f1772ee6313a8a31c2a721ce59d122fa4903444",
+      "revision": null,
+      "revision_required": false
+    },
+    "run": {
+      "delivery_qualified": false,
+      "effect_qualified": true,
+      "execution_completed_at": "2026-10-06T16:23:29.027791+00:00",
+      "execution_duration_ms": 1795,
+      "execution_started_at": "2026-10-06T16:23:27.233272+00:00",
+      "id": "inbox-3ab913be50144503a6f58a782d2e54f3",
+      "outcome": "COMPLETE"
+    },
+    "submission": {
+      "accepted_request_digest": "sha256:1d24eeac237a7862bcaa8bc398e9a8712bae1b0bcfc2a506d64de5f358fd424b",
+      "id": "sub-d29153ccc5b1bde859e0c98f10f48dd5",
+      "project_id": "djconnect",
+      "repository_id": "djconnect"
+    },
+    "validation_controls": {
+      "candidate_sha": null,
+      "contract_version": "1.0",
+      "controls": {
+        "effect_output_integrity": {
+          "category": "host_control",
+          "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:1",
+          "control_definition_digest": "sha256:54e7d9df1c6ac4663d06527ab82083982d17beffe1ad47305730e3a20931736d",
+          "control_identity": "effect_output_integrity",
+          "currentness": 0,
+          "diagnostic_evidence_ref": "UNAVAILABLE",
+          "duration_ms": 149,
+          "ended_at": "2026-10-06T16:23:28.309183+00:00",
+          "evidence_authority": "command_terminal",
+          "evidence_ref": "command_terminal",
+          "execution_status": "EXECUTED",
+          "exit_code": 0,
+          "observed_at": "2026-10-06T16:23:28.309183+00:00",
+          "required_for_profile": true,
+          "result": "PASS",
+          "result_detail": {
+            "status": "UNAVAILABLE"
+          },
+          "started_at": "2026-10-06T16:23:28.160649+00:00",
+          "validation_id": "effect_output_integrity"
+        },
+        "effect_scope_containment": {
+          "category": "host_control",
+          "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:2",
+          "control_definition_digest": "sha256:63f249fc32f36f9046ffcfbdbfd504cbacb46013a8b01bbd563911c0ab6cd310",
+          "control_identity": "effect_scope_containment",
+          "currentness": 0,
+          "diagnostic_evidence_ref": "UNAVAILABLE",
+          "duration_ms": 145,
+          "ended_at": "2026-10-06T16:23:28.496219+00:00",
+          "evidence_authority": "command_terminal",
+          "evidence_ref": "command_terminal",
+          "execution_status": "EXECUTED",
+          "exit_code": 0,
+          "observed_at": "2026-10-06T16:23:28.496219+00:00",
+          "required_for_profile": true,
+          "result": "PASS",
+          "result_detail": {
+            "status": "UNAVAILABLE"
+          },
+          "started_at": "2026-10-06T16:23:28.351430+00:00",
+          "validation_id": "effect_scope_containment"
+        },
+        "effect_source_binding": {
+          "category": "host_control",
+          "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:0",
+          "control_definition_digest": "sha256:a4cd6a57753b50df2a015885785c3cfb30f4b460551342f056ad383917ab08a7",
+          "control_identity": "effect_source_binding",
+          "currentness": 0,
+          "diagnostic_evidence_ref": "UNAVAILABLE",
+          "duration_ms": 147,
+          "ended_at": "2026-10-06T16:23:28.115227+00:00",
+          "evidence_authority": "command_terminal",
+          "evidence_ref": "command_terminal",
+          "execution_status": "EXECUTED",
+          "exit_code": 0,
+          "observed_at": "2026-10-06T16:23:28.115227+00:00",
+          "required_for_profile": true,
+          "result": "PASS",
+          "result_detail": {
+            "status": "UNAVAILABLE"
+          },
+          "started_at": "2026-10-06T16:23:27.968562+00:00",
+          "validation_id": "effect_source_binding"
+        },
+        "report_criteria_contract": {
+          "category": "host_control",
+          "command_id": "inbox-3ab913be50144503a6f58a782d2e54f3:effect:0:3",
+          "control_definition_digest": "sha256:feb23bde90c1c21e012c6e3fefd2e261a9ffd91d9eac072612dac9d45c4e9b55",
+          "control_identity": "report_criteria_contract",
+          "currentness": 0,
+          "diagnostic_evidence_ref": "UNAVAILABLE",
+          "duration_ms": 147,
+          "ended_at": "2026-10-06T16:23:28.683564+00:00",
+          "evidence_authority": "command_terminal",
+          "evidence_ref": "command_terminal",
+          "execution_status": "EXECUTED",
+          "exit_code": 0,
+          "observed_at": "2026-10-06T16:23:28.683564+00:00",
+          "required_for_profile": true,
+          "result": "PASS",
+          "result_detail": {
+            "status": "UNAVAILABLE"
+          },
+          "started_at": "2026-10-06T16:23:28.536141+00:00",
+          "validation_id": "report_criteria_contract"
+        }
+      },
+      "currentness": null,
+      "profile_currentness_conflict": false,
+      "profile_digest": null,
+      "profile_reference": "effect-validation@1.0",
+      "profile_selection_source": "accepted_effect_contract",
+      "required_validation_controls": [
+        "effect_source_binding",
+        "effect_output_integrity",
+        "effect_scope_containment",
+        "report_criteria_contract"
+      ],
+      "selected_validation_tier": "READ_ONLY_ASSESSMENT",
+      "status": "AVAILABLE",
+      "validation_profile_version": "effect-validation@1.0"
+    }
+  }
+}
