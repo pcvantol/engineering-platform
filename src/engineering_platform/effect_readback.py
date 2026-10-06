@@ -12,8 +12,8 @@ from .effect_execution import _load_result
 from .effect_state import subject
 
 
-CONTRACT_VERSION = "1.0"
-TERMINAL_CONTRACT_VERSION = "1.5"
+CONTRACT_VERSION = "1.1"
+TERMINAL_CONTRACT_VERSION = "1.6"
 
 
 def projection(database: Path, state: TransactionState) -> dict[str, object]:
@@ -34,6 +34,7 @@ def projection(database: Path, state: TransactionState) -> dict[str, object]:
     return {"contract_version": CONTRACT_VERSION, "outcome": state.phase,
             "terminal": state.terminal, "effect_qualified": qualified,
             "subject": identity,
+            "validation_profile": effect_evidence.profile_inputs(checkpoint, attempt),
             "artifact": {"id": attempt["result"]["artifact_id"], "digest_algorithm": "sha256",
                          "digest": "sha256:" + attempt["result"]["sha256"],
                          "content_type": "application/json", "content": envelope},

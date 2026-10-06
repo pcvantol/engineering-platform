@@ -135,7 +135,7 @@ class EffectIntegrationTests(unittest.TestCase):
         receipt = ParityLifecycleDispatcher(self.fixture.root).dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
         report = self.http(f"/v1/projects/djconnect/submissions/{submission}/effect-result")
-        fixtures.validate_public_schema("effect-result-v1", report)
+        fixtures.validate_public_schema("effect-result-v1.1", report)
         self.assertEqual(report["repair_rounds"]["used"], 0)
         self.assertTrue(report["effect_qualified"])
         for review in report["assurance_reviews"]:

@@ -212,7 +212,7 @@ def _http_json_openapi_document() -> dict[str, object]:
             "/v1/projects/{project_id}/submissions/{submission_id}/effect-result": {
                 "get": {
                     "summary": "Read the producer-bound FME result and exact artifact bytes",
-                    "description": "ep-effect-result/v1.0. Canonical compact sorted ASCII JSON of artifact.content hashes to artifact.digest. Same producer bearer required; terminal COMPLETE alone does not imply effect_qualified.",
+                    "description": "ep-effect-result/v1.1. Canonical compact sorted ASCII JSON of artifact.content hashes to artifact.digest; the same encoding of validation_profile hashes to every control/review profile_digest. Same producer bearer required; terminal COMPLETE alone does not imply effect_qualified.",
                     "security": [{"consumerBearer": []}],
                     "parameters": [
                         {"name": "project_id", "in": "path", "required": True, "schema": {"type": "string"}},
@@ -7340,8 +7340,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                         "validation_controls": ["1.0", "1.1"],
                         "delivery_revision_validation": ["1.0"],
                         "bounded_merge_delegation": ["1.0"],
-                        "effect_request": ["1.0"], "effect_result": ["1.0"],
-                        "terminal_evidence": [submission_service.TERMINAL_EVIDENCE_CONTRACT_VERSION, "1.5"],
+                        "effect_request": ["1.0"], "effect_result": ["1.1"],
+                        "effect_validation_profile": ["1.0"],
+                        "terminal_evidence": [submission_service.TERMINAL_EVIDENCE_CONTRACT_VERSION, "1.5", "1.6"],
                     }
                     declaration["authentication"] = {
                         "consumer_id": consumer_id,
