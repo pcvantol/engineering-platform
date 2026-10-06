@@ -158,11 +158,12 @@ class EffectWorkspaceTests(unittest.TestCase):
         snapshot.mkdir()
         (scratch / "escape").symlink_to(self.target, target_is_directory=True)
         probe = self.base / "probe.py"
-        probe.write_text("""import os, socket, sys
+        probe.write_text("""import errno, os, socket, sys
 for path in sys.argv[1:]:
     try:
         with open(path, 'w') as handle: handle.write('forbidden')
-    except (PermissionError, FileNotFoundError): pass
+    except OSError as error:
+        if error.errno not in {errno.EACCES, errno.EPERM, errno.ENOENT, errno.EROFS}: raise
     else: raise SystemExit('write was allowed')
 try:
     socket.create_connection(('127.0.0.1', 1), timeout=1)
@@ -176,6 +177,7 @@ else: raise SystemExit('network was allowed')
         command = workspace.sandbox_command(snapshot, (sys.executable, str(snapshot / "probe.py"),
             str(self.target / "docs/design.md"), str(self.target / ".git/index.lock"),
             str(self.target / ".ignored"), str(self.target / "temporary-then-reverted"),
+            str(snapshot.parent / "readonly-mount-ancestor"),
             str(scratch / "escape/private.txt")), scratch=scratch)
         completed = subprocess.run(command, env=workspace.child_environment(), text=True,
                                    capture_output=True, timeout=30, check=False)

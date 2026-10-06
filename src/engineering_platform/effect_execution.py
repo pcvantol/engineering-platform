@@ -102,8 +102,10 @@ def preflight(root: Path, database: Path, run_id: str, effects: dict[str, object
     probe_code = """import errno, os, socket, sys
 try:
     descriptor = os.open(sys.argv[1], os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-except (PermissionError, FileNotFoundError):
-    pass
+except OSError as error:
+    # Linux mount isolation can hide the path or expose a read-only ancestor.
+    if error.errno not in {errno.EACCES, errno.EPERM, errno.ENOENT, errno.EROFS}:
+        raise
 else:
     os.close(descriptor)
     raise SystemExit(42)

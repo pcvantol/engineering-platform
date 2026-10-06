@@ -122,8 +122,12 @@ fallback.
 The native runtime executable receives an exact-file read grant, including the
 qualified npm launcher's platform binary. Linux requires that binary for its
 in-sandbox re-execution. Installation directories and sibling files receive no
-grant. Outside-scope paths may be hidden by Linux mount isolation or denied by
-macOS; both prevent access, and the network probe still requires sandbox denial.
+grant. Outside-scope paths may be hidden by Linux mount isolation, have a
+read-only mount ancestor, or be denied by macOS. Admission accepts only
+`EACCES`, `EPERM`, `ENOENT` or `EROFS` for the forbidden file operation; other
+errors cannot prove enforcement. The network probe still requires permission
+denial. CI runs actual native tool and lifecycle admission probes before the
+complete suite.
 
 Validators execute real sandbox children with owned candidate/result reads,
 private scratch writes and no inherited credentials or ambient Git/Python
