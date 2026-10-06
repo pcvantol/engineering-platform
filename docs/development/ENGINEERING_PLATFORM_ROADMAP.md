@@ -130,18 +130,18 @@ had been superseded. That closure does not imply that every capability proposed
 in the draft reached current main. The strict current-control validation subset
 was independently delivered and qualified in PR #178. The still-relevant
 candidate-adoption, duplicate-safe first-publication recovery and exact
-committed-source qualification-build semantics are now explicit future work in
+committed-source qualification-build semantics are now qualified in
 the [Managed publication recovery V1 roadmap](MANAGED_PUBLICATION_RECOVERY_V1_ROADMAP.md)
 and its
 [documentary DAG](MANAGED_PUBLICATION_RECOVERY_V1_DAG.json). Historical #175
 source/tests remain forensic evidence only and are not current qualification.
 
-## Managed publication recovery V1 — future backlog
+## Managed publication recovery V1 — qualified delivery
 
-`EP_MANAGED_PUBLICATION_RECOVERY_V1` is PLANNED future work, separate from the
-active EP Server system/multi-instance productization lane. It reconstructs
-only the residual #175 semantics that remain absent or incomplete on current
-main:
+`EP_MANAGED_PUBLICATION_RECOVERY_V1` is QUALIFIED_ON_MAIN in EP 2.3.109,
+protected main `66433d7a2260397ec438a3052acae8ef50a84022` through PR #338.
+The [owning roadmap and exact-main installed receipt](MANAGED_PUBLICATION_RECOVERY_V1_ROADMAP.md#completed-delivery-evidence--2026-10-06)
+record source, review, coverage and installed proof for all four nodes:
 
 - `MPR-ADOPT`: typed exact existing-candidate adoption without implementation
   replay, followed by current validation and independent Q/S;
@@ -152,9 +152,11 @@ main:
   residue;
 - `MPR-Q`: integrated source + installed-artifact qualification.
 
-The lane is `NO_BUMP` documentation until explicitly selected. It does not
-reopen #175, reserve version 2.3.3, alter the current LANE_2 assignment, mutate
-CENTRAL/runtime/credentials, or authorize a real GitHub publication.
+The owner-selected assignment `L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006`
+delivered this scope with isolated product services and declared external
+adapters. Its closure does not reopen #175 or GP, start another roadmap
+assignment, qualify separate FME positives, publish a release, or authorize a
+live GitHub publication canary. This status finalization is `NO_BUMP`.
 
 ## Subagent orchestration and efficiency — retained audit and planned lane
 
@@ -172,8 +174,9 @@ provider turns, utility semantics, event deduplication and role specialization.
 Start with `SA-CTX`/`SA-ISO`, then `SA-OBS`; validation, selection, findings-consumer
 and role lanes follow their exact DAG edges. All runtime work is PLANNED.
 `SA-PUB` additionally requires qualified `MPR-Q` evidence from the
-separately owned Managed publication recovery backlog; this lane does not
-reimplement or close that work.
+separately owned Managed publication recovery capability. Its qualified
+source/artifact receipt now satisfies that external evidence gate; all SA
+implementation nodes retain their own prerequisites and PLANNED status.
 
 The full family is not a new first-canary gate. A concrete context/assurance defect
 on the selected canary path still requires a scoped safety assessment/fix.
