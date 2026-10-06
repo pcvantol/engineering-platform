@@ -5,6 +5,7 @@ import hashlib
 import json
 import unittest
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from jsonschema.exceptions import ValidationError
 
@@ -100,7 +101,12 @@ class EffectProfileTests(unittest.TestCase):
         self.assertEqual(integration.files(self.root), before)
 
     def test_evidence_only_profile_has_explicit_empty_bindings_and_legacy_schema_is_preserved(self):
-        compatibility = self.http("/v1/producer-compatibility?project_id=djconnect&repository_id=djconnect")
+        endpoint = f"http://127.0.0.1:{self.httpd.server_port}/v1/producer-compatibility"
+        with urlopen(Request(endpoint, headers={  # nosec B310
+            "Authorization": "Bearer " + self.fixture.credential,
+            "EP-Project-ID": "djconnect", "EP-Repository-ID": "djconnect",
+        })) as response:
+            compatibility = json.load(response)
         self.assertEqual(compatibility["contracts"]["effect_result"], ["1.1"])
         self.assertEqual(compatibility["contracts"]["effect_validation_profile"], ["1.0"])
         self.assertIn("1.5", compatibility["contracts"]["terminal_evidence"])
