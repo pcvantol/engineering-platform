@@ -249,10 +249,10 @@ def main(argv: list[str] | None = None) -> int:
         root = Path(temporary)
         wheelhouse, venv, data_root = root / "wheelhouse", root / "venv", root / "central"
         wheelhouse.mkdir()
-        # Build the candidate exactly as an installer would.  The qualification
-        # runner must not assume that its own interpreter happens to carry the
-        # project build backend; build isolation is part of the wheel contract.
-        subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)], check=True, capture_output=True, text=True)  # nosec B603
+        # The same route excludes checkout residue and refuses tracked edits
+        # before materializing the selected commit in an isolated directory.
+        subprocess.run([sys.executable, str(args.source_root / "tools/qualification/build_platform_wheel.py"),
+                        "--source-root", str(args.source_root), "--wheel-directory", str(wheelhouse)], check=True)  # nosec B603
         wheels = tuple(wheelhouse.glob("engineering_platform-*.whl"))
         if len(wheels) != 1:
             raise RuntimeError("CANDIDATE_WHEEL_UNAVAILABLE")

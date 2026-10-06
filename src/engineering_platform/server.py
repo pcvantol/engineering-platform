@@ -382,6 +382,32 @@ def _http_json_openapi_document() -> dict[str, object]:
                     },
                 },
             },
+            "/v1/projects/{project_id}/submissions/by-identity": {
+                "get": {
+                    "summary": "Recover one accepted Forge submission after a lost POST response",
+                    "description": "Read-only v1.0 identity lookup. Requires the bearer-derived producer, exact project, repository, correlation, idempotency key and locally computed accepted-request digest. Returns the immutable acceptance receipt and the selected v1.2/v1.3 producer readback; it never creates or dispatches a submission.",
+                    "security": [{"consumerBearer": []}],
+                    "parameters": [
+                        {"name": "project_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                        *(
+                            {"name": name, "in": "header", "required": True, "schema": {"type": "string"}}
+                            for name in (
+                                "EP-Submission-Identity-Contract", "EP-Producer-Readback-Contract",
+                                "EP-Repository-ID", "EP-Correlation-ID", "Idempotency-Key",
+                                "EP-Accepted-Request-Digest",
+                            )
+                        ),
+                    ],
+                    "responses": {
+                        "200": {"description": "Exactly one accepted submission with matching receipt and readback"},
+                        "400": {"description": "Incomplete or malformed identity"},
+                        "401": {"description": "Missing or invalid consumer credential"},
+                        "404": {"description": "No submission for the authenticated producer and key"},
+                        "409": {"description": "Identity, digest, contract or retained receipt conflict"},
+                        "503": {"description": "CENTRAL unavailable"},
+                    },
+                },
+            },
         },
         "components": {
             "securitySchemes": {
@@ -7292,6 +7318,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     declaration["contract_version"] = "1.1"
                     declaration["contracts"] = {
                         **declaration["contracts"],
+                        "submission_identity_readback": [submission_service.SUBMISSION_IDENTITY_READBACK_CONTRACT_VERSION],
                         "validation_controls": ["1.0", "1.1"],
                         "delivery_revision_validation": ["1.0"],
                         "bounded_merge_delegation": ["1.0"],
@@ -7516,6 +7543,42 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(200, projection, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except sqlite3.Error:
                 self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+            return
+        identity_readback = re.fullmatch(
+            r"/v1/projects/([^/]+)/submissions/by-identity", request.path,
+        )
+        if identity_readback:
+            project_id = identity_readback.group(1)
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    consumer_id = _authenticated_consumer(connection, token, project_id)
+                    if consumer_id is None:
+                        self._send(401, {"error": "UNAUTHENTICATED"}, cache_control="no-store")
+                        return
+                    required = (
+                        "EP-Submission-Identity-Contract", "EP-Producer-Readback-Contract",
+                        "EP-Repository-ID", "EP-Correlation-ID", "Idempotency-Key",
+                        "EP-Accepted-Request-Digest",
+                    )
+                    if any(not self.headers.get(name) for name in required):
+                        self._send(400, {"error": "SUBMISSION_IDENTITY_REQUEST_INCOMPLETE"}, cache_control="no-store")
+                        return
+                    projection = submission_service.producer_readback_by_identity(
+                        connection, project_id=project_id, consumer_id=consumer_id,
+                        repository_id=self.headers["EP-Repository-ID"],
+                        correlation_id=self.headers["EP-Correlation-ID"],
+                        idempotency_key=self.headers["Idempotency-Key"],
+                        accepted_request_digest=self.headers["EP-Accepted-Request-Digest"],
+                        contract_version=self.headers["EP-Submission-Identity-Contract"],
+                        readback_version=self.headers["EP-Producer-Readback-Contract"],
+                    )
+                self._send(200, projection, initialize(self.server.data_root).instance_id, cache_control="no-store")  # type: ignore[attr-defined]
+            except submission_service.SubmissionError as error:
+                self._send(error.status, {"error": error.code}, cache_control="no-store")
+            except sqlite3.Error:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"}, cache_control="no-store")
             return
         readback = re.fullmatch(r"/v1/projects/([^/]+)/submissions/([^/]+)", request.path)
         if readback:

@@ -37,18 +37,9 @@ def command(binary: Path, *args: str) -> dict[str, object]:
 
 
 def build_wheel(source_root: Path, wheelhouse: Path) -> None:
-    """Build normally first; use the installed backend only when offline."""
-    command = (sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(source_root))
-    try:
-        subprocess.run(command, check=True, capture_output=True, text=True)  # nosec B603
-    except subprocess.CalledProcessError:
-        # CI verifies the ordinary isolated build. Local recovery remains
-        # possible when its selected interpreter already has the declared
-        # backend but a package index is deliberately unavailable.
-        subprocess.run(
-            (*command[:5], "--no-build-isolation", *command[5:]),
-            check=True, capture_output=True, text=True,
-        )  # nosec B603
+    """Use the one isolated, committed-source qualification build route."""
+    subprocess.run((sys.executable, str(source_root / "tools/qualification/build_platform_wheel.py"),
+                    "--source-root", str(source_root), "--wheel-directory", str(wheelhouse)), check=True)  # nosec B603
 
 
 def git(path: Path, *args: str) -> None:

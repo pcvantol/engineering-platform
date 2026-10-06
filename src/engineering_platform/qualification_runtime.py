@@ -6,6 +6,7 @@ opts in explicitly, so no real Codex or GitHub write can escape its fixture.
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import json
 import os
 import re
@@ -18,6 +19,8 @@ from .capability_review import (
     mandatory_coverage_surfaces,
 )
 from .execution_models import AgentResult, PullRequestEvidence
+from .execution_repository import SubprocessRepositoryClient
+from .managed_publication import PublicationCandidate
 from .validation_profile import control_launcher
 
 
@@ -273,10 +276,36 @@ class DeterministicQualificationAgent:
         )
 
 
+class LocalQualificationRepository(SubprocessRepositoryClient):
+    """Real Git with the explicitly simulated GitHub bare-origin identity."""
+    def trusted_origin_identity(self, root: Path) -> str | None:
+        identity = super().trusted_origin_identity(root)
+        if identity is not None:
+            return identity
+        remote = Path(self._run(root, "git", "remote", "get-url", "origin"))
+        if remote.is_absolute() and (remote / "HEAD").is_file() and (remote / "objects").is_dir():
+            return "qualification/local"
+        return None
+
+    def inspect(self, root: Path):
+        observed = super().inspect(root)
+        return replace(observed, repository=self.trusted_origin_identity(root) or observed.repository)
+
+
 class LocalQualificationGitHub:
-    """A local PR/check adapter: no network, push, or GitHub mutation."""
+    """A stateful PR/check adapter; host Git effects use a real local bare origin."""
     def __init__(self, root: Path) -> None:
         self.root, self.calls = root, 0
+        self.publications: list[PublicationCandidate] = []
+
+    def publication_candidates(self, repository: str, branch: str) -> list[PublicationCandidate]:
+        return [item for item in self.publications if item.repository == repository and item.branch == branch]
+
+    def create_draft_publication(self, repository: str, branch: str, base: str, title: str, body: str) -> None:
+        if self.publications:
+            raise RuntimeError("QUALIFICATION_DUPLICATE_PUBLICATION")
+        sha = subprocess.run(("git", "-C", str(self.root), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
+        self.publications.append(PublicationCandidate(1, repository, repository, branch, base, sha, "OPEN", True))
 
     def pull_request(self, number: int) -> PullRequestEvidence:
         self.calls += 1

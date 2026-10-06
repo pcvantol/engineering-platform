@@ -7,10 +7,12 @@ from pathlib import Path
 import re
 import time
 from typing import Protocol
+from urllib.parse import urlencode
 
 from .execution_errors import RunnerError
 from .execution_models import PullRequestEvidence, RepositoryEvidence
 from .providers import GitProvider, GitHubProvider
+from .managed_publication import PublicationCandidate, valid_branch
 
 
 GIT_SYNC_LOCK_RETRY_ATTEMPTS = 3
@@ -47,6 +49,7 @@ class RepositoryClient(Protocol):
     def inspect(self, root: Path) -> RepositoryEvidence: ...
     def main_contains(self, root: Path, sha: str) -> bool: ...
     def protected_main_revision(self, root: Path) -> str: ...
+    def local_main_revision(self, root: Path) -> str: ...
     def refresh_main_reference(self, root: Path) -> None: ...
     def remote_main_contains(self, root: Path, sha: str) -> bool: ...
     def synchronize_main(self, root: Path) -> None: ...
@@ -54,9 +57,12 @@ class RepositoryClient(Protocol):
     def revision_is_ancestor(self, root: Path, ancestor: str, descendant: str) -> bool: ...
     def trusted_origin_identity(self, root: Path) -> str | None: ...
     def workspace_operation_active(self, root: Path) -> bool: ...
+    def publish_candidate_branch(self, root: Path, repository: str, branch: str, sha: str) -> None: ...
 
 
 class GitHubClient(Protocol):
+    def publication_candidates(self, repository: str, branch: str) -> list[PublicationCandidate]: ...
+    def create_draft_publication(self, repository: str, branch: str, base: str, title: str, body: str) -> None: ...
     def pull_request(self, number: int) -> PullRequestEvidence: ...
     def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None: ...
     def ready(self, number: int) -> None: ...
@@ -116,6 +122,9 @@ class SubprocessRepositoryClient:
         if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
             raise RunnerError("protected main revision is unavailable")
         return revision
+
+    def local_main_revision(self, root: Path) -> str:
+        return self._run(root, "git", "rev-parse", "--verify", "refs/heads/main")
 
     def remote_main_contains(self, root: Path, sha: str) -> bool:
         return self.provider.execute(root, "git", "merge-base", "--is-ancestor", sha, "origin/main").returncode == 0
@@ -256,6 +265,23 @@ class SubprocessRepositoryClient:
             raise RunnerError("MANAGED_PREPARATION_RESULT_UNCERTAIN")
         return prepared
 
+    def publish_candidate_branch(self, root: Path, repository: str, branch: str, sha: str) -> None:
+        observed = self.inspect(root)
+        if (not valid_branch(branch) or not re.fullmatch(r"[0-9a-f]{40}", sha)
+                or self.trusted_origin_identity(root) != repository
+                or observed.repository != repository or observed.branch != branch
+                or observed.head_sha != sha or not observed.clean or self.workspace_operation_active(root)):
+            raise RunnerError("Publication branch is not the exact reviewed candidate.")
+        ref = f"refs/heads/{branch}"
+        remote = self._run(root, "git", "ls-remote", "--heads", "origin", ref).strip()
+        if remote:
+            if remote.split() != [sha, ref]:
+                raise RunnerError("Publication branch conflicts with the remote candidate.")
+            return
+        # Only an absent remote ref may be installed. This explicit empty
+        # lease cannot overwrite a branch created concurrently.
+        self._run(root, "git", "push", f"--force-with-lease={ref}:", "origin", f"{sha}:{ref}")
+
     def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
         self._run(root, "git", "fetch", "--prune"); self.synchronize_main(root)
         if not self.inspect(root).clean: raise RunnerError("Cleanup blocked: workspace is not clean.")
@@ -285,6 +311,34 @@ class GhCliClient:
         # `gh api` has no `--repo` flag; only `gh pr` accepts that selector.
         scoped = (*args, "--repo", self.repository) if self.repository and args and args[0] == "pr" else args
         return self.provider.github(*scoped)
+
+    def publication_candidates(self, repository: str, branch: str) -> list[PublicationCandidate]:
+        if repository != self.repository or not valid_branch(branch):
+            raise RunnerError("Publication requires the exact configured GitHub repository and branch.")
+        query = urlencode({"state": "all", "head": f"{repository.split('/')[0]}:{branch}", "per_page": 100})
+        try:
+            pages = json.loads(self._github("api", f"repos/{repository}/pulls?{query}", "--paginate", "--slurp"))
+            if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+                raise ValueError("invalid pages")
+            candidates = []
+            for page in pages:
+                for item in page:
+                    candidates.append(PublicationCandidate(
+                        item["number"], item["base"]["repo"]["full_name"], item["head"]["repo"]["full_name"],
+                        item["head"]["ref"], item["base"]["ref"], item["head"]["sha"],
+                        "MERGED" if item.get("merged_at") else str(item["state"]).upper(), item["draft"],
+                    ))
+            return candidates
+        except (RuntimeError, ValueError, KeyError, TypeError) as error:
+            raise RunnerError("Exact publication readback is unavailable.") from error
+
+    def create_draft_publication(self, repository: str, branch: str, base: str, title: str, body: str) -> None:
+        if repository != self.repository or not valid_branch(branch) or base != "main":
+            raise RunnerError("Publication target differs from configured authority.")
+        try:
+            self._github("pr", "create", "--head", branch, "--base", base, "--draft", "--title", title, "--body", body)
+        except RuntimeError as error:
+            raise RunnerError("Draft publication acknowledgement is uncertain.") from error
 
     def version_preparation_writer(self) -> dict[str, object]:
         """Read the configured writer's safe identity and repository scope.

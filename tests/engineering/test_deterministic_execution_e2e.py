@@ -76,19 +76,20 @@ class DeterministicExecutionE2ETests(unittest.TestCase):
             "",
         )
 
-    def test_wheel_build_uses_the_isolated_contract_before_offline_fallback(self) -> None:
+    def test_wheel_build_preserves_committed_source_failure_without_fallback(self) -> None:
         wheelhouse = self.root / "wheelhouse"
         first = subprocess.CalledProcessError(2, ("pip", "wheel"))
         with patch.object(
             self.module.subprocess,
             "run",
-            side_effect=(first, subprocess.CompletedProcess((), 0)),
+            side_effect=first,
         ) as run:
-            self.module.build_wheel(self.root, wheelhouse)
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.module.build_wheel(self.root, wheelhouse)
         first_command = run.call_args_list[0].args[0]
-        fallback_command = run.call_args_list[1].args[0]
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(Path(first_command[1]).name, "build_platform_wheel.py")
         self.assertNotIn("--no-build-isolation", first_command)
-        self.assertIn("--no-build-isolation", fallback_command)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 # Managed publication recovery V1 roadmap
 
-**Increment:** `EP_MANAGED_PUBLICATION_RECOVERY_V1`  
-**Status:** PLANNED / FUTURE_WORK  
-**Version effect:** NO_BUMP documentation only  
-**Execution authority:** none
+**Increment:** `EP_MANAGED_PUBLICATION_RECOVERY_V1`
+**Status:** IN_PROGRESS / source implementation; protected-main and installed qualification pending
+**Version effect:** 2.3.109
+**Execution authority:** [owner assignment](https://github.com/pcvantol/forge/issues/142#issuecomment-6011925204), `L2-EP-MANAGED-PUBLICATION-RECOVERY-V1-20261006`
 
 This roadmap normalizes the still-relevant residual scope from closed, unmerged
 PR #175 (`Draft: managed post-assurance publication closure`) into current
@@ -25,10 +25,10 @@ The documentary DAG is
 | Node | Status | Bounded result | Acceptance |
 | --- | --- | --- | --- |
 | `MPR-0` | DOCUMENTED | Reconcile historical #175 scope against current main and explicitly retire the old draft as an implementation source | #175 remains historical/unmerged; PR #178's strict-current-validation delivery is not duplicated; all remaining work has a current owner and acceptance |
-| `MPR-ADOPT` | PLANNED | Typed adoption of an exact existing Managed candidate | One explicitly authorized `branch + candidate SHA` is adopted without rerunning initial implementation; current validation and independent Quality/Security run against that exact candidate; run-wide repair lineage/budget is preserved; stale/foreign/mutated candidate fails closed |
-| `MPR-PUBREC` | PLANNED | Deterministic, duplicate-safe first-PR publication and recovery | Before create/retry the host performs exact GitHub readback; one matching open draft with expected base/head SHA is reconciled; mismatch/ambiguity blocks; uncertain acknowledgement/crash/network loss can resume without a second PR or replaying implementation; unchanged reviewed SHA remains mandatory |
-| `MPR-QBUILD` | PLANNED | Qualification artifacts are built from exact committed source | Wheel/sdist qualification materializes exact committed `HEAD` in an isolated source tree; tracked dirty state fails before build; ignored/untracked residue cannot silently enter qualification bytes; deterministic and transport qualification use that exact build path |
-| `MPR-Q` | PLANNED | Integrated source + installed-artifact qualification of the three residual capabilities | Current-main implementation proves adopted-candidate continuation, publication recovery/idempotence and committed-source build hardening together; source and installed-wheel evidence are distinct; no historical #175 test result is promoted to current PASS |
+| `MPR-ADOPT` | IMPLEMENTED_PENDING_QUALIFICATION | Typed adoption of an exact existing Managed candidate | One explicitly authorized `branch + candidate SHA` is adopted without rerunning initial implementation; current validation and independent Quality/Security run against that exact candidate; run-wide repair lineage/budget is preserved; stale/foreign/mutated candidate fails closed |
+| `MPR-PUBREC` | IMPLEMENTED_PENDING_QUALIFICATION | Deterministic, duplicate-safe first-PR publication and recovery | Before create/retry the host performs exact GitHub readback; one matching open draft with expected base/head SHA is reconciled; mismatch/ambiguity blocks; uncertain acknowledgement/crash/network loss can resume without a second PR or replaying implementation; unchanged reviewed SHA remains mandatory |
+| `MPR-QBUILD` | IMPLEMENTED_PENDING_QUALIFICATION | Qualification artifacts are built from exact committed source | Wheel/sdist qualification materializes exact committed `HEAD` in an isolated source tree; tracked dirty state fails before build; ignored/untracked residue cannot silently enter qualification bytes; deterministic and transport qualification use that exact build path |
+| `MPR-Q` | IN_PROGRESS | Integrated source + installed-artifact qualification of the three residual capabilities | Current-main implementation proves adopted-candidate continuation, publication recovery/idempotence and committed-source build hardening together; source and installed-wheel evidence are distinct; no historical #175 test result is promoted to current PASS |
 
 ## MPR-ADOPT — existing Managed candidate adoption
 
@@ -144,3 +144,7 @@ This roadmap does not:
 On pickup, reconstruct from current `main`, compare the old draft only as
 forensic design evidence, and deliver each capability through normal protected
 EP review, qualification and versioning.
+
+## Active delivery evidence
+
+The [Managed candidate and publication contract](../engineering/MANAGED_CANDIDATE_PUBLICATION_CONTRACT.md) defines the typed local-owner ingress, canonical publication intent and exact committed-source build. The current branch includes real Git/CENTRAL lifecycle and failure tests. Source implementation does not yet claim protected merge, final installed-main qualification or completion of `MPR-Q`. The historical documentary non-goals above describe the original backlog registration; the linked owner assignment supplies the current bounded development and qualification authority.
