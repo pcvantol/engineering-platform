@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -15,11 +16,16 @@ import time
 import zipfile
 
 
+def verify_wheel_identity(selected: Path, built: Path) -> None:
+    """Every byte, including metadata, scripts and .pth files, must match."""
+    if hashlib.sha256(selected.read_bytes()).digest() != hashlib.sha256(built.read_bytes()).digest():
+        raise RuntimeError("MPR_WHEEL_SOURCE_IDENTITY_MISMATCH")
+
+
 def installed_matrix(wheel: Path, source: str, evidence: Path) -> None:
     import engineering_platform
     from tests.engineering.test_managed_adoption import AdoptionLifecycleTests
     from engineering_platform.agent_state import StateStore
-    from engineering_platform.execution_lease import LEASE_TIMEOUT_SECONDS
     package = Path(engineering_platform.__file__).resolve().parent
     if Path(sys.prefix).resolve() not in package.parents or "site-packages" not in package.parts:
         raise RuntimeError("MPR_REQUIRES_NONEDITABLE_INSTALLED_PACKAGE")
@@ -33,7 +39,6 @@ def installed_matrix(wheel: Path, source: str, evidence: Path) -> None:
         area = fixture.area
         (area / "selection.json").write_text(json.dumps(fixture.selection))
         command = [sys.executable, "-m", "tests.engineering.mpr_process_worker", str(area)]
-        started = time.monotonic()
         first = subprocess.run([*command, "start"], text=True, capture_output=True, timeout=45)
         if first.returncode != 91:
             raise RuntimeError("MPR_CRASH_BOUNDARY_NOT_REACHED: " + first.stderr[-1500:])
@@ -47,7 +52,11 @@ def installed_matrix(wheel: Path, source: str, evidence: Path) -> None:
         # Respect the real product lease timeout. No fixture edits expiry or
         # substitutes a clock to turn a dead process into fresh authority.
         print("MPR_RESTART_WAIT=existing_lease_expiry", flush=True)
-        remaining = LEASE_TIMEOUT_SECONDS + 2 - (time.monotonic() - started)
+        with sqlite3.connect(f"file:{fixture.database}?mode=ro", uri=True) as connection:
+            expiry, = connection.execute(
+                "SELECT expires_at FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE'", ("adopt-run",),
+            ).fetchone()
+        remaining = (datetime.fromisoformat(expiry) - datetime.now(timezone.utc)).total_seconds() + 2
         if remaining > 0: time.sleep(remaining)
         resumed = subprocess.run([*command, "resume"], text=True, capture_output=True, timeout=30)
         if resumed.returncode:
@@ -92,19 +101,14 @@ def main():
     sha = subprocess.check_output(("git", "-C", str(source), "rev-parse", "HEAD"), text=True).strip()
     with tempfile.TemporaryDirectory(prefix="ep-mpr-installed-") as temporary:
         work = Path(temporary)
+        subprocess.run([sys.executable, str(source / "tools/qualification/build_platform_wheel.py"), "--source-root", str(source), "--wheel-directory", str(work / "dist")], check=True)
+        wheel, = (work / "dist").glob("*.whl")
         if args.wheel:
-            wheel = args.wheel.resolve()
-        else:
-            subprocess.run([sys.executable, str(source / "tools/qualification/build_platform_wheel.py"), "--source-root", str(source), "--wheel-directory", str(work / "dist")], check=True)
-            wheel, = (work / "dist").glob("*.whl")
+            verify_wheel_identity(args.wheel.resolve(), wheel)
         if subprocess.check_output(("git", "-C", str(source), "status", "--porcelain", "--untracked-files=no"), text=True).strip():
             raise RuntimeError("MPR_SOURCE_MUST_BE_COMMITTED")
-        with zipfile.ZipFile(wheel) as archive:
-            for member in archive.namelist():
-                if member.startswith("engineering_platform/") and not member.endswith("/"):
-                    committed = subprocess.check_output(("git", "-C", str(source), "show", f"{sha}:src/{member}"))
-                    if archive.read(member) != committed:
-                        raise RuntimeError("MPR_WHEEL_SOURCE_IDENTITY_MISMATCH")
+        if subprocess.check_output(("git", "-C", str(source), "rev-parse", "HEAD"), text=True).strip() != sha:
+            raise RuntimeError("MPR_SOURCE_CHANGED_DURING_BUILD")
         subprocess.run([sys.executable, "-m", "venv", str(work / "venv")], check=True)
         python = work / "venv/bin/python"
         subprocess.run([str(python), "-m", "pip", "install", "--no-deps", str(wheel)], check=True)
@@ -113,8 +117,9 @@ def main():
         for relative in ("tests/engineering/__init__.py", "tests/engineering/harness_isolation.py",
                          "tests/engineering/test_execution_host.py", "tests/engineering/test_managed_adoption.py",
                          "tests/engineering/test_managed_publication.py", "tests/engineering/mpr_process_worker.py"):
-            shutil.copy2(source / relative, runner / relative)
-        shutil.copy2(Path(__file__), runner / "mpr_matrix.py")
+            (runner / relative).write_bytes(subprocess.check_output(("git", "-C", str(source), "show", f"{sha}:{relative}")))
+        (runner / "mpr_matrix.py").write_bytes(subprocess.check_output((
+            "git", "-C", str(source), "show", f"{sha}:tools/qualification/mpr_installed_matrix.py")))
         environment = os.environ.copy()
         environment.pop("PYTHONPATH", None)
         environment.pop("PYTHONHOME", None)

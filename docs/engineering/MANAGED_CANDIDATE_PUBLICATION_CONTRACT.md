@@ -36,7 +36,7 @@ Selection V1 requires exactly these fields:
 | `repair_ordinal` | Existing consumed run-wide repair count, zero for a new run |
 | `validation_profile_digest` | Current candidate, ordinal, diff-derived profile and control-launcher identity |
 
-The host rechecks the project binding, origin, clean checkout, branch, candidate,
+The host rechecks the canonical project binding and current repository declaration, origin, clean checkout, branch, candidate,
 current remote and local main, ancestry and validation profile while holding
 the existing run lease. It preserves the selected branch instead of switching
 to main. It enters normal required validation and independent Quality/Security
@@ -48,6 +48,11 @@ unknown/foreign lineage, missing authority, stale base/profile, active Git
 operation, dirty checkout or changed candidate fails closed. An accepted repair
 continues only through the same run's durable repair audit and candidate.
 Existing terminal runs are not reopened by this command.
+An interrupted repair consumes its existing durable provider result and repair
+reservation before checking the new candidate and repeating current validation
+and both reviews. Historical adoption/publication identities remain attached
+when the run advances to Finalization or Reconciliation; their own recovery
+routes continue without re-entering first implementation publication.
 
 ## Host-owned first publication
 
@@ -96,6 +101,11 @@ wheel/sdist SHA-256. It rechecks checkout identity after building and artifact
 bytes before reporting PASS. The installed qualification consumes those exact
 distribution bytes outside the source checkout. Building is not publication or
 release authorization.
+Both deterministic and transport installed qualification call this same build
+entrypoint. The MPR matrix always builds the pinned source itself; a supplied
+wheel must match the complete rebuilt artifact byte for byte before installation,
+including its metadata, scripts and every non-package member. Its test harness
+is also copied from the pinned Git commit.
 
 ## Qualification inventory
 

@@ -82,6 +82,132 @@ class AdoptionLifecycleTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.run(("git", *args), cwd=self.root, check=True, text=True, capture_output=True).stdout.strip()
 
+    def stop_host(self, runner):
+        if runner.lease_heartbeat:
+            from engineering_platform.execution_lease import release
+            release(self.root, runner.lease_heartbeat.stop(), central_database=self.database)
+            runner.active_lease = runner.lease_heartbeat = None
+
+    def lifecycle_adapters(self):
+        fixture = self
+        class Agent(FakeAgent):
+            def invoke(self, root, prompt):
+                self.prompts.append(prompt)
+                if "Local repository validation gate" not in prompt:
+                    raise SystemExit("external provider handoff")
+                return AgentResult("COMPLETE", fixture.git("branch", "--show-current"), commit_sha=fixture.git("rev-parse", "HEAD"))
+            def review(self, root, selected, objective, evidence=None):
+                return mandatory_review_result(selected.reviewer, objective)
+        class GitHub:
+            def __init__(self): self.candidates, self.creates = [], 0
+            def publication_candidates(self, *args): return self.candidates
+            def create_draft_publication(inner, repository, branch, base, title, body):
+                inner.creates += 1
+                inner.candidates = [PublicationCandidate(71, repository, repository, branch, "main", fixture.git("rev-parse", "HEAD"), "OPEN", True)]
+            def pull_request(self, number):
+                candidate = self.candidates[0]
+                return PullRequestEvidence(number, "OPEN", True, True, head_branch=candidate.branch, base_branch="main", head_sha=candidate.head_sha)
+            def ready(self, number): pass
+            def normalize_markdown_body(self, number): return False
+            def find_open_pull_request(self, *args): return None
+        return Agent(AgentResult("COMPLETE")), GitHub()
+
+    def test_historical_adoption_and_publication_do_not_redirect_later_transactions(self):
+        agent, github = self.lifecycle_adapters()
+        runner = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        self.addCleanup(self.stop_host, runner)
+        waiting = runner.run(self.prompt, run_id="adopt-run", owner_authorized=True, managed_candidate=self.selection)
+        self.assertEqual(waiting.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.git("switch", "main")
+        self.git("merge", "--ff-only", "codex/existing")
+        self.transport.command(self.root, "git", "push", "origin", "main")
+        for kind, start in (("FINALIZATION", runner._start_finalization), ("RECONCILIATION", runner._start_automatic_reconciliation)):
+            with self.subTest(kind=kind):
+                # The ordinary entry saves its checkpoint before the external
+                # provider is interrupted. All host/state services remain real.
+                with self.assertRaisesRegex(SystemExit, "external provider handoff"):
+                    start(waiting, 71) if kind == "FINALIZATION" else start(waiting)
+                checkpoint = self.store.load("adopt-run")
+                self.assertEqual(checkpoint.transaction_kind, kind)
+                self.assertEqual(checkpoint.publication_intent, waiting.publication_intent)
+                self.assertEqual(checkpoint.managed_candidate_adoption, self.selection)
+                resumed = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+                self.addCleanup(self.stop_host, resumed)
+                if kind == "FINALIZATION":
+                    with self.assertRaisesRegex(SystemExit, "external provider handoff"):
+                        resumed.run(self.prompt, run_id="adopt-run", resume=True)
+                else:
+                    result = resumed.run(self.prompt, run_id="adopt-run", resume=True)
+                    # Existing reconciliation fails closed without its own
+                    # finalization-merge/PR receipt, never republishes work.
+                    self.assertEqual(result.next_action, "reconciliation_recovery_evidence_required")
+                after = self.store.load("adopt-run")
+                self.assertEqual(after.transaction_kind, kind)
+                self.assertEqual(after.terminal, kind == "RECONCILIATION")
+                self.assertEqual(after.publication_intent, waiting.publication_intent)
+                self.assertEqual(github.creates, 1)
+                self.stop_host(resumed)
+
+    def test_recovered_adopted_repair_consumes_same_reservation_then_qualifies_new_sha(self):
+        from engineering_platform.provider_recovery import (
+            create_recovery_available, persist_recovery_agent_result, transition_recovery_state,
+        )
+        agent, github = self.lifecycle_adapters()
+        state = TransactionState("adopt-run", "qualification/managed", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION",
+                                 owner_authorized=True, last_verified_sha=self.sha, implementation_head_sha=self.sha)
+        state = verify_selection(selection=self.selection, state=state, root=self.root, repository=self.repository,
+                                 central_database=self.database, owner_authorized=True)
+        self.store.save(state)
+        runner = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        state, admission_error = runner._confirm_deterministic_admission(state)
+        self.assertIsNone(admission_error)
+        with self.assertRaisesRegex(SystemExit, "external provider handoff"):
+            runner._repair(state, "local validation failed. Correct the documentation heading.")
+        reserved = self.store.load("adopt-run")
+        self.assertEqual((reserved.repair_iterations, reserved.repair_audit[-1]["outcome"]), (1, "planned"))
+        # The interrupted external provider returned its committed candidate
+        # through the existing immutable result/recovery services.
+        (self.root / "README.md").write_text("# Repaired candidate\n")
+        self.git("add", "README.md")
+        self.git("commit", "-qm", "same reserved repair")
+        repaired = self.git("rev-parse", "HEAD")
+        recovery = create_recovery_available(self.root, run_id="adopt-run", triggering_invocation_id="interrupted-repair",
+            lifecycle_phase="REPAIR_AGENT", branch="codex/existing", worktree_identity=str(self.root), lease_id=None,
+            central_database=self.database)
+        reference = persist_recovery_agent_result(self.root, run_id="adopt-run", invocation_id=recovery["replacement_invocation_id"],
+            result=AgentResult("COMPLETE", "codex/existing", commit_sha=repaired), central_database=self.database,
+            artifact_root=self.data / "artifacts")
+        self.assertTrue(transition_recovery_state(self.root, run_id="adopt-run", expected="RECOVERY_AVAILABLE", target="RECOVERED",
+            result="SUCCESS", result_evidence_ref=reference, central_database=self.database))
+        resumed = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
+        self.addCleanup(self.stop_host, resumed)
+        after = resumed.run(self.prompt, run_id="adopt-run", resume=True)
+        self.assertEqual(after.phase, "WAIT_FOR_OPERATOR_MERGE", after)
+        self.assertEqual(after.repair_iterations, 1)
+        self.assertEqual(len(after.repair_audit), 1)
+        self.assertEqual(after.repair_audit[0]["repair_id"], reserved.repair_audit[0]["repair_id"])
+        self.assertEqual(after.repair_audit[0]["commit_sha"], repaired)
+        self.assertEqual(after.publication_intent["candidate_sha"], repaired)
+        self.assertEqual(after.assurance_profile["candidate_sha"], repaired)
+        self.assertEqual(after.managed_candidate_adoption, self.selection)
+        self.assertEqual(github.creates, 1)
+        self.assertEqual(len(agent.prompts), 2)  # interrupted repair, then read-only validation
+
+    def test_current_committed_declaration_must_still_match_the_central_binding(self):
+        declaration = self.root / ".engineering-platform/repository.json"
+        payload = json.loads(declaration.read_text())
+        payload["project"]["id"] = "foreign-project"
+        payload["repository"]["id"] = "foreign-repository"
+        declaration.write_text(json.dumps(payload))
+        self.git("add", str(declaration))
+        self.git("commit", "-qm", "changed declaration")
+        sha = self.git("rev-parse", "HEAD")
+        selection = {**self.selection, "candidate_sha": sha, "validation_profile_digest": profile_digest(self.root, sha, 0)}
+        state = TransactionState("adopt-run", "qualification/managed", str(self.prompt), "INITIALIZE", owner_authorized=True)
+        with self.assertRaisesRegex(RuntimeError, "project binding is unavailable"):
+            verify_selection(selection=selection, state=state, root=self.root, repository=self.repository,
+                             central_database=self.database, owner_authorized=True)
+
     def test_typed_owner_adoption_validates_reviews_and_recovers_lost_ack(self):
         selection = self.selection
         class AssuranceAgent(FakeAgent):

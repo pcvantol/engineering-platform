@@ -1316,6 +1316,21 @@ class EngineeringRunner:
         if isinstance(accepted, TransactionState):
             return accepted
         repair, result = accepted
+        if (repair.managed_candidate_adoption is not None and repair.transaction_kind == "IMPLEMENTATION"
+                and repair.pull_request is None and repair.publication_intent is None):
+            # A recovered repair now has its immutable result in the original
+            # reservation. Recheck the actual binding/owner and candidate
+            # before any new validation or assurance provider can run.
+            from .managed_adoption import verify_selection
+            try:
+                repair = verify_selection(
+                    selection=repair.managed_candidate_adoption,
+                    state=replace(repair, implementation_head_sha=result.commit_sha), root=self.root,
+                    repository=self.repository, central_database=self.store.central_database,
+                    owner_authorized=repair.owner_authorized,
+                )
+            except RunnerError as error:
+                return self._save_terminal(repair, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         # PR acknowledgement is a separate durable boundary from provider
         # result receipt.  Read-only validation must never erase this binding;
         # a restart can therefore continue with the same candidate and PR.
@@ -3087,7 +3102,8 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             raise RunnerError("Managed adoption selection conflicts with the durable checkpoint.")
         if resume and state is not None and dismissal_for_run(self.root, state.run_id):
             raise RunnerError("This execution has already been dismissed and cannot be resumed.")
-        if state is not None and state.publication_intent is not None and state.pull_request is None:
+        if (state is not None and state.transaction_kind == "IMPLEMENTATION"
+                and state.publication_intent is not None and state.pull_request is None):
             return state if state.terminal else self._resume_first_publication(state, prompt_path)
         if (
             state is not None
@@ -3298,7 +3314,12 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             if state.phase != "INITIALIZE":
                 raise RunnerError("checkpoint action intent conflicts with the producer execution context")
             state = replace(state, action_intent=context.action_intent)
-        adoption_selection = managed_candidate if managed_candidate is not None else state.managed_candidate_adoption
+        # Adoption and first-publication receipts remain immutable history
+        # when this run advances to Finalization or Reconciliation. They must
+        # never redirect those transactions back to implementation admission.
+        adoption_selection = (
+            managed_candidate if managed_candidate is not None else state.managed_candidate_adoption
+        ) if state.transaction_kind == "IMPLEMENTATION" else None
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
         qualification_control_wait = getattr(self.agent, "wait_for_controlled_interruption_arm", None)
@@ -3404,7 +3425,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
-        if recovered_resume and adoption_selection is None:
+        if recovered_resume and (adoption_selection is None or recovery_snapshot["lifecycle_phase"] == "REPAIR_AGENT"):
             self._heartbeat()
             if revision_binding is not None and context.execution_mode == "MANAGED":
                 recovered_head = self.repository.inspect(self.root)
@@ -3449,7 +3470,7 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
             state = self._record_agent_execution_time(state)
             state = self._record_validation_evidence(state, result)
             state = self._record_verified_result_commit(
-                state, result, phase="EXECUTE_AGENT", description="implementation_agent_commit_verified",
+                state, result, phase=str(recovery_snapshot["lifecycle_phase"]), description="recovered_agent_commit_verified",
             )
             return self._advance_after_recovered_provider_result(
                 state, result, evidence, str(recovery_snapshot["lifecycle_phase"]),
@@ -3676,7 +3697,9 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
         self.store.save(state)
         write_live_status(self.root, state, state.next_action)
         complete_phase(self.root, capability_review)
-        if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
+        if state.terminal:
+            return state
+        if state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
         if state.action_intent == "VALIDATION_ONLY":
             # The provider-free path still executes the persisted controls;

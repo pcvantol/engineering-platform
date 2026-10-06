@@ -8,6 +8,7 @@ import re
 import sqlite3
 
 from .execution_errors import RunnerError
+from .local_repository_binding import LocalRepositoryBindingError, resolve_local_repository_binding
 from .managed_publication import valid_branch
 from .platform_admin import require_installation_owner
 from .validation_profile import (
@@ -80,13 +81,14 @@ def verify_selection(*, selection: object, state, root: Path, repository, centra
         raise RunnerError("Managed adoption owner differs from the durable authority.")
     try:
         with closing(sqlite3.connect(f"file:{central_database}?mode=ro", uri=True)) as connection:
-            rows = connection.execute(
-                "SELECT b.local_root FROM ep_local_repository_bindings b "
-                "JOIN ep_repository_registrations r ON r.repository_id=b.repository_id AND r.project_id=b.project_id "
-                "JOIN ep_project_registrations p ON p.project_id=b.project_id "
-                "WHERE b.project_id=? AND b.repository_id=? AND b.state='BOUND' AND p.status='ACTIVE'",
-                (selected["project_id"], selected["repository_id"]),
-            ).fetchall()
+            binding = resolve_local_repository_binding(
+                connection, project_id=str(selected["project_id"]), repository_id=str(selected["repository_id"]),
+                data_root=central_database.parent,
+            )
+            active = connection.execute(
+                "SELECT 1 FROM ep_project_registrations WHERE project_id=? AND status='ACTIVE'",
+                (selected["project_id"],),
+            ).fetchone()
             foreign = connection.execute(
                 "SELECT t.run_id FROM engineering_transactions t WHERE t.run_id<>? "
                 "AND json_extract(t.payload,'$.repository')=? AND ("
@@ -94,9 +96,9 @@ def verify_selection(*, selection: object, state, root: Path, repository, centra
                 "OR EXISTS(SELECT 1 FROM execution_run_leases l WHERE l.run_id=t.run_id AND l.lease_state='ACTIVE')) LIMIT 1",
                 (state.run_id, selected["repository"], selected["branch"], selected["branch"]),
             ).fetchone()
-    except sqlite3.Error as error:
+    except (sqlite3.Error, LocalRepositoryBindingError) as error:
         raise RunnerError("Managed adoption project binding is unavailable.") from error
-    if len(rows) != 1 or Path(rows[0][0]).resolve() != root.resolve():
+    if active is None or binding.local_root != root.resolve():
         raise RunnerError("Managed adoption project or repository binding differs from the selected checkout.")
     if foreign is not None:
         raise RunnerError("Managed adoption candidate belongs to another run or active writer.")
