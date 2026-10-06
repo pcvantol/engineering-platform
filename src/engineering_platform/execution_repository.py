@@ -57,7 +57,8 @@ class RepositoryClient(Protocol):
     def revision_is_ancestor(self, root: Path, ancestor: str, descendant: str) -> bool: ...
     def trusted_origin_identity(self, root: Path) -> str | None: ...
     def workspace_operation_active(self, root: Path) -> bool: ...
-    def publish_candidate_branch(self, root: Path, repository: str, branch: str, sha: str) -> None: ...
+    def publish_candidate_branch(self, root: Path, repository: str, branch: str, sha: str,
+                                 *, expected_previous_sha: str | None = None) -> None: ...
 
 
 class GitHubClient(Protocol):
@@ -265,7 +266,8 @@ class SubprocessRepositoryClient:
             raise RunnerError("MANAGED_PREPARATION_RESULT_UNCERTAIN")
         return prepared
 
-    def publish_candidate_branch(self, root: Path, repository: str, branch: str, sha: str) -> None:
+    def publish_candidate_branch(self, root: Path, repository: str, branch: str, sha: str,
+                                 *, expected_previous_sha: str | None = None) -> None:
         observed = self.inspect(root)
         if (not valid_branch(branch) or not re.fullmatch(r"[0-9a-f]{40}", sha)
                 or self.trusted_origin_identity(root) != repository
@@ -275,9 +277,17 @@ class SubprocessRepositoryClient:
         ref = f"refs/heads/{branch}"
         remote = self._run(root, "git", "ls-remote", "--heads", "origin", ref).strip()
         if remote:
-            if remote.split() != [sha, ref]:
+            if remote.split() == [sha, ref]:
+                return
+            if (expected_previous_sha is None or remote.split() != [expected_previous_sha, ref]
+                    or not self.revision_is_ancestor(root, expected_previous_sha, sha)):
                 raise RunnerError("Publication branch conflicts with the remote candidate.")
+            # A repaired candidate advances this exact existing PR branch.
+            # The explicit lease prevents overwriting a concurrent writer.
+            self._run(root, "git", "push", f"--force-with-lease={ref}:{expected_previous_sha}", "origin", f"{sha}:{ref}")
             return
+        if expected_previous_sha is not None:
+            raise RunnerError("The bound publication branch is no longer present.")
         # Only an absent remote ref may be installed. This explicit empty
         # lease cannot overwrite a branch created concurrently.
         self._run(root, "git", "push", f"--force-with-lease={ref}:", "origin", f"{sha}:{ref}")

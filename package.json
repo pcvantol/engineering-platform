@@ -1,7 +1,7 @@
 {
   "name": "engineering-platform-browser-validation",
   "private": true,
-  "version": "2.3.109",
+  "version": "2.3.110",
   "scripts": {
     "test:engineering-dashboard": "PYTHONPATH=src python3 -m engineering_platform.dashboard_browser_validation",
     "test:engineering-dashboard-logic": "node --test tests/engineering/dashboard_status_store.test.mjs tests/engineering/ui_localization_contract.test.mjs tests/engineering/dashboard_translation.test.mjs",
@@ -9,6 +9,7 @@
     "test:p-transport-ingress-matrix": "python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root ."
   },
   "devDependencies": {
+    "@openai/codex": "0.160.1",
     "@playwright/test": "1.63.0"
   }
 }

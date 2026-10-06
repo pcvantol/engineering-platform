@@ -1,0 +1,772 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/effect-result-v1.schema.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "outcome",
+        "effect_qualified"
+      ],
+      "properties": {
+        "contract_version": {
+          "enum": [
+            "1.0"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "NOT_STARTED"
+          ]
+        },
+        "effect_qualified": {
+          "enum": [
+            false
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "outcome",
+        "terminal",
+        "effect_qualified",
+        "subject",
+        "artifact",
+        "validation_controls",
+        "assurance_reviews",
+        "repair_rounds",
+        "delivery"
+      ],
+      "properties": {
+        "contract_version": {
+          "enum": [
+            "1.0"
+          ]
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "effect_qualified": {
+          "type": "boolean"
+        },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subject_kind",
+            "subject_id",
+            "subject_digest",
+            "source_revision",
+            "source_snapshot_digest",
+            "effect_contract_digest",
+            "criteria_digest",
+            "binding_digest",
+            "repair_ordinal",
+            "candidate_revision"
+          ],
+          "properties": {
+            "subject_kind": {
+              "enum": [
+                "REPORT_ARTIFACT"
+              ]
+            },
+            "subject_id": {
+              "type": "string"
+            },
+            "subject_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "source_revision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "source_snapshot_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "effect_contract_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "criteria_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "binding_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "repair_ordinal": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3
+            },
+            "candidate_revision": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "digest_algorithm",
+            "digest",
+            "content_type",
+            "content"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "digest_algorithm": {
+              "enum": [
+                "sha256"
+              ]
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "content_type": {
+              "enum": [
+                "application/json"
+              ]
+            },
+            "content": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "contract_version",
+                "artifact_type",
+                "binding",
+                "contract",
+                "contract_digest",
+                "source_manifest",
+                "source_manifest_digest",
+                "invocation_id",
+                "repair_ordinal",
+                "result"
+              ],
+              "properties": {
+                "contract_version": {
+                  "enum": [
+                    "1.0"
+                  ]
+                },
+                "artifact_type": {
+                  "enum": [
+                    "EP_EFFECT_RESULT"
+                  ]
+                },
+                "binding": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "run_id",
+                    "submission_id",
+                    "project_id",
+                    "repository_id",
+                    "producer_id",
+                    "producer_type",
+                    "repository",
+                    "producer_version",
+                    "correlation_id",
+                    "mission_id",
+                    "engineering_action_id",
+                    "source_revision",
+                    "accepted_request_digest"
+                  ],
+                  "properties": {
+                    "run_id": {
+                      "type": "string"
+                    },
+                    "submission_id": {
+                      "type": "string"
+                    },
+                    "project_id": {
+                      "type": "string"
+                    },
+                    "repository_id": {
+                      "type": "string"
+                    },
+                    "producer_id": {
+                      "type": "string"
+                    },
+                    "producer_type": {
+                      "type": "string"
+                    },
+                    "repository": {
+                      "type": "string"
+                    },
+                    "producer_version": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "correlation_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "mission_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "engineering_action_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "source_revision": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$"
+                    },
+                    "accepted_request_digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                "contract": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "contract_version",
+                    "mode",
+                    "delivery",
+                    "source_revision",
+                    "read_paths",
+                    "write_paths",
+                    "criteria"
+                  ],
+                  "properties": {
+                    "contract_version": {
+                      "enum": [
+                        "1.0"
+                      ]
+                    },
+                    "mode": {
+                      "enum": [
+                        "READ_ONLY_ASSESSMENT",
+                        "DOCUMENTATION_ONLY",
+                        "ARCHITECTURE_DESIGN_ONLY",
+                        "BOUNDED_REPOSITORY_CHANGE"
+                      ]
+                    },
+                    "delivery": {
+                      "enum": [
+                        "EVIDENCE_ONLY",
+                        "GIT"
+                      ]
+                    },
+                    "source_revision": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$"
+                    },
+                    "read_paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240,
+                        "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+                      },
+                      "minItems": 1,
+                      "maxItems": 64,
+                      "uniqueItems": true
+                    },
+                    "write_paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240,
+                        "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+                      },
+                      "maxItems": 64,
+                      "uniqueItems": true
+                    },
+                    "criteria": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "id",
+                          "description"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+                          },
+                          "description": {
+                            "type": "string",
+                            "minLength": 20,
+                            "maxLength": 1000
+                          }
+                        }
+                      },
+                      "minItems": 1,
+                      "maxItems": 16
+                    }
+                  },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "delivery": {
+                            "const": "EVIDENCE_ONLY"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "mode": {
+                            "enum": [
+                              "READ_ONLY_ASSESSMENT",
+                              "ARCHITECTURE_DESIGN_ONLY"
+                            ]
+                          },
+                          "write_paths": {
+                            "maxItems": 0
+                          }
+                        }
+                      },
+                      "else": {
+                        "properties": {
+                          "mode": {
+                            "enum": [
+                              "DOCUMENTATION_ONLY",
+                              "ARCHITECTURE_DESIGN_ONLY",
+                              "BOUNDED_REPOSITORY_CHANGE"
+                            ]
+                          },
+                          "write_paths": {
+                            "minItems": 1
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                "contract_digest": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "source_manifest": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                },
+                "source_manifest_digest": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "invocation_id": {
+                  "type": "string"
+                },
+                "repair_ordinal": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3
+                },
+                "result": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "summary",
+                    "criteria",
+                    "files"
+                  ],
+                  "properties": {
+                    "summary": {
+                      "type": "string",
+                      "minLength": 40,
+                      "maxLength": 16000
+                    },
+                    "criteria": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "id",
+                          "status",
+                          "analysis",
+                          "source_paths"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "enum": [
+                              "SATISFIED"
+                            ]
+                          },
+                          "analysis": {
+                            "type": "string",
+                            "minLength": 40,
+                            "maxLength": 16000
+                          },
+                          "source_paths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 240,
+                              "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+                            },
+                            "minItems": 1
+                          }
+                        }
+                      },
+                      "minItems": 1,
+                      "maxItems": 16
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "path",
+                          "content"
+                        ],
+                        "properties": {
+                          "path": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 240,
+                            "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+                          },
+                          "content": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      "maxItems": 64
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "validation_controls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "validation_id",
+              "authority",
+              "command_id",
+              "started_at",
+              "completed_at",
+              "exit_code",
+              "profile_digest",
+              "status"
+            ],
+            "properties": {
+              "validation_id": {
+                "type": "string"
+              },
+              "authority": {
+                "type": "string"
+              },
+              "command_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "completed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "exit_code": {
+                "type": "integer"
+              },
+              "profile_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "status": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ]
+              }
+            }
+          }
+        },
+        "assurance_reviews": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reviewer",
+              "status",
+              "subject",
+              "profile_digest",
+              "invocation_id",
+              "contract_version",
+              "started_at",
+              "completed_at",
+              "findings",
+              "coverage",
+              "finding_dispositions"
+            ],
+            "properties": {
+              "reviewer": {
+                "enum": [
+                  "quality",
+                  "security"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ]
+              },
+              "subject": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "subject_kind",
+                  "subject_id",
+                  "subject_digest",
+                  "source_revision",
+                  "source_snapshot_digest",
+                  "effect_contract_digest",
+                  "criteria_digest",
+                  "binding_digest",
+                  "repair_ordinal",
+                  "candidate_revision"
+                ],
+                "properties": {
+                  "subject_kind": {
+                    "enum": [
+                      "REPORT_ARTIFACT"
+                    ]
+                  },
+                  "subject_id": {
+                    "type": "string"
+                  },
+                  "subject_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "source_revision": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "source_snapshot_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "effect_contract_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "criteria_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "binding_digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "repair_ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3
+                  },
+                  "candidate_revision": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "profile_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "invocation_id": {
+                "type": "string"
+              },
+              "contract_version": {
+                "enum": [
+                  "3.0"
+                ]
+              },
+              "started_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "completed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "coverage": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "surface",
+                    "status",
+                    "evidence_ref"
+                  ],
+                  "properties": {
+                    "surface": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "REVIEWED",
+                        "NOT_APPLICABLE"
+                      ]
+                    },
+                    "evidence_ref": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "finding_dispositions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "finding_id",
+                    "disposition",
+                    "evidence_ref"
+                  ],
+                  "properties": {
+                    "finding_id": {
+                      "type": "string"
+                    },
+                    "disposition": {
+                      "enum": [
+                        "RESOLVED",
+                        "OPEN"
+                      ]
+                    },
+                    "evidence_ref": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "maxItems": 2
+        },
+        "repair_rounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "used",
+            "maximum"
+          ],
+          "properties": {
+            "used": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3
+            },
+            "maximum": {
+              "enum": [
+                3
+              ]
+            }
+          }
+        },
+        "delivery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "revision",
+            "pull_request"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "EVIDENCE_ONLY",
+                "GIT"
+              ]
+            },
+            "revision": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pull_request": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  ]
+}

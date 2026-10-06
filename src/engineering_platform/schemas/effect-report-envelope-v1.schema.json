@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/effect-report-envelope-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "artifact_type",
+    "binding",
+    "contract",
+    "contract_digest",
+    "source_manifest",
+    "source_manifest_digest",
+    "invocation_id",
+    "repair_ordinal",
+    "result"
+  ],
+  "properties": {
+    "contract_version": {
+      "enum": [
+        "1.0"
+      ]
+    },
+    "artifact_type": {
+      "enum": [
+        "EP_EFFECT_RESULT"
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "submission_id",
+        "project_id",
+        "repository_id",
+        "producer_id",
+        "producer_type",
+        "repository",
+        "producer_version",
+        "correlation_id",
+        "mission_id",
+        "engineering_action_id",
+        "source_revision",
+        "accepted_request_digest"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "submission_id": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "repository_id": {
+          "type": "string"
+        },
+        "producer_id": {
+          "type": "string"
+        },
+        "producer_type": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "producer_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "correlation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mission_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engineering_action_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "accepted_request_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "mode",
+        "delivery",
+        "source_revision",
+        "read_paths",
+        "write_paths",
+        "criteria"
+      ],
+      "properties": {
+        "contract_version": {
+          "enum": [
+            "1.0"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "READ_ONLY_ASSESSMENT",
+            "DOCUMENTATION_ONLY",
+            "ARCHITECTURE_DESIGN_ONLY",
+            "BOUNDED_REPOSITORY_CHANGE"
+          ]
+        },
+        "delivery": {
+          "enum": [
+            "EVIDENCE_ONLY",
+            "GIT"
+          ]
+        },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "read_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+          },
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "write_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "description"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 1000
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 16
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "delivery": {
+                "const": "EVIDENCE_ONLY"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "READ_ONLY_ASSESSMENT",
+                  "ARCHITECTURE_DESIGN_ONLY"
+                ]
+              },
+              "write_paths": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "DOCUMENTATION_ONLY",
+                  "ARCHITECTURE_DESIGN_ONLY",
+                  "BOUNDED_REPOSITORY_CHANGE"
+                ]
+              },
+              "write_paths": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "contract_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_manifest": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "source_manifest_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "invocation_id": {
+      "type": "string"
+    },
+    "repair_ordinal": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "criteria",
+        "files"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 40,
+          "maxLength": 16000
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "status",
+              "analysis",
+              "source_paths"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "SATISFIED"
+                ]
+              },
+              "analysis": {
+                "type": "string",
+                "minLength": 40,
+                "maxLength": 16000
+              },
+              "source_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240,
+                  "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+                },
+                "minItems": 1
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "content"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240,
+                "description": "Relative ASCII file or directory prefix ending in /. No empty/dot/traversal components, globs, reserved control/secret paths, links or case aliases. Producer semantic validation is also mandatory."
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "maxItems": 64
+        }
+      }
+    }
+  }
+}

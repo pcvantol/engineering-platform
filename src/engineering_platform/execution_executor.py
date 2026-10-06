@@ -629,7 +629,8 @@ class CodexCliClient:
             "required": required,
             "properties": properties,
         }
-        state_directory = root / ".engineering"
+        from . import effect_provider
+        state_directory = effect_provider.schema_directory(root)
         state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False
@@ -642,7 +643,7 @@ class CodexCliClient:
             with proxy as environment:
                 completed = self.provider.invoke(
                     root,
-                    (
+                    effect_provider.restrict_review((
                     "codex",
                     "exec",
                     "--sandbox",
@@ -653,7 +654,8 @@ class CodexCliClient:
                     "--output-schema",
                     str(schema_path),
                         reviewer_prompt(selection, objective, evidence),
-                    ), environment=environment, timeout=_reviewer_invocation_timeout_seconds(selection),
+                    )), environment=environment, timeout=_reviewer_invocation_timeout_seconds(selection),
+                    **effect_provider.review_input(),
                 )
             self.last_context_escalations = proxy.context_escalations()
             self.last_execution_seconds = round(time.monotonic() - started, 3)

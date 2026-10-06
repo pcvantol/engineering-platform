@@ -449,11 +449,47 @@ def request_from_mapping(project_id: str, payload: object, *, transport: str) ->
         transport_received_at=_token(payload.get("transport_received_at"), "transport_received_at", optional=True),
     )
     _forge_provenance(request)
+    _validate_effect_contract(request)
     try:
         parse_repository_revision_binding(request.constraints)
     except ValueError as error:
         raise SubmissionError("INVALID_REPOSITORY_REVISION_BINDING") from error
     return request
+
+
+def _validate_effect_contract(request: SubmissionRequest) -> None:
+    from .effect_contract import EffectContractError, parse
+    try:
+        effects = parse(request.constraints)
+        if effects is None:
+            return
+        constraints = request.constraints or {}
+        from .execution_context import execution_mode_for
+        if execution_mode_for(request.prompt) != "MANAGED" or "parallel_action_intake" in constraints:
+            raise EffectContractError("EFFECT_EXECUTION_COMPOSITION_UNSUPPORTED")
+        revision = parse_repository_revision_binding(constraints)
+        if revision is not None and (revision.requested_revision != effects["source_revision"]
+                or revision.allowed_baseline_revision not in (None, effects["source_revision"])):
+            raise EffectContractError("EFFECT_REVISION_BINDING_CONFLICT")
+        if "validation_profile" in constraints:
+            from .validation_profile import resolve_producer_profile
+            resolve_producer_profile(constraints["validation_profile"])
+            if effects["delivery"] == "EVIDENCE_ONLY":
+                raise EffectContractError("EFFECT_REPORT_PROFILE_REQUIRES_REPOSITORY_CONTROLS")
+        provenance = constraints.get("forge_execution") or {}
+        if not isinstance(provenance, dict) or not isinstance(provenance.get("execution_constraints", []), list):
+            raise EffectContractError("INVALID_EFFECT_CONSTRAINTS")
+        controls = provenance.get("execution_constraints", [])
+        if not all(isinstance(item, str) for item in controls):
+            raise EffectContractError("INVALID_EFFECT_CONSTRAINTS")
+        if any(item.startswith(("ep-delivery-control-validation:", "ep-delivery-unittest:")) for item in controls):
+            raise EffectContractError("EFFECT_POST_MERGE_CONTROL_UNSUPPORTED")
+        if effects["delivery"] == "EVIDENCE_ONLY" and any(item.startswith("ep-merge-delegation:") for item in controls):
+            raise EffectContractError("EFFECT_REMOTE_AUTHORITY_FORBIDDEN")
+    except (EffectContractError, ValidationProfileResolutionError, ValueError) as error:
+        if not isinstance(error, EffectContractError):
+            raise SubmissionError("INVALID_EFFECT_CONSTRAINTS") from error
+        raise SubmissionError(str(error)) from error
 
 
 def _same_idempotent_request(row: tuple[object, ...], request: SubmissionRequest) -> bool:
@@ -586,7 +622,11 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest, *,
         raise SubmissionError("PLATFORM_MAINTENANCE_ACTIVE", 503)
     _transport(request.transport)
     _validate_execution_mode(request)
+    _validate_effect_contract(request)
     _forge_provenance(request)
+    if ("effect_contract" in (request.constraints or {})
+            and authenticated_consumer_id is not None and authenticated_consumer_id != request.producer_id):
+        raise SubmissionError("EFFECT_PRODUCER_PRINCIPAL_MISMATCH", 403)
     if ((request.constraints or {}).get("parallel_action_intake") is not None
             and operator_retry_parent_submission_id is None
             and authenticated_consumer_id != request.producer_id):
@@ -1460,6 +1500,15 @@ def write_terminal_evidence(
             "findings": {"open_blocking": sum(1 for review in current_reviews for finding in review.get("findings", []) if finding.get("blocking") and finding.get("disposition") == "OPEN"), "open_non_blocking": sum(1 for review in current_reviews for finding in review.get("findings", []) if not finding.get("blocking") and finding.get("disposition") in {"OPEN", "NON_BLOCKING"}), "artifact": None if findings_id is None else {"id": findings_id, "digest_algorithm": "sha256", "digest": hashlib.sha256(findings_bytes).hexdigest()}},
         },
     }
+    if (checkpoint.effect_execution is not None and checkpoint.effect_execution["attempts"]
+            and checkpoint.effect_execution["attempts"][-1]["result"] is not None):
+        from .effect_readback import projection as effect_projection, TERMINAL_CONTRACT_VERSION
+        effect_result = effect_projection(database, checkpoint)
+        payload["contract_version"] = TERMINAL_CONTRACT_VERSION
+        payload["effect_result"] = {key: value for key, value in effect_result.items() if key != "artifact"}
+        payload["report"] = {key: value for key, value in effect_result["artifact"].items() if key != "content"}
+        payload["report"]["readback_path"] = f"/v1/projects/{row[1]}/submissions/{row[0]}/effect-result"
+        payload["run"]["effect_qualified"] = effect_result["effect_qualified"]
     _write_immutable_artifact(target, _canonical_json_bytes(payload))
     record_artifact(
         repository_root, target, artifact_id=artifact_id, artifact_type="EP_TERMINAL_EVIDENCE",
@@ -1743,18 +1792,23 @@ def producer_readback_by_identity(
 
 def producer_evidence_artifact(
     connection: sqlite3.Connection, *, project_id: str, artifact_id: str,
+    consumer_id: str | None = None,
 ) -> bytes | None:
     """Return a verified, project-scoped terminal or assurance artifact."""
     row = connection.execute(
-        """SELECT a.digest_algorithm,a.digest,a.storage_location
+        """SELECT a.digest_algorithm,a.digest,a.storage_location,s.producer_id,t.payload
              FROM execution_artifact_records a
              JOIN ep_parity_lifecycle_dispatches d ON d.run_id=a.ep_run_id OR d.run_id=a.run_id
+             JOIN ep_submissions s ON s.submission_id=d.submission_id
+             LEFT JOIN engineering_transactions t ON t.run_id=d.run_id
             WHERE d.project_id=? AND a.artifact_id=? AND a.artifact_type IN ('EP_TERMINAL_EVIDENCE','EP_ASSURANCE_FINDINGS')""",
         (project_id, artifact_id),
     ).fetchone()
     if row is None or row[0] != "sha256" or not isinstance(row[1], str):
         return None
     try:
+        if row[4] is not None and json.loads(row[4]).get("effect_execution") is not None and row[3] != consumer_id:
+            return None
         database_path = Path(connection.execute("PRAGMA database_list").fetchone()[2])
         artifact_root = (database_path.parent / "artifacts").resolve()
         target = (artifact_root / str(row[2])).resolve()

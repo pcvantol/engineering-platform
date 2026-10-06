@@ -1,5 +1,14 @@
 # Engineering Platform Roadmap
 
+## Approved FME extension — existing L2 assignment, 2026-10-06
+
+[Bounded effect execution V1](../engineering/BOUNDED_EFFECT_EXECUTION_V1.md)
+implements useful assessment reports, documentation/design output and explicit
+bounded repository changes in the existing runner. Status is IMPLEMENTED /
+QUALIFYING at 2.3.110; independent review, protected-main and installed evidence
+remain required. This extends the existing r31 source-writer assignment. MPR
+and GP remain complete; r30 dependencies/holds and historical #175 stay intact.
+
 ## Progress-aware provider deadlines V2
 
 `PROGRESS_AWARE_PROVIDER_DEADLINES_V2` replaces the single wall-clock deadline
