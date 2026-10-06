@@ -98,7 +98,9 @@ def preflight(root: Path, database: Path, run_id: str, effects: dict[str, object
     workspace.verify_snapshot(source, manifest)
     # An actual sandbox child must run. Unsupported sandbox installations
     # block before provider execution, with no unrestricted fallback.
-    forbidden = directory / "sandbox-write-probe"
+    # Probe a real host-backed read-only mount. Linux may create private tmpfs
+    # scaffolding for ungranted ancestors; writes there cannot reach the host.
+    forbidden = source / (".ep-sandbox-write-probe-" + os.urandom(16).hex())
     probe_code = """import errno, os, socket, sys
 try:
     descriptor = os.open(sys.argv[1], os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

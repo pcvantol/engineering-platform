@@ -159,7 +159,7 @@ class EffectWorkspaceTests(unittest.TestCase):
         (scratch / "escape").symlink_to(self.target, target_is_directory=True)
         probe = self.base / "probe.py"
         probe.write_text("""import errno, os, socket, sys
-for path in sys.argv[1:]:
+for path in sys.argv[1:-1]:
     try:
         with open(path, 'w') as handle: handle.write('forbidden')
     except OSError as error:
@@ -170,6 +170,12 @@ try:
 except PermissionError: pass
 except OSError: raise SystemExit('network was not sandbox denied')
 else: raise SystemExit('network was allowed')
+# An ungranted ancestor may exist only in Linux's private mount namespace.
+# The parent process must prove this can never create the host-side file.
+try:
+    with open(sys.argv[-1], 'w') as handle: handle.write('namespace-only')
+except OSError as error:
+    if error.errno not in {errno.EACCES, errno.EPERM, errno.ENOENT, errno.EROFS}: raise
 """)
         # The executable probe itself is copied to the explicitly readable input.
         (snapshot / "probe.py").write_bytes(probe.read_bytes())
@@ -177,11 +183,13 @@ else: raise SystemExit('network was allowed')
         command = workspace.sandbox_command(snapshot, (sys.executable, str(snapshot / "probe.py"),
             str(self.target / "docs/design.md"), str(self.target / ".git/index.lock"),
             str(self.target / ".ignored"), str(self.target / "temporary-then-reverted"),
-            str(snapshot.parent / "readonly-mount-ancestor"),
-            str(scratch / "escape/private.txt")), scratch=scratch)
+            str(snapshot / "forbidden-source-write"), str(scratch / "escape/private.txt"),
+            str(snapshot.parent / "namespace-only")), scratch=scratch)
         completed = subprocess.run(command, env=workspace.child_environment(), text=True,
                                    capture_output=True, timeout=30, check=False)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertFalse((snapshot.parent / "namespace-only").exists())
+        self.assertFalse((snapshot / "forbidden-source-write").exists())
         self.assertEqual(workspace.git(self.target, "status", "--porcelain").decode().strip(), "")
 
 

@@ -128,6 +128,9 @@ read-only mount ancestor, or be denied by macOS. Admission accepts only
 errors cannot prove enforcement. The network probe still requires permission
 denial. CI runs actual native tool and lifecycle admission probes before the
 complete suite.
+The write probe targets the actual host-backed source mount. Linux may provide
+private tmpfs ancestors for its mount layout; test readback proves writes in
+that namespace cannot create the corresponding host files.
 
 Validators execute real sandbox children with owned candidate/result reads,
 private scratch writes and no inherited credentials or ambient Git/Python
