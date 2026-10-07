@@ -211,11 +211,11 @@ def run_reviews(
                 tuple(dict(item) for item in result.findings if isinstance(item, dict)),
                 result.contract_version,
                 result.failed,
-                result.usage,
-                result.runtime_metadata,
-                result.churn,
+                dict(result.usage),
+                dict(result.runtime_metadata),
+                dict(result.churn),
                 result.duration_seconds,
-                result.usage_snapshots,
+                tuple(dict(item) for item in result.usage_snapshots),
                 tuple(dict(item) for item in result.coverage if isinstance(item, dict)),
                 tuple(dict(item) for item in result.finding_dispositions if isinstance(item, dict)),
             )
@@ -369,7 +369,11 @@ def reviewer_prompt(
     evidence: ReviewerEvidence | None = None,
 ) -> str:
     """Build the bounded read-only reviewer instruction without lifecycle authority."""
-    projection = project_context(ProviderRole.SPECIALIST_REVIEW, objective)
+    role = {
+        "quality": ProviderRole.QUALITY_REVIEW,
+        "security": ProviderRole.SECURITY_REVIEW,
+    }.get(selection.reviewer, ProviderRole.SPECIALIST_REVIEW)
+    projection = project_context(role, objective)
     prompt: dict[str, object] = {
         "reviewer": REVIEWER_LABELS[selection.reviewer],
         "capability": selection.capability,
@@ -380,6 +384,7 @@ def reviewer_prompt(
             "budget_version": projection.budget_version,
             "source_item_count": projection.source_item_count,
             "omitted_low_priority_count": projection.omitted_low_priority_count,
+            "budget_overflow_bytes": projection.telemetry["context_budget_overflow_bytes"],
         },
         "provider_context_scope": {
             "policy": POLICY_ID,
@@ -389,6 +394,12 @@ def reviewer_prompt(
         "authority": "Read-only inspection and recommendations only. Do not edit, commit, push, merge, create pull requests, finalize, or change lifecycle state.",
         "scope": "Analyse only the declared capability. Cross-capability analysis requires objective repository evidence.",
     }
+    if selection.reviewer in {"quality", "security"}:
+        prompt["mandatory_review_contract"] = {
+            "version": MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+            "required_coverage_surfaces": list(selection.required_coverage_surfaces),
+            "required_finding_ids": list(selection.required_finding_ids),
+        }
     if evidence is not None:
         prompt["run_scoped_repository_evidence"] = evidence.to_dict()
         prompt["evidence_instructions"] = (

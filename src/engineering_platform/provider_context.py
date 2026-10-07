@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-import re
 
 from .provider_context_scope import POLICY_ID
 
@@ -19,6 +18,7 @@ class ProviderRole(StrEnum):
     SPECIALIST_REVIEW = "SPECIALIST_REVIEW"
     IMPLEMENTATION = "IMPLEMENTATION"
     QUALITY_REVIEW = "QUALITY_REVIEW"
+    SECURITY_REVIEW = "SECURITY_REVIEW"
     REPAIR = "REPAIR"
     FINALIZATION = "FINALIZATION"
 
@@ -43,6 +43,9 @@ class ContextProjection:
             "context_source_item_count": self.source_item_count,
             "context_omitted_low_priority_count": self.omitted_low_priority_count,
             "context_projected_bytes": len(self.text.encode("utf-8")),
+            "context_budget_overflow_bytes": max(
+                0, len(self.text.encode("utf-8")) - _ROLE_BUDGETS[self.role]
+            ),
         }
 
 
@@ -50,23 +53,15 @@ _ROLE_BUDGETS = {
     ProviderRole.SPECIALIST_REVIEW: 18_000,
     ProviderRole.IMPLEMENTATION: 60_000,
     ProviderRole.QUALITY_REVIEW: 22_000,
+    ProviderRole.SECURITY_REVIEW: 22_000,
     ProviderRole.REPAIR: 18_000,
     ProviderRole.FINALIZATION: 18_000,
 }
-_MANDATORY_HEADINGS = re.compile(
-    r"\b(?:objective|doel|acceptance|acceptatie|constraint|beperking|"
-    r"safety|veilig|authority|autoriteit|validation|validatie|required|"
-    r"verplicht|non-negotiable|niet-onderhandelbaar|scope|niet wijzigen|do not)\b",
-    re.IGNORECASE,
-)
-_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$")
-
-
 def provider_need_for_phase(phase: str, *, passive_observation: bool = False) -> ProviderNeedDecision:
     """Make provider need explicit; passive/deterministic phases never need one."""
     if passive_observation:
         return ProviderNeedDecision(False, "passive observation is deterministic")
-    if phase in {"EXECUTE_AGENT", "LOCAL_REPOSITORY_VALIDATION"}:
+    if phase == "EXECUTE_AGENT":
         return ProviderNeedDecision(True, "bounded implementation work requires reasoning")
     if phase == "QUALITY_CONTROL_AGENT":
         return ProviderNeedDecision(True, "autonomous quality review requires reasoning")
@@ -88,49 +83,12 @@ def role_for_phase(phase: str, *, repair: bool = False, quality: bool = False) -
 
 
 def project_context(role: ProviderRole, objective: str) -> ContextProjection:
-    """Keep all mandatory sections while omitting lower-priority prompt history.
+    """Preserve the complete authoritative objective for every provider role.
 
-    Prompts without recognisable Markdown sections are deliberately retained in
-    full: safety beats an unproven token reduction.  Initial implementation
-    also receives the complete prompt once; downstream roles receive the
-    mandatory contract rather than replaying the complete transcript.
+    Markdown text cannot prove that a section contains only optional history.
+    The approved objective remains one indivisible input; role-specific rubrics
+    and authority are supplied separately by the host. Nominal role-budget
+    overflow is observable, never permission to omit safety or acceptance text.
+    This safety subset makes no historical-context/token-reduction claim.
     """
-    if role == ProviderRole.IMPLEMENTATION:
-        return ContextProjection(role, objective, 1, 0)
-    sections = _markdown_sections(objective)
-    selected = [section for heading, section in sections if heading == "preamble" or _MANDATORY_HEADINGS.search(heading)]
-    if not selected:
-        return ContextProjection(role, objective, 1, 0)
-    budget = _ROLE_BUDGETS[role]
-    included: list[str] = []
-    used = 0
-    for section in selected:
-        size = len(section.encode("utf-8"))
-        # Mandatory material is never silently truncated.  A single oversized
-        # mandatory section is kept whole and may exceed the nominal budget.
-        if included and used + size > budget:
-            continue
-        included.append(section)
-        used += size
-    text = "\n\n".join(included)
-    return ContextProjection(role, text, len(sections), max(0, len(sections) - len(included)))
-
-
-def _markdown_sections(value: str) -> list[tuple[str, str]]:
-    lines = value.splitlines()
-    starts: list[tuple[int, str]] = []
-    for index, line in enumerate(lines):
-        match = _HEADING.match(line)
-        if match:
-            starts.append((index, match.group(1)))
-    if not starts:
-        return []
-    result: list[tuple[str, str]] = []
-    if starts[0][0]:
-        preamble = "\n".join(lines[:starts[0][0]]).strip()
-        if preamble:
-            result.append(("preamble", preamble))
-    for ordinal, (start, heading) in enumerate(starts):
-        end = starts[ordinal + 1][0] if ordinal + 1 < len(starts) else len(lines)
-        result.append((heading, "\n".join(lines[start:end]).strip()))
-    return result
+    return ContextProjection(role, objective, 1, 0)

@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from .storage import EngineeringStorageError, open_storage
+from .provider_usage import canonical_provider_invocations, is_reviewer_role
 
 
 EXECUTION_ACTIVITY_SUMMARY_VERSION = 1
@@ -95,10 +96,7 @@ def _phase_paths(root: Path, baseline: str | None, commit: str | None) -> dict[s
 def _command_activity(root: Path, run_id: str) -> dict[str, object]:
     connection = open_storage(root)
     try:
-        provider_rows = connection.execute(
-            "SELECT phase,role,COUNT(*) FROM provider_invocations "
-            "WHERE run_id=? AND provider='codex_cli' GROUP BY phase,role", (run_id,)
-        ).fetchall()
+        provider_rows = canonical_provider_invocations(connection, run_id)
         validation_rows = connection.execute(
             "SELECT COUNT(*) FROM execution_validation_command_invocations WHERE run_id=?", (run_id,)
         ).fetchone()
@@ -106,13 +104,15 @@ def _command_activity(root: Path, run_id: str) -> dict[str, object]:
         connection.close()
     primary: dict[str, int] = {}
     reviewers: dict[str, dict[str, int]] = {}
-    for phase, role, count in provider_rows:
-        if not isinstance(phase, str) or not isinstance(role, str) or not isinstance(count, int):
+    for row in provider_rows:
+        phase, role = row["phase"], row["role"]
+        if row["provider"] != "codex_cli" or not isinstance(phase, str) or not isinstance(role, str):
             continue
-        if role.casefold().startswith("reviewer"):
-            reviewers.setdefault(role, {})[phase] = count
+        if is_reviewer_role(role):
+            phases = reviewers.setdefault(role, {})
+            phases[phase] = phases.get(phase, 0) + 1
         else:
-            primary[phase] = primary.get(phase, 0) + count
+            primary[phase] = primary.get(phase, 0) + 1
     reviewer_total = sum(sum(phases.values()) for phases in reviewers.values())
     primary_total = sum(primary.values())
     host_validation_total = int(validation_rows[0]) if validation_rows and isinstance(validation_rows[0], int) else 0

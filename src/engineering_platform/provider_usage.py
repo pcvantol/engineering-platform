@@ -35,6 +35,8 @@ RATE_TABLE = {
 AUTHORITATIVE, DERIVED = "AUTHORITATIVE", "DERIVED"
 _SPEED_STATES = frozenset({"FAST", "NORMAL_DEFAULT", "OTHER", "UNKNOWN"})
 _SAFE_CHURN_TEXT_FIELDS = frozenset({
+    "candidate_sha", "assurance_profile_digest", "canonical_invocation_id",
+    "review_status",
     "interruption_classification",
     "interruption_reason",
     "usage_state",
@@ -504,6 +506,53 @@ class ProviderInvocation:
     usage_snapshots: tuple[Mapping[str, object], ...] = ()
 
 
+def _canonical_invocation_rows(rows):
+    """Fold linked dispatch/terminal events into one measured provider turn.
+
+    An interrupted dispatch remains an unavailable observation. Conflicting
+    bindings remain separate evidence rather than silently hiding a turn.
+    The immutable source rows are never updated or deleted.
+    """
+    terminals = {row["invocation_id"]: row for row in rows
+                 if row["phase"] == "MANDATORY_ASSURANCE" and row["completed_at"] is not None}
+    result = []
+    for row in rows:
+        if row["phase"] == "MANDATORY_ASSURANCE_DISPATCH":
+            try:
+                binding = json.loads(row["churn"])
+                if not isinstance(binding, dict):
+                    raise TypeError("Dispatch observation metadata is not an object.")
+                identifier = binding["canonical_invocation_id"]
+                terminal = terminals.get(identifier)
+                if (terminal is not None and row["invocation_id"] == identifier + ":dispatch"
+                        and row["completed_at"] is None and row["role"] == terminal["role"]
+                        and all(row[key] == terminal[key]
+                                for key in ("run_id", "provider", "started_at"))):
+                    completed = json.loads(terminal["churn"])
+                    if isinstance(completed, dict) and all(binding.get(key) == completed.get(key) and binding.get(key)
+                           for key in ("canonical_invocation_id", "candidate_sha", "assurance_profile_digest")):
+                        continue
+            except (KeyError, TypeError, ValueError):
+                pass
+        result.append(row)
+    return result
+
+
+def canonical_provider_invocations(connection: sqlite3.Connection, run_id: str):
+    """Read canonical turns without changing the caller's connection factory."""
+    cursor = connection.execute(
+        "SELECT * FROM provider_invocations WHERE run_id=? ORDER BY ordinal", (run_id,)
+    )
+    names = [column[0] for column in cursor.description]
+    return _canonical_invocation_rows([dict(zip(names, row)) for row in cursor.fetchall()])
+
+
+def is_reviewer_role(role: object) -> bool:
+    return isinstance(role, str) and (
+        role.casefold().startswith("reviewer") or role.casefold() in {"quality", "security"}
+    )
+
+
 def persist_provider_invocation(root: Path, invocation: ProviderInvocation, *, central_database: Path | None = None) -> str:
     """Append one immutable provider invocation; unknowns remain NULL, never zero."""
     usage = dict(invocation.usage)
@@ -687,7 +736,7 @@ def provider_usage_summary(
         connection.row_factory = sqlite3.Row
         try:
             rows = connection.execute(
-            """SELECT invocation_id,ordinal,provider,model,model_authority,raw_provider_model,
+            """SELECT invocation_id,run_id,ordinal,provider,model,model_authority,raw_provider_model,
                       phase,role,started_at,completed_at,duration_ms,input_tokens,
                       cached_input_tokens,uncached_input_tokens,output_tokens,
                       reasoning_tokens,total_tokens,estimated_credits,estimated_eur,
@@ -709,6 +758,7 @@ def provider_usage_summary(
             connection.close()
     else:
         rows, snapshot_rows = _rows, _snapshot_rows
+    rows = _canonical_invocation_rows(rows)
     if not rows:
         return {"invocation_detail": UNAVAILABLE}
     inputs: list[int] = []

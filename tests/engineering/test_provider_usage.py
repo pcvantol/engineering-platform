@@ -25,6 +25,105 @@ from engineering_platform import server
 
 
 class ProviderUsageTests(unittest.TestCase):
+    def test_dispatch_and_terminal_are_one_turn_but_interrupted_dispatch_is_unknown(self):
+        binding = {"canonical_invocation_id": "run-usage:quality:one",
+                   "candidate_sha": "a" * 40, "assurance_profile_digest": "sha256:" + "b" * 64}
+        for ordinal, phase, identifier, completed, usage in (
+            (1, "MANDATORY_ASSURANCE_DISPATCH", binding["canonical_invocation_id"] + ":dispatch", None, {}),
+            (2, "MANDATORY_ASSURANCE", binding["canonical_invocation_id"], "2026-10-07T00:00:01+00:00", {"input_tokens": 11}),
+            (3, "MANDATORY_ASSURANCE_DISPATCH", "run-usage:security:two:dispatch", None, {}),
+        ):
+            current = {**binding, "canonical_invocation_id": identifier.removesuffix(":dispatch")}
+            persist_provider_invocation(self.root, ProviderInvocation(
+                "run-usage", ordinal, "codex_cli", None, phase,
+                "quality" if ordinal < 3 else "security", "2026-10-07T00:00:00+00:00", completed,
+                None, usage, churn=current, invocation_id=identifier))
+        summary = provider_usage_summary(self.root, "run-usage")
+        self.assertEqual(summary["provider_invocation_count"], 2)
+        self.assertEqual(summary["input_tokens"], 11)
+        self.assertEqual(summary["provider_invocations_by_role"], {"quality": 1, "security": 1})
+        from engineering_platform.execution_host_evidence import _activity
+        from engineering_platform.execution_activity import cumulative_activity
+        from engineering_platform.contracts.projection import _usage_projection
+        with open_storage(self.root) as connection:
+            self.assertEqual(_activity(connection, "run-usage")["provider_invocations"], 2)
+            usage, reviews = _usage_projection(connection, "run-usage")
+        self.assertEqual(usage["provider_invocation_count"], 2)
+        self.assertEqual(usage["reviewer_invocation_count"], 2)
+        self.assertEqual(usage["run_cumulative_input"], "UNAVAILABLE")
+        self.assertEqual(usage["output"], "UNAVAILABLE")
+        self.assertEqual(usage["provider_execution_time"], "UNAVAILABLE")
+        self.assertEqual(reviews["roles"], ["quality", "security"])
+        self.assertEqual([review["state"] for review in reviews["reviewers"]], ["COMPLETE", "ACTIVE"])
+        activity = cumulative_activity(self.root, "run-usage")
+        self.assertEqual(activity["primary_codex_commands_total"], 0)
+        self.assertEqual(activity["reviewer_codex_commands_total"], 2)
+
+    def test_unknown_mandatory_review_usage_stays_unknown_in_every_consumer(self):
+        from engineering_platform.execution_host_evidence import _activity
+        from engineering_platform.execution_activity import cumulative_activity
+        from engineering_platform.contracts.projection import _usage_projection
+        ordinal = 0
+        for role in ("quality", "security"):
+            identifier = "run-usage:" + role
+            for dispatch in (True, False):
+                ordinal += 1
+                persist_provider_invocation(self.root, ProviderInvocation(
+                    "run-usage", ordinal, "codex_cli", None,
+                    "MANDATORY_ASSURANCE_DISPATCH" if dispatch else "MANDATORY_ASSURANCE", role,
+                    "2026-10-07T00:00:00+00:00", None if dispatch else "2026-10-07T00:00:01+00:00",
+                    None, {}, invocation_id=identifier + (":dispatch" if dispatch else ""),
+                    churn={"canonical_invocation_id": identifier, "candidate_sha": "a" * 40,
+                           "assurance_profile_digest": "sha256:" + "b" * 64}))
+        summary = provider_usage_summary(self.root, "run-usage")
+        self.assertEqual(summary["provider_invocation_count"], 2)
+        self.assertIsNone(summary["input_tokens"])
+        with open_storage(self.root) as connection:
+            self.assertEqual(_activity(connection, "run-usage")["provider_invocations"], 2)
+            usage, reviews = _usage_projection(connection, "run-usage")
+        for field in ("run_cumulative_input", "cached_input", "uncached_input", "output", "provider_execution_time"):
+            self.assertEqual(usage[field], "UNAVAILABLE", field)
+        self.assertEqual({row["state"] for row in reviews["reviewers"]}, {"COMPLETE"})
+        self.assertEqual(cumulative_activity(self.root, "run-usage")["primary_codex_commands_total"], 0)
+
+    def test_dispatch_fold_retains_conflicting_or_corrupt_bindings(self):
+        from engineering_platform.provider_usage import _canonical_invocation_rows
+        terminal = dict(invocation_id="turn", run_id="run", provider="codex_cli", started_at="start",
+                        phase="MANDATORY_ASSURANCE", completed_at="now",
+                        role="quality", churn=json.dumps({"canonical_invocation_id": "turn",
+                        "candidate_sha": "a" * 40, "assurance_profile_digest": "digest"}))
+        dispatch = {**terminal, "invocation_id": "turn:dispatch",
+                    "phase": "MANDATORY_ASSURANCE_DISPATCH", "completed_at": None}
+        for bad in ("broken-json", "{}", "null", json.dumps({"canonical_invocation_id": "turn",
+                    "candidate_sha": "foreign", "assurance_profile_digest": "digest"})):
+            self.assertEqual(len(_canonical_invocation_rows([{**dispatch, "churn": bad}, terminal])), 2)
+        self.assertEqual(len(_canonical_invocation_rows([dispatch, {**terminal, "role": "security"}])), 2)
+        self.assertEqual(len(_canonical_invocation_rows([{**dispatch, "completed_at": "unexpected"}, terminal])), 2)
+        for key in ("run_id", "provider", "started_at"):
+            self.assertEqual(len(_canonical_invocation_rows([dispatch, {**terminal, key: "foreign"}])), 2)
+        for bad in ("null", "[]", '"text"', "12", "invalid-json"):
+            self.assertEqual(len(_canonical_invocation_rows([dispatch, {**terminal, "churn": bad}])), 2)
+
+    def test_corrupt_terminal_metadata_does_not_crash_shared_consumers(self):
+        from engineering_platform.execution_host_evidence import _activity
+        from engineering_platform.execution_activity import cumulative_activity
+        from engineering_platform.contracts.projection import _usage_projection
+        self.test_unknown_mandatory_review_usage_stays_unknown_in_every_consumer()
+        # Simulate corrupt persisted observation bytes without bypassing any
+        # producer decision or replacing the canonical folding implementation.
+        with open_storage(self.root) as connection:
+            triggers = connection.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='provider_invocations'").fetchall()
+            for row in triggers:
+                connection.execute('DROP TRIGGER "' + row[0].replace('"', '""') + '"')
+            for value in ("null", "[]", '"text"', "12", "invalid-json"):
+                connection.execute("UPDATE provider_invocations SET churn=? WHERE invocation_id='run-usage:quality'", (value,))
+                self.assertEqual(_activity(connection, "run-usage")["provider_invocations"], 3)
+                usage, _ = _usage_projection(connection, "run-usage")
+                self.assertEqual(usage["provider_invocation_count"], 3)
+                self.assertEqual(usage["output"], "UNAVAILABLE")
+                self.assertEqual(provider_usage_summary(self.root, "run-usage")["provider_invocation_count"], 3)
+                self.assertEqual(cumulative_activity(self.root, "run-usage")["reviewer_codex_commands_total"], 3)
+
     def test_central_context_persists_provider_usage_without_local_database(self) -> None:
         with TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()

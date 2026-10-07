@@ -761,7 +761,7 @@ class EngineeringRunner:
         if isinstance(usage, dict):
             write_codex_usage(self.root, run_id, usage)
 
-    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None, observed_snapshots: tuple[dict[str, int], ...] | None = None, interruption_reason: str | None = None, invocation_id: str | None = None) -> str | None:
+    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None, observed_snapshots: tuple[dict[str, int], ...] | None = None, interruption_reason: str | None = None, invocation_id: str | None = None, dispatch: bool = False) -> str | None:
         """Append safe per-invocation evidence without affecting execution outcome."""
         usage = observed_usage if observed_usage is not None else getattr(self.agent, "last_usage", None)
         snapshots = observed_snapshots if observed_snapshots is not None else getattr(self.agent, "last_usage_snapshots", ())
@@ -774,7 +774,8 @@ class EngineeringRunner:
             **self._provider_context_telemetry,
             **self._provider_dispatch_telemetry,
         }
-        escalations = getattr(self.agent, "last_context_escalations", ())
+        escalations = (() if phase.startswith("MANDATORY_ASSURANCE")
+                       else getattr(self.agent, "last_context_escalations", ()))
         if isinstance(escalations, tuple):
             safe_escalations = [item for item in escalations if isinstance(item, dict)]
             if safe_escalations:
@@ -790,7 +791,9 @@ class EngineeringRunner:
             # channel; an interrupted turn has no AgentResult or final usage.
             churn["interruption_classification"] = "provider_turn_interrupted"
             churn["interruption_reason"] = redact_diagnostic(interruption_reason, limit=120)
-        duration = observed_duration if observed_duration is not None else getattr(self.agent, "last_execution_seconds", None)
+        duration = (observed_duration if phase.startswith("MANDATORY_ASSURANCE")
+                    else observed_duration if observed_duration is not None
+                    else getattr(self.agent, "last_execution_seconds", None))
         raw_model = metadata.get("raw_provider_model") if isinstance(metadata, dict) else None
         normalized_model = normalize_codex_model(raw_model)
         try:
@@ -811,8 +814,8 @@ class EngineeringRunner:
                 model=normalized_model,
                 model_authority=AUTHORITATIVE if isinstance(raw_model, str) else "UNAVAILABLE",
                 raw_provider_model=raw_model if isinstance(raw_model, str) else None,
-                phase=phase, role=role, started_at=started_at or now, completed_at=now,
-                duration_ms=round(duration * 1000) if isinstance(duration, (int, float)) and duration >= 0 else None,
+                phase=phase, role=role, started_at=started_at or now, completed_at=None if dispatch else now,
+                duration_ms=round(duration * 1000) if not dispatch and isinstance(duration, (int, float)) and duration >= 0 else None,
                 usage=usage, runtime_metadata=metadata if isinstance(metadata, dict) else None,
                 retry_ordinal=state.repair_iterations, churn=churn if isinstance(churn, dict) else None,
                 usage_snapshots=snapshots if isinstance(snapshots, tuple) else (), invocation_id=invocation_id,
@@ -2312,7 +2315,6 @@ class EngineeringRunner:
                     validation, result=failed, outcome="validation_failed", profile=profile,
                 )
                 return validation, failed
-            host_evidence = self._validation_assessment_evidence(validation_context)
             expected_pr, expectation_error = self._validation_pr_expectation(validation, candidate)
             if expectation_error is not None:
                 failed = AgentResult("FAILED", branch=branch, diagnostic="The bound pull request could not be verified before read-only assessment.")
@@ -2320,57 +2322,16 @@ class EngineeringRunner:
                     validation, result=failed, outcome="assessment_rejected", profile=profile,
                 )
                 return self._save_terminal(validation, "BLOCKED", expectation_error, failed.diagnostic), implementation
-            instruction = f"""
-
-Local repository validation gate — read-only assessment:
-- Stay on exactly `{branch}`. Do not merge or change scope.
-- The host has already selected and executed the canonical required controls through its private validation scratch. Their candidate-bound command receipts below are authoritative.
-- Do not execute tests, scripts, package managers, Python, SQLite, tempfile probes, or any other validation command. Do not substitute, repeat, reinterpret, or create validation evidence.
-- Assess only whether the supplied host evidence is internally usable for this unchanged candidate. Return `COMPLETE` when it is; otherwise return `WAITING` or `FAILED` with a concise safe diagnostic.
-- Do not modify files, index, branch, commits, remotes, pull requests, or external state. The host enforces a read-only provider sandbox.
-- Do not create a pull request. First publication is a later host-owned gate after both mandatory reviews pass.
-
-Host-owned validation evidence (candidate-bound, command-terminal receipts):
-{json.dumps(host_evidence, sort_keys=True)}
-"""
+            # All required control receipts are host-owned and exact-candidate
+            # bound. Their deterministic predicate needs no provider assessment.
+            # Reinspect after execution; neither prose nor a stale checkpoint
+            # can authorize success or first publication.
+            result = AgentResult("COMPLETE", branch=branch,
+                                 commit_sha=candidate.head_sha)
             try:
-                result = self._invoke_agent_with_timing(
-                    validation,
-                    assemble_prompt(Path(validation.prompt_path), validation, managed_target=self.root) + instruction,
-                    local_validation=True,
-                    attempt=iteration,
-                )
-                validation = self._record_agent_execution_time(validation)
-                # Provider prose is assessment-only.  It can neither create
-                # nor amend host-owned required-control evidence.
-                result = replace(result, validation_evidence=())
-                validation = self._record_verified_result_commit(
-                    validation,
-                    result,
-                    phase="LOCAL_REPOSITORY_VALIDATION",
-                    description="local_repository_validation_commit_verified",
-                )
-                self._persist_agent_usage(validation.run_id)
-                try:
-                    after_validation = self.repository.inspect(self.root)
-                except RunnerError:
-                    after_validation = None
-            except ProviderReadinessBlocked as blocked:
-                return blocked.state, implementation
-            except CodexInvocationError as error:
-                validation = self._record_agent_execution_time(validation)
-                self.console_detail = error.console_detail
-                validation = self._record_local_validation_audit(validation, result=None, outcome="agent_failed", profile=profile)
-                return self._terminalize_provider_invocation_error(validation, error), implementation
-            # A failed validation command is evidence for the shared repair
-            # route, not an unavailable validator.  Only a provider-blocked
-            # invocation is terminal at this read-only gate.
-            if result.terminal_state == "BLOCKED":
-                validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
-                return validation, result
-            if result.branch and result.branch != branch:
-                validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
-                return self._save_terminal(validation, "BLOCKED", "local_validation_scope", "Local validation changed the bounded implementation branch."), implementation
+                after_validation = self.repository.inspect(self.root)
+            except RunnerError:
+                after_validation = None
             observed_pr, post_expectation_error = self._validation_pr_expectation(validation, candidate)
             if (
                 post_expectation_error is None
@@ -2379,26 +2340,14 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 and self._validation_pr_scope(observed_pr) != self._validation_pr_scope(expected_pr)
             ):
                 post_expectation_error = "validation_pull_request_scope_conflict"
-            normalized_result, reference_error = self._accept_validation_pr_reference(
-                validation, result, candidate, expected_pr,
-            )
-            if post_expectation_error is not None or reference_error is not None:
-                error_code = post_expectation_error or reference_error
-                rejected = replace(
-                    result, diagnostic=(
-                        "Read-only assessment referenced an unbound or candidate-incompatible pull request."
-                        if error_code not in {"validation_pull_request_unverified", "validation_pull_request_scope_conflict"}
-                        else "Read-only assessment pull-request reference could not be independently verified."
-                    ),
-                )
+            if post_expectation_error is not None:
+                failed = replace(result, terminal_state="FAILED",
+                                 diagnostic="The bound pull-request scope changed during validation.")
                 validation = self._record_local_validation_audit(
-                    validation, result=rejected, outcome="assessment_rejected", profile=profile,
+                    validation, result=failed, outcome="assessment_rejected", profile=profile,
                 )
-                return self._save_terminal(
-                    validation, "BLOCKED", error_code,
-                    rejected.diagnostic,
-                ), implementation
-            result = normalized_result
+                return self._save_terminal(validation, "BLOCKED", post_expectation_error,
+                                           failed.diagnostic), implementation
             candidate_unchanged = (
                 after_validation is not None
                 and after_validation.clean
@@ -2632,6 +2581,25 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 + criteria
             )
             started_at = datetime.now(timezone.utc).isoformat()
+            invocation_id = f"{quality.run_id}:{selection.reviewer}:{uuid.uuid4().hex}"
+            context_role = (ProviderRole.QUALITY_REVIEW if selection.reviewer == "quality"
+                            else ProviderRole.SECURITY_REVIEW)
+            self._provider_context_telemetry = project_context(context_role, assurance_objective).telemetry
+            self._provider_dispatch_telemetry = {}
+            binding = {"candidate_sha": candidate.head_sha,
+                       "assurance_profile_digest": profile_digest,
+                       "canonical_invocation_id": invocation_id}
+            dispatched = self._persist_provider_invocation(
+                quality, phase="MANDATORY_ASSURANCE_DISPATCH", role=selection.reviewer,
+                started_at=started_at, invocation_id=invocation_id + ":dispatch",
+                observed_usage={}, observed_metadata={}, observed_churn=binding,
+                observed_snapshots=(), dispatch=True,
+            )
+            if dispatched is None:
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_invocation_storage_unavailable",
+                    "Mandatory assurance dispatch identity could not be persisted.",
+                ), implementation
             result = run_reviews(
                 assurance_root or self.root,
                 (contracted_selection,),
@@ -2666,7 +2634,18 @@ Host-owned validation evidence (candidate-bound, command-terminal receipts):
                 or any(item["disposition"] == "OPEN" for item in finding_dispositions)
             ):
                 status = "FAIL"
-            invocation_id = f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + len(records)}"
+            recorded = self._persist_provider_invocation(
+                quality, phase="MANDATORY_ASSURANCE", role=selection.reviewer,
+                started_at=started_at, invocation_id=invocation_id,
+                observed_usage=result.usage, observed_metadata=result.runtime_metadata,
+                observed_churn={**result.churn, **binding, "review_status": status},
+                observed_duration=result.duration_seconds, observed_snapshots=result.usage_snapshots,
+            )
+            if recorded is None:
+                return self._save_terminal(
+                    quality, "BLOCKED", "assurance_invocation_storage_unavailable",
+                    "Mandatory assurance terminal observations could not be persisted.",
+                ), implementation
             records.append({
                 "reviewer": selection.reviewer, "status": status, "candidate_sha": candidate.head_sha,
                 "profile_digest": profile_digest, "invocation_id": invocation_id,
