@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **2**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **3**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.113** (normal PATCH; no operational activation).
 Base: `454e96c477e2305bb3240e7a457b93ae314950d3`, EP 2.3.112.
@@ -57,7 +57,7 @@ wheel noneditable outside checkout and sanitized receipts/own cleanup.
 Do not claim full SA-Q/ROLE/PAR, commercial quality, saving percentages or live
 activation. Keep actual TDE assessment separate from workflow SUCCESS.
 
-## Current candidate reconciliation (plan revision 2)
+## Current candidate reconciliation (plan revision 3)
 
 The single existing selector now requires explicit bounded JSON questions from
 `Specialist review requests:` in the approved objective. Registered role, risk,
@@ -111,6 +111,14 @@ The first full source run executed 2,283 tests with two existing skips and one 6
 Three real OS recovery tests now PASS (274.071 seconds): new specialist assurance boundary, new specialist publication boundary and the previously timed-out existing MPR publication boundary. They preserve actual lease expiry, primary candidate, unchanged controls, finite optional allowance, repair counter 2 and one external create. Host regressions: 330 tests PASS, one existing skip. Actual CENTRAL concurrent divergent append preserves one winner and rejects the conflicting writer; skipped/dispatched journal transitions fail closed. Corrupt actual artifact, candidate/branch drift, changed question and out-of-scope claimed application are denied without replay or false verification. A genuine late-result case waits the unchanged five-minute specialist ceiling; no fake clock or lower product limit.
 
 Source coverage and final independent/installed gates are being recollected on stable official bytes after these necessary fixes. Earlier line-number coverage from the pre-fix run is not used for a final claim. Formal corrective review consumption remains zero.
+
+## Final pre-review boundary correction (plan revision 3)
+
+An additional owner self-check reproduced a second primary call after assurance interruption when both optional results contained no usable findings. The consumer artifact was previously written only alongside dispositions. The existing journal now also records actual completed primary output after any optional dispatch, including failed/empty/uncertain advice, without inventing acceptance or application. It reuses the same canonical primary ledger row and integrity-checked artifact. Actual clean branch/commit/result binding is mandatory before receipt creation and resume. Three real in-process consumer/assurance tests PASS (7.445 seconds); the new OS assurance-empty boundary joins the final installed matrix with repair counter 2 unchanged.
+
+macOS FileProvider repeatedly unloads existing source/dependency bytes. The temporary source qualification copy is an exact clean shallow copy of the committed candidate, used only for qualification by this same writer; it is not another development assignment or source writer. Canonical source edits remain solely in the existing checkout. Restricted and FileProvider-timeout runs are retained as diagnostics, never final PASS/coverage. Full owning coverage is collected from stable exact committed inputs outside that backing store.
+
+The existing browser gate exposed fixture/layout races on unchanged production UI. Necessary test-only corrections wait for the initial snapshot/splash and the real mutation-observer/scroll layout, retaining the original visible geometry, overflow and colour assertions and no artificial DOM/CSS workaround. These corrections are validation prerequisites within this same vertical delivery; no Console redesign or new product behaviour. Full browser and production gates are requalified on their official candidate. Historical predecessor budgets remain closed; no formal corrective review has yet been consumed.
 
 ## Authorized execution contract (verbatim)
 

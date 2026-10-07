@@ -168,7 +168,8 @@
       "qualification_evidence": [],
       "assignment_id": "L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007",
       "delivery_plan": "SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md",
-      "qualification_scope": "Selected bounded specialist selection and primary disposition; NOT_QUALIFIED pending exact protected final-main installed evidence."
+      "qualification_scope": "Selected bounded specialist selection and primary disposition; NOT_QUALIFIED pending exact protected final-main installed evidence.",
+      "plan_revision": 3
     },
     {
       "id": "SA-LOOP",
@@ -188,7 +189,8 @@
       "qualification_evidence": [],
       "assignment_id": "L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007",
       "delivery_plan": "SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md",
-      "qualification_scope": "Selected bounded specialist selection and primary disposition; NOT_QUALIFIED pending exact protected final-main installed evidence."
+      "qualification_scope": "Selected bounded specialist selection and primary disposition; NOT_QUALIFIED pending exact protected final-main installed evidence.",
+      "plan_revision": 3
     },
     {
       "id": "SA-ROLE",

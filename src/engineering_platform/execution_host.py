@@ -3134,7 +3134,10 @@ class EngineeringRunner:
                                              candidate_sha=evidence.head_sha, changed_paths=paths)
         except (ValueError, TypeError, KeyError, StopIteration, RunnerError, ValidationProfileResolutionError):
             return self._save_terminal(state, "BLOCKED", "specialist_disposition_invalid", "Primary specialist disposition or change evidence is incomplete/invalid.")
-        if events:
+        if events or (result.terminal_state == "COMPLETE" and any(r["kind"] == "DISPATCH" for r in state.specialist_records)):
+            if (result.terminal_state != "COMPLETE" or not evidence.clean
+                    or result.branch != evidence.branch or result.commit_sha != evidence.head_sha):
+                return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_stale", "Primary result must match the actual clean candidate before recording consumer completion.")
             if not any(r["kind"] == "CONSUMER_RESULT" for r in state.specialist_records):
                 identifier = self._last_provider_invocation_id
                 if not identifier:
@@ -3154,7 +3157,7 @@ class EngineeringRunner:
                     quality_evidence=tuple({k:redact_diagnostic(v,limit=240) for k,v in item.items()} for item in result.quality_evidence))
                 reference = persist_recovery_agent_result(self.root, run_id=state.run_id, invocation_id=identifier, result=safe_result,
                     central_database=self.store.central_database, artifact_root=self.store.central_database.parent / "artifacts" if self.store.central_database else None)
-                original = next(r for r in state.specialist_records if r["kind"] == "RESULT" and r["payload"]["findings"])
+                original = next(r for r in state.specialist_records if r["kind"] == "DISPATCH")
                 state = replace(state, specialist_records=state.specialist_records + ({**original, "kind": "CONSUMER_RESULT", "payload": {
                     "consumer_invocation_id": identifier, "result_candidate_sha": evidence.head_sha, "result_ref": reference}},))
                 self.store.save(state)

@@ -27,7 +27,7 @@ def git(*args):
     return subprocess.check_output(('git',*args),cwd=root,text=True).strip()
 fixture=SimpleNamespace(root=root,data=data,prompt=prompt,remote=remote,database=database,store=store,git=git)
 case=qualified.SpecialistPipelineTests();case.fixture=fixture
-Base=type(case.transport())
+Base=type(case.transport(optional_fail=boundary=='assurance-empty'))
 class Model(Base):
     def log(self,role):
         with (data/'specialist-model-calls.jsonl').open('a') as file:
@@ -36,7 +36,7 @@ class Model(Base):
         self.log(selected.reviewer)
         if mode=='start' and boundary=='dispatch' and selected.reviewer not in {'quality','security'}:
             os._exit(73)
-        if mode=='start' and boundary=='assurance' and selected.reviewer=='quality':
+        if mode=='start' and boundary in {'assurance','assurance-empty'} and selected.reviewer=='quality':
             os._exit(73)
         if mode=='resume' and selected.reviewer not in {'quality','security'}:
             raise AssertionError('Uncertain optional invocation was retried')

@@ -198,6 +198,39 @@ class SpecialistPipelineTests(unittest.TestCase):
         self.assertEqual(model.implementations,1)
         self.assertEqual(result.specialist_records,state.specialist_records)
 
+    def test_durable_consumer_resume_applies_once_without_primary_replay(self):
+        model,state=self.interrupted_consumer()
+        result=self.runner(model).run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual(result.phase,'WAIT_FOR_OPERATOR_MERGE')
+        self.assertEqual(model.implementations,1)
+        self.assertEqual(len([r for r in result.specialist_records if r['kind']=='APPLICATION']),1)
+        self.assertEqual(result.specialist_records[:len(state.specialist_records)],state.specialist_records)
+
+    def assurance_resume(self,optional_fail):
+        model=self.transport(optional_fail=optional_fail);review=model.review
+        def interrupt(root,selected,objective,evidence=None):
+            if selected.reviewer=='quality':raise SystemExit('after real controls, before assurance result')
+            return review(root,selected,objective,evidence)
+        model.review=interrupt;runner=self.runner(model)
+        with self.assertRaises(SystemExit):
+            runner.run(self.fixture.prompt,run_id='specialist-run',owner_authorized=True)
+        state=self.store.load('specialist-run');self.fixture.stop_host(runner)
+        self.assertTrue(any(r['kind']=='CONSUMER_RESULT' for r in state.specialist_records))
+        controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls']
+        model.review=review
+        result=self.runner(model).run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual(result.phase,'WAIT_FOR_OPERATOR_MERGE')
+        self.assertEqual(model.implementations,1)
+        self.assertEqual(result.specialist_records,state.specialist_records)
+        self.assertEqual(load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls'],controls)
+        if optional_fail:self.assertEqual(cr.specialist_readback(result.specialist_records)['findings'],[])
+
+    def test_assurance_resume_preserves_applied_consumer_and_controls(self):
+        self.assurance_resume(False)
+
+    def test_assurance_resume_with_no_optional_findings_preserves_primary_once(self):
+        self.assurance_resume(True)
+
     def test_selector_relevance_capacity_capability_overflow_and_consumed_allowance(self):
         for kwargs,reason in (({'remaining_percent':None},'capacity_unknown'),({'remaining_percent':50},'mandatory_controls_assurance_and_repair_reserved'),
                               ({'qualified_roles':()},'capability_unqualified'),({'consumed_invocations':2},'finite_optional_allowance_exhausted')):
@@ -238,7 +271,7 @@ class SpecialistPipelineTests(unittest.TestCase):
         self.assertEqual(start.returncode,73,start.stdout+start.stderr)
         interrupted=self.store.load('specialist-run')
         self.assertEqual(interrupted.repair_iterations,2)
-        interrupted_controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database) if boundary in {'assurance','publication'} else None
+        interrupted_controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database) if boundary in {'assurance','assurance-empty','publication'} else None
         with sqlite_connection(self.fixture.database) as connection:
             expiry=connection.execute("SELECT expires_at FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE'",('specialist-run',)).fetchone()[0]
         delay=(datetime.fromisoformat(expiry)-datetime.now(timezone.utc)).total_seconds()
@@ -254,13 +287,17 @@ class SpecialistPipelineTests(unittest.TestCase):
             self.assertEqual((data['reserved_invocation_count'],data['uncertain_invocation_count']),(1,1))
             self.assertEqual(data['completed_invocation_count'],0)
             self.assertTrue(data['dispatch_skips'])
+        elif boundary=='assurance-empty':
+            self.assertEqual((data['reserved_invocation_count'],data['completed_invocation_count']),(2,0))
+            self.assertEqual(data['findings'],[])
+            self.assertFalse(any(r['kind']=='APPLICATION' for r in after.specialist_records))
         else:
             self.assertEqual((data['reserved_invocation_count'],data['completed_invocation_count']),(2,2))
             self.assertEqual([f['disposition'] for f in data['findings']],['DEFERRED','VERIFIED'])
             self.assertEqual(len([r for r in after.specialist_records if r['kind']=='APPLICATION']),1)
         expected_resume = [] if boundary=='publication' else ['implementation','quality','security'] if boundary=='dispatch' else ['quality','security']
         self.assertEqual([call['role'] for call in calls if call['mode']=='resume'],expected_resume)
-        if boundary in {'assurance','publication'}:
+        if boundary in {'assurance','assurance-empty','publication'}:
             after_controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls']
             self.assertEqual(after_controls,interrupted_controls['controls'])
         remote=json.loads((self.fixture.data/'specialist-remote.json').read_text())
@@ -275,6 +312,9 @@ class SpecialistPipelineTests(unittest.TestCase):
 
     def test_real_new_process_at_assurance_preserves_primary_candidate_and_budget(self):
         self.process_boundary('assurance')
+
+    def test_real_new_process_at_assurance_without_findings_never_replays_primary(self):
+        self.process_boundary('assurance-empty')
 
     def test_real_new_process_after_publication_acceptance_never_creates_twice(self):
         self.process_boundary('publication')
