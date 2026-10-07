@@ -22,6 +22,30 @@ This lower-priority historical context is deliberately long and is not needed by
 
 
 class ProviderContextTest(unittest.TestCase):
+    def test_raw_markup_is_unclassified_and_retained_in_full(self) -> None:
+        objective = "# Safety\n<pre>\n# Historical transcript\n</pre>\nNever omit this required rule.\n"
+        projection = project_context(ProviderRole.SECURITY_REVIEW, objective)
+        self.assertEqual(projection.text, objective)
+        self.assertEqual(projection.omitted_low_priority_count, 0)
+
+    def test_unknown_headings_are_required_even_when_nested_in_optional_history(self) -> None:
+        for heading in ("Security requirements", "Delivery conditions", "Constraints", "Unrecognised obligations"):
+            for level in ("# ", "## "):
+                objective = ("# Objective\nAssess the candidate.\n# Optional history\nold notes.\n"
+                             + level + heading + "\nDO_NOT_PUBLISH_WITHOUT_OWNER_AUTHORIZATION\n")
+                for role in ("quality", "security"):
+                    with self.subTest(heading=heading, level=level, role=role):
+                        prompt = json.loads(reviewer_prompt(ReviewerSelection(role, "mandatory", 1.0), objective))
+                        self.assertIn("DO_NOT_PUBLISH_WITHOUT_OWNER_AUTHORIZATION", prompt["objective"])
+
+    def test_unknown_parent_keeps_complete_contract_and_unclassified_history(self) -> None:
+        objective = ("# Delivery conditions\n## Optional history\nStill part of this unknown contract.\n"
+                     "# History\nUnclassified required lineage.\n")
+        projection = project_context(ProviderRole.QUALITY_REVIEW, objective)
+        self.assertIn("Still part of this unknown contract.", projection.text)
+        self.assertIn("Unclassified required lineage.", projection.text)
+        self.assertEqual(projection.omitted_low_priority_count, 0)
+
     def test_actual_mandatory_reviewer_prompts_keep_fenced_safety_and_role_rubrics(self) -> None:
         objective = "#\tSafety constraints\n## Details\n```sh\n# inert sample comment\n```\nNever publish without owner authorization.\n"
         for role in ("quality", "security"):
@@ -52,7 +76,7 @@ class ProviderContextTest(unittest.TestCase):
         self.assertIn("Never drop this required rule.", project_context(ProviderRole.QUALITY_REVIEW, objective).text)
 
     def test_mandatory_contract_includes_nested_sections_with_neutral_titles(self) -> None:
-        objective = "# Acceptance criteria\n## Scenarios\nRequired case A.\n### Details\nRequired case B.\n# History\n## Transcript\nOptional old notes.\n"
+        objective = "# Acceptance criteria\n## Scenarios\nRequired case A.\n### Details\nRequired case B.\n# Optional history\n## Optional transcript\nOptional old notes.\n"
         projection = project_context(ProviderRole.SECURITY_REVIEW, objective)
         self.assertIn("Required case A.", projection.text)
         self.assertIn("Required case B.", projection.text)

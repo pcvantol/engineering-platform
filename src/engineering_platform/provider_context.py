@@ -58,10 +58,10 @@ _ROLE_BUDGETS = {
     ProviderRole.REPAIR: 18_000,
     ProviderRole.FINALIZATION: 18_000,
 }
-_MANDATORY_HEADINGS = re.compile(
-    r"\b(?:objective|doel|acceptance|acceptatie|constraint|beperking|"
-    r"safety|veilig|authority|autoriteit|validation|validatie|required|"
-    r"verplicht|non-negotiable|niet-onderhandelbaar|scope|niet wijzigen|do not)\b",
+# Only this declared optional-history vocabulary permits omission. Unknown
+# headings (including neutral children of history) may contain obligations.
+_OPTIONAL_HISTORY = re.compile(
+    r"^(?:historical transcript|(?:optional|low[- ]priority)\s+(?:history|transcript|background))$",
     re.IGNORECASE,
 )
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[\t ]+(.+?)\s*$")
@@ -103,6 +103,10 @@ def project_context(role: ProviderRole, objective: str) -> ContextProjection:
     """
     if role == ProviderRole.IMPLEMENTATION:
         return ContextProjection(role, objective, 1, 0)
+    # Raw markup has different block rules: apparent ATX headings inside an
+    # HTML/XML block are not proven optional history. Preserve ambiguous input.
+    if re.search(r"(?m)^[\t ]*<", objective):
+        return ContextProjection(role, objective, 1, 0)
     sections = _markdown_sections(objective)
     selected: list[str] = []
     mandatory_parents: list[int] = []
@@ -111,11 +115,11 @@ def project_context(role: ProviderRole, objective: str) -> ContextProjection:
         level = len(header.group(1)) if header is not None else 0
         while mandatory_parents and mandatory_parents[-1] >= level:
             mandatory_parents.pop()
-        mandatory = heading == "preamble" or bool(_MANDATORY_HEADINGS.search(heading))
-        if mandatory or mandatory_parents:
+        required = heading == "preamble" or _OPTIONAL_HISTORY.fullmatch(heading.rstrip(" #\t")) is None
+        if required or mandatory_parents:
             selected.append(section)
-        if mandatory and level:
-            mandatory_parents.append(level)
+            if level:
+                mandatory_parents.append(level)
     if not selected:
         return ContextProjection(role, objective, 1, 0)
     # The budget limits optional history, never the approved contract. Retain

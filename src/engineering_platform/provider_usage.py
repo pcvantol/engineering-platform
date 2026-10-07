@@ -520,6 +520,8 @@ def _canonical_invocation_rows(rows):
         if row["phase"] == "MANDATORY_ASSURANCE_DISPATCH":
             try:
                 binding = json.loads(row["churn"])
+                if not isinstance(binding, dict):
+                    raise TypeError("Dispatch observation metadata is not an object.")
                 identifier = binding["canonical_invocation_id"]
                 terminal = terminals.get(identifier)
                 if (terminal is not None and row["invocation_id"] == identifier + ":dispatch"
@@ -527,7 +529,7 @@ def _canonical_invocation_rows(rows):
                         and all(row[key] == terminal[key]
                                 for key in ("run_id", "provider", "started_at"))):
                     completed = json.loads(terminal["churn"])
-                    if all(binding.get(key) == completed.get(key) and binding.get(key)
+                    if isinstance(completed, dict) and all(binding.get(key) == completed.get(key) and binding.get(key)
                            for key in ("canonical_invocation_id", "candidate_sha", "assurance_profile_digest")):
                         continue
             except (KeyError, TypeError, ValueError):

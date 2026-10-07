@@ -101,6 +101,28 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual(len(_canonical_invocation_rows([{**dispatch, "completed_at": "unexpected"}, terminal])), 2)
         for key in ("run_id", "provider", "started_at"):
             self.assertEqual(len(_canonical_invocation_rows([dispatch, {**terminal, key: "foreign"}])), 2)
+        for bad in ("null", "[]", '"text"', "12", "invalid-json"):
+            self.assertEqual(len(_canonical_invocation_rows([dispatch, {**terminal, "churn": bad}])), 2)
+
+    def test_corrupt_terminal_metadata_does_not_crash_shared_consumers(self):
+        from engineering_platform.execution_host_evidence import _activity
+        from engineering_platform.execution_activity import cumulative_activity
+        from engineering_platform.contracts.projection import _usage_projection
+        self.test_unknown_mandatory_review_usage_stays_unknown_in_every_consumer()
+        # Simulate corrupt persisted observation bytes without bypassing any
+        # producer decision or replacing the canonical folding implementation.
+        with open_storage(self.root) as connection:
+            triggers = connection.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='provider_invocations'").fetchall()
+            for row in triggers:
+                connection.execute('DROP TRIGGER "' + row[0].replace('"', '""') + '"')
+            for value in ("null", "[]", '"text"', "12", "invalid-json"):
+                connection.execute("UPDATE provider_invocations SET churn=? WHERE invocation_id='run-usage:quality'", (value,))
+                self.assertEqual(_activity(connection, "run-usage")["provider_invocations"], 3)
+                usage, _ = _usage_projection(connection, "run-usage")
+                self.assertEqual(usage["provider_invocation_count"], 3)
+                self.assertEqual(usage["output"], "UNAVAILABLE")
+                self.assertEqual(provider_usage_summary(self.root, "run-usage")["provider_invocation_count"], 3)
+                self.assertEqual(cumulative_activity(self.root, "run-usage")["reviewer_codex_commands_total"], 3)
 
     def test_central_context_persists_provider_usage_without_local_database(self) -> None:
         with TemporaryDirectory() as temporary:

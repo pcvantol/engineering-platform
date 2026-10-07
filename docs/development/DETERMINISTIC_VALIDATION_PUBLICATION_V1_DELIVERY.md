@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007`.
 Directive: `L234-NEXT-BACKLOG-DELIVERY-V1-20261007`.
-Lane revision: **r32**, plan revision **2**, sole writer **LANE_2_WORK**.
+Lane revision: **r32**, plan revision **3**, sole writer **LANE_2_WORK**.
 Base: `a5924d614eeb07cc3a78bb3a351bcea14aa59232` (EP 2.3.111).
 Branch: `codex/ep-deterministic-validation-publication-v1`.
 State: **IMPLEMENTING / NOT QUALIFIED**.
@@ -51,6 +51,18 @@ All **51** focused context/ledger/consumer regressions pass. Security's first
 wave was interrupted by model capacity and is not a PASS. Fresh independent
 exact-head reviews and complete qualification remain required. The closed r31
 consumption stays three; this assignment has consumed one corrective round.
+
+Independent wave 2 on `e2c956e9c864985b52b150ed099ccd9906e6a217`
+confirmed the first fixes and found two remaining gaps: unrecognised headings
+could still lose obligations, and non-object terminal churn could crash shared
+readers. Correction round **2** preserves all unknown sections and ambiguous
+markup; only the explicitly classified optional-history vocabulary permits
+omission. Both decoded binding halves must be objects before canonical folding;
+corrupt halves remain distinct unavailable observations. **58** focused actual
+context, adapter, storage and consumer regressions pass. This assignment has
+consumed **two** corrective rounds; r31 remains closed with three unchanged.
+Exact-head independent reviews, complete source/installed qualification and
+protected delivery are still required; this is not a terminal qualification.
 
 Use existing controls, ledger, adoption, publication adapter and recovery.
 Qualification uses local synthetic repositories and temporary storage; only
