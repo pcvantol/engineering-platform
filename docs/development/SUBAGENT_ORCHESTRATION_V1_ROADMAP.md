@@ -16,14 +16,16 @@ L2 r32 selects **SA-VAL + SA-PUB**, with only their necessary SA-CTX/SA-ISO/SA-O
 prerequisites, under assignment
 `L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007`.
 The [code/evidence/delta mapping](DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md)
-records candidate EP 2.3.112, actual admission and the required qualification.
-Status is IMPLEMENTING; no owning node is closed by source existence. The
+records protected EP 2.3.112 main, complete source and fresh installed evidence.
+SA-VAL/SA-PUB are QUALIFIED_SELECTED_SCOPE; SA-CTX/ISO/OBS are
+QUALIFIED_NECESSARY_SUBSET. Full-family qualification is not implied. The
 historical PLANNED audit below is preserved, and broader SA-Q/ROLE/PAR is not
 selected. Existing MPR-Q evidence is reused without reopening its assignment.
 
 `SA-0` records this documentation; it becomes canonical only through protected
-main delivery. All nine implementation nodes and the `SA-Q` integrated
-qualification node remain PLANNED, with no qualification evidence claimed.
+main delivery. The original documentary baseline left all implementation nodes PLANNED.
+The current selected statuses below close only the qualified scopes; `SA-Q` and
+all broader optimization/specialization/parallel work remain PLANNED.
 The original 2026-09-09 source audit is pinned at `62eb6c4` and reconciled to
 `0c282bacc40731221da267bcff289e0687ca945c`; later work must fetch again and
 reconcile each OPEN finding against current code before implementing it.
@@ -37,11 +39,11 @@ Priority is not an additional hard dependency beyond the DAG.
 | Node | Status | Hard dependencies | Findings | Bounded delivery and acceptance |
 | --- | --- | --- | --- | --- |
 | SA-0 | DOCUMENTED | none | SA-F01, SA-F02, SA-F03, SA-F04, SA-F05, SA-F06, SA-F07, SA-F08, SA-F09 | Retain the source audit, target design and documentary DAG. Pinned sources, nine finding IDs, forensic limits, discoverable links and acyclic dependencies; canonical only on protected main. |
-| SA-CTX | PLANNED | SA-0 | SA-F01 | Preserve the complete mandatory role contract. Production-module tests: oversized first/combined sections, unstructured input, actual mandatory-role routing and explicit overflow; no omitted required safety/acceptance under PASS. |
-| SA-ISO | PLANNED | SA-0 | SA-F04 | Isolate invocation results, telemetry and cancellation state. Real adapter tests with controlled parallel interleavings, distinct usage/content, success/failure/timeout/cancel and snapshot reset; no cross-invocation attribution. |
-| SA-OBS | PLANNED | SA-ISO | SA-F05, SA-F07, SA-F08 | Complete the invocation ledger and correct measurement semantics. Mandatory Q/S and failure/recovery IDs join usage/timing; unknown remains unknown; event replay/id deduplication; legacy proxy counters stay historical and are not fabricated adoption. |
-| SA-VAL | PLANNED | SA-CTX, SA-OBS | SA-F06 | Execute known validation controls without an LLM turn. Actual Managed and validation-only paths retain candidate/profile/exit evidence, full required controls and bounded failure diagnostics; zero provider calls for eligible deterministic control execution. |
-| SA-PUB | PLANNED | SA-VAL, SA-PUBLICATION-CONTRACT | SA-F06 | Use a deterministic host-owned first-PR publication adapter. Current validation, both independent reviews and authority precede dispatch; unchanged SHA; ambiguous response/restart reconciles one exact PR with no new provider turn or duplicate publication. |
+| SA-CTX | QUALIFIED_NECESSARY_SUBSET | SA-0 | SA-F01 | Preserve the complete mandatory role contract. Production-module tests: oversized first/combined sections, unstructured input, actual mandatory-role routing and explicit overflow; no omitted required safety/acceptance under PASS. |
+| SA-ISO | QUALIFIED_NECESSARY_SUBSET | SA-0 | SA-F04 | Isolate invocation results, telemetry and cancellation state. Real adapter tests with controlled parallel interleavings, distinct usage/content, success/failure/timeout/cancel and snapshot reset; no cross-invocation attribution. |
+| SA-OBS | QUALIFIED_NECESSARY_SUBSET | SA-ISO | SA-F05, SA-F07, SA-F08 | Complete the invocation ledger and correct measurement semantics. Mandatory Q/S and failure/recovery IDs join usage/timing; unknown remains unknown; event replay/id deduplication; legacy proxy counters stay historical and are not fabricated adoption. |
+| SA-VAL | QUALIFIED_SELECTED_SCOPE | SA-CTX, SA-OBS | SA-F06 | Execute known validation controls without an LLM turn. Actual Managed and validation-only paths retain candidate/profile/exit evidence, full required controls and bounded failure diagnostics; zero provider calls for eligible deterministic control execution. |
+| SA-PUB | QUALIFIED_SELECTED_SCOPE | SA-VAL, SA-PUBLICATION-CONTRACT | SA-F06 | Use a deterministic host-owned first-PR publication adapter. Current validation, both independent reviews and authority precede dispatch; unchanged SHA; ambiguous response/restart reconciles one exact PR with no new provider turn or duplicate publication. |
 | SA-SEL | PLANNED | SA-OBS | SA-F03 | Select useful optional specialists under bounded capacity. Capability/path/risk selection rejects misleading md/yaml/coordinator triggers; selected/skipped rationale and consumer recorded; finite wave/concurrency allowance, mandatory work reserved and saturation tested. |
 | SA-LOOP | PLANNED | SA-CTX, SA-OBS | SA-F02, SA-F07 | Join bounded specialist findings to genuine dispositions. Actual proposed/accepted/rejected/deferred/implemented/verified transitions with references; no-consumer skip; no private-reasoning/approval sharing, invented adoption or scope/repair-budget expansion. |
 | SA-ROLE | PLANNED | SA-CTX, SA-OBS | SA-F09 | Qualify role rubrics and explicit provider/model/effort policy. Versioned Q/S coverage, unresolved criteria, requested versus observed settings, incompatible-capability denial and comparative detection quality; preserve existing effective-profile authority. |
@@ -70,8 +72,8 @@ implementation node. Its owning capability is
 `MPR-Q`. The gate is QUALIFIED_EVIDENCE_AVAILABLE from EP 2.3.109, protected
 main `66433d7a2260397ec438a3052acae8ef50a84022`, with the
 [exact-main installed receipt](https://github.com/pcvantol/engineering-platform/pull/338#issuecomment-6013731687).
-This updates the external evidence reference only; SA nodes remain PLANNED
-and no SA execution is selected.
+The selected 2026-10-07 delivery reuses this evidence; the historical external
+reference does not activate broader SA work.
 Before `SA-PUB` activation, verify the exact qualified current-main
 source/artifact and `MPR-Q` evidence. Closed, unmerged PR #175 is historical
 design evidence only. A local candidate, handoff, old PR workflow or this

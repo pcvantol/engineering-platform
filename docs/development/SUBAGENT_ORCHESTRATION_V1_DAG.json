@@ -57,7 +57,7 @@
       "id": "SA-CTX",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "QUALIFIED_NECESSARY_SUBSET",
       "depends_on": [
         "SA-0"
       ],
@@ -66,13 +66,17 @@
       ],
       "delivery": "Preserve the complete mandatory role contract",
       "acceptance": "Production-module tests: oversized first/combined sections, unstructured input, actual mandatory-role routing and explicit overflow; no omitted required safety/acceptance under PASS.",
-      "qualification_evidence": []
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040405874",
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040754336"
+      ],
+      "qualification_scope": "Selected deterministic validation/publication delivery only; no full-family, routing, utility, token-reduction or parallel-assurance claim."
     },
     {
       "id": "SA-ISO",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "QUALIFIED_NECESSARY_SUBSET",
       "depends_on": [
         "SA-0"
       ],
@@ -81,13 +85,17 @@
       ],
       "delivery": "Isolate invocation results, telemetry and cancellation state",
       "acceptance": "Real adapter tests with controlled parallel interleavings, distinct usage/content, success/failure/timeout/cancel and snapshot reset; no cross-invocation attribution.",
-      "qualification_evidence": []
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040405874",
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040754336"
+      ],
+      "qualification_scope": "Selected deterministic validation/publication delivery only; no full-family, routing, utility, token-reduction or parallel-assurance claim."
     },
     {
       "id": "SA-OBS",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "QUALIFIED_NECESSARY_SUBSET",
       "depends_on": [
         "SA-ISO"
       ],
@@ -98,13 +106,17 @@
       ],
       "delivery": "Complete the invocation ledger and correct measurement semantics",
       "acceptance": "Mandatory Q/S and failure/recovery IDs join usage/timing; unknown remains unknown; event replay/id deduplication; legacy proxy counters stay historical and are not fabricated adoption.",
-      "qualification_evidence": []
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040405874",
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040754336"
+      ],
+      "qualification_scope": "Selected deterministic validation/publication delivery only; no full-family, routing, utility, token-reduction or parallel-assurance claim."
     },
     {
       "id": "SA-VAL",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "QUALIFIED_SELECTED_SCOPE",
       "depends_on": [
         "SA-CTX",
         "SA-OBS"
@@ -114,13 +126,17 @@
       ],
       "delivery": "Execute known validation controls without an LLM turn",
       "acceptance": "Actual Managed and validation-only paths retain candidate/profile/exit evidence, full required controls and bounded failure diagnostics; zero provider calls for eligible deterministic control execution.",
-      "qualification_evidence": []
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040405874",
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040754336"
+      ],
+      "qualification_scope": "Selected deterministic validation/publication delivery only; no full-family, routing, utility, token-reduction or parallel-assurance claim."
     },
     {
       "id": "SA-PUB",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "QUALIFIED_SELECTED_SCOPE",
       "depends_on": [
         "SA-VAL",
         "SA-PUBLICATION-CONTRACT"
@@ -130,7 +146,11 @@
       ],
       "delivery": "Use a deterministic host-owned first-PR publication adapter",
       "acceptance": "Current validation, both independent reviews and authority precede dispatch; unchanged SHA; ambiguous response/restart reconciles one exact PR with no new provider turn or duplicate publication.",
-      "qualification_evidence": []
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040405874",
+        "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040754336"
+      ],
+      "qualification_scope": "Selected deterministic validation/publication delivery only; no full-family, routing, utility, token-reduction or parallel-assurance claim."
     },
     {
       "id": "SA-SEL",
@@ -238,5 +258,26 @@
       "RMP-Q"
     ],
     "documentary_only": true
+  },
+  "selected_delivery": {
+    "assignment_id": "L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007",
+    "lane_revision": "r32",
+    "plan_revision": 5,
+    "correction_rounds_consumed": 3,
+    "package": "2.3.112",
+    "scope": [
+      "SA-VAL",
+      "SA-PUB"
+    ],
+    "necessary_prerequisites": [
+      "SA-CTX",
+      "SA-ISO",
+      "SA-OBS"
+    ],
+    "source_main": "a4b192e90f9e5658b610b10a53b5a05b09b6e455",
+    "installed_evidence": "https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040754336",
+    "full_family_qualified": false,
+    "activation_authority": false,
+    "delivery": "DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md"
   }
 }
