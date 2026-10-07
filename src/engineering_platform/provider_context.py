@@ -19,6 +19,7 @@ class ProviderRole(StrEnum):
     SPECIALIST_REVIEW = "SPECIALIST_REVIEW"
     IMPLEMENTATION = "IMPLEMENTATION"
     QUALITY_REVIEW = "QUALITY_REVIEW"
+    SECURITY_REVIEW = "SECURITY_REVIEW"
     REPAIR = "REPAIR"
     FINALIZATION = "FINALIZATION"
 
@@ -43,6 +44,9 @@ class ContextProjection:
             "context_source_item_count": self.source_item_count,
             "context_omitted_low_priority_count": self.omitted_low_priority_count,
             "context_projected_bytes": len(self.text.encode("utf-8")),
+            "context_budget_overflow_bytes": max(
+                0, len(self.text.encode("utf-8")) - _ROLE_BUDGETS[self.role]
+            ),
         }
 
 
@@ -50,6 +54,7 @@ _ROLE_BUDGETS = {
     ProviderRole.SPECIALIST_REVIEW: 18_000,
     ProviderRole.IMPLEMENTATION: 60_000,
     ProviderRole.QUALITY_REVIEW: 22_000,
+    ProviderRole.SECURITY_REVIEW: 22_000,
     ProviderRole.REPAIR: 18_000,
     ProviderRole.FINALIZATION: 18_000,
 }
@@ -66,7 +71,7 @@ def provider_need_for_phase(phase: str, *, passive_observation: bool = False) ->
     """Make provider need explicit; passive/deterministic phases never need one."""
     if passive_observation:
         return ProviderNeedDecision(False, "passive observation is deterministic")
-    if phase in {"EXECUTE_AGENT", "LOCAL_REPOSITORY_VALIDATION"}:
+    if phase == "EXECUTE_AGENT":
         return ProviderNeedDecision(True, "bounded implementation work requires reasoning")
     if phase == "QUALITY_CONTROL_AGENT":
         return ProviderNeedDecision(True, "autonomous quality review requires reasoning")
@@ -98,22 +103,23 @@ def project_context(role: ProviderRole, objective: str) -> ContextProjection:
     if role == ProviderRole.IMPLEMENTATION:
         return ContextProjection(role, objective, 1, 0)
     sections = _markdown_sections(objective)
-    selected = [section for heading, section in sections if heading == "preamble" or _MANDATORY_HEADINGS.search(heading)]
+    selected: list[str] = []
+    mandatory_parents: list[int] = []
+    for heading, section in sections:
+        level = len(section.splitlines()[0].split(" ", 1)[0]) if heading != "preamble" else 0
+        while mandatory_parents and mandatory_parents[-1] >= level:
+            mandatory_parents.pop()
+        mandatory = heading == "preamble" or bool(_MANDATORY_HEADINGS.search(heading))
+        if mandatory or mandatory_parents:
+            selected.append(section)
+        if mandatory and level:
+            mandatory_parents.append(level)
     if not selected:
         return ContextProjection(role, objective, 1, 0)
-    budget = _ROLE_BUDGETS[role]
-    included: list[str] = []
-    used = 0
-    for section in selected:
-        size = len(section.encode("utf-8"))
-        # Mandatory material is never silently truncated.  A single oversized
-        # mandatory section is kept whole and may exceed the nominal budget.
-        if included and used + size > budget:
-            continue
-        included.append(section)
-        used += size
-    text = "\n\n".join(included)
-    return ContextProjection(role, text, len(sections), max(0, len(sections) - len(included)))
+    # The budget limits optional history, never the approved contract. Retain
+    # all mandatory material and expose excess bytes for dispatch telemetry.
+    text = "\n\n".join(selected)
+    return ContextProjection(role, text, len(sections), max(0, len(sections) - len(selected)))
 
 
 def _markdown_sections(value: str) -> list[tuple[str, str]]:

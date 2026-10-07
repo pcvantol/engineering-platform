@@ -25,6 +25,37 @@ from engineering_platform import server
 
 
 class ProviderUsageTests(unittest.TestCase):
+    def test_dispatch_and_terminal_are_one_turn_but_interrupted_dispatch_is_unknown(self):
+        binding = {"canonical_invocation_id": "run-usage:quality:one",
+                   "candidate_sha": "a" * 40, "assurance_profile_digest": "sha256:" + "b" * 64}
+        for ordinal, phase, identifier, completed, usage in (
+            (1, "MANDATORY_ASSURANCE_DISPATCH", binding["canonical_invocation_id"] + ":dispatch", None, {}),
+            (2, "MANDATORY_ASSURANCE", binding["canonical_invocation_id"], "2026-10-07T00:00:01+00:00", {"input_tokens": 11}),
+            (3, "MANDATORY_ASSURANCE_DISPATCH", "run-usage:security:two:dispatch", None, {}),
+        ):
+            current = {**binding, "canonical_invocation_id": identifier.removesuffix(":dispatch")}
+            persist_provider_invocation(self.root, ProviderInvocation(
+                "run-usage", ordinal, "codex_cli", None, phase,
+                "quality" if ordinal < 3 else "security", "2026-10-07T00:00:00+00:00", completed,
+                None, usage, churn=current, invocation_id=identifier))
+        summary = provider_usage_summary(self.root, "run-usage")
+        self.assertEqual(summary["provider_invocation_count"], 2)
+        self.assertEqual(summary["input_tokens"], 11)
+        self.assertEqual(summary["provider_invocations_by_role"], {"quality": 1, "security": 1})
+
+    def test_dispatch_fold_retains_conflicting_or_corrupt_bindings(self):
+        from engineering_platform.provider_usage import _canonical_invocation_rows
+        terminal = dict(invocation_id="turn", phase="MANDATORY_ASSURANCE", completed_at="now",
+                        role="quality", churn=json.dumps({"canonical_invocation_id": "turn",
+                        "candidate_sha": "a" * 40, "assurance_profile_digest": "digest"}))
+        dispatch = {**terminal, "invocation_id": "turn:dispatch",
+                    "phase": "MANDATORY_ASSURANCE_DISPATCH", "completed_at": None}
+        for bad in ("broken-json", "{}", "null", json.dumps({"canonical_invocation_id": "turn",
+                    "candidate_sha": "foreign", "assurance_profile_digest": "digest"})):
+            self.assertEqual(len(_canonical_invocation_rows([{**dispatch, "churn": bad}, terminal])), 2)
+        self.assertEqual(len(_canonical_invocation_rows([dispatch, {**terminal, "role": "security"}])), 2)
+        self.assertEqual(len(_canonical_invocation_rows([{**dispatch, "completed_at": "unexpected"}, terminal])), 2)
+
     def test_central_context_persists_provider_usage_without_local_database(self) -> None:
         with TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()

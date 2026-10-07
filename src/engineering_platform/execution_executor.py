@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import wraps
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -14,7 +15,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
-from threading import Event, Thread
+from threading import Event, Thread, RLock
 from typing import Callable, Mapping
 
 from .capability_review import (
@@ -382,10 +383,25 @@ _format_cli_failure = format_cli_failure
 # contract.  Review-only invocations remain read-only below.
 MANAGED_EXECUTION_SANDBOX = "danger-full-access"
 
+def _invocation_owned(method):
+    """Serialize an adapter's invocation and callback configuration ownership.
+
+    Reentry permits validate's scoped sandbox to call invoke. Separate callers
+    cannot replace callbacks, cancellation, sandbox or observations mid-turn.
+    Distinct clients remain independent; this grants no parallel assurance.
+    """
+    @wraps(method)
+    def owned(self, *args, **kwargs):
+        with self._invocation_lock:
+            return method(self, *args, **kwargs)
+    return owned
+
+
 class CodexCliClient:
     def __init__(self, provider: CodexCliProvider | None = None, *,
                  disable_multi_agent: bool = False, repository_only: bool = False) -> None:
         self.provider = provider or CodexCliProvider()
+        self._invocation_lock = RLock()
         self._disable_multi_agent = disable_multi_agent
         self._repository_only = repository_only
         self.last_usage: dict[str, int | float | str] = {}
@@ -426,14 +442,17 @@ class CodexCliClient:
             metadata["codex_cli_installation_path"] = installation_path
         return metadata
 
+    @_invocation_owned
     def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
         """Set the optional local-only sink for safe live activity labels."""
         self._activity_callback = callback
 
+    @_invocation_owned
     def set_transient_action_callback(self, callback: Callable[[str], None] | None) -> None:
         """Set the non-persistent sink for a safe live Codex action name."""
         self._transient_action_callback = callback
 
+    @_invocation_owned
     def set_process_callback(self, callback: Callable[[dict[str, int] | None], None] | None) -> None:
         """Set the owned foreground Codex-process sink for runtime metrics."""
         self._process_callback = callback
@@ -442,6 +461,7 @@ class CodexCliClient:
         """Whether the last streamed provider session was observed to exit."""
         return self._provider_process_cleanup_confirmed
 
+    @_invocation_owned
     def set_cancellation_check(self, callback: Callable[[], bool] | None) -> None:
         """Bind an exact Action's durable cancellation request to this client."""
         self._cancellation_check = callback
@@ -504,26 +524,31 @@ class CodexCliClient:
                 time.sleep(.1)
         return drained()
 
+    @_invocation_owned
     def set_runtime_metadata_callback(
         self, callback: Callable[[dict[str, str]], None] | None
     ) -> None:
         """Publish only explicitly reported runtime settings during a live run."""
         self._runtime_metadata_callback = callback
 
+    @_invocation_owned
     def set_command_callback(self, callback: Callable[..., None] | None) -> None:
         """Set a direct JSONL command-boundary sink for execution telemetry."""
         self._command_callback = callback
 
+    @_invocation_owned
     def set_workspace_progress_callback(
         self, callback: Callable[[dict[str, int]], None] | None
     ) -> None:
         """Set a bounded, filename-free workspace change counter sink."""
         self._workspace_progress_callback = callback
 
+    @_invocation_owned
     def set_handoff_deadline_callback(self, callback: Callable[[], bool] | None) -> None:
         """Set a host-owned deadline check for an externally observable hand-off."""
         self._handoff_deadline_callback = callback
 
+    @_invocation_owned
     def set_deadline_progress_callback(self, callback: Callable[[], None] | None) -> None:
         """Set the transient sink that advances a progress-aware deadline.
 
@@ -542,6 +567,7 @@ class CodexCliClient:
             raise RunnerError("Codex CLI version could not be detected")
         return detected_codex_cli_version(completed.stdout)
 
+    @_invocation_owned
     def review(
         self,
         root: Path,
@@ -550,10 +576,12 @@ class CodexCliClient:
         evidence: ReviewerEvidence | None = None,
     ) -> ReviewerResult:
         self.last_usage = {}
+        self.last_usage_snapshots = ()
         self.last_churn = {}
         self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
+        self._cancellation_observed = False
         mandatory = selection.reviewer in {"quality", "security"}
         contract_version = (
             MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION
@@ -721,6 +749,7 @@ class CodexCliClient:
                 usage_snapshots=self.last_usage_snapshots,
             )
 
+    @_invocation_owned
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         self.last_usage = {}
         self.last_usage_snapshots = ()
@@ -728,6 +757,7 @@ class CodexCliClient:
         self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
+        self._cancellation_observed = False
         assessment_contract = getattr(self, "_validation_contract", False)
         schema = {
             "type": "object",
@@ -907,6 +937,7 @@ class CodexCliClient:
                 interruption_reason=interruption,
             ) from error
 
+    @_invocation_owned
     def validate(self, root: Path, prompt: str) -> AgentResult:
         """Run the local-validation provider turn without repository writes.
 

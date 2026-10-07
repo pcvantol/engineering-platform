@@ -8,6 +8,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import time
+from datetime import datetime, timezone
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -199,7 +202,7 @@ class AdoptionLifecycleTests(unittest.TestCase):
         self.assertEqual(after.assurance_profile["candidate_sha"], repaired)
         self.assertEqual(after.managed_candidate_adoption, self.selection)
         self.assertEqual(github.creates, 1)
-        self.assertEqual(len(agent.prompts), 2)  # interrupted repair, then read-only validation
+        self.assertEqual(len(agent.prompts), 1)  # only the interrupted repair requires reasoning
 
     def test_current_committed_declaration_must_still_match_the_central_binding(self):
         declaration = self.root / ".engineering-platform/repository.json"
@@ -262,24 +265,10 @@ class AdoptionLifecycleTests(unittest.TestCase):
 
     def test_old_repair_receipt_cannot_redirect_validation_or_the_next_repair_round(self):
         agent, github, _, repaired = self.recovered_repair_fixture()
-        invoke = agent.invoke
-        def interrupted_validation(root, prompt):
-            self.assertTrue(prompt)
-            if "Local repository validation gate" in prompt:
-                raise SystemExit("external validation provider interrupted")
-            return invoke(root, prompt)
-        resumed = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
-        with patch.object(agent, "invoke", side_effect=interrupted_validation):
-            try:
-                with self.assertRaisesRegex(SystemExit, "external validation provider"):
-                    resumed.run(self.prompt, run_id="adopt-run", resume=True)
-            finally:
-                self.stop_host(resumed)
-        checkpoint = self.store.load("adopt-run")
-        self.assertEqual((checkpoint.phase, checkpoint.repair_iterations), ("LOCAL_REPOSITORY_VALIDATION", 1))
         restarted = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
         self.addCleanup(self.stop_host, restarted)
         after = restarted.run(self.prompt, run_id="adopt-run", resume=True)
+        self.assertEqual(len(agent.prompts), 1)  # no mechanical model assessment
         self.assertEqual(after.phase, "WAIT_FOR_OPERATOR_MERGE", after)
         self.assertEqual(after.publication_intent["candidate_sha"], repaired)
         self.assertEqual((after.repair_iterations, github.creates), (1, 1))
@@ -333,9 +322,65 @@ class AdoptionLifecycleTests(unittest.TestCase):
         self.assertEqual(result.pull_request, 71)
         self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
         self.assertEqual(github.creates, 1)
-        self.assertEqual(len(agent.prompts), 1)
+        self.assertEqual(len(agent.prompts), 0)
         self.assertEqual(result.managed_candidate_adoption, self.selection)
         self.assertEqual((result.repair_iterations, self.git("rev-parse", "HEAD")), (0, self.sha))
+
+    def process_restart(self, boundary):
+        spec = self.area / "process-input.json"
+        spec.write_text(json.dumps({"root": str(self.root), "data": str(self.data),
+                                   "remote": str(self.remote), "prompt": str(self.prompt),
+                                   "selection": self.selection}))
+        command = (sys.executable, "-m", "tests.engineering.deterministic_delivery_process",
+                   str(spec))
+        interrupted = subprocess.run((*command, "start", boundary), text=True, capture_output=True, timeout=60)
+        self.assertEqual(interrupted.returncode, 73, interrupted.stdout + interrupted.stderr)
+        checkpoint = self.store.load("adopt-run")
+        validation = load_validation_context(self.root, "adopt-run", central_database=self.database)
+        self.assertEqual(validation["candidate_sha"], self.sha)
+        self.assertTrue(all(item["result"] == "PASS" for item in validation["controls"].values()))
+        # Preserve the actual product lease policy: a hard crash cannot release
+        # its heartbeat. Wait for its real persisted expiry, without resetting
+        # leases, clocks, repair consumption or deterministic decision logic.
+        with sqlite_connection(self.database) as connection:
+            expiry = connection.execute(
+                "SELECT expires_at FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE'",
+                ("adopt-run",)).fetchone()[0]
+        delay = (datetime.fromisoformat(expiry) - datetime.now(timezone.utc)).total_seconds()
+        if delay > 0:
+            time.sleep(delay + .1)
+        resumed = subprocess.run((*command, "resume", boundary), text=True, capture_output=True, timeout=60)
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        after = self.store.load("adopt-run")
+        self.assertEqual((after.phase, after.pull_request, after.repair_iterations),
+                         ("WAIT_FOR_OPERATOR_MERGE", 71, 0))
+        self.assertEqual(after.publication_intent["candidate_sha"], self.sha)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.sha)
+        current = load_validation_context(self.root, "adopt-run", central_database=self.database)
+        self.assertEqual(current["controls"], validation["controls"])
+        with sqlite_connection(self.database) as connection:
+            invocations = connection.execute(
+                "SELECT invocation_id,role,completed_at,churn,input_tokens,duration_ms FROM provider_invocations WHERE run_id=? ORDER BY ordinal",
+                ("adopt-run",)).fetchall()
+        terminal = [row for row in invocations if row[2] is not None]
+        self.assertEqual([row[1] for row in terminal], ["quality", "security"])
+        for row in terminal:
+            binding = json.loads(row[3])
+            self.assertEqual(binding["candidate_sha"], self.sha)
+            self.assertEqual(binding["assurance_profile_digest"], after.assurance_profile["digest"])
+            self.assertEqual(binding["canonical_invocation_id"], row[0])
+            self.assertIsNone(row[4])  # unobserved usage is not measured zero
+            self.assertIsNone(row[5])
+            self.assertTrue(any(item[0] == row[0] + ":dispatch" and item[2] is None
+                                for item in invocations))
+        self.assertEqual(len(invocations), 4 if boundary == "publication" else 5)
+        self.assertEqual(checkpoint.repair_iterations, after.repair_iterations)
+
+    def test_real_process_crash_after_publication_acceptance_resumes_without_second_create(self):
+        self.process_restart("publication")
+
+    def test_real_process_crash_at_assurance_dispatch_resumes_without_implementation_or_validation_replay(self):
+        self.process_restart("assurance")
 
     def test_selection_rejects_foreign_stale_changed_authority_and_lineage(self):
         state = TransactionState("adopt-run", "qualification/managed", str(self.prompt), "INITIALIZE", owner_authorized=True)

@@ -3995,7 +3995,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual([item["status"] for item in advanced.assurance_reviews], ["PASS", "PASS"])
         self.assertIn("Integral repair method", agent.prompts[0])
         self.assertIn("maintenance_recovery_cleanup", agent.prompts[0])
-        self.assertIn("Local repository validation gate", agent.prompts[1])
+        self.assertEqual(len(agent.prompts), 1)
         context = load_validation_context(self.root, "repair-rereview", currentness=1)
         assert context is not None
         self.assertEqual(context["controls"]["git_diff_check"]["result"], "PASS")
@@ -4455,7 +4455,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(advanced.phase, "WAIT_FOR_OPERATOR_MERGE")
         self.assertEqual(advanced.pull_request, 82)
-        self.assertEqual(len(agent.prompts), 2)
+        self.assertEqual(len(agent.prompts), 1)
         self.assertEqual(runner.github.publication_creates, 1)
 
     def test_repair_with_bound_pr_rejects_a_different_returned_pr(self) -> None:
@@ -4507,8 +4507,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(validated.local_validation_iterations, 1)
         self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed"])
         self.assertIsNone(result.pull_request)
-        self.assertIn("read-only", agent.prompts[0])
-        self.assertNotIn("draft implementation pull request", agent.prompts[0])
+        self.assertEqual(agent.prompts, [])
+        self.assertEqual(result.terminal_state, "FAILED")
 
     def test_verified_implementation_validation_failure_enters_local_repair_route(self) -> None:
         sha = "b" * 40
@@ -4568,7 +4568,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             AgentResult("COMPLETE", "codex/implementation", 701),
         ])
         github = FakeGitHub([
-            PullRequestEvidence(701, "OPEN", True, True, head_branch="codex/implementation", base_branch="main"),
+            PullRequestEvidence(701, "OPEN", True, True, head_branch="codex/implementation", base_branch="main", head_sha=sha),
         ])
 
         runner = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None)
@@ -4582,13 +4582,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
 
         self.assertTrue(state.commit_evidence, state.diagnostic)
-        self.assertEqual(state.phase, "BLOCKED", state.diagnostic)
-        self.assertTrue(state.terminal)
-        self.assertEqual(state.next_action, "unexpected_validation_pull_request")
+        self.assertEqual(state.phase, "WAIT_FOR_OPERATOR_MERGE", state.diagnostic)
+        self.assertFalse(state.terminal)
+        self.assertEqual(state.pull_request, 701)
         self.assertEqual(state.local_validation_iterations, 1)
-        self.assertEqual(state.local_validation_audit[0]["outcome"], "assessment_rejected")
-        self.assertEqual(len(agent.prompts), 2)
-        self.assertIn("Local repository validation gate", agent.prompts[1])
+        self.assertEqual(state.local_validation_audit[0]["outcome"], "validated")
+        self.assertEqual(len(agent.prompts), 1)
+        self.assertEqual(github.publication_creates, 1)
 
     def test_finalization_repair_validates_its_own_pr_after_implementation_merge(self) -> None:
         branch = "codex/finalize-repair"
@@ -4700,7 +4700,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(blocked.local_validation_iterations, 1)
         self.assertEqual(blocked.local_validation_audit[0]["outcome"], "validation_failed")
 
-    def test_local_validation_provider_assesses_host_receipts_without_creating_controls(self) -> None:
+    def test_deterministic_validation_assesses_host_receipts_without_provider(self) -> None:
         run_id = "host-receipt-assessment"
         profile = execution_host.classify(())
         bindings = execution_host.profile_control_bindings(profile, repository_root=self.root)
@@ -4740,8 +4740,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         assert context is not None
         self.assertEqual(validated.local_validation_audit[-1]["outcome"], "validated")
         self.assertEqual(result.validation_evidence, ())
-        self.assertIn("Host-owned validation evidence", agent.prompts[-1])
-        self.assertIn("Do not execute tests", agent.prompts[-1])
+        self.assertEqual(agent.prompts, [])
         self.assertEqual(set(context["controls"]), {"git_diff_check", "repository_suite"})
 
     def test_runtime_failure_replaces_a_stale_operator_merge_terminal_condition(self) -> None:
@@ -4808,7 +4807,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         state = TransactionState(
             "signal-interrupted-provider-run", "pcvantol/djconnect", str(self.prompt),
-            "LOCAL_REPOSITORY_VALIDATION", next_action="run_local_repository_validation",
+            "EXECUTE_AGENT", next_action="implement",
         )
         runner = EngineeringRunner(
             self.root, self.store, FakeRepository(), FakeGitHub([]),
@@ -4816,7 +4815,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
 
         with self.assertRaises(CodexInvocationError) as raised:
-            runner._invoke_agent_with_timing(state, "objective", local_validation=True)
+            runner._invoke_agent_with_timing(state, "objective")
 
         self.assertTrue(raised.exception.provider_turn_interrupted)
         self.assertEqual(raised.exception.next_action, "NONE")
@@ -6647,6 +6646,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         github.pull_request = lambda _number: candidate  # type: ignore[method-assign]
         runner = EngineeringRunner(source, self.store, actual, github,
                                    FakeAgent(AgentResult("WAITING")), lambda _: None)
+        from engineering_platform import server
+        server.initialize(self.root / "central")
         self.store.central_database = self.root / "central" / "epdata.sqlite"
         state = TransactionState("recovered-autonomous", target, str(self.prompt), "FINALIZE_AGENT",
                                  owner_authorized=True, transaction_kind="FINALIZATION",

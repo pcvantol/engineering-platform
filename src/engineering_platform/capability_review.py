@@ -211,11 +211,11 @@ def run_reviews(
                 tuple(dict(item) for item in result.findings if isinstance(item, dict)),
                 result.contract_version,
                 result.failed,
-                result.usage,
-                result.runtime_metadata,
-                result.churn,
+                dict(result.usage),
+                dict(result.runtime_metadata),
+                dict(result.churn),
                 result.duration_seconds,
-                result.usage_snapshots,
+                tuple(dict(item) for item in result.usage_snapshots),
                 tuple(dict(item) for item in result.coverage if isinstance(item, dict)),
                 tuple(dict(item) for item in result.finding_dispositions if isinstance(item, dict)),
             )
@@ -369,7 +369,11 @@ def reviewer_prompt(
     evidence: ReviewerEvidence | None = None,
 ) -> str:
     """Build the bounded read-only reviewer instruction without lifecycle authority."""
-    projection = project_context(ProviderRole.SPECIALIST_REVIEW, objective)
+    role = {
+        "quality": ProviderRole.QUALITY_REVIEW,
+        "security": ProviderRole.SECURITY_REVIEW,
+    }.get(selection.reviewer, ProviderRole.SPECIALIST_REVIEW)
+    projection = project_context(role, objective)
     prompt: dict[str, object] = {
         "reviewer": REVIEWER_LABELS[selection.reviewer],
         "capability": selection.capability,
@@ -380,6 +384,7 @@ def reviewer_prompt(
             "budget_version": projection.budget_version,
             "source_item_count": projection.source_item_count,
             "omitted_low_priority_count": projection.omitted_low_priority_count,
+            "budget_overflow_bytes": projection.telemetry["context_budget_overflow_bytes"],
         },
         "provider_context_scope": {
             "policy": POLICY_ID,

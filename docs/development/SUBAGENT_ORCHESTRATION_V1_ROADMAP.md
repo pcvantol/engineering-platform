@@ -12,6 +12,15 @@ No existing executable DAG, Mission, run or policy activation is changed.
 
 ## Status and pickup priority
 
+L2 r32 selects **SA-VAL + SA-PUB**, with only their necessary SA-CTX/SA-ISO/SA-OBS
+prerequisites, under assignment
+`L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007`.
+The [code/evidence/delta mapping](DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md)
+records candidate EP 2.3.112, actual admission and the required qualification.
+Status is IMPLEMENTING; no owning node is closed by source existence. The
+historical PLANNED audit below is preserved, and broader SA-Q/ROLE/PAR is not
+selected. Existing MPR-Q evidence is reused without reopening its assignment.
+
 `SA-0` records this documentation; it becomes canonical only through protected
 main delivery. All nine implementation nodes and the `SA-Q` integrated
 qualification node remain PLANNED, with no qualification evidence claimed.

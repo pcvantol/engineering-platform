@@ -1,5 +1,14 @@
 # Engineering Platform Roadmap
 
+## Deterministic validation and publication subset — L2 r32, 2026-10-07
+
+The [selected delivery](DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md)
+implements SA-VAL/SA-PUB and their necessary context, invocation-isolation and
+ledger prerequisites on candidate EP 2.3.112. Status is IMPLEMENTING, with
+protected-main and installed qualification still required. Existing MPR is
+reused; the full subagent family, optional parallel assurance and model routing
+remain outside this selection. The completed r31 producer remains closed.
+
 ## FME extension — existing L2 assignment, 2026-10-06
 
 [Bounded effect execution V1](../engineering/BOUNDED_EFFECT_EXECUTION_V1.md)
