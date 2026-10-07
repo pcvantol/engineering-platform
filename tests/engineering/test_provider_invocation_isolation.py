@@ -57,6 +57,8 @@ class InvocationIsolationTests(unittest.TestCase):
         client.last_usage = {"input_tokens": 77}
         client.last_usage_snapshots = ({"input_tokens": 77},)
         client.last_churn = {"tool_loop_operations": 12}
+        client.last_execution_metadata = {"modified": 12, "created": 7,
+                                          "deleted": 3, "codex_commands_executed": 99}
         client._cancellation_observed = True
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(RuntimeError, "external transport"):
@@ -64,6 +66,7 @@ class InvocationIsolationTests(unittest.TestCase):
         self.assertEqual(client.last_usage, {})
         self.assertEqual(client.last_usage_snapshots, ())
         self.assertEqual(client.last_churn, {})
+        self.assertEqual(set(client.last_execution_metadata.values()), {0})
         self.assertFalse(client.cancellation_observed())
         self.assertIsNone(client.last_execution_seconds)
 

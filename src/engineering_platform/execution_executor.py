@@ -582,6 +582,9 @@ class CodexCliClient:
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
         self._cancellation_observed = False
+        self.last_execution_metadata = {
+            name: 0 for name in ("modified", "created", "deleted", "codex_commands_executed")
+        }
         mandatory = selection.reviewer in {"quality", "security"}
         contract_version = (
             MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION
@@ -758,6 +761,9 @@ class CodexCliClient:
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
         self._cancellation_observed = False
+        self.last_execution_metadata = {
+            name: 0 for name in ("modified", "created", "deleted", "codex_commands_executed")
+        }
         assessment_contract = getattr(self, "_validation_contract", False)
         schema = {
             "type": "object",
