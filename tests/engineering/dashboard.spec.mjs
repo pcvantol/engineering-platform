@@ -10896,6 +10896,9 @@ test.describe("Engineering Status browser smoke", () => {
     });
     // Observe the actual mutation-observer layout pass before measuring it.
     await expect(page.locator("#chatMessages .chat-message--scrollable")).toHaveCount(2);
+    await expect.poll(() => page.locator("#chatMessages").evaluate((container) =>
+      [...container.querySelectorAll(".chat-message__body")].every((body) => body.scrollHeight > body.clientHeight),
+    )).toBe(true);
     const measurements = await page.locator("#chatMessages").evaluate((container) => ({
       available: container.clientHeight,
       bubbles: [...container.querySelectorAll(".chat-message")].map((bubble) => {
