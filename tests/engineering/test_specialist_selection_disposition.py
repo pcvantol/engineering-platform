@@ -342,7 +342,7 @@ class SpecialistPipelineTests(unittest.TestCase):
             self.assertEqual((data['reserved_invocation_count'],data['completed_invocation_count']),(2,2))
             self.assertEqual([f['disposition'] for f in data['findings']],['DEFERRED','VERIFIED'])
             self.assertEqual(len([r for r in after.specialist_records if r['kind']=='APPLICATION']),1)
-        expected_resume = [] if boundary=='publication' else ['implementation','quality','security'] if boundary=='dispatch' else ['quality','security']
+        expected_resume = [] if boundary=='publication' else ['implementation','quality','security'] if boundary in {'dispatch','recovery-available'} else ['quality','security']
         self.assertEqual([call['role'] for call in calls if call['mode']=='resume'],expected_resume)
         if boundary in {'assurance','assurance-empty','publication','repair-assurance'}:
             after_controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls']
@@ -350,6 +350,9 @@ class SpecialistPipelineTests(unittest.TestCase):
         remote=json.loads((self.fixture.data/'specialist-remote.json').read_text())
         self.assertEqual(remote['head_sha'],self.fixture.git('rev-parse','HEAD'))
         self.assertTrue(all(c['result']=='PASS' for c in load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls'].values()))
+
+    def test_real_new_process_before_replacement_preserves_existing_recovery_authority(self):
+        self.process_boundary('recovery-available')
 
     def test_real_new_process_after_noop_consumer_never_invents_branch_or_replays(self):
         self.process_boundary('noop-consumer')

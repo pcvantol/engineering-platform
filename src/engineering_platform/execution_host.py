@@ -3484,7 +3484,7 @@ class EngineeringRunner:
         recovered_resume = self._recovered_result_matches_state(state, recovery_snapshot) and state.phase in {
             "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT",
         }
-        if (resume and not recovered_resume and consumer_receipt is None
+        if (resume and recovery_snapshot is None and not recovered_resume and consumer_receipt is None
                 and state.transaction_kind == "IMPLEMENTATION" and state.phase == "EXECUTE_AGENT"
                 and any(r["kind"] == "DISPATCH" for r in state.specialist_records)):
             from .provider_recovery import completed_primary_result_reference
@@ -3494,8 +3494,6 @@ class EngineeringRunner:
             except ValueError:
                 return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_unavailable", "Completed primary result is uncertain; provider replay is forbidden.")
             if completed_primary is not None:
-                if isinstance(recovery_snapshot, dict):
-                    return self._save_terminal(state, "BLOCKED", "specialist_consumer_recovery_uncertain", "Existing recovery controller does not authorize this completed primary result.")
                 # Actual candidate is checked after exclusive lease admission;
                 # the artifact remains the sole authority for result content.
                 consumer_receipt = {"consumer_invocation_id": completed_primary[0],

@@ -44,7 +44,7 @@ class Model(Base):
         return replace(result,findings=()) if boundary=='noop-consumer' and selected.reviewer not in {'quality','security'} else result
     def invoke(self,root,prompt):
         self.log('implementation')
-        if mode=='resume' and boundary!='dispatch':
+        if mode=='resume' and boundary not in {'dispatch','recovery-available'}:
             raise AssertionError('Durable primary consumer result was replayed through model')
         if boundary=='noop-consumer':
             import subprocess
@@ -53,7 +53,7 @@ class Model(Base):
             from engineering_platform.execution_models import AgentResult
             return AgentResult('COMPLETE',terminal_condition='repository_reconciled',commit_sha=git('rev-parse','HEAD'),
                 validation_evidence=({'command':'python3 -m unittest discover -s tests','result':'PASS: actual isolated repository tests'},))
-        if boundary=='recovered':
+        if boundary in {'recovered','recovery-available'}:
             import subprocess
             child=subprocess.Popen((sys.executable,'-c','import time;time.sleep(30)'),start_new_session=True)
             try:
@@ -82,6 +82,14 @@ class GitHub:
     def ready(self,number):pass
     def normalize_markdown_body(self,number):return False
     def find_open_pull_request(self,*args):return None
+if mode=='start' and boundary=='recovery-available':
+    from engineering_platform import execution_host
+    os.environ['ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE']='specialist-run:EXECUTE_AGENT'
+    available=execution_host.create_recovery_available
+    def crash_after_available(*args,**kwargs):
+        available(*args,**kwargs)
+        os._exit(73)
+    execution_host.create_recovery_available=crash_after_available
 if mode=='start' and boundary=='recovered':
     from engineering_platform import execution_host
     os.environ['ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE']='specialist-run:EXECUTE_AGENT'
