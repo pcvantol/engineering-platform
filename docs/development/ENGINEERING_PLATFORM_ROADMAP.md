@@ -3,9 +3,10 @@
 ## Deterministic validation and publication subset — L2 r32, 2026-10-07
 
 The [selected delivery](DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md)
-implements SA-VAL/SA-PUB and their necessary context, invocation-isolation and
-ledger prerequisites on candidate EP 2.3.112. Status is IMPLEMENTING, with
-protected-main and installed qualification still required. Existing MPR is
+qualifies the selected SA-VAL/SA-PUB and necessary context, invocation-isolation
+and ledger prerequisites on protected EP 2.3.112 main `a4b192e`, with fresh
+noneditable installed proof. Ordinary NO_BUMP finalization and exact final-main
+receipt follow without broadening the selected subset. Existing MPR is
 reused; the full subagent family, optional parallel assurance and model routing
 remain outside this selection. The completed r31 producer remains closed.
 

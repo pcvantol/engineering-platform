@@ -7,8 +7,10 @@ This is a retained source audit and a documented target for later engineering,
 not a runtime change. It is a proposal until merged into owning EP `main`;
 merging documents establishes documentary authority, not implementation,
 qualification, installation, execution, publication or policy activation.
-All implementation nodes in the [scoped roadmap](../development/SUBAGENT_ORCHESTRATION_V1_ROADMAP.md)
-and [documentary DAG](../development/SUBAGENT_ORCHESTRATION_V1_DAG.json) are PLANNED.
+The original audit left implementation nodes PLANNED. The current
+[scoped roadmap](../development/SUBAGENT_ORCHESTRATION_V1_ROADMAP.md) and
+[documentary DAG](../development/SUBAGENT_ORCHESTRATION_V1_DAG.json) now record
+the qualified selected SA-VAL/SA-PUB delivery and necessary prerequisite subsets.
 This documentation increment is `NO_BUMP`.
 
 The [Execution Host architecture](EXECUTION_HOST_ARCHITECTURE.md) retains
@@ -63,7 +65,7 @@ There is no claimed production incidence, quantified saving or model superiority
 The local publication-repair candidate `3ec4f898d6cae070c15feaef3320d98fc369561c`
 is not part of this source evidence and must not be treated as merged or installed.
 
-## Current source behavior
+## Source behavior at the retained audit baseline
 
 The host runs optional capability reviewers through separate read-only
 `CodexCliClient.review` invocations, using `run_reviews` in parallel. This is
@@ -359,3 +361,21 @@ No live release/install/canary or executable programme DAG is changed here.
 [memory]: https://github.com/pcvantol/engineering-platform/blob/62eb6c4631cc23b9e4d2a53043216be6f20bfaae/src/engineering_platform/engineering_memory.py
 [usage]: https://github.com/pcvantol/engineering-platform/blob/62eb6c4631cc23b9e4d2a53043216be6f20bfaae/src/engineering_platform/provider_usage.py
 [benchmark]: https://github.com/pcvantol/engineering-platform/blob/62eb6c4631cc23b9e4d2a53043216be6f20bfaae/src/engineering_platform/provider_context_benchmark.py
+
+
+## 2026-10-07 selected delivery disposition
+
+[L2 r32 delivery](../development/DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md)
+is protected on EP 2.3.112 main with fresh noneditable installed evidence.
+SA-F01's context-integrity prerequisite is satisfied by preserving the entire
+approved objective and reporting overflow; token/history reduction is not claimed.
+SA-F04's necessary adapter ownership and observation isolation is satisfied without
+activating parallel mandatory reviews. SA-F05's mandatory Q/S identity/ledger joins
+and unknown measurements are qualified across the real consumers. SA-F06's
+selected validation/publication mechanics require zero extra model turns and
+reuse the existing qualified MPR adapter. These are scoped dispositions, not
+retroactive changes to the preserved source audit or its immutable forensic files.
+Broader SA-F02/F03/F07/F08/F09, utility/adoption/churn semantics, routing, comparative
+model quality, optional specialist optimization and full SA-Q/PAR remain open.
+No percentage saving, production incidence, new live EP, signing or activation is
+claimed. Exact final-main qualification follows ordinary NO_BUMP finalization.

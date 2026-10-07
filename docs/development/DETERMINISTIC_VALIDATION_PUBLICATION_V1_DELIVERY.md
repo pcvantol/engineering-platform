@@ -2,13 +2,13 @@
 
 Assignment: `L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007`.
 Directive: `L234-NEXT-BACKLOG-DELIVERY-V1-20261007`.
-Lane revision: **r32**, plan revision **4**, sole writer **LANE_2_WORK**.
+Lane revision: **r32**, plan revision **5**, sole writer **LANE_2_WORK**.
 Base: `a5924d614eeb07cc3a78bb3a351bcea14aa59232` (EP 2.3.111).
 Branch: `codex/ep-deterministic-validation-publication-v1`.
-State: **IMPLEMENTING / NOT QUALIFIED**.
-Candidate package: **2.3.112**.
+State: **QUALIFIED IMPLEMENTATION MAIN / ORDINARY FINALIZATION**.
+Package: **2.3.112**, finalization **NO_BUMP**.
 
-## Code, evidence and missing delta
+## Code, evidence and missing delta at pickup
 
 | Selected boundary | Existing production path | Required delta |
 | --- | --- | --- |
@@ -86,5 +86,49 @@ Required completion: full owning regressions and strict changed-file line
 coverage >80.2%; exact-head independent Quality/Security; protected delivery
 and ordinary finalization; exact final-main noneditable wheel outside the
 checkout; linked positive, negative and real process-restart receipts;
-sanitized terminal register and cleanup. This document records pickup, not
-qualification of any roadmap family.
+sanitized terminal register and cleanup. This document closes the selected SA-VAL/SA-PUB implementation subset and its
+necessary prerequisites; it does not close the full roadmap family.
+
+
+## Protected implementation and installed qualification
+
+Implementation [PR #344](https://github.com/pcvantol/engineering-platform/pull/344)
+merged through protected squash as `a4b192e90f9e5658b610b10a53b5a05b09b6e455`.
+Its tree `55eb4543d67b866a22d91c655898c171e2da2ef9` equals the independently
+Quality/Security-reviewed `dacf51c03ab0e4d1a83e90a126b6394680fd183c` candidate.
+[Exact independent reviews](https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040236862)
+and [source/coverage/candidate installed evidence](https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040405874)
+are separate from final-main qualification.
+
+Full source: **2,263 tests PASS, one existing skip**, Python3.14.8. All **163**
+modules meet combined coverage; aggregate **84.8850987781%**, minimum module
+**80.3203661327%**. All **nine** changed Python production files have strictly
+more than80.2% executable-line coverage, minimum **82.7613727055%**. No waiver
+or exclusion was introduced. Four browser shards/localization, CodeQL,
+dependency/static security, trusted delivery, canonical versioning and the
+installed CI matrix all passed. Actual Owner Authorization status was
+SUCCESS/Not required for LOW_RISK or NORMAL_RISK; no admin bypass.
+
+[Fresh noneditable protected-main qualification](https://github.com/pcvantol/engineering-platform/pull/344#issuecomment-6040754336) outside checkout: **108 tests
+PASS**, with real local Git/CENTRAL/controls and two `os._exit(73)` process
+crashes, true lease expiry, separate Q/S and one exact publication readback.
+All **194** committed test files were Git-blob verified, **190** installed
+package files matched wheel/source before and after tests, and **15** version
+projections passed. Implementation-main wheel SHA256:
+`0619f6dab614c2e81d537002f9bb1209990b6addbd797cf48067e66cdbfb825d`.
+Mechanical SA-VAL/SA-PUB invoke no model; the substantive independent reviews
+remain genuine separate turns. The approved objective stays complete: no
+context/token-reduction or commercial-model-quality claim.
+
+Candidate TDE policy assessment is **FAIL**, repository qualification **FAILED**,
+`repository-qualification.cdc836cdd513954765e5e237`, with unavailable coverage.
+This is the existing nonblocking NFR-TDE-001 boundary, not policy PASS inferred
+from workflow success. Final-main TDE readback remains explicit in the final
+receipt. Hermetic validators are qualified; full host-loopback EP/Forge
+validators and native/signing holds remain unsupported/unqualified.
+
+Ordinary NO_BUMP finalization changes documentation only. Exact final-main
+noneditable qualification, sanitized linked process captures and cleanup are
+recorded after its protected merge on the finalization PR and owning #142.
+No operational runtime/public release or next-family pickup follows closure.
+SA-Q/SEL/LOOP/ROLE/PAR and broader SA-OBS utility/churn claims remain unqualified.
