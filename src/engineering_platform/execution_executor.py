@@ -439,7 +439,8 @@ class CodexCliClient:
                     raise ValueError("Specialist snapshot differs from its exact paths")
                 for path, expected in selection.specialist_source_blobs:
                     data = (workspace / path).read_bytes()
-                    actual = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                    # Git SHA-1 object identity; cryptographic request/profile binding uses SHA-256.
+                    actual = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data, usedforsecurity=False).hexdigest()
                     if actual != expected:
                         raise ValueError("Specialist source binding differs from its snapshot")
                 options = effect_provider.policy(self, workspace)
