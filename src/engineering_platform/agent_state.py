@@ -164,6 +164,7 @@ class TransactionState:
     assurance_review_progress: tuple[dict[str, str], ...] = ()
     assurance_reviews: tuple[dict[str, object], ...] = ()
     assurance_resolutions: tuple[dict[str, str], ...] = ()
+    specialist_records: tuple[dict[str, object], ...] = ()
     repair_iterations: int = 0
     repair_audit: tuple[dict[str, str], ...] = ()
     local_validation_iterations: int = 0
@@ -218,6 +219,7 @@ class TransactionState:
             "assurance_review_progress": (),
             "assurance_reviews": (),
             "assurance_resolutions": (),
+            "specialist_records": (),
             "repair_iterations": 0,
             "repair_audit": (),
             "local_validation_iterations": 0,
@@ -246,6 +248,8 @@ class TransactionState:
         for field in ("implementation_changed_paths", "finalization_changed_paths", "reconciliation_changed_paths"):
             if isinstance(raw.get(field), list):
                 raw = {**raw, field: tuple(raw[field])}
+        if isinstance(raw.get("specialist_records"), list):
+            raw = {**raw, "specialist_records": tuple(raw["specialist_records"])}
         if isinstance(raw.get("assurance_reviews"), list):
             raw = {**raw, "assurance_reviews": tuple(raw["assurance_reviews"])}
         if isinstance(raw.get("assurance_review_progress"), list):
@@ -266,6 +270,11 @@ class TransactionState:
             state = cls(**raw)
         except TypeError as error:
             raise StateError("checkpoint fields are invalid") from error
+        from .capability_review import validate_specialist_records
+        try:
+            validate_specialist_records(state.specialist_records, run_id=state.run_id, repository=state.repository)
+        except (ValueError, TypeError, KeyError) as error:
+            raise StateError("specialist checkpoint is invalid") from error
         if state.schema_version != SCHEMA_VERSION:
             raise StateError("unsupported checkpoint schema version")
         if state.publication_intent is not None:
@@ -723,6 +732,11 @@ class StateStore:
             raise StateError("canonical checkpoint is corrupt") from error
 
     def save(self, state: TransactionState, *, expected_publication_intent: object = _UNSPECIFIED) -> Path:
+        from .capability_review import validate_specialist_records
+        try:
+            validate_specialist_records(state.specialist_records, run_id=state.run_id, repository=state.repository)
+        except (ValueError, TypeError, KeyError) as error:
+            raise StateError("specialist checkpoint is invalid") from error
         path = self.path_for(state.run_id)
         canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
         previous_phase: str | None = None
@@ -737,6 +751,9 @@ class StateStore:
                     "SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (state.run_id,)
                 ).fetchone()
                 previous_phase = str(prior[0]) if prior is not None else None
+                previous_records = json.loads(prior[1]).get("specialist_records", []) if prior else []
+                if list(state.specialist_records[:len(previous_records)]) != previous_records:
+                    raise StateError("specialist records changed concurrently or cannot be erased")
                 previous_intent = json.loads(prior[1]).get("publication_intent") if prior else None
                 prior_adoption = json.loads(prior[1]).get("managed_candidate_adoption") if prior else None
                 from .effect_state import transition as effect_transition

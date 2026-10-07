@@ -7239,7 +7239,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("## Reviewer Findings", body)
         self.assertIn("## Repository Truth", body)
         self.assertIn("Initial observation: The capability does not yet exist.", body)
-        self.assertIn("Resolved by: implementation evidence", body)
+        self.assertIn("Advisory completion is not accepted or verified adoption", body)
         self.assertIn("Resulting commits: implementation `" + "a" * 40, body)
         self.assertIn("Repository state: branch=main; clean=True", body)
         self.assertTrue(terminal_report_matches_state(body, state))
@@ -7601,26 +7601,26 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_capability_selection_covers_documentation_validation_governance_and_finalization(self) -> None:
         selections = select_reviewers("Update governance documentation and validation diagnostics.", self.prompt, "FINALIZATION", {})
-        self.assertEqual(tuple(item.reviewer for item in selections), ("repository_governance", "validation", "documentation", "finalization"))
+        self.assertEqual(selections, ())  # Keywords/lifecycle are insufficient without a bound consumer question.
 
     def test_capability_selection_uses_memory_confidence_and_allows_no_reviewer(self) -> None:
         memory = {"reviewers": [{"reviewer": "documentation", "future_confidence": 0.4}]}
         documented = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", memory)
-        self.assertEqual(documented[0].confidence, 0.9)
+        self.assertEqual(documented, ())  # Historical completion confidence is not a selection grant.
         self.assertEqual(select_reviewers("binary objective", Path("objective.txt"), "IMPLEMENTATION", {}), ())
 
     def test_parallel_reviews_are_advisory_and_reconcile_conflicts(self) -> None:
-        selections = select_reviewers("governance documentation validation", self.prompt, "IMPLEMENTATION", {})
+        selections = (ReviewerSelection("validation", "bounded adapter test", 1.0), ReviewerSelection("documentation", "bounded adapter test", 1.0))
         reviewer = FakeReviewer()
         results = run_reviews(self.root, selections, "objective", reviewer)
-        self.assertEqual(len(results), 3)
+        self.assertEqual(len(results), 2)
         self.assertEqual(reconciled_recommendations(results), ("Use canonical wording.",))
         records = records_for_storage(selections, results)
-        self.assertEqual(records[0]["accepted_recommendations"], 1)
+        self.assertEqual(records[0]["accepted_recommendations"], 0)
         self.assertEqual(records[0]["codex_commands_executed"], 0)
 
     def test_reviewer_record_keeps_its_own_safe_command_count(self) -> None:
-        selection = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", {})
+        selection = (ReviewerSelection("documentation", "bounded adapter test", 1.0),)
         result = ReviewerResult(
             "documentation", "Review complete.", churn={"tool_loop_operations": 4}
         )
@@ -7630,7 +7630,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(records[0]["codex_commands_executed"], 4)
 
     def test_reviewer_prompt_reuses_bounded_run_scoped_facts_without_conclusions(self) -> None:
-        selection = select_reviewers("validation", self.prompt, "IMPLEMENTATION", {})[0]
+        selection = ReviewerSelection("validation", "bounded prompt test", 1.0)
         evidence = ReviewerEvidence.from_repository(
             "inbox-context", "MANAGED",
             RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True),
@@ -7653,7 +7653,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("whenever freshness is uncertain", prompt["invocation_read_reuse"])
 
     def test_reviewer_prompt_receives_candidate_bound_host_validation_receipts(self) -> None:
-        selection = select_reviewers("validation", self.prompt, "IMPLEMENTATION", {})[0]
+        selection = ReviewerSelection("validation", "bounded prompt test", 1.0)
         assessment = {
             "candidate_sha": "a" * 40,
             "profile_digest": "sha256:" + "b" * 64,
@@ -7677,7 +7677,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
 
     def test_parallel_reviewers_share_facts_but_not_reasoning(self) -> None:
-        selections = select_reviewers("governance documentation validation", self.prompt, "IMPLEMENTATION", {})
+        selections = (ReviewerSelection("validation", "bounded adapter test", 1.0), ReviewerSelection("documentation", "bounded adapter test", 1.0))
         evidence = ReviewerEvidence.from_repository(
             "inbox-context", "MANAGED",
             RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True),
@@ -7771,7 +7771,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(InvocationInvestigationLedger().reusable("source_inspection"))
 
     def test_reviewer_progress_reports_started_and_terminal_states(self) -> None:
-        selections = select_reviewers("documentation validation", self.prompt, "IMPLEMENTATION", {})
+        selections = (ReviewerSelection("validation", "bounded adapter test", 1.0), ReviewerSelection("documentation", "bounded adapter test", 1.0))
         progress: list[tuple[str, str, bool | None]] = []
 
         results = run_reviews(
@@ -7790,7 +7790,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.assertIn((selection.reviewer, "completed", False), progress)
 
     def test_reviewer_failure_never_blocks_selection(self) -> None:
-        selections = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", {})
+        selections = (ReviewerSelection("documentation", "bounded adapter test", 1.0),)
         results = run_reviews(self.root, selections, "objective", FakeReviewer(fail=True))
         self.assertTrue(results[0].failed)
         self.assertEqual(reconciled_recommendations(results), ())
@@ -7838,15 +7838,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         for objective, reviewer in cases:
             with self.subTest(reviewer=reviewer):
                 selected = select_reviewers(objective, Path("objective.txt"), "IMPLEMENTATION", {})
-                self.assertIn(reviewer, tuple(item.reviewer for item in selected))
+                self.assertEqual(selected, ())  # Product words alone are not qualified snapshot evidence.
 
     def test_cross_capability_selection_preserves_product_scope_and_generic_review(self) -> None:
         selected = select_reviewers("apps/apple/ integrates with djconnect-api REST API contract and validation", Path("objective.md"), "IMPLEMENTATION", {})
         reviewers = {item.reviewer: item for item in selected}
-        self.assertEqual(reviewers["apple_platform"].capability, "apple_platform")
-        self.assertEqual(reviewers["api"].capability, "api")
-        self.assertIn("validation", reviewers)
-        self.assertIn("documentation", reviewers)
+        self.assertEqual(reviewers, {})  # Keywords cannot confer capability, capacity or a real consumer.
 
     def test_engineering_qualification_registers_and_executes_all_scenarios(self) -> None:
         report = execute_qualification(self.root, {scenario.capability: True for scenario in SCENARIOS})

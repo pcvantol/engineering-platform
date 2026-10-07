@@ -156,7 +156,7 @@
       "id": "SA-SEL",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "IMPLEMENTING",
       "depends_on": [
         "SA-OBS"
       ],
@@ -165,13 +165,16 @@
       ],
       "delivery": "Select useful optional specialists under bounded capacity",
       "acceptance": "Capability/path/risk selection rejects misleading md/yaml/coordinator triggers; selected/skipped rationale and consumer recorded; finite wave/concurrency allowance, mandatory work reserved and saturation tested.",
-      "qualification_evidence": []
+      "qualification_evidence": [],
+      "assignment_id": "L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007",
+      "delivery_plan": "SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md",
+      "qualification_scope": "Selected bounded specialist selection and primary disposition; NOT_QUALIFIED pending exact protected final-main installed evidence."
     },
     {
       "id": "SA-LOOP",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "PLANNED",
+      "status": "IMPLEMENTING",
       "depends_on": [
         "SA-CTX",
         "SA-OBS"
@@ -182,7 +185,10 @@
       ],
       "delivery": "Join bounded specialist findings to genuine dispositions",
       "acceptance": "Actual proposed/accepted/rejected/deferred/implemented/verified transitions with references; no-consumer skip; no private-reasoning/approval sharing, invented adoption or scope/repair-budget expansion.",
-      "qualification_evidence": []
+      "qualification_evidence": [],
+      "assignment_id": "L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007",
+      "delivery_plan": "SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md",
+      "qualification_scope": "Selected bounded specialist selection and primary disposition; NOT_QUALIFIED pending exact protected final-main installed evidence."
     },
     {
       "id": "SA-ROLE",

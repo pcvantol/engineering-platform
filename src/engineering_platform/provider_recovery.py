@@ -605,7 +605,7 @@ def mark_ambiguous(root: Path, *, run_id: str, expected: str, diagnostic_code: s
 def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str, result: object,
                                   central_database: Path | None = None, artifact_root: Path | None = None) -> str:
     """Persist the bounded structured AgentResult once for post-crash consumption."""
-    fields = ("terminal_state", "branch", "pull_request", "terminal_condition", "diagnostic", "repository_path", "commit_sha", "validation_evidence", "quality_evidence", "validation_disposition")
+    fields = ("terminal_state", "branch", "pull_request", "terminal_condition", "diagnostic", "repository_path", "commit_sha", "validation_evidence", "quality_evidence", "validation_disposition", "specialist_dispositions")
     payload = {field: getattr(result, field) for field in fields}
     artifact_id = f"provider-recovery-result:{run_id}:{invocation_id}"
     directory = ((artifact_root / "provider-recovery-results") if artifact_root else

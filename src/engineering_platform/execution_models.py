@@ -42,3 +42,4 @@ class AgentResult:
     # A failed validation never becomes a pass. This merely tells the host
     # when a separate validation-environment recovery is warranted.
     validation_disposition: str = "product_failure"
+    specialist_dispositions: tuple[dict[str, object], ...] = ()
