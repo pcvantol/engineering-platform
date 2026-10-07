@@ -1397,7 +1397,7 @@ class EngineeringRunner:
         sha = plan.get("commit_sha")
         branch = plan.get("repair_branch")
         reserved = plan.get("pre_repair_pull_request")
-        first_pr = state.pull_request is None and reserved == "none" and plan.get("first_pr_authorized") == "yes"
+        first_pr = reserved == "none" and plan.get("first_pr_authorized") == "yes"
         existing_pr = (
             isinstance(reserved, str) and reserved.isdigit() and int(reserved) >= 1
             and int(reserved) == state.pull_request and plan.get("first_pr_authorized") == "no"
