@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007`.
 Directive: `L234-NEXT-BACKLOG-DELIVERY-V1-20261007`.
-Lane revision: **r32**, plan revision **3**, sole writer **LANE_2_WORK**.
+Lane revision: **r32**, plan revision **4**, sole writer **LANE_2_WORK**.
 Base: `a5924d614eeb07cc3a78bb3a351bcea14aa59232` (EP 2.3.111).
 Branch: `codex/ep-deterministic-validation-publication-v1`.
 State: **IMPLEMENTING / NOT QUALIFIED**.
@@ -63,6 +63,18 @@ context, adapter, storage and consumer regressions pass. This assignment has
 consumed **two** corrective rounds; r31 remains closed with three unchanged.
 Exact-head independent reviews, complete source/installed qualification and
 protected delivery are still required; this is not a terminal qualification.
+
+Quality wave 3 on `d713f91f9bfbfe19a33fba7d43aa0dc8546aa9ba`
+identified remaining setext/empty-heading/literal-hash ambiguities. The final
+correction round **3** preserves the **entire already approved objective** for
+every role. Textual history omission is removed from this safety subset;
+Markdown cannot prove an instruction optional. Correct role/rubric delivery
+and explicit nominal-budget overflow remain. Historical benchmark counters
+are preserved and make no token-reduction claim. **59** focused real prompt,
+adapter, storage and consumer regressions pass. Fresh complete reviews and
+qualification are required on this final candidate. This assignment has
+consumed **three** corrective rounds; no further correction budget is implied.
+Closed r31's three rounds remain separate and unchanged.
 
 Use existing controls, ledger, adoption, publication adapter and recovery.
 Qualification uses local synthetic repositories and temporary storage; only

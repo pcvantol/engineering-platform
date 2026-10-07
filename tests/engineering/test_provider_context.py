@@ -22,6 +22,17 @@ This lower-priority historical context is deliberately long and is not needed by
 
 
 class ProviderContextTest(unittest.TestCase):
+    def test_actual_review_prompts_preserve_ambiguous_markdown_boundaries(self) -> None:
+        for boundary in ("Security requirements\n=====================", "#", "# Optional history#",
+                         "#\u00a0Requirements", "> Security requirements\n> ========"):
+            objective = "# Objective\nAssess.\n# Optional history\nOld notes.\n\n" + boundary + "\nMUST_RETAIN_RULE\n"
+            for role in ("quality", "security"):
+                with self.subTest(boundary=boundary, role=role):
+                    prompt = json.loads(reviewer_prompt(ReviewerSelection(role, "mandatory", 1.0), objective))
+                    self.assertEqual(prompt["objective"], objective)
+                    self.assertIn("MUST_RETAIN_RULE", prompt["objective"])
+                    self.assertEqual(prompt["context_projection"]["omitted_low_priority_count"], 0)
+
     def test_raw_markup_is_unclassified_and_retained_in_full(self) -> None:
         objective = "# Safety\n<pre>\n# Historical transcript\n</pre>\nNever omit this required rule.\n"
         projection = project_context(ProviderRole.SECURITY_REVIEW, objective)
@@ -69,7 +80,7 @@ class ProviderContextTest(unittest.TestCase):
                 projection = project_context(ProviderRole.SECURITY_REVIEW, objective)
                 self.assertIn("Never publish without owner authorization.", projection.text)
                 self.assertIn("# inert sample comment", projection.text)
-                self.assertNotIn("optional past notes.", projection.text)
+                self.assertIn("optional past notes.", projection.text)
 
     def test_unclosed_and_mixed_fences_preserve_required_remaining_material(self) -> None:
         objective = "# Safety constraints\n```example\n~~~\n# inert\nNever drop this required rule.\n"
@@ -80,7 +91,7 @@ class ProviderContextTest(unittest.TestCase):
         projection = project_context(ProviderRole.SECURITY_REVIEW, objective)
         self.assertIn("Required case A.", projection.text)
         self.assertIn("Required case B.", projection.text)
-        self.assertNotIn("Optional old notes.", projection.text)
+        self.assertIn("Optional old notes.", projection.text)
 
     def test_overflow_retains_every_mandatory_section(self) -> None:
         objective = "# Objective\n" + ("bounded work\n" * 2000) + "\n# Safety constraints\nNever change authority.\n# Acceptance criteria\nRequire independent security review.\n"
@@ -99,18 +110,20 @@ class ProviderContextTest(unittest.TestCase):
         self.assertFalse(provider_need_for_phase("EXECUTE_AGENT", passive_observation=True).required)
         self.assertTrue(provider_need_for_phase("EXECUTE_AGENT").required)
 
-    def test_downstream_roles_keep_mandatory_contract_without_full_replay(self) -> None:
+    def test_downstream_roles_keep_complete_approved_contract(self) -> None:
         implementation = project_context(ProviderRole.IMPLEMENTATION, OBJECTIVE)
         for role in (ProviderRole.SPECIALIST_REVIEW, ProviderRole.QUALITY_REVIEW, ProviderRole.REPAIR, ProviderRole.FINALIZATION, ProviderRole.SECURITY_REVIEW):
             projection = project_context(role, OBJECTIVE)
             self.assertIn("Do not weaken validation or merge authority.", projection.text)
             self.assertIn("Add focused tests.", projection.text)
-            self.assertNotIn("old detail\nold detail", projection.text)
-            self.assertLess(len(projection.text), len(implementation.text))
-            self.assertGreater(projection.telemetry["context_omitted_low_priority_count"], 0)
+            self.assertIn("old detail\nold detail", projection.text)
+            self.assertEqual(projection.text, implementation.text)
+            self.assertEqual(projection.telemetry["context_omitted_low_priority_count"], 0)
 
-    def test_structural_benchmark_has_zero_provider_passive_paths_and_smaller_repair(self) -> None:
+    def test_structural_benchmark_has_zero_provider_passive_paths_and_complete_repair_context(self) -> None:
         result = benchmark_shape(OBJECTIVE)
         self.assertEqual(result["deterministic_preflight_blocker"]["provider_calls"], 0)
         self.assertEqual(result["passive_merge_wait"]["provider_calls"], 0)
-        self.assertLess(result["repair"]["context_bytes"], result["baseline_full_replay_bytes"]["context_bytes"])
+        self.assertEqual(result["repair"]["context_bytes"], result["implementation"]["context_bytes"])
+        self.assertEqual(result["baseline_full_replay_bytes"]["context_bytes"],
+                         result["implementation"]["context_bytes"] + result["repair"]["context_bytes"])

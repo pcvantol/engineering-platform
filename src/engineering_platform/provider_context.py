@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-import re
 
 from .provider_context_scope import POLICY_ID
 
@@ -58,16 +57,6 @@ _ROLE_BUDGETS = {
     ProviderRole.REPAIR: 18_000,
     ProviderRole.FINALIZATION: 18_000,
 }
-# Only this declared optional-history vocabulary permits omission. Unknown
-# headings (including neutral children of history) may contain obligations.
-_OPTIONAL_HISTORY = re.compile(
-    r"^(?:historical transcript|(?:optional|low[- ]priority)\s+(?:history|transcript|background))$",
-    re.IGNORECASE,
-)
-_HEADING = re.compile(r"^ {0,3}(#{1,6})[\t ]+(.+?)\s*$")
-_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-
-
 def provider_need_for_phase(phase: str, *, passive_observation: bool = False) -> ProviderNeedDecision:
     """Make provider need explicit; passive/deterministic phases never need one."""
     if passive_observation:
@@ -94,65 +83,12 @@ def role_for_phase(phase: str, *, repair: bool = False, quality: bool = False) -
 
 
 def project_context(role: ProviderRole, objective: str) -> ContextProjection:
-    """Keep all mandatory sections while omitting lower-priority prompt history.
+    """Preserve the complete authoritative objective for every provider role.
 
-    Prompts without recognisable Markdown sections are deliberately retained in
-    full: safety beats an unproven token reduction.  Initial implementation
-    also receives the complete prompt once; downstream roles receive the
-    mandatory contract rather than replaying the complete transcript.
+    Markdown text cannot prove that a section contains only optional history.
+    The approved objective remains one indivisible input; role-specific rubrics
+    and authority are supplied separately by the host. Nominal role-budget
+    overflow is observable, never permission to omit safety or acceptance text.
+    This safety subset makes no historical-context/token-reduction claim.
     """
-    if role == ProviderRole.IMPLEMENTATION:
-        return ContextProjection(role, objective, 1, 0)
-    # Raw markup has different block rules: apparent ATX headings inside an
-    # HTML/XML block are not proven optional history. Preserve ambiguous input.
-    if re.search(r"(?m)^[\t ]*<", objective):
-        return ContextProjection(role, objective, 1, 0)
-    sections = _markdown_sections(objective)
-    selected: list[str] = []
-    mandatory_parents: list[int] = []
-    for heading, section in sections:
-        header = _HEADING.match(section.splitlines()[0])
-        level = len(header.group(1)) if header is not None else 0
-        while mandatory_parents and mandatory_parents[-1] >= level:
-            mandatory_parents.pop()
-        required = heading == "preamble" or _OPTIONAL_HISTORY.fullmatch(heading.rstrip(" #\t")) is None
-        if required or mandatory_parents:
-            selected.append(section)
-            if level:
-                mandatory_parents.append(level)
-    if not selected:
-        return ContextProjection(role, objective, 1, 0)
-    # The budget limits optional history, never the approved contract. Retain
-    # all mandatory material and expose excess bytes for dispatch telemetry.
-    text = "\n\n".join(selected)
-    return ContextProjection(role, text, len(sections), max(0, len(sections) - len(selected)))
-
-
-def _markdown_sections(value: str) -> list[tuple[str, str]]:
-    lines = value.splitlines()
-    starts: list[tuple[int, str]] = []
-    fence: tuple[str, int] | None = None
-    for index, line in enumerate(lines):
-        delimiter = _FENCE.match(line)
-        if fence is not None:
-            if (delimiter is not None and delimiter.group(1)[0] == fence[0]
-                    and len(delimiter.group(1)) >= fence[1] and not delimiter.group(2).strip()):
-                fence = None
-            continue
-        if delimiter is not None:
-            fence = (delimiter.group(1)[0], len(delimiter.group(1)))
-            continue
-        match = _HEADING.match(line)
-        if match:
-            starts.append((index, match.group(2)))
-    if not starts:
-        return []
-    result: list[tuple[str, str]] = []
-    if starts[0][0]:
-        preamble = "\n".join(lines[:starts[0][0]]).strip()
-        if preamble:
-            result.append(("preamble", preamble))
-    for ordinal, (start, heading) in enumerate(starts):
-        end = starts[ordinal + 1][0] if ordinal + 1 < len(starts) else len(lines)
-        result.append((heading, "\n".join(lines[start:end]).strip()))
-    return result
+    return ContextProjection(role, objective, 1, 0)
