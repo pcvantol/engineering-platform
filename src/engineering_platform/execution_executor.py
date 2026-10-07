@@ -401,7 +401,54 @@ def _invocation_owned(method):
 
 
 class CodexCliClient:
-    qualified_specialist_roles = REVIEWER_ORDER
+    def qualified_specialist_capabilities(self, root: Path) -> tuple[str, ...]:
+        """Qualify the installed runtime/tool boundary, not just role names."""
+        from .effect_provider import policy
+        if self._specialist_cancellation():
+            return ()
+        try:
+            policy(self, root)
+        except (ValueError, RuntimeError, OSError):
+            return ()
+        return REVIEWER_ORDER
+
+    def _specialist_cancellation(self) -> bool:
+        if self._cancellation_check is None:
+            return False
+        cancelled = bool(self._cancellation_check())
+        self._cancellation_observed |= cancelled
+        return cancelled
+
+    def _review_specialist_snapshot(self, root: Path, selection: ReviewerSelection,
+                                   objective: str, evidence: ReviewerEvidence | None) -> ReviewerResult:
+        """Use the existing FME snapshot/policy tools for this read-only role."""
+        import hashlib
+        from . import effect_provider, effect_workspace
+        try:
+            if self._specialist_cancellation():
+                return ReviewerResult(selection.reviewer, "Specialist cancelled before dispatch.", failed=True)
+            with tempfile.TemporaryDirectory(prefix="ep-specialist-readonly-") as area:
+                workspace = Path(area) / "source"
+                artifacts = Path(area) / "artifacts"
+                artifacts.mkdir(mode=0o700)
+                manifest = effect_workspace.snapshot(root, workspace, {
+                    "source_revision": selection.specialist_binding["candidate_sha"],
+                    "read_paths": list(selection.specialist_paths),
+                }, executable_source_as_text=True)
+                if set(manifest) != set(selection.specialist_paths):
+                    raise ValueError("Specialist snapshot differs from its exact paths")
+                for path, expected in selection.specialist_source_blobs:
+                    data = (workspace / path).read_bytes()
+                    actual = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                    if actual != expected:
+                        raise ValueError("Specialist source binding differs from its snapshot")
+                options = effect_provider.policy(self, workspace)
+                with effect_provider.scoped(artifacts, options, reviewer_prompt(selection, objective, evidence)):
+                    result = self.review(workspace, selection, objective, evidence)
+                effect_workspace.verify_snapshot(workspace, manifest)
+                return result
+        except (ValueError, RuntimeError, OSError):
+            return ReviewerResult(selection.reviewer, "Specialist snapshot/tool boundary unavailable or changed.", failed=True)
     def __init__(self, provider: CodexCliProvider | None = None, *,
                  disable_multi_agent: bool = False, repository_only: bool = False) -> None:
         self.provider = provider or CodexCliProvider()
@@ -579,6 +626,11 @@ class CodexCliClient:
         objective: str,
         evidence: ReviewerEvidence | None = None,
     ) -> ReviewerResult:
+        from . import effect_provider
+        if selection.specialist_binding and project_context(ProviderRole.SPECIALIST_REVIEW, reviewer_prompt(selection, objective, evidence)).telemetry["context_budget_overflow_bytes"]:
+            return ReviewerResult(selection.reviewer, "Complete specialist context exceeds the selected role limit; no dispatch.", failed=True)
+        if selection.specialist_binding and not effect_provider.review_is_scoped():
+            return self._review_specialist_snapshot(root, selection, objective, evidence)
         self.last_usage = {}
         self.last_usage_snapshots = ()
         self.last_churn = {}
@@ -702,6 +754,7 @@ class CodexCliClient:
                     str(schema_path),
                         reviewer_prompt(selection, objective, evidence),
                     )), environment=environment, timeout=_reviewer_invocation_timeout_seconds(selection),
+                    **({"cancellation_check": self._specialist_cancellation} if selection.specialist_binding else {}),
                     **effect_provider.review_input(),
                 )
             self.last_context_escalations = proxy.context_escalations()

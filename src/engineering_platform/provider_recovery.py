@@ -631,6 +631,31 @@ def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str
     return f"artifact:{artifact_id}"
 
 
+def completed_primary_result_reference(root: Path, *, run_id: str,
+                                       central_database: Path | None = None) -> tuple[str, str] | None:
+    """Join an already completed primary to its existing immutable artifact.
+
+    A missing/ambiguous result after completed dispatch is uncertainty, never
+    permission to start the implementer again.
+    """
+    connection = _connection(root, central_database)
+    try:
+        rows = connection.execute(
+            "SELECT p.invocation_id,a.artifact_id FROM provider_invocations p "
+            "LEFT JOIN execution_artifact_records a ON a.execution_id=p.invocation_id "
+            "AND (a.run_id=p.run_id OR a.run_id IS NULL) AND a.artifact_type='PROVIDER_RECOVERY_AGENT_RESULT' "
+            "WHERE p.run_id=? AND p.phase='PROVIDER_EXECUTION' AND p.completed_at IS NOT NULL",
+            (run_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+    if not rows:
+        return None
+    if len(rows) != 1 or rows[0][1] != f"provider-recovery-result:{run_id}:{rows[0][0]}":
+        raise ValueError("Completed primary result is missing or ambiguous")
+    return rows[0][0], "artifact:" + rows[0][1]
+
+
 def load_recovery_agent_result(
     root: Path, reference: str, *, run_id: str, invocation_id: str,
     central_database: Path | None = None, artifact_root: Path | None = None,

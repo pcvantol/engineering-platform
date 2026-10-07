@@ -55,6 +55,11 @@ COMMIT_EVIDENCE_DESCRIPTIONS = frozenset({
 SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
     r"(?i)\b(api[_ -]?key|oauth|access[_ -]?token|refresh[_ -]?token|secret|cookie|authorization|password)\b\s*[:=]\s*\S+|\bbearer\s+\S+|\b[A-Z][A-Z0-9_]{2,}\s*=\s*\S+"
 )
+CREDENTIAL_SHAPE_PATTERN = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"sk-(?:(?:proj|svcacct)-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|"
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
+)
 
 
 class StateError(ValueError):
@@ -67,6 +72,7 @@ def redact_diagnostic(value: str, *, limit: int = MAX_DIAGNOSTIC_LENGTH) -> str:
         return "Diagnostic omitted because it was not valid text."
     compact = " ".join(value.replace("\x00", " ").split())
     compact = SENSITIVE_DIAGNOSTIC_PATTERN.sub("[REDACTED]", compact)
+    compact = CREDENTIAL_SHAPE_PATTERN.sub("[REDACTED]", compact)
     return compact[:limit]
 
 

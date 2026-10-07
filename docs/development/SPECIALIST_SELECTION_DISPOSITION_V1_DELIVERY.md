@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **3**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **4**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.113** (normal PATCH; no operational activation).
 Base: `454e96c477e2305bb3240e7a457b93ae314950d3`, EP 2.3.112.
@@ -14,7 +14,7 @@ Same Work session, one clean checkout/worktree at admission; no open EP PR,
 own source/test process or Git-operation lock. Preserve both old stashes,
 advisory browser lock and separate r30/native holds. r32/r31 each remain
 closed with three consumed corrective rounds. This distinct selected assignment
-uses the existing maximum three corrective rounds, currently zero consumed;
+uses the existing maximum three corrective rounds, currently one consumed;
 it never resets a previous provider/run/repair lineage.
 
 ## Code, evidence and missing delta
@@ -118,7 +118,7 @@ An additional owner self-check reproduced a second primary call after assurance 
 
 macOS FileProvider repeatedly unloads existing source/dependency bytes. The temporary source qualification copy is an exact clean shallow copy of the committed candidate, used only for qualification by this same writer; it is not another development assignment or source writer. Canonical source edits remain solely in the existing checkout. Restricted and FileProvider-timeout runs are retained as diagnostics, never final PASS/coverage. Full owning coverage is collected from stable exact committed inputs outside that backing store.
 
-The existing browser gate exposed fixture/layout races on unchanged production UI. Necessary test-only corrections wait for the initial snapshot/splash and the real mutation-observer/scroll layout, retaining the original visible geometry, overflow and colour assertions and no artificial DOM/CSS workaround. These corrections are validation prerequisites within this same vertical delivery; no Console redesign or new product behaviour. Full browser and production gates are requalified on their official candidate. Historical predecessor budgets remain closed; no formal corrective review has yet been consumed.
+The existing browser gate exposed fixture/layout races on unchanged production UI. Necessary test-only corrections wait for the initial snapshot/splash and the real mutation-observer/scroll layout, retaining the original visible geometry, overflow and colour assertions and no artificial DOM/CSS workaround. These corrections are validation prerequisites within this same vertical delivery; no Console redesign or new product behaviour. Full browser and production gates are requalified on their official candidate. At that earlier pre-review checkpoint, predecessor budgets remained closed and no formal corrective review had yet been consumed.
 
 ## Converged selected test matrix
 
@@ -185,3 +185,11 @@ scopeverbreding stilzwijgend aannemen. Behoud één bronwriter en één muterend
 assignment per productrepo. Subagents mogen uitsluitend niet-muterend
 kwalificeren; geen verborgen parallelle codewriter.
 ```
+
+## Mandatory review round 1 correction (plan revision 4)
+
+Exact candidate 0959c9afad4d66e57e1ef226435c90f6b41412aa received Quality CHANGES_REQUIRED (three findings) and Security CHANGES_REQUESTED (five findings). One of three corrective rounds is consumed; two remain. This candidate is not merge-qualified. The sole writer corrects all eight together: immutable source/tool policy, canonical Git objects, cancellation cleanup, artifact-before-marker recovery, credential privacy, repaired-candidate assurance, replacement invocation identity and proven Managed no-op continuation. Existing receipts describe the earlier candidate only; current corrections require fresh committed qualification and independent review. Register: https://github.com/pcvantol/forge/issues/142#issuecomment-6047649733.
+
+### Round 1 closure checks before the next immutable candidate
+
+Thirty-six owning fast cases pass, including real owned-child cancellation and sibling preservation, canonical commit replace-ref denial, known unlabelled credential denial/redaction, and completed-primary/missing-catalog fail-closed recovery. Existing provider/recovery boundary regressions: 25 PASS. The production specialist snapshot adapter is qualified through the real pinned CLI with a local deterministic model HTTP transport: inherited unsafe configuration cannot grant outside reads/writes, network effects, remote tools or escalation. No paid or live provider request occurred. Real OS crashes after artifact catalog persistence and after generic replacement RECOVERED each pass fresh-host restart after the actual unchanged lease expiry; primary invocation remains once. Real no-op consumer checkpoint crash likewise passes without a fabricated branch or changed main. The repaired-candidate assurance crash is included in the owning matrix. These are convergence receipts, not a renewed mandatory review grant or exact-final-main qualification.

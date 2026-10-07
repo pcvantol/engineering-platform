@@ -196,8 +196,13 @@ def select_reviewers(objective: str, prompt_path: Path, transaction_kind: str, m
                     try:
                         source = []
                         for p in paths:
-                            entry = subprocess.check_output(("git", "-C", str(root), "ls-tree", candidate_sha, "--", p), stderr=subprocess.DEVNULL, text=True).strip().split()
-                            if len(entry) != 4 or entry[0] not in {"100644", "100755"} or entry[1] != "blob" or entry[3] != p:
+                            from .effect_workspace import git as safe_git
+                            raw = safe_git(root, "ls-tree", "-z", candidate_sha, "--", p).split(b"\0")
+                            if len(raw) != 2 or raw[1] != b"":
+                                raise ValueError("path is not one exact blob")
+                            metadata, encoded_path = raw[0].split(b"\t", 1)
+                            entry = metadata.decode("ascii").split()
+                            if len(entry) != 3 or entry[0] not in {"100644", "100755"} or entry[1] != "blob" or encoded_path.decode("utf-8") != p:
                                 raise ValueError("path is not an exact non-symlink blob")
                             source.append((p, entry[2]))
                         if any(not re.fullmatch(r"[0-9a-f]{40}", sha) for _, sha in source):
@@ -535,7 +540,8 @@ def specialist_requests(objective: str) -> tuple[dict[str, object], ...]:
 
 def specialist_findings(selection: ReviewerSelection, result: ReviewerResult) -> tuple[dict[str, str], ...]:
     """Reject untrusted output that is foreign, stale, executable or approval-shaped."""
-    if (result.failed or result.recommendations or result.contract_version != SPECIALIST_CONTRACT_VERSION
+    if (result.failed or result.recommendations or not _safe_text(result.contribution)
+            or result.contract_version != SPECIALIST_CONTRACT_VERSION
             or result.specialist_binding != selection.specialist_binding or result.reviewer != selection.reviewer
             or not isinstance(result.findings, tuple) or len(result.findings) > 8):
         raise ValueError("specialist_result_binding_invalid")

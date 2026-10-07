@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 
 @dataclass(frozen=True)
@@ -402,6 +402,10 @@ class ProviderOutputLimitExceeded(RuntimeError):
     """An advisory provider invocation exceeded its retained output budget."""
 
 
+class ProviderInvocationCancelled(RuntimeError):
+    """The owning Action cancelled its bounded provider process."""
+
+
 class CodexCliProvider(LocalProcessProvider):
     """Codex process adapter pinned exclusively to EP's managed launcher."""
 
@@ -457,6 +461,7 @@ class CodexCliProvider(LocalProcessProvider):
         environment: Mapping[str, str] | None = None,
         input_text: str | None = None,
         max_output_bytes: int | None = None,
+        cancellation_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Execute a complete Codex command; callers never spawn its CLI directly."""
         command = self._arguments(arguments)
@@ -466,6 +471,7 @@ class CodexCliProvider(LocalProcessProvider):
             return self._invoke_with_output_limit(
                 root, command, timeout=timeout, environment=environment,
                 input_text=input_text, max_output_bytes=max_output_bytes,
+                cancellation_check=cancellation_check,
             )
         if timeout is None and environment is None and input_text is None:
             return self.execute(root, command)
@@ -481,6 +487,7 @@ class CodexCliProvider(LocalProcessProvider):
         self, root: Path, command: tuple[str, ...], *, timeout: float | None,
         environment: Mapping[str, str] | None, input_text: str | None,
         max_output_bytes: int,
+        cancellation_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Capture bounded advisory output; terminate only this invocation's group.
 
@@ -490,6 +497,8 @@ class CodexCliProvider(LocalProcessProvider):
         """
         if max_output_bytes < 1:
             raise ValueError("Provider output limit must be positive")
+        if cancellation_check is not None and cancellation_check():
+            raise ProviderInvocationCancelled("Cancelled before bounded provider launch")
         arguments = (self._executable, *command[1:])
         pending_input = memoryview(input_text.encode("utf-8") if input_text is not None else b"")
         output = {"stdout": bytearray(), "stderr": bytearray()}
@@ -512,10 +521,13 @@ class CodexCliProvider(LocalProcessProvider):
                     else:
                         process.stdin.close()
                 while streams.get_map():
+                    if cancellation_check is not None and cancellation_check():
+                        raise ProviderInvocationCancelled("Cancelled during bounded provider invocation")
                     remaining = None if deadline is None else deadline - time.monotonic()
                     if remaining is not None and remaining <= 0:
                         raise subprocess.TimeoutExpired(arguments, timeout)
-                    for key, _ in streams.select(remaining):
+                    poll = min(remaining, .1) if remaining is not None else .1
+                    for key, _ in streams.select(poll if cancellation_check is not None else remaining):
                         if key.data == "stdin":
                             try:
                                 pending_input = pending_input[os.write(key.fd, pending_input[:4096]):]
@@ -533,8 +545,16 @@ class CodexCliProvider(LocalProcessProvider):
                         if retained > max_output_bytes:
                             raise ProviderOutputLimitExceeded("Provider output byte limit exceeded")
                         output[key.data].extend(chunk)
-                remaining = None if deadline is None else max(0, deadline - time.monotonic())
-                process.wait(timeout=remaining)
+                while process.poll() is None:
+                    if cancellation_check is not None and cancellation_check():
+                        raise ProviderInvocationCancelled("Cancelled after provider output closed")
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        raise subprocess.TimeoutExpired(arguments, timeout)
+                    try:
+                        process.wait(timeout=min(remaining, .1) if remaining is not None else .1)
+                    except subprocess.TimeoutExpired:
+                        continue
             finally:
                 # This session was created above for this bounded invocation;
                 # never target another provider or the EP server's process group.

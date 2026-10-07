@@ -177,6 +177,25 @@ class SpecialistPipelineTests(unittest.TestCase):
         self.assertEqual(model.implementations,1)
         return model,self.store.load('specialist-run')
 
+    def test_completed_primary_without_catalog_before_consumer_marker_blocks_no_replay(self):
+        from engineering_platform import execution_host
+        model=self.transport();runner=self.runner(model)
+        persist=execution_host.persist_recovery_agent_result
+        def interrupted(*args,**kwargs):
+            persist(*args,**kwargs)
+            raise SystemExit('after artifact catalog before marker')
+        with patch.object(execution_host,'persist_recovery_agent_result',side_effect=interrupted),self.assertRaises(SystemExit):
+            runner.run(self.fixture.prompt,run_id='specialist-run',owner_authorized=True)
+        state=self.store.load('specialist-run')
+        self.assertFalse(any(r['kind']=='CONSUMER_RESULT' for r in state.specialist_records))
+        self.fixture.stop_host(runner)
+        with sqlite_connection(self.fixture.database) as connection:
+            connection.execute("DELETE FROM execution_artifact_records WHERE artifact_type='PROVIDER_RECOVERY_AGENT_RESULT'")
+        result=self.runner(model).run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual(result.next_action,'specialist_consumer_result_unavailable')
+        self.assertEqual(model.implementations,1)
+        self.assertEqual(result.specialist_records,state.specialist_records)
+
     def test_consumer_resume_rejects_corrupt_actual_artifact_without_provider_replay(self):
         model,state=self.interrupted_consumer()
         receipt=next(r['payload'] for r in state.specialist_records if r['kind']=='CONSUMER_RESULT')
@@ -275,7 +294,7 @@ class SpecialistPipelineTests(unittest.TestCase):
     def process_boundary(self,boundary):
         import subprocess,sys,time
         from datetime import datetime,timezone
-        state=replace(self.state,repair_iterations=2)
+        state=replace(self.state,repair_iterations=1 if boundary=='repair-assurance' else 2)
         self.store.save(state)
         spec=self.fixture.area/'specialist-process-input.json'
         spec.write_text(json.dumps({'root':str(self.root),'data':str(self.fixture.data),'database':str(self.fixture.database),
@@ -285,7 +304,7 @@ class SpecialistPipelineTests(unittest.TestCase):
         self.assertEqual(start.returncode,73,start.stdout+start.stderr)
         interrupted=self.store.load('specialist-run')
         self.assertEqual(interrupted.repair_iterations,2)
-        interrupted_controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database) if boundary in {'assurance','assurance-empty','publication'} else None
+        interrupted_controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database) if boundary in {'assurance','assurance-empty','publication','repair-assurance'} else None
         with sqlite_connection(self.fixture.database) as connection:
             expiry=connection.execute("SELECT expires_at FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE'",('specialist-run',)).fetchone()[0]
         delay=(datetime.fromisoformat(expiry)-datetime.now(timezone.utc)).total_seconds()
@@ -293,10 +312,23 @@ class SpecialistPipelineTests(unittest.TestCase):
         resume=subprocess.run((*command,'resume',boundary),capture_output=True,text=True,timeout=60)
         self.assertEqual(resume.returncode,0,resume.stdout+resume.stderr)
         after=self.store.load('specialist-run');data=cr.specialist_readback(after.specialist_records)
+        if boundary=='noop-consumer':
+            self.assertEqual((after.phase,after.pull_request,after.repair_iterations),('COMPLETE',None,2))
+            self.assertEqual((self.fixture.git('branch','--show-current'),self.fixture.git('rev-parse','HEAD')),('main',self.fixture.base))
+            self.assertEqual(data['findings'],[])
+            calls=[json.loads(line) for line in (self.fixture.data/'specialist-model-calls.jsonl').read_text().splitlines()]
+            self.assertEqual(sum(call['role']=='implementation' for call in calls),1)
+            self.assertFalse(any(call['mode']=='resume' for call in calls))
+            self.assertEqual(after.specialist_records[:len(interrupted.specialist_records)],interrupted.specialist_records)
+            return
         self.assertEqual((after.phase,after.pull_request,after.repair_iterations),('WAIT_FOR_OPERATOR_MERGE',71,2))
         self.assertEqual(after.specialist_records[:len(interrupted.specialist_records)],interrupted.specialist_records)
         calls=[json.loads(line) for line in (self.fixture.data/'specialist-model-calls.jsonl').read_text().splitlines()]
         self.assertEqual(sum(call['role']=='implementation' for call in calls),1)
+        if boundary=='repair-assurance':
+            self.assertEqual(sum(call['role']=='repair' for call in calls),1)
+            receipt=next(r['payload'] for r in after.specialist_records if r['kind']=='CONSUMER_RESULT')
+            self.assertNotEqual(receipt['result_candidate_sha'],self.fixture.git('rev-parse','HEAD'))
         if boundary=='dispatch':
             self.assertEqual((data['reserved_invocation_count'],data['uncertain_invocation_count']),(1,1))
             self.assertEqual(data['completed_invocation_count'],0)
@@ -312,12 +344,106 @@ class SpecialistPipelineTests(unittest.TestCase):
             self.assertEqual(len([r for r in after.specialist_records if r['kind']=='APPLICATION']),1)
         expected_resume = [] if boundary=='publication' else ['implementation','quality','security'] if boundary=='dispatch' else ['quality','security']
         self.assertEqual([call['role'] for call in calls if call['mode']=='resume'],expected_resume)
-        if boundary in {'assurance','assurance-empty','publication'}:
+        if boundary in {'assurance','assurance-empty','publication','repair-assurance'}:
             after_controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls']
             self.assertEqual(after_controls,interrupted_controls['controls'])
         remote=json.loads((self.fixture.data/'specialist-remote.json').read_text())
         self.assertEqual(remote['head_sha'],self.fixture.git('rev-parse','HEAD'))
         self.assertTrue(all(c['result']=='PASS' for c in load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls'].values()))
+
+    def test_real_new_process_after_noop_consumer_never_invents_branch_or_replays(self):
+        self.process_boundary('noop-consumer')
+
+    def test_real_new_process_after_same_pr_repair_assurance_uses_actual_new_candidate(self):
+        self.process_boundary('repair-assurance')
+
+    def test_real_new_process_after_recovered_primary_keeps_replacement_identity(self):
+        self.process_boundary('recovered')
+
+    def test_real_managed_noop_with_empty_advice_retains_actual_clean_main(self):
+        import subprocess,sys
+        model=self.transport();review=model.review
+        def empty(root,selection,objective,evidence=None):
+            result=review(root,selection,objective,evidence)
+            return replace(result,findings=()) if selection.reviewer not in {'quality','security'} else result
+        model.review=empty
+        def noop(root,prompt):
+            model.implementations+=1
+            completed=subprocess.run((sys.executable,'-m','unittest','discover','-s','tests'),cwd=root,capture_output=True,text=True)
+            self.assertEqual(completed.returncode,0,completed.stderr)
+            return AgentResult('COMPLETE',terminal_condition='repository_reconciled',commit_sha=self.fixture.git('rev-parse','HEAD'),
+                validation_evidence=({'command':'python3 -m unittest discover -s tests','result':'PASS: actual isolated repository tests'},))
+        model.invoke=noop;before=self.fixture.git('rev-parse','HEAD')
+        result=self.runner(model).run(self.fixture.prompt,run_id='specialist-run',owner_authorized=True)
+        self.assertEqual(result.phase,'COMPLETE')
+        self.assertEqual((model.implementations,len(model.selected)),(1,2))
+        self.assertEqual((self.fixture.git('branch','--show-current'),self.fixture.git('rev-parse','HEAD')),('main',before))
+        self.assertEqual(cr.specialist_readback(result.specialist_records)['findings'],[])
+
+    def test_real_new_process_after_primary_artifact_catalog_never_replays_consumer(self):
+        self.process_boundary('artifact')
+
+    def test_commit_replace_ref_cannot_substitute_selected_source_blobs(self):
+        original=self.plan()
+        (self.root/'README.md').write_text('# Replacement content\n')
+        self.fixture.git('add','README.md');self.fixture.git('commit','-qm','replacement commit')
+        replacement=self.fixture.git('rev-parse','HEAD')
+        self.fixture.git('replace',self.fixture.base,replacement)
+        substituted=self.plan()
+        self.assertEqual([s.specialist_source_blobs for s in substituted.selections],
+                         [s.specialist_source_blobs for s in original.selections])
+        self.assertNotEqual(self.fixture.git('show',self.fixture.base+':README.md'),
+                            self.fixture.git('--no-replace-objects','show',self.fixture.base+':README.md'))
+
+    def test_known_unlabelled_credentials_are_denied_and_redacted_in_actual_readback(self):
+        from engineering_platform.agent_state import redact_diagnostic
+        selection=self.plan().selections[0]
+        selection=replace(selection,specialist_binding={**selection.specialist_binding,'invocation_id':'a'*32})
+        path=selection.specialist_paths[0]
+        for credential in ('ghp_'+'A'*36,'github_pat_'+'B'*30,'sk-proj-'+'C'*32,'AKIA'+'D'*16):
+            self.assertNotIn(credential,redact_diagnostic('Observed '+credential))
+            result=ReviewerResult(selection.reviewer,'Bounded advice',findings=({'id':'case','summary':credential,
+                'path':path,'evidence_ref':'git-blob:'+dict(selection.specialist_source_blobs)[path],
+                'proposed_disposition':'DEFERRED'},),contract_version=cr.SPECIALIST_CONTRACT_VERSION,
+                specialist_binding=dict(selection.specialist_binding))
+            with self.assertRaises(ValueError):cr.specialist_findings(selection,result)
+            result=replace(result,contribution=credential,findings=())
+            with self.assertRaises(ValueError):cr.specialist_findings(selection,result)
+
+    def test_pre_cancelled_specialist_adapter_launches_no_transport(self):
+        from engineering_platform.execution_executor import CodexCliClient
+        from engineering_platform.providers import CodexCliProvider
+        class NoCall(CodexCliProvider):
+            def invoke(self,*args,**kwargs):
+                raise AssertionError('Cancelled specialist launched provider')
+        client=CodexCliClient(NoCall());client.set_cancellation_check(lambda:True)
+        selection=self.plan().selections[0]
+        result=client.review(self.root,selection,self.objective)
+        self.assertTrue(result.failed)
+        self.assertTrue(client._cancellation_observed)
+
+    def test_real_bounded_provider_cancellation_reaps_owned_child_and_preserves_sibling(self):
+        import subprocess,sys,os,time
+        from engineering_platform.providers import CodexCliProvider,ProviderInvocationCancelled
+        marker=self.fixture.area/'cancel-child.pid'
+        launcher=self.fixture.area/'cancel-provider'
+        launcher.write_text('#!'+sys.executable+'\nimport os,time\nfrom pathlib import Path\nPath('+repr(str(marker))+').write_text(str(os.getpid()))\ntime.sleep(30)\n')
+        launcher.chmod(0o700)
+        sibling=subprocess.Popen((sys.executable,'-c','import time;time.sleep(30)'),start_new_session=True)
+        try:
+            prefix=self.fixture.area/'cancel-managed';(prefix/'bin').mkdir(parents=True)
+            (prefix/'bin/codex').symlink_to(launcher)
+            with patch.dict(os.environ,{'EP_MANAGED_CODEX_CLI_PREFIX':str(prefix)}):
+                provider=CodexCliProvider()
+            started=time.monotonic()
+            with self.assertRaises(ProviderInvocationCancelled):
+                provider.invoke(self.root,('codex','exec'),timeout=10,max_output_bytes=1024,
+                                cancellation_check=lambda:marker.exists())
+            self.assertLess(time.monotonic()-started,5)
+            with self.assertRaises(ProcessLookupError):os.kill(int(marker.read_text()),0)
+            self.assertIsNone(sibling.poll())
+        finally:
+            sibling.terminate();sibling.wait(timeout=10)
 
     def test_real_new_process_after_optional_dispatch_never_retries_or_resets_budget(self):
         self.process_boundary('dispatch')
@@ -519,10 +645,18 @@ class SpecialistPipelineTests(unittest.TestCase):
                     'path':path,'evidence_ref':'git-blob:'+dict(selection.specialist_source_blobs)[path],'proposed_disposition':'DEFERRED'}]}
         class ModelTransport(CodexCliProvider):
             def invoke(inner,root,command,*args,**kwargs):
+                if command==('codex','--version'):
+                    return subprocess.CompletedProcess(command,0,'codex-cli 0.160.1\n','')
+                if command==('codex','mcp','list','--json'):
+                    return subprocess.CompletedProcess(command,0,'[{"name":"unsafe_inherited"}]','')
                 schema=json.loads(Path(command[command.index('--output-schema')+1]).read_text())
                 assert schema['properties']['specialist_binding']['const']==selection.specialist_binding
                 assert schema['properties']['findings']['items']['additionalProperties'] is False
-                assert 'read-only' in command
+                assert root!=self.root and not (root/'.git').exists()
+                assert all(flag in command for flag in ('--ignore-user-config','--ignore-rules','--strict-config','--ephemeral'))
+                assert kwargs['max_output_bytes']==262144
+                assert 'permissions.ep-effects-' in ' '.join(command)
+                assert 'mcp_servers.unsafe_inherited.enabled=false' in ' '.join(command)
                 text=json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(inner.output)}})
                 return subprocess.CompletedProcess(command,0,text,'')
         provider=ModelTransport();provider.output=payload;client=CodexCliClient(provider)

@@ -1392,12 +1392,12 @@ class EngineeringRunner:
     def _durable_repair_result_for_validation_resume(self, state: TransactionState) -> AgentResult | None:
         """Project an acknowledged repair receipt into the pending read-only gate."""
         plan = self._repair_plan(state)
-        if plan is None or state.pull_request is None:
+        if plan is None:
             return None
         sha = plan.get("commit_sha")
         branch = plan.get("repair_branch")
         reserved = plan.get("pre_repair_pull_request")
-        first_pr = reserved == "none" and plan.get("first_pr_authorized") == "yes"
+        first_pr = state.pull_request is None and reserved == "none" and plan.get("first_pr_authorized") == "yes"
         existing_pr = (
             isinstance(reserved, str) and reserved.isdigit() and int(reserved) >= 1
             and int(reserved) == state.pull_request and plan.get("first_pr_authorized") == "no"
@@ -2089,6 +2089,7 @@ class EngineeringRunner:
                         "Recovered provider result is unavailable.", "Recovery result evidence failed integrity verification.",
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
                     )
+                self._last_provider_invocation_id = replacement_id
                 try:
                     return AgentResult(
                         terminal_state=str(payload["terminal_state"]), branch=payload.get("branch"),
@@ -3002,6 +3003,9 @@ class EngineeringRunner:
             state.execution_mode == "MANAGED" and state.transaction_kind == "IMPLEMENTATION"
             and state.action_intent == "MUTATING_DELIVERY" and callable(getattr(self.agent, "review", None))
         ) else ()
+        qualify = getattr(self.agent, "qualified_specialist_capabilities", None)
+        if requested and callable(qualify):
+            supported = tuple(qualify(self.root))
         consumed = sum(r["kind"] == "DISPATCH" for r in state.specialist_records)
         plan = select_reviewers(objective, Path(state.prompt_path), state.transaction_kind, {},
             root=self.root, run_id=state.run_id, repository=state.repository, candidate_sha=next((r["candidate_sha"] for r in state.specialist_records if r["kind"] == "SELECTION"), evidence.head_sha),
@@ -3122,6 +3126,7 @@ class EngineeringRunner:
     def _consume_optional_specialists(self, state: TransactionState, result: AgentResult, evidence: RepositoryEvidence) -> TransactionState:
         """Consume primary decisions against actual changes, never a model's SHA claim."""
         from .capability_review import specialist_dispositions
+        baseline = evidence
         evidence = self.repository.inspect(self.root)
         if not state.specialist_records:
             if result.specialist_dispositions:
@@ -3129,13 +3134,14 @@ class EngineeringRunner:
             return state
         try:
             source = next(r["candidate_sha"] for r in state.specialist_records if r["kind"] == "SELECTION")
+            proven_noop = evidence.head_sha == source and self._is_verified_managed_noop(state, result, baseline)
             paths = changed_paths(self.root, source) if evidence.head_sha != source else ()
             events = specialist_dispositions(state.specialist_records, result.specialist_dispositions,
                                              candidate_sha=evidence.head_sha, changed_paths=paths)
         except (ValueError, TypeError, KeyError, StopIteration, RunnerError, ValidationProfileResolutionError):
             return self._save_terminal(state, "BLOCKED", "specialist_disposition_invalid", "Primary specialist disposition or change evidence is incomplete/invalid.")
-        if events or (result.terminal_state == "COMPLETE" and any(r["kind"] == "DISPATCH" for r in state.specialist_records)):
-            if (result.terminal_state != "COMPLETE" or not evidence.clean
+        if events or ((result.terminal_state == "COMPLETE" or proven_noop) and any(r["kind"] == "DISPATCH" for r in state.specialist_records)):
+            if not proven_noop and (result.terminal_state != "COMPLETE" or not evidence.clean
                     or result.branch != evidence.branch or result.commit_sha != evidence.head_sha):
                 return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_stale", "Primary result must match the actual clean candidate before recording consumer completion.")
             if not any(r["kind"] == "CONSUMER_RESULT" for r in state.specialist_records):
@@ -3468,14 +3474,32 @@ class EngineeringRunner:
             raise RunnerError("Codex CLI is not installed or invokable")
         self._verify_engineering_platform()
         recovery_snapshot = self._recovery_state(state.run_id)
+        repair_assurance_resume = (state.transaction_kind == "IMPLEMENTATION"
+            and state.phase == "QUALITY_CONTROL_AGENT" and self._repair_plan(state) is not None)
         consumer_receipt = next((r["payload"] for r in state.specialist_records if r["kind"] == "CONSUMER_RESULT"), None) if (
-            state.transaction_kind == "IMPLEMENTATION" and state.phase in {
+            not repair_assurance_resume and state.transaction_kind == "IMPLEMENTATION" and state.phase in {
                 "EXECUTE_AGENT", "LOCAL_REPOSITORY_VALIDATION", "CAPABILITY_REVIEW", "QUALITY_CONTROL_AGENT",
             }
         ) else None
         recovered_resume = self._recovered_result_matches_state(state, recovery_snapshot) and state.phase in {
             "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT",
         }
+        if (resume and not recovered_resume and consumer_receipt is None
+                and state.transaction_kind == "IMPLEMENTATION" and state.phase == "EXECUTE_AGENT"
+                and any(r["kind"] == "DISPATCH" for r in state.specialist_records)):
+            from .provider_recovery import completed_primary_result_reference
+            try:
+                completed_primary = completed_primary_result_reference(self.root, run_id=state.run_id,
+                    central_database=self.store.central_database)
+            except ValueError:
+                return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_unavailable", "Completed primary result is uncertain; provider replay is forbidden.")
+            if completed_primary is not None:
+                if isinstance(recovery_snapshot, dict):
+                    return self._save_terminal(state, "BLOCKED", "specialist_consumer_recovery_uncertain", "Existing recovery controller does not authorize this completed primary result.")
+                # Actual candidate is checked after exclusive lease admission;
+                # the artifact remains the sole authority for result content.
+                consumer_receipt = {"consumer_invocation_id": completed_primary[0],
+                    "result_ref": completed_primary[1], "result_candidate_sha": None}
         try:
             persisted_submission = load_submission_for_run(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
@@ -3644,13 +3668,36 @@ class EngineeringRunner:
         self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
+        if repair_assurance_resume:
+            try:
+                self._verify_adoption_continuation(state)
+            except RunnerError as error:
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
+            result = self._durable_repair_result_for_validation_resume(state)
+            current = self.repository.inspect(self.root)
+            if (result is None or not current.clean or result.branch != current.branch
+                    or result.commit_sha != current.head_sha):
+                return self._save_terminal(state, "BLOCKED", "repair_result_receipt_missing", "Current repair assurance cannot resume without its actual candidate/reservation receipt.")
+            if not self._current_local_validation_passes(state):
+                return self._advance_after_repair_agent_result(state, result)
+            if not self._current_assurance_passes(state):
+                state, result = self._run_quality_assurance(state, result)
+                if state.terminal or state.phase == "REPAIR_AGENT":
+                    return state
+            if state.pull_request is None:
+                state, result = self._publish_first_implementation_pull_request(state, result)
+                if state.terminal or result.pull_request is None:
+                    return state
+            return self._continue_after_quality_control(state, result, current)
         if consumer_receipt is not None:
             state = self._run_optional_specialists(state, objective, evidence)
             if state.terminal:
                 return state
             self._heartbeat()
             current = self.repository.inspect(self.root)
-            if not current.clean or current.repository != state.repository or current.head_sha != consumer_receipt["result_candidate_sha"]:
+            if (not current.clean or current.repository != state.repository
+                    or (consumer_receipt["result_candidate_sha"] is not None
+                        and current.head_sha != consumer_receipt["result_candidate_sha"])):
                 return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_stale", "Persisted consumer result no longer matches the actual candidate.")
             raw = load_recovery_agent_result(self.root, consumer_receipt["result_ref"], run_id=state.run_id,
                 invocation_id=consumer_receipt["consumer_invocation_id"], central_database=self.store.central_database,
@@ -3666,7 +3713,10 @@ class EngineeringRunner:
                 result = AgentResult(**raw)
             except (TypeError, ValueError):
                 return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_unavailable", "Persisted consumer output failed integrity verification; no provider retry.")
-            if (result.terminal_state != "COMPLETE" or result.commit_sha != current.head_sha
+            self._last_provider_invocation_id = consumer_receipt["consumer_invocation_id"]
+            source_sha = next(r["candidate_sha"] for r in state.specialist_records if r["kind"] == "SELECTION")
+            proven_noop = current.head_sha == source_sha and self._is_verified_managed_noop(state, result, current)
+            if not proven_noop and (result.terminal_state != "COMPLETE" or result.commit_sha != current.head_sha
                     or result.branch != current.branch):
                 return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_stale", "Persisted consumer branch/result no longer matches the actual candidate.")
             if state.phase == "QUALITY_CONTROL_AGENT" and self._current_local_validation_passes(state):

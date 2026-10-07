@@ -213,15 +213,22 @@ class EffectProviderTests(unittest.TestCase):
                 with self.subTest(reason=reason), self.assertRaisesRegex(contract.EffectContractError, reason):
                     effect_provider.propose(client, root, root, options, {})
 
+    def test_actual_specialist_cli_denies_inherited_effects_and_escalation(self):
+        self._assert_actual_installed_cli_denies_effects_and_escalation(specialist=True)
+
     def test_actual_installed_cli_denies_effects_and_escalation(self):
+        self._assert_actual_installed_cli_denies_effects_and_escalation()
+
+    def _assert_actual_installed_cli_denies_effects_and_escalation(self, *, specialist=False):
         """Only the external model HTTP transport is replaced; tool execution is real."""
         requests, probes = [], []
+        output=result()
         class Model(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_POST(self):
                 requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
                 item = {"id": "message", "type": "message", "role": "assistant", "status": "completed",
-                        "content": [{"type": "output_text", "text": json.dumps(result())}]}
+                        "content": [{"type": "output_text", "text": json.dumps(output)}]}
                 if len(requests) <= len(probes):
                     name, arguments = probes[len(requests) - 1]
                     item = {"type": "function_call", "id": "function", "call_id": "call_" + str(len(requests)),
@@ -239,6 +246,20 @@ class EffectProviderTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             workspace.write_file(source, "docs/design.md", b"Operator-owned deployment boundary.\n")
+            selection=None
+            if specialist:
+                from engineering_platform.capability_review import select_reviewers,SPECIALIST_CONTRACT_VERSION
+                from dataclasses import replace
+                for args in (('init','-q','-b','main'),('config','user.name','Fixture'),('config','user.email','fixture@example.invalid'),('add','.'),('commit','-qm','source')):
+                    subprocess.run(('git',*args),cwd=source,check=True,capture_output=True)
+                sha=subprocess.check_output(('git','rev-parse','HEAD'),cwd=source,text=True).strip()
+                objective='Specialist review requests: '+json.dumps([{'reviewer':'documentation','question':'Which deployment detail is missing?',
+                    'paths':['docs/design.md'],'consumer':'EXECUTE_AGENT','risk':'NORMAL'}])
+                selection=select_reviewers(objective,source/'objective.md','IMPLEMENTATION',{},root=source,run_id='sandbox-run',
+                    repository='qualification/managed',candidate_sha=sha,qualified_roles=('documentation',),remaining_percent=100,reserve_percent=0).selections[0]
+                selection=replace(selection,specialist_binding={**selection.specialist_binding,'invocation_id':'a'*32})
+                output={'contract_version':SPECIALIST_CONTRACT_VERSION,'contribution':'Bounded advice','recommendations':[],
+                        'specialist_binding':dict(selection.specialist_binding),'findings':[]}
             artifacts, prefix, home, protected = (root / name for name in ("artifacts", "provider", "cli-home", "protected"))
             for path in (artifacts, prefix / "bin", home, protected): path.mkdir(parents=True)
             binary = shutil.which("codex")
@@ -268,7 +289,19 @@ print(json.dumps(r))
                     options = effect_provider.policy(client, source) + (
                         "-c", 'model="fixture"', "-c", 'model_provider="fixture"', "-c",
                         f'model_providers.fixture={{name="fixture",base_url="http://127.0.0.1:{httpd.server_port}/v1",wire_api="responses",requires_openai_auth=false}}')
-                    self.assertEqual(effect_provider.propose(client, source, artifacts, options, {"effect_contract": effect()}), result())
+                    if specialist:
+                        original_policy=effect_provider.policy
+                        # Only the external model endpoint is replaced; the exact production
+                        # policy and snapshot wrapper still execute and enforce tool access.
+                        model_options=options[-6:]
+                        def local_model_policy(client,root):
+                            return original_policy(client,root)+model_options
+                        with patch.object(effect_provider,'policy',side_effect=local_model_policy):
+                            observed=client.review(source,selection,objective)
+                        self.assertFalse(observed.failed,observed.contribution)
+                        self.assertEqual(observed.specialist_binding,selection.specialist_binding)
+                    else:
+                        self.assertEqual(effect_provider.propose(client, source, artifacts, options, {"effect_contract": effect()}), result())
             finally:
                 httpd.shutdown(); worker.join(); httpd.server_close()
             self.assertEqual(len(requests), 3)
