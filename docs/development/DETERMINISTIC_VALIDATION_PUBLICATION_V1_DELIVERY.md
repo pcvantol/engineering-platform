@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007`.
 Directive: `L234-NEXT-BACKLOG-DELIVERY-V1-20261007`.
-Lane revision: **r32**, plan revision **1**, sole writer **LANE_2_WORK**.
+Lane revision: **r32**, plan revision **2**, sole writer **LANE_2_WORK**.
 Base: `a5924d614eeb07cc3a78bb3a351bcea14aa59232` (EP 2.3.111).
 Branch: `codex/ep-deterministic-validation-publication-v1`.
 State: **IMPLEMENTING / NOT QUALIFIED**.
@@ -40,6 +40,17 @@ create, and repair consumption remains unchanged. Source/regression evidence
 is not a final-main installed claim. Ledger dispatch and terminal events share
 one canonical identity and are counted as one turn; interrupted observations
 retain unavailable usage/duration.
+
+Independent review wave 1 on `f8ce16d91e2b46f02dff9a25c1e792dd55ac8c75`
+found a context parser P1 (tabs/fenced samples) and a ledger-consumer P2
+(double counting and unknown-to-zero). Correction round **1** retains heading
+levels from the parser, preserves fenced material, explicitly includes mandatory
+review rubrics in the delivered prompt, and shares canonical turn folding across
+usage, terminal host evidence, cumulative activity and the read contract.
+All **51** focused context/ledger/consumer regressions pass. Security's first
+wave was interrupted by model capacity and is not a PASS. Fresh independent
+exact-head reviews and complete qualification remain required. The closed r31
+consumption stays three; this assignment has consumed one corrective round.
 
 Use existing controls, ledger, adoption, publication adapter and recovery.
 Qualification uses local synthetic repositories and temporary storage; only

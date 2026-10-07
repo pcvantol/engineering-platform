@@ -523,7 +523,9 @@ def _canonical_invocation_rows(rows):
                 identifier = binding["canonical_invocation_id"]
                 terminal = terminals.get(identifier)
                 if (terminal is not None and row["invocation_id"] == identifier + ":dispatch"
-                        and row["completed_at"] is None and row["role"] == terminal["role"]):
+                        and row["completed_at"] is None and row["role"] == terminal["role"]
+                        and all(row[key] == terminal[key]
+                                for key in ("run_id", "provider", "started_at"))):
                     completed = json.loads(terminal["churn"])
                     if all(binding.get(key) == completed.get(key) and binding.get(key)
                            for key in ("canonical_invocation_id", "candidate_sha", "assurance_profile_digest")):
@@ -532,6 +534,21 @@ def _canonical_invocation_rows(rows):
                 pass
         result.append(row)
     return result
+
+
+def canonical_provider_invocations(connection: sqlite3.Connection, run_id: str):
+    """Read canonical turns without changing the caller's connection factory."""
+    cursor = connection.execute(
+        "SELECT * FROM provider_invocations WHERE run_id=? ORDER BY ordinal", (run_id,)
+    )
+    names = [column[0] for column in cursor.description]
+    return _canonical_invocation_rows([dict(zip(names, row)) for row in cursor.fetchall()])
+
+
+def is_reviewer_role(role: object) -> bool:
+    return isinstance(role, str) and (
+        role.casefold().startswith("reviewer") or role.casefold() in {"quality", "security"}
+    )
 
 
 def persist_provider_invocation(root: Path, invocation: ProviderInvocation, *, central_database: Path | None = None) -> str:
@@ -717,7 +734,7 @@ def provider_usage_summary(
         connection.row_factory = sqlite3.Row
         try:
             rows = connection.execute(
-            """SELECT invocation_id,ordinal,provider,model,model_authority,raw_provider_model,
+            """SELECT invocation_id,run_id,ordinal,provider,model,model_authority,raw_provider_model,
                       phase,role,started_at,completed_at,duration_ms,input_tokens,
                       cached_input_tokens,uncached_input_tokens,output_tokens,
                       reasoning_tokens,total_tokens,estimated_credits,estimated_eur,

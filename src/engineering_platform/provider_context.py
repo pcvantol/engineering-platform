@@ -64,7 +64,8 @@ _MANDATORY_HEADINGS = re.compile(
     r"verplicht|non-negotiable|niet-onderhandelbaar|scope|niet wijzigen|do not)\b",
     re.IGNORECASE,
 )
-_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+_HEADING = re.compile(r"^ {0,3}(#{1,6})[\t ]+(.+?)\s*$")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
 def provider_need_for_phase(phase: str, *, passive_observation: bool = False) -> ProviderNeedDecision:
@@ -106,7 +107,8 @@ def project_context(role: ProviderRole, objective: str) -> ContextProjection:
     selected: list[str] = []
     mandatory_parents: list[int] = []
     for heading, section in sections:
-        level = len(section.splitlines()[0].split(" ", 1)[0]) if heading != "preamble" else 0
+        header = _HEADING.match(section.splitlines()[0])
+        level = len(header.group(1)) if header is not None else 0
         while mandatory_parents and mandatory_parents[-1] >= level:
             mandatory_parents.pop()
         mandatory = heading == "preamble" or bool(_MANDATORY_HEADINGS.search(heading))
@@ -125,10 +127,20 @@ def project_context(role: ProviderRole, objective: str) -> ContextProjection:
 def _markdown_sections(value: str) -> list[tuple[str, str]]:
     lines = value.splitlines()
     starts: list[tuple[int, str]] = []
+    fence: tuple[str, int] | None = None
     for index, line in enumerate(lines):
+        delimiter = _FENCE.match(line)
+        if fence is not None:
+            if (delimiter is not None and delimiter.group(1)[0] == fence[0]
+                    and len(delimiter.group(1)) >= fence[1] and not delimiter.group(2).strip()):
+                fence = None
+            continue
+        if delimiter is not None:
+            fence = (delimiter.group(1)[0], len(delimiter.group(1)))
+            continue
         match = _HEADING.match(line)
         if match:
-            starts.append((index, match.group(1)))
+            starts.append((index, match.group(2)))
     if not starts:
         return []
     result: list[tuple[str, str]] = []

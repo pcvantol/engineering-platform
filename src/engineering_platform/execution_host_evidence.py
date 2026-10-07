@@ -16,6 +16,7 @@ from typing import Any, Mapping
 
 from . import central_database
 from .providers import GitProvider
+from .provider_usage import canonical_provider_invocations
 from .storage import sqlite_connection
 
 
@@ -73,17 +74,16 @@ def _start_snapshot(root: Path) -> dict[str, object]:
 
 def _activity(connection: sqlite3.Connection, run_id: str) -> dict[str, int] | None:
     try:
-        provider = connection.execute(
-            "SELECT COUNT(*) FROM provider_invocations WHERE run_id=? AND provider='codex_cli'", (run_id,),
-        ).fetchone()
+        provider = sum(row["provider"] == "codex_cli"
+                       for row in canonical_provider_invocations(connection, run_id))
         validation = connection.execute(
             "SELECT COUNT(*) FROM execution_validation_command_invocations WHERE run_id=?", (run_id,),
         ).fetchone()
     except sqlite3.DatabaseError:
         return None
-    if not provider or not validation or not isinstance(provider[0], int) or not isinstance(validation[0], int):
+    if not validation or not isinstance(validation[0], int):
         return None
-    return {"provider_invocations": provider[0], "host_validation_actions": validation[0]}
+    return {"provider_invocations": provider, "host_validation_actions": validation[0]}
 
 
 def _terminal_snapshot(

@@ -394,6 +394,12 @@ def reviewer_prompt(
         "authority": "Read-only inspection and recommendations only. Do not edit, commit, push, merge, create pull requests, finalize, or change lifecycle state.",
         "scope": "Analyse only the declared capability. Cross-capability analysis requires objective repository evidence.",
     }
+    if selection.reviewer in {"quality", "security"}:
+        prompt["mandatory_review_contract"] = {
+            "version": MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+            "required_coverage_surfaces": list(selection.required_coverage_surfaces),
+            "required_finding_ids": list(selection.required_finding_ids),
+        }
     if evidence is not None:
         prompt["run_scoped_repository_evidence"] = evidence.to_dict()
         prompt["evidence_instructions"] = (

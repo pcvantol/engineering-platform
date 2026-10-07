@@ -23,6 +23,7 @@ from .models import (
 )
 from ..storage import EngineeringStorageError, database_path, load_validation_context
 from ..validation_profile import strict_required_controls_pass
+from ..provider_usage import canonical_provider_invocations, is_reviewer_role
 
 
 UNAVAILABLE = "UNAVAILABLE"
@@ -217,27 +218,33 @@ def _usage_projection_unavailable() -> tuple[dict[str, object], dict[str, object
 
 def _usage_projection(connection: sqlite3.Connection, run_id: str) -> tuple[dict[str, object], dict[str, object]]:
     try:
-        rows = connection.execute(
-            "SELECT provider,model,role,duration_ms,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,usage_authority,speed_state,estimated_credits,estimated_eur,churn FROM provider_invocations WHERE run_id=? ORDER BY ordinal",
-            (run_id,),
-        ).fetchall()
+        rows = canonical_provider_invocations(connection, run_id)
     except sqlite3.OperationalError:
         rows = []
     if not rows:
         return _usage_projection_unavailable()
-    def total(index: int) -> int:
-        return sum(value for row in rows if isinstance((value := row[index]), int))
+    def total(field: str):
+        values = [row[field] for row in rows]
+        return (sum(values) if all(isinstance(value, int) and not isinstance(value, bool)
+                                  for value in values) else UNAVAILABLE)
     primary = rows[-1]
-    reviewers = [row for row in rows if str(row[2]).casefold() == "reviewer"]
-    churn = _json_object(primary[12])
-    usage = {"provider": primary[0] or UNAVAILABLE, "model": primary[1] or UNAVAILABLE, "model_authority": primary[8], "provider_invocation_count": len(rows),
-             "reviewer_invocation_count": len(reviewers), "run_cumulative_input": total(5) + total(6), "cached_input": total(5), "uncached_input": total(6),
-             "output": total(7), "provider_execution_time": total(3), "tool_output": churn.get("tool_output_bytes", UNAVAILABLE),
+    reviewers = [row for row in rows if is_reviewer_role(row["role"])]
+    churn = _json_object(primary["churn"])
+    usage = {"provider": primary["provider"] or UNAVAILABLE, "model": primary["model"] or UNAVAILABLE,
+             "model_authority": primary["model_authority"], "provider_invocation_count": len(rows),
+             "reviewer_invocation_count": len(reviewers), "run_cumulative_input": total("input_tokens"),
+             "cached_input": total("cached_input_tokens"), "uncached_input": total("uncached_input_tokens"),
+             "output": total("output_tokens"), "provider_execution_time": total("duration_ms"),
+             "tool_output": churn.get("tool_output_bytes", UNAVAILABLE),
              "git_output": churn.get("git_output_bytes", UNAVAILABLE), "github_output": churn.get("github_output_bytes", UNAVAILABLE),
-             "estimated_credits": primary[10] if primary[10] is not None else UNAVAILABLE, "estimated_eur": primary[11] if primary[11] is not None else UNAVAILABLE,
-             "speed_state": primary[9], "authority": primary[8], "availability": "AVAILABLE"}
-    reviewer_projection = {"selection_policy_result": "AVAILABLE", "selected_reviewer_count": len(reviewers), "roles": sorted({str(row[2]) for row in rows}),
-                           "reviewers": [{"role": row[2], "state": "COMPLETE" if row[3] is not None else "ACTIVE", "duration": row[3] if row[3] is not None else UNAVAILABLE, "conclusion": UNAVAILABLE} for row in reviewers],
+             "estimated_credits": primary["estimated_credits"] if primary["estimated_credits"] is not None else UNAVAILABLE,
+             "estimated_eur": primary["estimated_eur"] if primary["estimated_eur"] is not None else UNAVAILABLE,
+             "speed_state": primary["speed_state"], "authority": primary["usage_authority"], "availability": "AVAILABLE"}
+    reviewer_projection = {"selection_policy_result": "AVAILABLE", "selected_reviewer_count": len({row["role"] for row in reviewers}),
+                           "roles": sorted({str(row["role"]) for row in reviewers}),
+                           "reviewers": [{"role": row["role"], "state": "COMPLETE" if row["completed_at"] is not None else "ACTIVE",
+                                          "duration": row["duration_ms"] if row["duration_ms"] is not None else UNAVAILABLE,
+                                          "conclusion": UNAVAILABLE} for row in reviewers],
                            "independence_state": "UNAVAILABLE"}
     return usage, reviewer_projection
 

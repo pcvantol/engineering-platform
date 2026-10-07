@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import json
 
 from engineering_platform.provider_context import ProviderRole, project_context, provider_need_for_phase
 from engineering_platform.provider_context_benchmark import benchmark_shape
+from engineering_platform.capability_review import ReviewerSelection, reviewer_prompt, mandatory_coverage_surfaces
 
 
 OBJECTIVE = """# Objective
@@ -20,6 +22,35 @@ This lower-priority historical context is deliberately long and is not needed by
 
 
 class ProviderContextTest(unittest.TestCase):
+    def test_actual_mandatory_reviewer_prompts_keep_fenced_safety_and_role_rubrics(self) -> None:
+        objective = "#\tSafety constraints\n## Details\n```sh\n# inert sample comment\n```\nNever publish without owner authorization.\n"
+        for role in ("quality", "security"):
+            surfaces = mandatory_coverage_surfaces(role, "IMPLEMENTATION")
+            selection = ReviewerSelection(role, "mandatory assurance", 1.0,
+                                           required_coverage_surfaces=surfaces)
+            prompt = json.loads(reviewer_prompt(selection, objective))
+            self.assertIn("Never publish without owner authorization.", prompt["objective"])
+            self.assertEqual(prompt["context_projection"]["role"], role.upper() + "_REVIEW")
+            for surface in surfaces:
+                self.assertIn(surface, json.dumps(prompt))
+
+    def test_tabs_and_fenced_samples_cannot_end_the_mandatory_section(self) -> None:
+        for fence in ("```sh", "~~~~", "````python"):
+            closing = fence.split("sh")[0].split("python")[0]
+            objective = ("  #\tSafety constraints\n## Details\n" + fence
+                         + "\n# inert sample comment\n## sample\n"
+                         + closing + "\nNever publish without owner authorization.\n"
+                         + "# Historical transcript\noptional past notes.\n")
+            with self.subTest(fence=fence):
+                projection = project_context(ProviderRole.SECURITY_REVIEW, objective)
+                self.assertIn("Never publish without owner authorization.", projection.text)
+                self.assertIn("# inert sample comment", projection.text)
+                self.assertNotIn("optional past notes.", projection.text)
+
+    def test_unclosed_and_mixed_fences_preserve_required_remaining_material(self) -> None:
+        objective = "# Safety constraints\n```example\n~~~\n# inert\nNever drop this required rule.\n"
+        self.assertIn("Never drop this required rule.", project_context(ProviderRole.QUALITY_REVIEW, objective).text)
+
     def test_mandatory_contract_includes_nested_sections_with_neutral_titles(self) -> None:
         objective = "# Acceptance criteria\n## Scenarios\nRequired case A.\n### Details\nRequired case B.\n# History\n## Transcript\nOptional old notes.\n"
         projection = project_context(ProviderRole.SECURITY_REVIEW, objective)
