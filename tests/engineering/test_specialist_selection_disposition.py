@@ -131,6 +131,20 @@ class SpecialistPipelineTests(unittest.TestCase):
         self.assertEqual([r[1] for r in rows],[200,100])
         self.assertEqual(provider_usage_summary(self.root,'specialist-run',central_database=self.fixture.database)['provider_invocation_count'],5)
 
+    def test_actual_duplicate_results_are_consumed_and_applied_only_once(self):
+        model=self.transport();review=model.review
+        def duplicate(root,selected,objective,evidence=None):
+            result=review(root,selected,objective,evidence)
+            return replace(result,findings=result.findings*2) if selected.reviewer not in {'quality','security'} else result
+        model.review=duplicate
+        result=self.runner(model).run(self.fixture.prompt,run_id='specialist-run',owner_authorized=True)
+        self.assertEqual(result.phase,'WAIT_FOR_OPERATOR_MERGE')
+        data=cr.specialist_readback(result.specialist_records)
+        self.assertEqual((len(data['findings']),data['duplicate_observations']),(2,2))
+        self.assertEqual(len([r for r in result.specialist_records if r['kind']=='APPLICATION']),1)
+        self.assertEqual(model.implementations,1)
+        self.assertEqual(provider_usage_summary(self.root,'specialist-run',central_database=self.fixture.database)['provider_invocation_count'],5)
+
     def test_real_accept_and_reject_are_decisions_not_implemented_or_verified(self):
         result=self.runner(self.transport({'documentation':'ACCEPTED','validation':'REJECTED'})).run(self.fixture.prompt, run_id='specialist-run', owner_authorized=True)
         self.assertEqual(result.phase,'WAIT_FOR_OPERATOR_MERGE')
@@ -288,7 +302,8 @@ class SpecialistPipelineTests(unittest.TestCase):
             self.assertEqual(data['completed_invocation_count'],0)
             self.assertTrue(data['dispatch_skips'])
         elif boundary=='assurance-empty':
-            self.assertEqual((data['reserved_invocation_count'],data['completed_invocation_count']),(2,0))
+            # Returned failed advice is completed usage, never adoption.
+            self.assertEqual((data['reserved_invocation_count'],data['completed_invocation_count']),(2,2))
             self.assertEqual(data['findings'],[])
             self.assertFalse(any(r['kind']=='APPLICATION' for r in after.specialist_records))
         else:

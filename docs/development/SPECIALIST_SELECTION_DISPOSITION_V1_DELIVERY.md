@@ -120,6 +120,12 @@ macOS FileProvider repeatedly unloads existing source/dependency bytes. The temp
 
 The existing browser gate exposed fixture/layout races on unchanged production UI. Necessary test-only corrections wait for the initial snapshot/splash and the real mutation-observer/scroll layout, retaining the original visible geometry, overflow and colour assertions and no artificial DOM/CSS workaround. These corrections are validation prerequisites within this same vertical delivery; no Console redesign or new product behaviour. Full browser and production gates are requalified on their official candidate. Historical predecessor budgets remain closed; no formal corrective review has yet been consumed.
 
+## Converged selected test matrix
+
+The complete fast selected matrix is PASS: 30 cases, including actual duplicate return -> one primary application, real concurrent append, consumer-corruption/candidate/branch/question denial, capacity/context/no-call, explicit dispositions and actual controls. The actual new OS assurance-empty boundary is PASS (92.035 seconds), preserving primary once, original controls and repair counter 2. Its test correctly counts two returned failed specialist turns as completed invocations, never adoption, findings or successful utility.
+
+Browser qualification at the unchanged production UI: all four shards PASS without retries, 435 passed and four existing skips. Fixture/layout corrections retain every original visible acceptance assertion. The official source/installed gates use the converged committed inputs, not pre-fix snapshots; known gaps are closed before the first mandatory review. Formal corrective-review consumption remains zero.
+
 ## Authorized execution contract (verbatim)
 
 ```text
