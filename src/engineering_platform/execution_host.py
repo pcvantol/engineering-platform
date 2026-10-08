@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-from contextlib import closing
 from datetime import datetime, timezone
 from dataclasses import replace
 import json
@@ -1073,6 +1072,23 @@ class EngineeringRunner:
                 diagnostic_capture_available = command_outcome.diagnostic_capture_available
                 infrastructure_diagnostic = getattr(command_outcome, "infrastructure_diagnostic", None)
             completed_at = datetime.now(timezone.utc).isoformat()
+            if not started:
+                try:
+                    record_validation_control_result(
+                        self.root, run_id=validation.run_id, validation_id=launcher.validation_id,
+                        category=launcher.category, control_identity=launcher.control_identity,
+                        required_for_profile=True, execution_status="NOT_EXECUTED", result="UNAVAILABLE",
+                        evidence_ref="validation_environment:" + (infrastructure_diagnostic or "COMMAND_NOT_STARTED"),
+                        observed_at=completed_at, currentness=currentness,
+                        central_database=self.store.central_database,
+                    )
+                except EngineeringStorageError:
+                    complete_phase(self.root, span, outcome="FAILED")
+                    return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence",
+                                               "Nonstarted control evidence could not be persisted.")
+                complete_phase(self.root, span, outcome="FAILED")
+                return self._save_terminal(validation, "BLOCKED", "validation_environment",
+                    f"Required local validation was not executed: {infrastructure_diagnostic or 'COMMAND_NOT_STARTED'}.")
             try:
                 record_validation_command_terminal(
                     self.root, run_id=validation.run_id, command_id=command_id,
@@ -2641,28 +2657,10 @@ class EngineeringRunner:
             and record.get("reviewer") in assurance_roles
         }
         records: list[dict[str, object]] = list(completed_reviews.values())
-        try:
-            with closing(sqlite3.connect(self.store.central_database)
-                  if self.store.central_database is not None else open_storage(self.root)) as connection:
-                previous_invocations = connection.execute(
-                    "SELECT role,churn FROM provider_invocations WHERE run_id=? "
-                    "AND phase IN ('MANDATORY_ASSURANCE_DISPATCH','MANDATORY_ASSURANCE')",
-                    (quality.run_id,),
-                ).fetchall()
-            for reviewer, raw_binding in previous_invocations:
-                previous_binding = json.loads(raw_binding)
-                if not isinstance(previous_binding, dict):
-                    raise TypeError("Prior mandatory invocation binding is invalid.")
-                if (reviewer not in completed_reviews
-                        and previous_binding.get("candidate_sha") == candidate.head_sha
-                        and previous_binding.get("assurance_profile_digest") == profile_digest):
-                    return self._save_terminal(
-                        quality, "BLOCKED", "mandatory_assurance_interrupted",
-                        "A started mandatory invocation lacks its complete durable result; no replay.",
-                    ), implementation
-        except (sqlite3.Error, EngineeringStorageError, TypeError, ValueError):
-            return self._save_terminal(quality, "BLOCKED", "assurance_invocation_storage_unavailable",
-                                       "Prior mandatory invocation identity could not be verified."), implementation
+        # A completed exact-profile result is retained. An interrupted read-only
+        # review follows the existing valid recovery policy with a fresh recorded
+        # invocation, current authority, and unchanged primary/repair lineage.
+        # Historical dispatch evidence remains immutable and unavailable.
         pending_resolutions: list[dict[str, str]] = []
         # Run sequentially: each is still a distinct sandboxed invocation, and
         # this avoids sharing mutable CLI telemetry between parallel calls.
@@ -5439,7 +5437,14 @@ class EngineeringRunner:
             terminal_condition=terminal_condition or state.terminal_condition,
             diagnostic=redact_diagnostic(diagnostic) if diagnostic else None,
         )
-        self.store.save(terminal)
+        if terminal.managed_candidate_adoption is not None:
+            # Commit the terminal audit without overwriting a grant/budget change
+            # that raced the diagnostic read. Only phase/terminal are this audit's
+            # authorized transition; owning results and history remain intact.
+            self.store.save(terminal, preserve_effect_authority=True, preserve_effect_status=False)
+            terminal = self.store.load(terminal.run_id)
+        else:
+            self.store.save(terminal)
         if self.active_lease is not None and self.active_lease.run_id == terminal.run_id:
             lease = self.active_lease
             try:
@@ -5619,6 +5624,17 @@ class EngineeringRunner:
                     captured = outcome.diagnostic_capture_available
                     infrastructure_diagnostic = getattr(outcome, "infrastructure_diagnostic", None)
                 completed_at = datetime.now(timezone.utc).isoformat()
+                if not started:
+                    record_validation_control_result(
+                        self.root, run_id=state.run_id, validation_id=validation_id,
+                        category="repository", control_identity=str(binding["control_identity"]),
+                        required_for_profile=False, execution_status="NOT_EXECUTED", result="UNAVAILABLE",
+                        evidence_ref="validation_environment:" + (infrastructure_diagnostic or "COMMAND_NOT_STARTED"),
+                        observed_at=completed_at, currentness=currentness,
+                        central_database=self.store.central_database,
+                    )
+                    return self._save_terminal(state, "BLOCKED", "delivery_observation_evidence_unavailable",
+                                               "Approved observation control was not started.")
                 record_validation_command_terminal(
                     self.root, run_id=state.run_id, command_id=command_id,
                     completed_at=completed_at, exit_code=exit_code,

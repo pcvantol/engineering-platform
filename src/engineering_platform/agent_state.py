@@ -735,7 +735,8 @@ class StateStore:
             raise StateError("canonical checkpoint is corrupt") from error
 
     def save(self, state: TransactionState, *, expected_publication_intent: object = _UNSPECIFIED,
-             expected_effect_checkpoint: dict | None = None, preserve_effect_authority: bool = False) -> Path:
+             expected_effect_checkpoint: dict | None = None, preserve_effect_authority: bool = False,
+             preserve_effect_status: bool = True) -> Path:
         from .capability_review import validate_specialist_records
         try:
             validate_specialist_records(state.specialist_records, run_id=state.run_id, repository=state.repository)
@@ -762,9 +763,11 @@ class StateStore:
                             for key, value in expected_effect_checkpoint.items())):
                     raise StateError("effect checkpoint changed concurrently; no stale authority write")
                 if preserve_effect_authority and prior_payload is not None and prior_payload.get("managed_candidate_adoption") is not None:
+                    fields = EFFECT_CHECKPOINT_FIELDS if preserve_effect_status else tuple(
+                        key for key in EFFECT_CHECKPOINT_FIELDS if key not in {"phase", "terminal"})
                     state = replace(state, **{
                         key: tuple(prior_payload[key]) if isinstance(getattr(state, key), tuple)
-                        else prior_payload[key] for key in EFFECT_CHECKPOINT_FIELDS
+                        else prior_payload[key] for key in fields
                     })
                     canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
                 previous_records = json.loads(prior[1]).get("specialist_records", []) if prior else []

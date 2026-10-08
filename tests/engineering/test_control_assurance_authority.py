@@ -161,18 +161,20 @@ class ControlAssuranceAuthority(unittest.TestCase):
             first += "\nimport time\ntime.sleep(17)\nfrom engineering_platform.storage import sqlite_connection\nwith sqlite_connection(Path(%r)) as db: current=db.execute('SELECT expires_at FROM execution_run_leases WHERE run_id=\"control-run\" AND lease_state=\"ACTIVE\"').fetchone()[0]\nassert current>%r, 'control wait must permit actual lease renewal'" % (str(c.database),runner.active_lease.expires_at)
         second="from pathlib import Path\nPath('second-output.txt').write_text('must not start')"
         bindings=tuple({'validation_id':name,'category':'repository','control_identity':name,'command':[sys.executable,'-c',code],'required':True} for name,code in (('first',first),('second',second)))
+        if loss=='unavailable':
+            bindings=({**bindings[0],'command':[str(c.area/'missing-control')]},bindings[1])
         record_validation_profile(c.root,run_id=state.run_id,selected_validation_tier='DOCUMENTATION',validation_profile_version='1.0',required_validation_controls=('first','second'),control_bindings=bindings,recorded_at=datetime.now(timezone.utc).isoformat(),central_database=c.database)
         before=target_bytes(c.root)
         result=runner._execute_required_validation_controls(state)
         after=target_bytes(c.root)
         changed={p for p in set(before)|set(after) if before.get(p)!=after.get(p)}
-        self.assertEqual(changed,{'first-output.txt'}, 'only the authorized first control may write target bytes')
-        self.assertEqual((result.phase,result.next_action),('BLOCKED','managed_candidate_adoption_invalid'))
+        self.assertEqual(changed,set() if loss=='unavailable' else {'first-output.txt'}, 'only the authorized first control may write target bytes')
+        self.assertEqual((result.phase,result.next_action),('BLOCKED','validation_environment' if loss=='unavailable' else 'managed_candidate_adoption_invalid'))
         with sqlite_connection(c.database) as connection:
             commands=[tuple(r) for r in connection.execute("SELECT validation_id FROM execution_validation_command_invocations WHERE run_id='control-run'")]
             controls=[tuple(r) for r in connection.execute("SELECT validation_id,execution_status,result FROM execution_validation_control_results WHERE run_id='control-run'")]
-        self.assertEqual(commands,[('first',)])
-        self.assertEqual(controls,[('first','EXECUTED','PASS')])
+        self.assertEqual(commands,[] if loss=='unavailable' else [('first',)])
+        self.assertEqual(controls,[('first','NOT_EXECUTED','UNAVAILABLE')] if loss=='unavailable' else [('first','EXECUTED','PASS')])
         self.assertEqual(result.repair_iterations,state.repair_iterations)
         if loss=="checkpoint":
             self.assertFalse(c.store.load(state.run_id).owner_authorized, "blocked audit must preserve canonical withdrawal")
@@ -225,15 +227,21 @@ finally:c.stop_host(r)
         self.assertNotEqual(receipt['pid'],os.getpid())
         self.assertEqual(receipt['repairs'],state.repair_iterations)
         self.assertEqual(receipt['repair_audit'],list(state.repair_audit))
+        if interrupted:
+            with sqlite_connection(c.database) as db:
+                rows=[tuple(row) for row in db.execute("SELECT invocation_id,phase FROM provider_invocations WHERE run_id='adopt-run' ORDER BY ordinal")]
+            self.assertEqual(rows[0][1],'MANDATORY_ASSURANCE_DISPATCH')
+            self.assertEqual(len(rows),1 if revoked else 5)
+            self.assertEqual(len({row[0] for row in rows}),len(rows))
         self.assertEqual(receipt['controls'],[], 'new process must preserve completed control evidence')
-        if revoked or interrupted:
+        if revoked:
             self.assertEqual(receipt['calls'],[], 'revoked recovery must not replay any reviewer')
             self.assertEqual(receipt['creates'],0)
             self.assertEqual(receipt['phase'],'BLOCKED')
             self.assertEqual(receipt['reviews'],[] if interrupted else ['quality'])
             self.assertEqual(target_bytes(c.root),before)
         else:
-            self.assertEqual(receipt['calls'],['security'], 'valid recovery must preserve completed quality result')
+            self.assertEqual(receipt['calls'],['quality','security'] if interrupted else ['security'], 'valid recovery must retain completed results and separately record a fresh uncertain review')
             self.assertEqual(receipt['creates'],1)
             self.assertEqual(receipt['phase'],'WAIT_FOR_OPERATOR_MERGE')
             self.assertEqual(receipt['reviews'],['quality','security'])
@@ -337,8 +345,49 @@ finally:c.stop_host(r)
         self.assertFalse(actual.owner_authorized)
         self.assertEqual(target_bytes(c.root),before)
 
-    def test_started_uncertain_review_new_process_has_no_replay(self):
+    def test_valid_uncertain_review_new_process_has_fresh_identity_without_budget_reset(self):
         self.process_resume(False,interrupted=True)
 
     def test_revoked_started_uncertain_review_new_process_has_no_replay(self):
         self.process_resume(True,interrupted=True)
+
+    def test_unavailable_native_control_has_no_invocation_or_terminal_fabrication(self):
+        self.control_sequence('unavailable')
+
+    def test_nonstarted_delivery_observation_has_no_terminal_or_target_effect(self):
+        c=self.case
+        state,runner,agent,github=self.pipeline()
+        runner.active_lease=acquire(c.root,state.run_id,identity=runner.host_identity,
+            instance_id=runner.host_instance_id,process_id=os.getpid(),central_database=c.database)
+        runner.lease_heartbeat=LeaseHeartbeat(c.root,runner.active_lease,central_database=c.database);runner.lease_heartbeat.start()
+        artifacts=c.database.parent/'artifacts'/'validation-scratch';artifacts.mkdir(parents=True,exist_ok=True)
+        original_mode=artifacts.stat().st_mode & 0o777
+        artifacts.chmod(0o500)
+        self.addCleanup(artifacts.chmod,original_mode)
+        before=target_bytes(c.root);starts=[]
+        def audit(event,args):
+            if event=='subprocess.Popen' and args[2] is not None and os.fsdecode(args[2])==str(c.root) and 'unittest' in args[1]:starts.append(args[1])
+        sys.addaudithook(audit)
+        result=runner._execute_delivery_observation_controls(state,('tests.test_docs',),currentness=0)
+        self.assertEqual(result.next_action,'delivery_observation_evidence_unavailable')
+        self.assertEqual(starts,[])
+        self.assertEqual(target_bytes(c.root),before)
+        with sqlite_connection(c.database) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM execution_validation_command_invocations WHERE command_id LIKE 'observation-control-%'").fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM execution_validation_command_terminals WHERE command_id LIKE 'observation-control-%'").fetchone()[0],0)
+            rows=[tuple(row) for row in db.execute("SELECT execution_status,result FROM execution_validation_control_results WHERE required_for_profile=0")]
+        self.assertEqual(rows,[('NOT_EXECUTED','UNAVAILABLE')])
+
+    def test_non_authority_error_terminal_audit_preserves_current_checkpoint_grant(self):
+        c=self.case
+        state,runner,agent,github=self.pipeline()
+        c.store.save(replace(state,owner_authorized=False))
+        before=target_bytes(c.root)
+        result=runner._save_terminal(state,'BLOCKED','validation_environment','Actual nonstarted validation error.')
+        self.assertEqual((result.phase,result.terminal),('BLOCKED',True))
+        self.assertFalse(result.owner_authorized)
+        self.assertFalse(c.store.load(state.run_id).owner_authorized)
+        self.assertEqual(result.repair_iterations,state.repair_iterations)
+        self.assertEqual(result.repair_audit,state.repair_audit)
+        self.assertEqual(result.assurance_reviews,state.assurance_reviews)
+        self.assertEqual(target_bytes(c.root),before)

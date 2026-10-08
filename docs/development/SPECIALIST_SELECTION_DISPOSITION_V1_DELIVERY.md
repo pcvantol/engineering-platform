@@ -503,7 +503,7 @@ Finalization and exact-final-main installed qualification are still outstanding.
 | --- | --- | --- |
 | Normal/resumed local validation | Short canonical checkpoint CAS precedes the persisted phase; each required command gets a separate current owner/binding/lease/checkpoint scope | Actual command invocation is recorded after native spawn; denial stops the loop, without fabricated EXECUTED/PASS |
 | Final-delivery observation controls | Same individual deterministic executor and current effect scope | Typed denial stops the observation loop; required controls remain mandatory |
-| Mandatory Quality and Security | Distinct current scopes around each native or explicit inline adapter; native execute, bounded input and spawn share the start primitive | True first result is durable before the second reviewer; matching completed reviewer is retained on process restart; started incomplete invocation is blocked without replay |
+| Mandatory Quality and Security | Distinct current scopes around each native or explicit inline adapter; native execute, bounded input and spawn share the start primitive | True first result is durable before the second reviewer; matching completed reviewer is retained on process restart; valid interrupted read-only review follows existing recovery with a fresh recorded identity; revocation prevents every next start |
 | Native process wait | Serialization ends at actual Popen; model dispatch excludes metadata probes | Heartbeat and canonical withdrawal remain possible during control/model waits; a started operation's actual result remains evidence |
 | Adjacent audit transitions | Canonical CAS rejects stale phase/grant changes; result writes preserve current authority fields atomically | BLOCKED audit retains current checkpoint withdrawal and all existing budgets/ledgerrows; it never restores stale owner authority |
 | Context and threads | Context scopes are restored on exit; actual Codex invocation is synchronous, while watchdog/heartbeat threads perform no model start | Protected validation rejects absent process context; deliberately standalone/Genesis execution retains its existing boundary |
@@ -518,3 +518,26 @@ detectors remain, with separate control and assurance detectors added to the
 existing mandatory CI gate. No new live EP environment, signing, operational
 installation or public package release. Dashboard remains NOT_ACTIVE until the
 whole r33 delivery is truly terminal.
+
+Round8 own convergence additionally fixes the nonstarted-command audit: a real
+missing executable receives NOT_EXECUTED/UNAVAILABLE without a fabricated
+invocation/terminal. The five historical synthetic profile tests explicitly
+signal their existing inline fixture start. Valid interrupted mandatory review
+keeps its original unavailable dispatch and uses the existing fresh-invocation
+recovery policy under current authority; completed exact-profile reviews remain
+retained, and revoked recovery still starts nothing. No consumption or repair
+reservation is erased. These are integrated own-convergence fixes within the
+same consumed round8, before any new mandatory independent review.
+
+The first integrated b035726 candidate is explicitly NOT_QUALIFIED: source2421
+(failures7/errors9/skipped2), installed254 (failures6). All failures were
+inventoried before the integrated follow-up: valid interrupted assurance policy,
+explicit historical inline fixture callbacks, and truthful nonstarted-command
+storage. Adjacent terminal/error audits now preserve current grant and budget
+fields atomically while committing their authorized terminal transition.
+Current owning25 control/assurance cases plus the full host component converge:
+355 tests PASS with one existing host skip; all ten restored-fault controls PASS.
+The six actual assurance-resume failure cases are separately green, including
+real new-process crash recovery. No official fresh independent review has run
+before this own convergence. These fixes remain in the same consumed round8,
+plan11, canonical writer/branch/history; no ninth round or budget reset.

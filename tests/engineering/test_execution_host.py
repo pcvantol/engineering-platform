@@ -18,7 +18,7 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
 from engineering_platform.managed_publication import PublicationCandidate
 from engineering_platform.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic, verified_commit_evidence_record
@@ -3503,7 +3503,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     @patch.object(EngineeringRunner, "_run_required_validation_command")
     def test_validation_only_executor_uses_the_persisted_control_binding(self, run: object) -> None:
-        run.return_value = 0  # type: ignore[attr-defined]
+        run.side_effect = lambda command, *, state, started: (started(), 0)[1]  # type: ignore[attr-defined]
         run_id = "persisted-binding-execution"
         record_validation_profile(
             self.root, run_id=run_id, selected_validation_tier="DASHBOARD", validation_profile_version="1.0",
@@ -3514,11 +3514,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
         runner._execute_required_validation_controls(TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY"))
-        run.assert_called_once_with(("fixture", "dashboard"))  # type: ignore[attr-defined]
+        run.assert_called_once_with(("fixture", "dashboard"), state=ANY, started=ANY)  # type: ignore[attr-defined]
 
     @patch.object(EngineeringRunner, "_run_required_validation_command")
     def test_validation_only_executes_required_control_before_qualification(self, run: object) -> None:
-        run.return_value = 0  # type: ignore[attr-defined]
+        run.side_effect = lambda command, *, state, started: (started(), 0)[1]  # type: ignore[attr-defined]
         run_id = "validation-only-execution"
         record_validation_profile(
             self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
@@ -3538,11 +3538,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(control["result"], "PASS")
         self.assertEqual(control["control_identity"], "npm run test:engineering-dashboard")
         self.assertEqual(agent.roots, [])
-        run.assert_called_once_with(("npm", "run", "test:engineering-dashboard"))  # type: ignore[attr-defined]
+        run.assert_called_once_with(("npm", "run", "test:engineering-dashboard"), state=ANY, started=ANY)  # type: ignore[attr-defined]
 
     @patch.object(EngineeringRunner, "_run_required_validation_command")
     def test_validation_only_executor_persists_every_required_control_result(self, run: object) -> None:
-        run.side_effect = (0, 7, None)  # type: ignore[attr-defined]
+        fixture_exits = iter((0, 7, None))
+        run.side_effect = lambda command, *, state, started: (started(), next(fixture_exits))[1]  # type: ignore[attr-defined]
         run_id = "all-required-control-results"
         record_validation_profile(
             self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
@@ -3574,7 +3575,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ])
 
     @patch.object(EngineeringRunner, "_run_required_validation_command", return_value=0)
-    def test_validation_only_report_projects_each_persisted_required_control(self, _: object) -> None:
+    def test_validation_only_report_projects_each_persisted_required_control(self, run: object) -> None:
+        run.side_effect = lambda command, *, state, started: (started(), 0)[1]  # type: ignore[attr-defined]
         run_id = "persisted-profile-report-projection"
         record_validation_profile(
             self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
@@ -3609,8 +3611,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
                     validation_profile_version="1.0", required_validation_controls=controls,
                     recorded_at="2026-08-29T00:00:00+00:00",
                 )
-                effects = list(exits)
-                run.side_effect = effects  # type: ignore[attr-defined]
+                fixture_exits = iter(exits)
+                run.side_effect = lambda command, *, state, started: (started(), next(fixture_exits))[1]  # type: ignore[attr-defined]
                 state = runner._execute_required_validation_controls(
                     TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
                 )
@@ -6893,7 +6895,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         outcome = SimpleNamespace(exit_code=1, stdout="", stderr="Ran 1 test in 0.01s\nFAILED (failures=1)\n",
                                   diagnostic_capture_available=True, infrastructure_diagnostic=None)
-        with (patch.object(runner, "_run_required_validation_command", return_value=outcome) as execute,
+        with (patch.object(runner, "_run_required_validation_command",
+                           side_effect=lambda command, *, state, started: (started(), outcome)[1]) as execute,
               patch("engineering_platform.execution_host.record_validation_command_invocation") as invocation,
               patch("engineering_platform.execution_host.record_validation_command_terminal") as terminal,
               patch("engineering_platform.execution_host.record_validation_control_result") as control,
@@ -7970,9 +7973,12 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
             control_bindings=({"validation_id": "arbitrary_control", "required": True, "category": "lint", "control_identity": "arbitrary check", "command": ["arbitrary"]},),
         )
         runner = EngineeringRunner(self.root, StateStore(self.root / ".engineering" / "state.json"), None, None, None, lambda _: None)
-        runner._run_required_validation_command = lambda _: DeterministicValidationResult(  # type: ignore[method-assign]
-            exit_code=7, stdout="", stderr="permission denied", diagnostic_capture_available=True,
-        )
+        def fixture_failure(command, *, state, started):
+            started()  # Explicit existing inline diagnostic fixture.
+            return DeterministicValidationResult(
+                exit_code=7, stdout="", stderr="permission denied", diagnostic_capture_available=True,
+            )
+        runner._run_required_validation_command = fixture_failure  # type: ignore[method-assign]
         runner._execute_required_validation_controls(
             TransactionState(self.run_id, "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
         )
