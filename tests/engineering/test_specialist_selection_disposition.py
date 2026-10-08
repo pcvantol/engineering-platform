@@ -456,6 +456,98 @@ class SpecialistPipelineTests(unittest.TestCase):
             self.assertEqual(calls,['REPAIR_AGENT'])
         finally:release(self.root,lease,central_database=self.fixture.database)
 
+    def test_recovered_repair_corrupt_artifact_blocks_without_replaying_provider(self):
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        artifact=self.fixture.database.parent/'artifacts/provider-recovery-results'/f"{recovery['replacement_invocation_id']}.json"
+        self.assertTrue(artifact.is_file());artifact.write_text('{}\n')
+        before=self.fixture.git('rev-parse','HEAD')
+        result=runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual((result.phase,result.next_action,result.repair_iterations),('BLOCKED','NONE',checkpoint.repair_iterations))
+        self.assertEqual(calls,['REPAIR_AGENT'])
+        self.assertEqual(result.specialist_records,checkpoint.specialist_records)
+        self.assertEqual(self.fixture.git('rev-parse','HEAD'),before)
+
+    def test_recovered_repair_missing_catalog_blocks_without_replaying_provider(self):
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        with sqlite_connection(self.fixture.database) as connection:
+            connection.execute('DELETE FROM execution_artifact_records WHERE artifact_id=?',
+                (f"provider-recovery-result:specialist-run:{recovery['replacement_invocation_id']}",))
+        result=runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual((result.phase,result.next_action,result.repair_iterations),('BLOCKED','NONE',checkpoint.repair_iterations))
+        self.assertEqual(calls,['REPAIR_AGENT'])
+        self.assertEqual(result.specialist_records,checkpoint.specialist_records)
+
+    def test_recovered_repair_auth_pause_preserves_receipt_and_restores_same_operation(self):
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        with patch('engineering_platform.execution_host.provider_readiness_failures',return_value=('GITHUB',)):
+            blocked=runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual((blocked.phase,blocked.next_action,blocked.repair_iterations),('REPAIR_AGENT','provider_auth_repair_required',checkpoint.repair_iterations))
+        self.assertFalse(blocked.terminal)
+        self.assertEqual(blocked.repair_audit,checkpoint.repair_audit)
+        self.assertEqual(blocked.specialist_records,checkpoint.specialist_records)
+        self.assertEqual(calls,['REPAIR_AGENT'])
+        result=runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual((result.phase,result.pull_request,result.repair_iterations),('WAIT_FOR_OPERATOR_MERGE',71,checkpoint.repair_iterations))
+        self.assertEqual(calls,['REPAIR_AGENT'])
+
+    def test_recovered_repair_changed_prompt_path_cannot_consume_or_dispatch(self):
+        from engineering_platform.execution_errors import RunnerError
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        other=self.fixture.data/'other-prompt.md';other.write_text(self.objective)
+        with self.assertRaisesRegex(RunnerError,'checkpoint conflicts with current prompt'):
+            runner.run(other,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual(self.store.load('specialist-run'),checkpoint)
+        self.assertEqual(calls,['REPAIR_AGENT'])
+
+    def test_recovered_repair_changed_checkpoint_before_lease_cannot_terminalize_new_owner(self):
+        from engineering_platform import execution_host as host
+        from engineering_platform.execution_errors import RunnerError
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        current=replace(checkpoint,branch='codex/other-bound-candidate')
+        acquire=host.acquire_lease
+        def concurrent_checkpoint(*args,**kwargs):
+            self.store.save(current)
+            return acquire(*args,**kwargs)
+        with patch.object(host,'acquire_lease',side_effect=concurrent_checkpoint):
+            with self.assertRaisesRegex(RunnerError,'checkpoint changed before exclusive repair recovery'):
+                runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual(self.store.load('specialist-run'),current)
+        self.assertFalse(current.terminal)
+        self.assertEqual(calls,['REPAIR_AGENT'])
+        with sqlite_connection(self.fixture.database) as connection:
+            active=connection.execute("SELECT COUNT(*) FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE'",('specialist-run',)).fetchone()[0]
+        self.assertEqual(active,0)
+
+    def test_recovered_repair_stale_original_ordinal_cannot_consume_or_dispatch(self):
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        with sqlite_connection(self.fixture.database) as connection:
+            connection.execute('UPDATE provider_invocations SET retry_ordinal=0 WHERE run_id=? AND invocation_id=?',
+                ('specialist-run',recovery['triggering_invocation_id']))
+        result=runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual((result.phase,result.next_action,result.repair_iterations),('BLOCKED','repair_result_receipt_missing',checkpoint.repair_iterations))
+        self.assertEqual(calls,['REPAIR_AGENT'])
+        self.assertEqual(result.specialist_records,checkpoint.specialist_records)
+
+    def test_recovered_repair_foreign_controller_phase_cannot_consume_or_dispatch(self):
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        with sqlite_connection(self.fixture.database) as connection:
+            connection.execute("UPDATE provider_recovery_attempts SET lifecycle_phase='EXECUTE_AGENT' WHERE run_id=?",('specialist-run',))
+        result=runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual((result.phase,result.next_action,result.repair_iterations),('BLOCKED','repair_result_receipt_missing',checkpoint.repair_iterations))
+        self.assertEqual(calls,['REPAIR_AGENT'])
+        self.assertEqual(result.specialist_records,checkpoint.specialist_records)
+
+    def test_recovered_repair_missing_original_row_cannot_consume_or_dispatch(self):
+        from engineering_platform.execution_errors import RunnerError
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        with sqlite_connection(self.fixture.database) as connection:
+            connection.execute('DELETE FROM provider_invocations WHERE run_id=? AND invocation_id=?',
+                ('specialist-run',recovery['triggering_invocation_id']))
+        with self.assertRaisesRegex(RunnerError,'original reservation identity'):
+            runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual(self.store.load('specialist-run'),checkpoint)
+        self.assertEqual(calls,['REPAIR_AGENT'])
+
     def process_boundary(self,boundary):
         import subprocess,sys,time
         from datetime import datetime,timezone
