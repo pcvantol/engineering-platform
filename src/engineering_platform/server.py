@@ -37,6 +37,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 from uuid import uuid4
 
+from . import installation_pairing
 from . import agent_trust
 from . import central_database
 from . import merge_delegation
@@ -148,7 +149,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 73
+SERVER_STORE_SCHEMA_VERSION = 74
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -223,6 +224,20 @@ def _http_json_openapi_document() -> dict[str, object]:
                                   "404": {"description": "No submission for this producer"},
                                   "409": {"description": "Result or required evidence unavailable or corrupt"},
                                   "503": {"description": "CENTRAL unavailable"}},
+                },
+            },
+            "/v1/installation-compatibility": {
+                "get": {
+                    "summary": "Authenticate exact EP and Forge instances without project authority",
+                    "security": [{"consumerBearer": []}],
+                    "parameters": [
+                        {"name": "EP-Instance-ID", "in": "header", "required": True, "schema": {"type": "string"}},
+                        {"name": "Forge-Instance-ID", "in": "header", "required": True, "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "Installation readback only; project and execution authority false"},
+                                  "400": {"description": "Project scope or query forbidden"},
+                                  "401": {"description": "Installation credential unavailable"},
+                                  "403": {"description": "Instance binding mismatch"}},
                 },
             },
             "/v1/producer-compatibility": {
@@ -713,6 +728,8 @@ SERVER_REQUIRED_TABLES = frozenset(
         "engineering_metadata",
         "ep_installations",
         "ep_control_provenance",
+        "ep_installation_pairings",
+        "ep_installation_pairing_credentials",
         "ep_consumer_credentials",
         "ep_consumer_registrations",
         "ep_consumer_credential_recovery_operations",
@@ -978,6 +995,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     storage.install_central_operational_compatibility_schema(connection)
     _install_current_submission_schema(connection)
     parallel_action_admission.install_schema(connection)
+    installation_pairing.install_schema(connection)
     _install_forge_action_context_schema(connection)
     _install_forge_planning_context_schema(connection)
     _install_execution_host_evidence_schema(connection)
@@ -2261,6 +2279,20 @@ def _migrate_schema_73(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=73")
 
 
+
+def _migrate_schema_74(connection: sqlite3.Connection) -> None:
+    """Add project-independent installation readback authority; preserve scopes."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema73")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 74))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,74 FROM ep_installations_schema73")
+    connection.execute("DROP TABLE ep_installations_schema73")
+    installation_pairing.install_schema(connection)
+    central_operational_reset.install_writer_fences(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(74)")
+    connection.execute("UPDATE engineering_metadata SET value='74' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=74")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2294,6 +2326,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (71, _migrate_schema_71),
     (72, _migrate_schema_72),
     (73, _migrate_schema_73),
+    (74, _migrate_schema_74),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -2313,6 +2346,10 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
     try:
         with storage.sqlite_connection(f"file:{path}?mode=ro", uri=True) as connection:
             tables = _table_names(connection)
+            try:
+                installation_pairing.validate_schema(connection)
+            except installation_pairing.InstallationPairingError as error:
+                raise ServerConfigurationError("EP installation pairing schema is invalid.") from error
             indexes = _index_names(connection)
             views = _view_names(connection)
             triggers = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
@@ -7181,6 +7218,28 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
             return
+        if request.path == "/v1/installation-compatibility":
+            identity = initialize(self.server.data_root).instance_id
+            if request.query or any(self.headers.get(key) is not None for key in ("EP-Project-ID", "EP-Repository-ID")):
+                self._send(400, {"error": "INSTALLATION_SCOPE_ONLY"}, cache_control="no-store")
+                return
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            with storage.sqlite_connection(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:
+                scope = installation_pairing.authenticate(connection, token)
+            if scope is None:
+                self._send(401, {"error": "UNAUTHENTICATED"}, cache_control="no-store")
+                return
+            if scope["ep_instance_id"] != identity or self.headers.get("EP-Instance-ID") != identity or self.headers.get("Forge-Instance-ID") != scope["forge_instance_id"]:
+                self._send(403, {"error": "INSTALLATION_INSTANCE_MISMATCH"}, cache_control="no-store")
+                return
+            self._send(200, {
+                "contract_version": installation_pairing.CONTRACT_VERSION,
+                "producer": {"id": "engineering-platform", "version": CURRENT_PLATFORM_VERSION},
+                "instance": {"id": identity}, "authentication": scope,
+                "authority": {"installation_readback": True, "project_access": False, "submission": False, "execution": False, "governance": False},
+            }, identity, cache_control="no-store")
+            return
         authority_match = re.fullmatch(
             r"/v1/projects/([^/]+)/repositories/([^/]+)/consumer-authority", request.path,
         )
@@ -8060,7 +8119,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "grant-parallel-action-repository", "revoke-parallel-action-repository", "qualify-parallel-action-artifact", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "recover-managed-workspace", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "installation-pairing-register", "installation-pairing-status", "installation-pairing-issue", "installation-pairing-revoke", "installation-pairing-detach", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "grant-parallel-action-repository", "revoke-parallel-action-repository", "qualify-parallel-action-artifact", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "recover-managed-workspace", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -8098,6 +8157,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-instance-id")
     parser.add_argument("--peer-binding-id")
     parser.add_argument("--peer-runtime-id")
+    parser.add_argument("--installation-credential-id")
     parser.add_argument("--peer-configuration-digest")
     parser.add_argument("--previous-peer-configuration-digest")
     parser.add_argument("--artifact", type=Path)
@@ -8865,6 +8925,30 @@ def main(argv: list[str] | None = None) -> int:
             receipt_complete = transport != "FILE_INBOX" or (isinstance(receipt_id, str) and bool(receipt_id) and isinstance(received_at, str) and bool(received_at))
             scope_complete = run_id is not None and (dispatch_project, dispatch_repository) == (project_id, repository_id)
             result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "admission_audit_provenance": "PRESENT" if admission_audit else "UNAVAILABLE", "receipt_run_provenance": "PRESENT" if run_id else "UNAVAILABLE", "dispatch_scope_provenance": "COMPLETE" if scope_complete else "UNAVAILABLE", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and run_id is None and blocked is None}
+        elif args.command.startswith("installation-pairing-"):
+            from .platform_admin import require_installation_owner
+            require_installation_owner(args.data_root)
+            identity = initialize(args.data_root).instance_id
+            if args.expected_instance_id != identity or not args.peer_binding_id:
+                raise ServerConfigurationError("INSTALLATION_PAIRING_INSTANCE_REQUIRED")
+            if args.project_id or args.repository_id:
+                raise ServerConfigurationError("INSTALLATION_PAIRING_PROJECT_SCOPE_FORBIDDEN")
+            with storage.sqlite_connection(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if args.command == "installation-pairing-register":
+                    result = installation_pairing.register(connection, binding_id=args.peer_binding_id,
+                        ep_instance_id=identity, forge_instance_id=args.peer_runtime_id,
+                        consumer_id=args.consumer_id, operation_id=args.operation_id)
+                elif args.command == "installation-pairing-status":
+                    result = installation_pairing.status(connection, binding_id=args.peer_binding_id)
+                elif args.command == "installation-pairing-issue":
+                    result = installation_pairing.issue(connection, binding_id=args.peer_binding_id,
+                        operation_id=args.operation_id).disclosure()
+                elif args.command == "installation-pairing-detach":
+                    result = installation_pairing.revoke_pairing(connection, binding_id=args.peer_binding_id, operation_id=args.operation_id)
+                else:
+                    result = installation_pairing.revoke_credential(connection, binding_id=args.peer_binding_id,
+                        credential_id=args.installation_credential_id, operation_id=args.operation_id)
         elif args.command == "register-topology":
             if args.declaration is None:
                 raise ServerConfigurationError("--declaration is required for explicit topology registration.")

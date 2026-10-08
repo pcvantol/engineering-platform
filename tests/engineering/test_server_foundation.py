@@ -44,6 +44,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         finally:
             self.temporary.cleanup()
 
+    def _prepare_pre74_schema(self, connection) -> None:
+        """Historical schemas had no installation-pairing tables or rows."""
+        for table in ('ep_installation_pairing_credentials','ep_installation_pairings'):
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone():
+                self.assertEqual(connection.execute('SELECT count(*) FROM '+table).fetchone()[0],0)
+                connection.execute('DROP TABLE '+table)
+
     def _system_inventory(self, selected: Path | None = None) -> dict[str, object]:
         entries: list[dict[str, str]] = []
         if selected is not None:
@@ -1297,6 +1304,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("PRAGMA legacy_alter_table=ON")
             for operation in ("insert", "update", "delete"):
                 connection.execute(f"DROP TRIGGER {fence_prefix}{operation}")
+            self._prepare_pre74_schema(connection)
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema71")
             connection.execute(
                 "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
@@ -1320,7 +1328,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )} <= triggers)
             self.assertEqual(connection.execute(
                 "SELECT schema_version FROM ep_installations"
-            ).fetchone(), (73,))
+            ).fetchone(), (server.SERVER_STORE_SCHEMA_VERSION,))
         self.assertNotIn("WRITER_FENCE_INCOMPLETE", central_operational_reset.preview(self.root)["blocking_codes"])
 
     def test_schema_41_installation_upgrades_through_the_ordered_current_path(self) -> None:
@@ -1364,6 +1372,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("DROP VIEW execution_submission_run_links")
             connection.execute("DROP TABLE execution_submission_attempt_links")
             connection.execute("DROP TABLE execution_submission_attempts")
+            self._prepare_pre74_schema(connection)
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema57")
             connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56)))")
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,56 FROM ep_installations_schema57")
@@ -1399,6 +1408,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         database = self.root / server.SERVER_DATABASE_FILENAME
         with sqlite_connection(database) as connection:
             connection.execute("DROP TABLE execution_validation_profile_identities")
+            self._prepare_pre74_schema(connection)
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema58")
             connection.execute(
                 "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
@@ -1437,6 +1447,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 connection.execute(f"DROP TRIGGER {trigger}")
             connection.execute("DROP INDEX ep_forge_exchange_audit_project_lookup")
             connection.execute("DROP TABLE ep_forge_exchange_audit")
+            self._prepare_pre74_schema(connection)
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema59")
             connection.execute(
                 "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
@@ -1479,6 +1490,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("DROP INDEX execution_artifact_records_ep_run_lookup")
             connection.execute("ALTER TABLE execution_artifact_records DROP COLUMN ep_run_id")
             connection.execute("ALTER TABLE execution_artifact_records DROP COLUMN ep_submission_id")
+            self._prepare_pre74_schema(connection)
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema60")
             connection.execute(
                 "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
@@ -1527,6 +1539,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             connection.execute("DROP INDEX ep_forge_planning_context_envelopes_project_lookup")
             connection.execute("DROP TABLE ep_forge_planning_context_envelopes")
             connection.execute("DROP TABLE ep_execution_host_evidence")
+            self._prepare_pre74_schema(connection)
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema61")
             connection.execute(
                 "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
