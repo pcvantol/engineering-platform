@@ -11752,9 +11752,8 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows live platform readiness in the titlebar health indicator", async ({ page }) => {
     const components = canonicalPlatformComponents();
-    await page.route("**/health", (route) => route.fulfill({ json: {
-      components, component_model: canonicalPlatformComponentModel(),
-    } }));
+    let healthPayload = { components, component_model: canonicalPlatformComponentModel() };
+    await page.route("**/health", (route) => route.fulfill({ json: healthPayload }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
@@ -11786,10 +11785,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#dashboardHealthChecks")).not.toContainText("opdrachten in wachtrij");
     await page.evaluate(() => r({ runs: [], queue_depth: 2 }, {}));
     await expect(page.locator("#dashboardHealthChecks")).toContainText("2 opdrachten in wachtrij");
-    await page.evaluate((component_model) => renderPlatformHealth({
-      component_model,
+    healthPayload = {
+      component_model: canonicalPlatformComponentModel(),
       components: { http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN" } },
-    }), canonicalPlatformComponentModel());
+    };
+    await page.evaluate(async () => {
+      const response = await fetch("/health", { cache: "no-store" });
+      renderPlatformHealth(await response.json());
+    });
     await expect(indicator).toHaveAttribute("data-health-state", "error");
   });
 
@@ -11871,6 +11874,9 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("renders current transport detail fields without raw machine codes", async ({ page }) => {
     const components = canonicalPlatformComponents();
+    await page.route("**/health", (route) => route.fulfill({ json: {
+      components, component_model: canonicalPlatformComponentModel(),
+    } }));
     await page.route("**/api/components/http_ingress/details", (route) => route.fulfill({ json: {
       component: "http_ingress", kind: "TRANSPORT", healthy: true,
       status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT",

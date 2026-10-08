@@ -133,7 +133,7 @@ class AdoptionLifecycleTests(unittest.TestCase):
                 # The public run owns an exclusive lease before this private
                 # post-merge entry. Reproduce that real contract here; the
                 # passive operator wait has deliberately released its lease.
-                if kind == "FINALIZATION":
+                if kind in {"FINALIZATION", "RECONCILIATION"}:
                     from engineering_platform.execution_lease import acquire, LeaseHeartbeat
                     runner.active_lease = acquire(self.root, waiting.run_id,
                         identity=runner.host_identity, instance_id=runner.host_instance_id,
@@ -144,7 +144,7 @@ class AdoptionLifecycleTests(unittest.TestCase):
                 # The ordinary entry saves its checkpoint before the external
                 # provider is interrupted. All host/state services remain real.
                 with self.assertRaisesRegex(SystemExit, "external provider handoff"):
-                    start(waiting, 71) if kind == "FINALIZATION" else start(waiting)
+                    start(waiting, 71) if kind == "FINALIZATION" else start(self.store.load("adopt-run"))
                 self.stop_host(runner)
                 checkpoint = self.store.load("adopt-run")
                 self.assertEqual(checkpoint.transaction_kind, kind)

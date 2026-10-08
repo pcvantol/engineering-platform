@@ -118,12 +118,19 @@ class SubprocessRepositoryClient:
         self._synchronize_command(root, "git", "fetch", "origin", "main")
 
     def protected_main_revision(self, root: Path) -> str:
-        """Return the freshly observed protected-main revision without checkout mutation."""
-        self.refresh_main_reference(root)
-        revision = self._run(root, "git", "rev-parse", "--verify", "origin/main")
-        if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        """Observe current remote main without writing refs, objects or FETCH_HEAD.
+
+        An origin/main cache is not current remote evidence. Callers that need
+        downloaded objects/ancestry use the separate authorized refresh route.
+        """
+        rows = self._run(root, "git", "ls-remote", "--heads", "origin", "refs/heads/main").splitlines()
+        if len(rows) != 1:
             raise RunnerError("protected main revision is unavailable")
-        return revision
+        fields = rows[0].split()
+        if (len(fields) != 2 or fields[1] != "refs/heads/main"
+                or re.fullmatch(r"[0-9a-f]{40}", fields[0]) is None):
+            raise RunnerError("protected main revision is unavailable")
+        return fields[0]
 
     def local_main_revision(self, root: Path) -> str:
         return self._run(root, "git", "rev-parse", "--verify", "refs/heads/main")
@@ -209,11 +216,14 @@ class SubprocessRepositoryClient:
         return re.sub(r"\s+", " ", str(error)).strip()[:512]
 
     def synchronize_main(self, root: Path) -> None:
+        from .managed_adoption import AdoptionAuthorityError
         self._synchronize_command(root, "git", "switch", "main")
         # Managed synchronization has one authority.  Do not let any local
         # branch.*.merge, pull.*, or upstream configuration select its source.
         try:
             self._synchronize_command(root, "git", "fetch", "origin", "main")
+        except AdoptionAuthorityError:
+            raise
         except RunnerError as error:
             raise RunnerError(
                 "MANAGED_MAIN_FETCH_FAILED: operation=git-fetch-origin-main "
@@ -221,6 +231,8 @@ class SubprocessRepositoryClient:
             ) from error
         try:
             self._synchronize_command(root, "git", "merge", "--ff-only", "origin/main")
+        except AdoptionAuthorityError:
+            raise
         except RunnerError as error:
             raise RunnerError(
                 "MANAGED_MAIN_FAST_FORWARD_FAILED: operation=git-merge-ff-only-origin-main "

@@ -8,6 +8,8 @@ from typing import Callable, Protocol
 from .agent_state import StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .live_status import write_live_status
+from .managed_adoption import AdoptionAuthorityError
+from .providers import process_effect_scope
 
 
 class CleanupRepository(Protocol):
@@ -26,6 +28,7 @@ class FinalizationCoordinator:
         state: TransactionState,
         save_terminal: Callable[[TransactionState, str, str, str | None], TransactionState],
         post_cleanup_validation: Callable[[TransactionState], TransactionState] | None = None,
+        authority_effect=None,
     ) -> TransactionState:
         cleanup = replace(state, phase="REPOSITORY_CLEANUP", next_action="fetch_prune_and_remove_transaction_branches")
         store.save(cleanup)
@@ -37,7 +40,10 @@ class FinalizationCoordinator:
             branches = (cleanup.implementation_branch, cleanup.finalization_branch)
             if cleanup.transaction_kind == "RECONCILIATION":
                 branches += (cleanup.branch,)
-            result = operation(root, branches)
+            with process_effect_scope((lambda: authority_effect(cleanup)) if authority_effect else None):
+                result = operation(root, branches)
+        except AdoptionAuthorityError as error:
+            return save_terminal(cleanup, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         except RunnerError as error:
             return save_terminal(cleanup, "BLOCKED", "repository_cleanup_required", str(error))
         reconciled = replace(

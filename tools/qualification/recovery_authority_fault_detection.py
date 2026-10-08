@@ -12,6 +12,8 @@ import tempfile
 AUTHORITY = 'tests.engineering.test_recovery_authority_regressions.RecoveryAuthorityRegressions.test_unbound_available_repair_has_zero_calls_and_target_writes'
 PUBLICATION = 'tests.engineering.test_publication_authority_regressions.PublicationAuthorityRegressions.test_unbind_after_create_prevents_edit_and_ready'
 HEARTBEAT = 'tests.engineering.test_publication_authority_regressions.PublicationAuthorityRegressions.test_real_publication_wait_past_busy_timeout_keeps_heartbeat'
+FRESH_GIT = 'tests.engineering.test_git_effect_authority_regressions.GitEffectAuthorityRegressions.test_fresh_revocation_has_zero_git_mutations_and_identical_metadata'
+POSTMERGE_GIT = 'tests.engineering.test_git_effect_authority_regressions.GitEffectAuthorityRegressions.test_postmerge_unbind_preserves_all_target_metadata_and_attempt'
 GENESIS = 'tests.engineering.test_recovery_authority_regressions.GenesisConsumerRegression.test_empty_specialist_consumer_supports_local_genesis_without_origin'
 
 
@@ -33,6 +35,8 @@ def main():
         ('local_genesis_origin', GENESIS, "No such remote 'origin'"),
         ('revoked_publication_continuation', PUBLICATION, 'revoked publication must prevent every subsequent mutation'),
         ('publication_heartbeat_lock', HEARTBEAT, 'publication wait must not block the real lease heartbeat'),
+        ('revoked_fresh_git', FRESH_GIT, 'revoked fresh admission must prevent every mutating Git start'),
+        ('revoked_postmerge_git', POSTMERGE_GIT, 'revoked post-merge readback must prevent every mutating Git start'),
     ):
         with tempfile.TemporaryDirectory(prefix='ep-recovery-fault-control-') as temporary:
             root = Path(temporary)
@@ -69,14 +73,33 @@ def main():
                 end = text.index('        return self._poll(state, result)', start)
                 text = (text[:start] + '            self.github.normalize_markdown_body(state.pull_request)\n'
                         + '            self.github.ready(state.pull_request)\n' + text[end:])
+            elif name == 'revoked_fresh_git':
+                repository = root / 'src/engineering_platform/execution_repository.py'
+                implementation = repository.read_text()
+                start = implementation.index('    def protected_main_revision(self, root: Path) -> str:', implementation.index('class SubprocessRepositoryClient'))
+                end = implementation.index('\n    def ', start + 5)
+                implementation = implementation[:start] + '''    def protected_main_revision(self, root: Path) -> str:
+        self.refresh_main_reference(root)
+        return self._run(root, "git", "rev-parse", "origin/main")
+''' + implementation[end:]
+                repository.write_text(implementation)
+            elif name == 'revoked_postmerge_git':
+                anchor = '''            with process_effect_scope(lambda: effect_authority(
+                    state=attempted, root=self.root,
+                    central_database=self.store.central_database, lease=self.active_lease,
+                    git_effect=True)):
+                self.repository.refresh_main_reference(git_root)'''
+                if text.count(anchor) != 1:
+                    raise RuntimeError('postmerge Git negative-control anchor changed')
+                text = text.replace(anchor, '            self.repository.refresh_main_reference(git_root)', 1)
             else:
                 provider = root / 'src/engineering_platform/providers.py'
                 transport = provider.read_text()
-                anchor = '            stdout, stderr = process.communicate()'
+                anchor = '            stdout, stderr = process.communicate(timeout=timeout)'
                 if transport.count(anchor) != 1:
                     raise RuntimeError('publication heartbeat control anchor changed')
                 transport = transport.replace(anchor,
-                    '            with process_effect_start():\n                stdout, stderr = process.communicate()', 1)
+                    '            with process_effect_start():\n                stdout, stderr = process.communicate(timeout=timeout)', 1)
                 provider.write_text(transport)
             host.write_text(text)
             negative = run(root, test)

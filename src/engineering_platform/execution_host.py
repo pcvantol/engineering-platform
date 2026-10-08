@@ -4504,13 +4504,15 @@ class EngineeringRunner:
                 # synchronization belongs to finalization/cleanup, after the
                 # remote merge has been verified.
                 try:
-                    from .managed_adoption import effect_authority
+                    from .managed_adoption import AdoptionAuthorityError, effect_authority
                     from .providers import process_effect_scope
                     with process_effect_scope(lambda: effect_authority(
                             state=state, root=self.root,
-                            central_database=self.store.central_database, lease=self.active_lease)):
+                            central_database=self.store.central_database, lease=self.active_lease, git_effect=True)):
                         self.repository.refresh_main_reference(self.root)
                     evidence = self.repository.inspect(self.root)
+                except AdoptionAuthorityError as error:
+                    return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
                 except RunnerError:
                     return self._save_operator_merge_wait(state)
                 if pr.merge_commit and self.repository.remote_main_contains(self.root, pr.merge_commit):
@@ -4599,11 +4601,16 @@ class EngineeringRunner:
             scratch_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(prefix="ep-assurance-", dir=scratch_parent) as temporary:
                 checkout = Path(temporary) / "candidate"
-                git.clone_branch(self.root, origin, branch, checkout)
-                # Single-branch clones omit main. Fetch the protected base
-                # explicitly so the independent review can inspect its exact
-                # PR diff rather than treating the whole branch as a change.
-                git.command(checkout, "git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main")
+                from .managed_adoption import effect_authority
+                from .providers import process_effect_scope
+                with process_effect_scope(lambda: effect_authority(
+                        state=state, root=self.root,
+                        central_database=self.store.central_database, lease=self.active_lease,
+                        git_effect=True)):
+                    git.clone_branch(self.root, origin, branch, checkout)
+                    # The private scratch checkout is distinct from the target;
+                    # both starts still need current authority and normal lease.
+                    git.command(checkout, "git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main")
                 pinned = self.repository.inspect(checkout)
                 if (pinned.repository != state.repository or pinned.branch != branch
                         or pinned.head_sha != head or not pinned.clean):
@@ -4662,6 +4669,7 @@ class EngineeringRunner:
         *, delivery_root: Path | None = None,
     ) -> TransactionState | None:
         """Consume a live scoped owner grant only after exact protected gates pass."""
+        from .managed_adoption import AdoptionAuthorityError
         attempted: TransactionState | None = None
         git_root = delivery_root if delivery_root is not None else self.root
         if (not state.owner_authorized or state.execution_mode != "MANAGED"
@@ -4837,7 +4845,13 @@ class EngineeringRunner:
                 with merge_authority():
                     self.github.merge(fresh.number, expected_head_sha=expected_head)
             merged = self.github.pull_request(fresh.number)
-            self.repository.refresh_main_reference(git_root)
+            # Remote completion is evidence, never permission for a new target
+            # write after revocation. Preserve the exact attempted operation.
+            with process_effect_scope(lambda: effect_authority(
+                    state=attempted, root=self.root,
+                    central_database=self.store.central_database, lease=self.active_lease,
+                    git_effect=True)):
+                self.repository.refresh_main_reference(git_root)
             if (merged.state == "MERGED" and merged.head_sha == expected_head
                     and isinstance(merged.merge_commit, str)
                     and re.fullmatch(r"[0-9a-f]{40}", merged.merge_commit)
@@ -4849,6 +4863,9 @@ class EngineeringRunner:
                 attempted, phase="WAIT_FOR_OPERATOR_MERGE", next_action="verify_delegated_merge_outcome",
                 terminal_condition="delegated_merge_outcome_uncertain",
             ))
+        except AdoptionAuthorityError as error:
+            return self._save_terminal(attempted or state, "BLOCKED",
+                                       "managed_candidate_adoption_invalid", str(error))
         except (EngineeringStorageError, sqlite3.Error, RunnerError, TypeError, ValueError):
             if attempted is not None:
                 return self._save_operator_merge_wait(replace(
@@ -4980,7 +4997,7 @@ class EngineeringRunner:
             try:
                 with process_effect_scope(lambda: effect_authority(
                         state=state, root=self.root,
-                        central_database=self.store.central_database, lease=self.active_lease)):
+                        central_database=self.store.central_database, lease=self.active_lease, git_effect=True)):
                     synchronize(self.root)
             except AdoptionAuthorityError as error:
                 complete_phase(self.root, finalization_phase, outcome="FAILED")
@@ -5127,7 +5144,16 @@ class EngineeringRunner:
         """Apply the bounded rolling-record update through a protected PR."""
         synchronize = getattr(self.repository, "synchronize_main", None)
         if callable(synchronize):
-            synchronize(self.root)
+            from .managed_adoption import AdoptionAuthorityError, effect_authority
+            from .providers import process_effect_scope
+            try:
+                with process_effect_scope(lambda: effect_authority(
+                        state=state, root=self.root,
+                        central_database=self.store.central_database, lease=self.active_lease,
+                        git_effect=True)):
+                    synchronize(self.root)
+            except AdoptionAuthorityError as error:
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         evidence = self.repository.inspect(self.root)
         if not evidence.clean or evidence.branch != "main":
             return self._save_post_merge_sync_wait(
@@ -5351,6 +5377,7 @@ class EngineeringRunner:
         self._managed_action(state, "RECONCILIATION")
         self._managed_action(state, "CLEANUP")
         cleanup = self._start_phase(state.run_id, "REPOSITORY_CLEANUP")
+        from .managed_adoption import effect_authority
         try:
             result = self.finalization.cleanup(
                 root=self.root,
@@ -5359,6 +5386,9 @@ class EngineeringRunner:
                 state=state,
                 save_terminal=self._save_terminal,
                 post_cleanup_validation=self._validate_delivery_revision if state.delivery_control_validation_required else None,
+                authority_effect=lambda current: effect_authority(
+                    state=current, root=self.root, central_database=self.store.central_database,
+                    lease=self.active_lease, git_effect=True),
             )
         except Exception:
             complete_phase(self.root, cleanup, outcome="FAILED")

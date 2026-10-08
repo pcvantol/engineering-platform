@@ -5,32 +5,97 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "description": "Generated-contract companion for the local OpenAPI 3.0 definition. Keep every OpenAPI operation represented here."
   },
-  "variable": [{"key": "baseUrl", "value": "http://127.0.0.1:8765"}],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8765"
+    }
+  ],
   "item": [
     {
       "name": "Aggregated platform health before runtime starts",
-      "request": {"method": "GET", "url": "{{baseUrl}}/health"},
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('critical component health is degraded before runtime start', () => pm.response.to.have.status(503));"]}}]
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('critical component health is degraded before runtime start', () => pm.response.to.have.status(503));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Aggregated platform health compatibility alias before runtime starts",
-      "request": {"method": "GET", "url": "{{baseUrl}}/api/health"},
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('critical component health compatibility alias is degraded before runtime start', () => pm.response.to.have.status(503));"]}}]
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('critical component health compatibility alias is degraded before runtime start', () => pm.response.to.have.status(503));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Health",
-      "request": {"method": "GET", "url": "{{baseUrl}}/healthz"},
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('health is available', () => pm.response.to.have.status(200));"]}}]
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/healthz"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('health is available', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Readiness",
-      "request": {"method": "GET", "url": "{{baseUrl}}/readyz"},
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('server is ready', () => pm.response.to.have.status(200));"]}}]
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/readyz"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('server is ready', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Producer compatibility declaration",
-      "request": {"method": "GET", "url": "{{baseUrl}}/v1/producer-compatibility"},
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('producer compatibility is available', () => pm.response.to.have.status(200));"]}}]
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/producer-compatibility"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('producer compatibility is available', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Effect result requires producer credential",
@@ -51,18 +116,47 @@
     },
     {
       "name": "Repository authority requires exact headers",
-      "request": {"method": "GET", "url": "{{baseUrl}}/v1/projects/:project_id/repositories/:repository_id/consumer-authority"},
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('repository authority requires exact headers', () => pm.response.to.have.status(400));"]}}]
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/projects/:project_id/repositories/:repository_id/consumer-authority"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('repository authority requires exact headers', () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Parallel Action intake rejects missing credential",
       "request": {
         "method": "POST",
-        "header": [{"key": "Content-Type", "value": "application/json"}],
-        "body": {"mode": "raw", "raw": "{}"},
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
         "url": "{{baseUrl}}/v1/projects/:project_id/parallel-action-intakes"
       },
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action intake requires a credential', () => pm.response.to.have.status(401));"]}}]
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('parallel Action intake requires a credential', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Parallel Action readback rejects missing credential",
@@ -70,7 +164,16 @@
         "method": "GET",
         "url": "{{baseUrl}}/v1/projects/:project_id/parallel-action-intakes/:intake_id"
       },
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action readback requires a credential', () => pm.response.to.have.status(401));"]}}]
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('parallel Action readback requires a credential', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Parallel Action collection rejects missing credential",
@@ -78,7 +181,16 @@
         "method": "GET",
         "url": "{{baseUrl}}/v1/projects/:project_id/parallel-action-intakes/:intake_id/collection"
       },
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action collection requires a credential', () => pm.response.to.have.status(401));"]}}]
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('parallel Action collection requires a credential', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Parallel Action collection export rejects missing credential",
@@ -86,17 +198,43 @@
         "method": "GET",
         "url": "{{baseUrl}}/v1/projects/:project_id/parallel-action-intakes/:intake_id/collection/export?format=json&snapshot_id=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('parallel Action collection export requires a credential', () => pm.response.to.have.status(401));"]}}]
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('parallel Action collection export requires a credential', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Canonical submission rejects missing credential",
       "request": {
         "method": "POST",
-        "header": [{"key": "Content-Type", "value": "application/json"}],
-        "body": {"mode": "raw", "raw": "{\"repository_id\":\"postman-repository\",\"producer\":{\"id\":\"postman-suite\",\"type\":\"HUMAN\"},\"prompt\":\"Postman contract qualification\"}"},
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"repository_id\":\"postman-repository\",\"producer\":{\"id\":\"postman-suite\",\"type\":\"HUMAN\"},\"prompt\":\"Postman contract qualification\"}"
+        },
         "url": "{{baseUrl}}/v1/projects/:project_id/submissions"
       },
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('credential is required', () => pm.response.to.have.status(401));"]}}]
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('credential is required', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Canonical producer readback rejects missing credential",
@@ -104,7 +242,16 @@
         "method": "GET",
         "url": "{{baseUrl}}/v1/projects/:project_id/submissions/:submission_id"
       },
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('credential is required', () => pm.response.to.have.status(401));"]}}]
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('credential is required', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Submission identity recovery rejects missing credential",
@@ -112,7 +259,33 @@
         "method": "GET",
         "url": "{{baseUrl}}/v1/projects/:project_id/submissions/by-identity"
       },
-      "event": [{"listen": "test", "script": {"exec": ["pm.test('identity recovery requires a credential', () => pm.response.to.have.status(401));"]}}]
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('identity recovery requires a credential', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Installation compatibility requires installation authentication",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/installation-compatibility"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('installation compatibility requires an installation credential', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

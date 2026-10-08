@@ -143,12 +143,13 @@ def verify_selection(*, selection: object, state, root: Path, repository, centra
         raise RunnerError("Managed adoption candidate is stale, foreign, changed or dirty.")
     if expected_sha == selected["candidate_sha"] and profile_digest(root, observed.head_sha, state.repair_iterations) != selected["validation_profile_digest"]:
         raise RunnerError("Managed adoption validation profile differs from the current candidate.")
+    _verify_owner_binding(selected=selected, state=state, root=root, central_database=central_database)
     return replace(state, managed_candidate_adoption=selected, managed_adoption_actor=actor, branch=observed.branch,
                    implementation_branch=observed.branch, execution_baseline_sha=str(selected["base_sha"]))
 
 
 @contextmanager
-def effect_authority(*, state, root: Path, central_database: Path | None, lease, connection=None):
+def effect_authority(*, state, root: Path, central_database: Path | None, lease, connection=None, git_effect=False):
     """Serialize current adoption authority with the start of one effect.
 
     Canonical binding/project writers contend on this same SQLite writer lock.
@@ -158,7 +159,8 @@ def effect_authority(*, state, root: Path, central_database: Path | None, lease,
     This does not hold a database lock during the whole
     asynchronous provider turn or replace the exclusive run lease.
     """
-    if state.managed_candidate_adoption is None or state.transaction_kind != "IMPLEMENTATION":
+    if (state.managed_candidate_adoption is None
+            or (state.transaction_kind != "IMPLEMENTATION" and not git_effect)):
         yield lambda: None
         return
     if central_database is None or not central_database.is_file() or lease is None:

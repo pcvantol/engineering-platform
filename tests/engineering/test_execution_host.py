@@ -1103,7 +1103,7 @@ class ClientContractTest(unittest.TestCase):
 
             def command(self, _: Path, *args: str) -> str:
                 self.calls.append(args)
-                return revision if args[-2:] == ("--verify", "origin/main") else ""
+                return revision + "\trefs/heads/main" if args[1] == "ls-remote" else ""
 
         provider = Provider()
         self.assertEqual(
@@ -1111,8 +1111,7 @@ class ClientContractTest(unittest.TestCase):
             revision,
         )
         self.assertEqual(provider.calls, [
-            ("git", "fetch", "origin", "main"),
-            ("git", "rev-parse", "--verify", "origin/main"),
+            ("git", "ls-remote", "--heads", "origin", "refs/heads/main"),
         ])
 
     def test_repository_protected_main_revision_rejects_an_invalid_identity(self) -> None:

@@ -2,10 +2,10 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **8**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **9**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
-Selected version target: **2.3.113** (normal PATCH; no operational activation).
-Base: `454e96c477e2305bb3240e7a457b93ae314950d3`, EP 2.3.112.
+Selected version target: **2.3.114** (normal PATCH; no operational activation).
+Base: `9318636060706534635954e9131e42e2f63928ef`, EP 2.3.113. Historical reviewbase454e96c is retained below.
 Branch: `codex/ep-specialist-selection-disposition-v1`.
 
 ## Admission and closed history
@@ -15,7 +15,7 @@ own source/test process or Git-operation lock. Preserve both old stashes,
 advisory browser lock and separate r30/native holds. r32/r31 each remain
 closed with three consumed corrective rounds. This distinct selected assignment
 retains its initial maximum three corrective rounds and historical consumed3.
-The specific owner extension below governs the current cumulative limit5;
+The specific round6 coordinator extension below governs the current cumulative limit6;
 no previous provider/run/repair lineage is reset.
 
 ## Code, evidence and missing delta
@@ -379,3 +379,51 @@ Fresh full current-head gates follow the test-only reconciliation.8a63540
 installed Genesis/Managed/controlled-recovery E2E, actual HTTP/OpenAPI/Postman,
 route guard,18 top-level design tests and11-component version consistency PASS
 retain their actual SHA. No previous review grant is copied.
+
+## Integrated final Git-effect correction round6 (plan revision9)
+
+Owning decision L2-R33-GIT-EFFECT-CLOSURE-R6-V1-20261008; exact L1
+source release #142/6060668211 accepted by the same LANE_2_WORK writer.
+Historical consumed5 is preserved. This actual source change starts round6:
+consumed6/cumulative maximum6/remaining0. No round7 or runtime budget reset.
+Protected main9318636060706534635954e9131e42e2f63928ef is integrated into the
+existing branch with installation pairing/auth/schema74 preserved.2.3.113 is
+already released by main; the next free canonical PATCH is prepared normally.
+Historical454e96c/3b9 reviews and all reject/budget/repro evidence stay pinned.
+
+The caller/effect matrix covers fresh admission, delegated qualification and
+post-merge readback, passive poll, publication, recovery, finalization sync,
+delivered-revision validation and cleanup. True current remote observation may
+be write-free; stale origin/main is not current evidence. Every necessary
+mutating target Git process starts under current canonical owner/binding,
+checkpoint and owning lease, releasing SQLite before the network wait.
+Both failed3b9 repros discriminate actual .git refs/FETCH_HEAD bytes, not only
+terminal BLOCKED. All previous regressions and full exact-head gates remain.
+Dashboard stays QUEUED/NOT_ACTIVE until complete r33 closure.
+
+
+### Round6 caller / command / effect / authority / owning regression
+
+| Caller | Actual command and possible effect | Current boundary and owning proof |
+| --- | --- | --- |
+| Fresh selection, delegated qualification, final delivery validation | `ls-remote --heads origin refs/heads/main`; current external identity, no target refs/objects/index/config/FETCH_HEAD writes | Exact live identity validation; fresh canonical owner/binding re-read before adoption. Stale-cache/current-remote and fresh-unbind Git regressions; original validation controls remain |
+| Delegated merge readback | `fetch origin main`; refs/objects/FETCH_HEAD | Current attempted checkpoint, owner/binding, lease at native start. Postmerge unbind bytes/start/one-merge proof and valid normal Finalization |
+| Passive merged poll | `fetch origin main`; refs/objects/FETCH_HEAD | Same native guard for Implementation/Finalization/Reconciliation; passive-readback owning revocation case |
+| Publication / recovery | inspect, live remote reads, CAS push, external create/edit/ready, provider/result continuation | Existing canonical process-start guards; all original recovery/publication regressions, real process recovery and actual authority drift retained |
+| Finalization / Reconciliation sync | switch, fetch, ff-only merge; index/HEAD/worktree/objects/refs | Same current historical-adoption Git authority without replaying original candidate. Own sync revocation tests, true native starts, later-kind lease/checkpoint/contention proof |
+| Cleanup | fetch/prune, switch/merge, transaction branch deletion | Guard uses the persisted cleanup checkpoint, not preceding phase; own cleanup native-start/metadata denial regression |
+| Recovered assurance scratch | clone and fetch in private disposable checkout | Clone now uses the existing guarded native process primitive with original timeout. Clone positive/introduction-of-revocation denial and actual new-process later-kind fetch proof |
+| Observation / failure diagnostics | status/rev-parse/branch/read-only ancestry; target observations only | Optional index locks/fsmonitor/lazy fetch/replacements disabled. Typed authority denial escapes sync diagnostics unchanged; target snapshots include all relevant Git metadata |
+
+Pre-admission observations are separated from effect starts. A process genuinely
+started before withdrawal can complete; every next mutating start needs current
+authority. No rollback/restoration of target metadata is used as proof. Canonical
+SQLite serialization ends at actual Popen before communicate/network waits.
+
+Owning old-head detection: both Git regressions fail on rejected committed3b9
+noneditable package with actual post-unbind fetch. Current 14 Git cases and
+2 provider-boundary cases plus330 host cases:346 total, OK (1 existing skip),
+`/private/tmp/ep-r33-round6-adjacent-git-v4.log`. All6 current-positive and
+restored-fault controls PASS, `/private/tmp/ep-r33-round6-fault-controls-v3.log`.
+These are own convergence receipts, not the mandatory new whole-scope Q/S,
+full source/coverage/installed/CI or protected/exact-final-main qualifications.

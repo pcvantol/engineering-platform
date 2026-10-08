@@ -109,12 +109,13 @@ class LocalProcessProvider:
     """Default local process adapter; orchestration code never imports subprocess for work."""
 
     def execute(
-        self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None,
+        self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None, timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         if _effect_authority.get() is None:
             return subprocess.run(
                 arguments, cwd=root, env=dict(environment) if environment is not None else None,
                 text=True, capture_output=True, check=False,
+                **({"timeout": timeout} if timeout is not None else {}),
             )
         with process_effect_start() as release:
             process = subprocess.Popen(
@@ -123,7 +124,7 @@ class LocalProcessProvider:
             )
             release()
         try:
-            stdout, stderr = process.communicate()
+            stdout, stderr = process.communicate(timeout=timeout)
         except BaseException:
             process.kill()
             process.communicate()
@@ -652,10 +653,9 @@ class GitProvider(LocalProcessProvider):
 
     def clone_branch(self, root: Path, origin: str, branch: str, destination: Path, *, timeout: int = 120) -> None:
         """Create one bounded, disposable checkout for a pinned remote review."""
-        completed = subprocess.run(
-            ("git", "clone", "--quiet", "--single-branch", "--no-tags", "--branch", branch,
-             origin, str(destination)), cwd=root, text=True, capture_output=True,
-            check=False, timeout=timeout,
+        completed = LocalProcessProvider().execute(
+            root, ("git", "clone", "--quiet", "--single-branch", "--no-tags", "--branch", branch,
+                   origin, str(destination)), timeout=timeout,
         )
         if completed.returncode:
             raise RuntimeError("Pinned Git review checkout could not be created.")

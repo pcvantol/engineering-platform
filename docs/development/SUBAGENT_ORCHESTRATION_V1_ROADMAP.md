@@ -12,7 +12,7 @@ No existing executable DAG, Mission, run or policy activation is changed.
 
 ## Status and pickup priority
 
-L2 r33 selects **SA-SEL + SA-LOOP** under `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`, plan revision 8. The [selected delivery](SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md) records the sole writer, exact base/branch, typed optional question and real primary consumer boundary. Both nodes are IMPLEMENTING / NOT_QUALIFIED until protected final-main installed evidence. Necessary CTX/ISO/OBS extensions are qualified with this same slice; prior r32 receipts remain historical qualified evidence and its assignment remains closed. No full SA-Q/ROLE/PAR, model routing, utility or commercial saving claim.
+L2 r33 selects **SA-SEL + SA-LOOP** under `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`, plan revision 9. The [selected delivery](SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md) records the sole writer, exact base/branch, typed optional question and real primary consumer boundary. Both nodes are IMPLEMENTING / NOT_QUALIFIED until protected final-main installed evidence. Necessary CTX/ISO/OBS extensions are qualified with this same slice; prior r32 receipts remain historical qualified evidence and its assignment remains closed. No full SA-Q/ROLE/PAR, model routing, utility or commercial saving claim.
 
 ### Closed predecessor r32
 
