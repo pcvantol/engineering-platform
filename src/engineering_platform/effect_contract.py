@@ -27,6 +27,12 @@ _SECRET = re.compile(
 )
 
 
+CREDENTIAL_SHAPE_PATTERN = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"sk-(?:(?:proj|svcacct)-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|"
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
+)
+
 class EffectContractError(ValueError):
     """An explicit effect grant or its proposed result is invalid."""
 
@@ -38,7 +44,6 @@ def digest(value: object) -> str:
 
 def require_redacted(value: object) -> None:
     """Reject detectable secrets before artifact persistence; never rewrite evidence."""
-    from .agent_state import CREDENTIAL_SHAPE_PATTERN
     text = json.dumps(value, ensure_ascii=False)
     if _SECRET.search(text) or CREDENTIAL_SHAPE_PATTERN.search(text):
         raise EffectContractError("EFFECT_SENSITIVE_CONTENT_REJECTED")

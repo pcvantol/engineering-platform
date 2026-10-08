@@ -213,6 +213,30 @@ class EffectProviderTests(unittest.TestCase):
                 with self.subTest(reason=reason), self.assertRaisesRegex(contract.EffectContractError, reason):
                     effect_provider.propose(client, root, root, options, {})
 
+    def test_shared_privacy_guard_stays_stateless_in_the_actual_native_control_sandbox(self):
+        from engineering_platform import effect_contract
+        from engineering_platform.agent_state import CREDENTIAL_SHAPE_PATTERN
+        self.assertIs(CREDENTIAL_SHAPE_PATTERN,effect_contract.CREDENTIAL_SHAPE_PATTERN)
+        package=Path(effect_contract.__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(prefix='ep-private-control-') as area:
+            root=Path(area)
+            code="""import sys
+from engineering_platform.effect_contract import require_redacted,EffectContractError
+require_redacted({'safe':'bounded evidence'})
+assert 'sqlite3' not in sys.modules
+for family in ('ghp_','gho_','ghu_','ghs_','ghr_'):
+ try:require_redacted({'source':family+'A'*36})
+ except EffectContractError:pass
+ else:raise AssertionError('Sensitive source accepted')
+assert 'sqlite3' not in sys.modules
+print('STATELESS_PRIVATE_CONTROL=PASS')
+"""
+            command=workspace.sandbox_command(root,(sys.executable,'-c',code),readable=(package,))
+            observed=subprocess.run(command,env=workspace.child_environment()|{'PYTHONPATH':str(package)},
+                capture_output=True,text=True,timeout=20)
+            self.assertEqual(observed.returncode,0,observed.stderr)
+            self.assertIn('STATELESS_PRIVATE_CONTROL=PASS',observed.stdout)
+
     def test_actual_specialist_cli_denies_inherited_effects_and_escalation(self):
         self._assert_actual_installed_cli_denies_effects_and_escalation(specialist=True)
 

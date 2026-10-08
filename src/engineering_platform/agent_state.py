@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 from time import sleep
 
+from .effect_contract import CREDENTIAL_SHAPE_PATTERN
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
     EngineeringStorageError,
@@ -55,11 +56,7 @@ COMMIT_EVIDENCE_DESCRIPTIONS = frozenset({
 SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
     r"(?i)\b(api[_ -]?key|oauth|access[_ -]?token|refresh[_ -]?token|secret|cookie|authorization|password)\b\s*[:=]\s*\S+|\bbearer\s+\S+|\b[A-Z][A-Z0-9_]{2,}\s*=\s*\S+"
 )
-CREDENTIAL_SHAPE_PATTERN = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
-    r"sk-(?:(?:proj|svcacct)-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|"
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
-)
+
 
 
 class StateError(ValueError):
