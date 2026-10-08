@@ -252,8 +252,13 @@ class AdoptionLifecycleTests(unittest.TestCase):
         runner = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
         execute = self.transport.execute
         def interrupted_transport(root, *args):
+            # Current remote preflight also uses ls-remote. Interrupt only the
+            # original PREPARED publication boundary, not earlier admission.
             if "ls-remote" in args:
-                raise SystemExit("external Git transport interrupted")
+                checkpoint = self.store.load("adopt-run")
+                if checkpoint.publication_intent is not None:
+                    self.assertEqual(checkpoint.publication_intent["status"], "PREPARED")
+                    raise SystemExit("external Git transport interrupted")
             return execute(root, *args)
         with patch.object(self.transport, "execute", side_effect=interrupted_transport):
             try:
