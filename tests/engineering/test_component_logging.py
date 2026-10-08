@@ -237,6 +237,9 @@ class ComponentLoggingTest(unittest.TestCase):
                 connection.execute("DROP TABLE ep_consumer_credential_recovery_operations")
                 connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(62)")
                 connection.execute("UPDATE engineering_metadata SET value='62' WHERE key='installation.schema_version'")
+                for table in ('ep_installation_pairing_credentials','ep_installation_pairings'):
+                    self.assertEqual(connection.execute('SELECT count(*) FROM '+table).fetchone()[0],0)
+                    connection.execute('DROP TABLE '+table)
                 connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema63_fixture")
                 connection.execute(
                     "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "

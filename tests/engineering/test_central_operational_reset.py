@@ -17,7 +17,7 @@ from unittest.mock import patch
 from engineering_platform import central_operational_reset as reset
 from engineering_platform import (
     development_profile, merge_delegation, parallel_action_admission,
-    server, submission_service,
+    server, submission_service, installation_pairing,
 )
 from engineering_platform.operational_installation_lock import OperationalInstallationLock
 from engineering_platform.storage import sqlite_connection
@@ -784,6 +784,25 @@ class CentralOperationalResetTests(unittest.TestCase):
             reset.verify(archive_root, operation_id="reset-invalid-archive-0001",
                          plan_digest=str(archive_plan["plan_digest"]))
 
+    def test_installation_pairing_is_preserved_and_fenced_during_reset(self) -> None:
+        identity=server.initialize(self.root).instance_id
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            installation_pairing.register(connection,binding_id='binding',ep_instance_id=identity,
+                forge_instance_id='forge-instance',consumer_id='forge',operation_id='register-installation')
+            credential=installation_pairing.issue(connection,binding_id='binding',operation_id='issue-installation')
+            before=installation_pairing.status(connection,binding_id='binding')
+        operation_id,digest=self._prepared(operation_id='reset-installation-pairing')
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            with self.assertRaisesRegex(sqlite3.IntegrityError,'EP_OPERATIONAL_MAINTENANCE_ACTIVE'):
+                installation_pairing.issue(connection,binding_id='binding',operation_id='issue-during-reset')
+            with self.assertRaisesRegex(sqlite3.IntegrityError,'EP_OPERATIONAL_MAINTENANCE_ACTIVE'):
+                installation_pairing.revoke_pairing(connection,binding_id='binding',operation_id='detach-during-reset')
+        reset.apply(self.root,operation_id=operation_id,plan_digest=digest)
+        reset.verify(self.root,operation_id=operation_id,plan_digest=digest)
+        with sqlite_connection(self.root / "epdata.sqlite") as connection:
+            self.assertEqual(installation_pairing.status(connection,binding_id='binding'),before)
+            self.assertEqual(installation_pairing.authenticate(connection,credential.credential)['ep_instance_id'],identity)
+
     def test_chat_parent_migration_preserves_rows_and_enforces_canonical_run(self) -> None:
         with closing(sqlite3.connect(self.root / "epdata.sqlite")) as connection:
             connection.execute("PRAGMA foreign_keys=OFF")
@@ -808,6 +827,8 @@ class CentralOperationalResetTests(unittest.TestCase):
             connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=68")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(67)")
             connection.execute("UPDATE engineering_metadata SET value='67' WHERE key='installation.schema_version'")
+            connection.execute("DROP TABLE ep_installation_pairing_credentials")
+            connection.execute("DROP TABLE ep_installation_pairings")
             connection.execute("ALTER TABLE ep_installations RENAME TO installation_schema68")
             connection.execute(
                 "CREATE TABLE ep_installations(instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,"
