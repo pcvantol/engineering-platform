@@ -130,10 +130,22 @@ class AdoptionLifecycleTests(unittest.TestCase):
         self.transport.command(self.root, "git", "push", "origin", "main")
         for kind, start in (("FINALIZATION", runner._start_finalization), ("RECONCILIATION", runner._start_automatic_reconciliation)):
             with self.subTest(kind=kind):
+                # The public run owns an exclusive lease before this private
+                # post-merge entry. Reproduce that real contract here; the
+                # passive operator wait has deliberately released its lease.
+                if kind == "FINALIZATION":
+                    from engineering_platform.execution_lease import acquire, LeaseHeartbeat
+                    runner.active_lease = acquire(self.root, waiting.run_id,
+                        identity=runner.host_identity, instance_id=runner.host_instance_id,
+                        process_id=os.getpid(), central_database=self.database)
+                    runner.lease_heartbeat = LeaseHeartbeat(self.root, runner.active_lease,
+                        central_database=self.database)
+                    runner.lease_heartbeat.start()
                 # The ordinary entry saves its checkpoint before the external
                 # provider is interrupted. All host/state services remain real.
                 with self.assertRaisesRegex(SystemExit, "external provider handoff"):
                     start(waiting, 71) if kind == "FINALIZATION" else start(waiting)
+                self.stop_host(runner)
                 checkpoint = self.store.load("adopt-run")
                 self.assertEqual(checkpoint.transaction_kind, kind)
                 self.assertEqual(checkpoint.publication_intent, waiting.publication_intent)

@@ -360,3 +360,22 @@ Previous d52 owning CI37735918188 has completed SUCCESS, including coverage
 and evidence. That exact previous-head result is retained; it grants no new
 round5 bytes. Current plan references are reconciled to8; historical6/7 and
 r32 plan5 remain unchanged.
+
+### Same-round private-entry fixture convergence
+
+The first official8a63540 source run exposed one historical fixture invoking
+`_start_finalization` directly after the operator-wait lease was released.
+The new current-authority guard correctly refused that mutating entry; the
+fixture must reproduce the public host's actual exclusive-lease contract.
+It now acquires/heartbeats a real owning lease before the private entry and
+releases its own fixture host before a fresh resume. All historical state,
+identity, publication and later-kind assertions remain. The complete historical
+fixture is now PASS on real services/Git; no production byte changed. This is
+own integrated round5 convergence, no new corrective round or budget allowance.
+
+The superseded8a63540 full source/installed attempts and its owning validation
+workflow are retained as interrupted/cancelled diagnostics, never full PASS.
+Fresh full current-head gates follow the test-only reconciliation.8a63540
+installed Genesis/Managed/controlled-recovery E2E, actual HTTP/OpenAPI/Postman,
+route guard,18 top-level design tests and11-component version consistency PASS
+retain their actual SHA. No previous review grant is copied.
