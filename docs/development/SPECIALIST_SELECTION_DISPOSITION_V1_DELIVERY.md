@@ -291,3 +291,17 @@ ordering must fail the no-call assertion; reintroducing unconditional Managed
 inspection must fail with the origin error. Current behavior must pass first.
 Original failed runs, reviews and interrupted/invalid local invocations remain
 retained and do not confer PASS. New official candidate qualification is pending.
+
+### Round4 CI fault-control convergence
+
+CI37735122987 on d81fcb0 passed all14 coupled regressions and all four
+browser shards/localization. Its negative fault-control validator failed: the
+restored authority fault was detected by the newly added ledger-invariance
+assertion before the expected no-call assertion. The mandatory validator
+correctly refused that unexpected discriminator; no acceptance was waived.
+The no-call assertion now runs first, retaining the complete unchanged-ledger,
+head/tree/worktree, reservation, specialistjournal and recovery assertions.
+Product bytes remain exactly d81fcb0; only regression assertion ordering and
+this owning history change. This is integrated round4 convergence, consumed4
+of cumulative5; reserve round5 remains unused. Official CI must run again on
+the new test revision. Older source/installed runs retain their exact SHA labels.

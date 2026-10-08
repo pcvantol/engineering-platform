@@ -115,9 +115,9 @@ class RecoveryAuthorityRegressions(unittest.TestCase):
             invocations = connection.execute('SELECT * FROM provider_invocations ORDER BY invocation_id').fetchall()
         self.replacement()
         after = self.resume()
+        self.assertEqual(self.calls, [], 'revoked authority must prevent every replacement call')
         with sqlite3.connect(self.case.database) as connection:
             self.assertEqual(connection.execute('SELECT * FROM provider_invocations ORDER BY invocation_id').fetchall(), invocations)
-        self.assertEqual(self.calls, [], 'revoked authority must prevent every replacement call')
         self.assertEqual(self.snapshot(), snapshot, 'revoked authority must prevent target writes')
         self.assertEqual((after.phase, after.next_action), ('BLOCKED', 'managed_candidate_adoption_invalid'))
         self.assertEqual(self.github.creates, 0)
