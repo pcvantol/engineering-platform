@@ -596,9 +596,16 @@ class ClientContractTest(unittest.TestCase):
                 encoding="utf-8",
             )
             store = StateStore(checkout / ".engineering" / "engineering-runs")
-            commit = "b" * 40
             branch = "codex/reuse-implementation-pr"
+            baseline = self._git(checkout, "rev-parse", "HEAD")
+            self._git(checkout, "switch", "-c", branch)
+            (checkout / "README.md").write_text("# Actual bounded candidate\n", encoding="utf-8")
+            self._git(checkout, "add", "README.md")
+            self._git(checkout, "commit", "-m", "bounded candidate")
+            commit = self._git(checkout, "rev-parse", "HEAD")
+            self._git(checkout, "switch", "main")
             repository = FakeRepository()
+            repository.evidence = replace(repository.evidence, head_sha=baseline)
 
             class DeliveryAgent(FakeAgent):
                 def __init__(self) -> None:
@@ -620,6 +627,7 @@ class ClientContractTest(unittest.TestCase):
                         return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
                     if "Mandatory autonomous refactor" in prompt_text:
                         return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
+                    ClientContractTest._git(checkout, "switch", branch)
                     repository.evidence = RepositoryEvidence(
                         "pcvantol/djconnect", branch, commit, True
                     )
@@ -2441,6 +2449,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         }
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        # These unit cases use FakeRepository's synthetic object IDs. Declare
+        # their Git observation explicitly; unavailable real objects are no
+        # longer empty-diff success. Public adoption/profile/runtime authority
+        # regressions use separate real Git fixtures without this observer.
+        self.fixture_diff_observer = patch("engineering_platform.execution_host.changed_paths", return_value=())
+        self.fixture_diff_observer.start()
+        self.addCleanup(self.fixture_diff_observer.stop)
         self.prompt = self.root / "prompt.md"
         self.prompt.write_text("# bounded objective\n", encoding="utf-8")
         manifest = self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"

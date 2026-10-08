@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **9**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **10**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.114** (normal PATCH; no operational activation).
 Base: `9318636060706534635954e9131e42e2f63928ef`, EP 2.3.113. Historical reviewbase454e96c is retained below.
@@ -427,3 +427,56 @@ noneditable package with actual post-unbind fetch. Current 14 Git cases and
 restored-fault controls PASS, `/private/tmp/ep-r33-round6-fault-controls-v3.log`.
 These are own convergence receipts, not the mandatory new whole-scope Q/S,
 full source/coverage/installed/CI or protected/exact-final-main qualifications.
+
+
+## Direct owner extension: integrated round7, plan revision10
+
+The owner explicitly accepted one additional integrated correction round in the
+same Work session after the two complete round6 REJECTs. Pickup #142/6063063917.
+This actual source start books consumed7/max7/remaining0; historical1–6 stay
+consumed. No new assignment, writer, operation/provider/lease budget or reset.
+Current reviewbase9318636, historical heads and EP2.3.114 candidate retained.
+
+Close the public later-kind Managed resume/synchronization/provider effect
+boundary with current canonical owner/binding/checkpoint/lease; preserve the
+original adoption/publication lineage without reselecting implementation.
+Make shared profile/change observation truly write-free, including promisor
+objects, and fail closed on unavailable evidence without empty-diff success.
+Both complete round6 reports and real positive/negative repros stay historical.
+Full current SA-SEL/SA-LOOP convergence, independent Quality/Security, strict
+coverage/CI/installed, protected merge, ordinary NO_BUMP Finalization and
+exact-final-main installed remain required. Dashboard stays QUEUED/NOT_ACTIVE.
+
+
+### Integrated round7 owning convergence and evidence boundary
+
+The same current authority is now necessary for every historically adopted
+transaction kind. Public Managed preparation/synchronization, live/recovered
+provider starts, subsequent target Git effects and later PR edit/ready all
+retain the same lease/checkpoint/actor/project/repository checks. Late provider
+results/publication receipts stay evidence; they do not regrant revoked binding.
+Typed denial persists the same BLOCKED identity without candidate/result replay.
+The shared profile diff uses GitProvider's write-free observation flags and
+unavailable evidence is explicitly refused in adoption, local validation and
+consumer handling, never recast as empty success or a lower control profile.
+
+Both owning negative cases really fail on rejected6978452 noneditable code
+(native later host effects and partial-clone objectwrites). The14 new cases
+cover those faults, available/unavailable real partial evidence, actual Git
+transport absence, valid original Finalization-resume, revocation precisely at
+provider start after valid sync, and both later transaction kinds' remote
+read→edit→ready boundaries including successful bound continuation.
+The direct complete host/profile/Git/provider-boundary cohort:374 tests OK,
+1 existing skip,61.516s; `/private/tmp/ep-r33-round7-final-integrated-convergence.log`.
+No authority, lease, recoverycontroller or storage mock in these new cases.
+Existing FakeRepository unitcases explicitly declare their synthetic Git
+observation; their unit routing assertions are not runtime qualification.
+The existing durable-PR restart unit now uses real baseline/candidate Git IDs.
+A first testloader attempt accidentally imported the fixture TestCase itself;
+that own duplicate run was stopped and retained as INTERRUPTED/NOT_PASS. The
+correct fixture module alias prevents duplicate discovery in official CI.
+
+Prior whole-scope REJECTs and partial/interrupted runs remain pinned historical
+evidence. Current full source/strict coverage/installed/CI and new independent
+Quality/Security still have to pass before protected/Finalization/final-main
+qualification. No seventh-round allowance grants a review or merge PASS.

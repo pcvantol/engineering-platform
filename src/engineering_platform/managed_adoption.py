@@ -15,7 +15,7 @@ from .local_repository_binding import LocalRepositoryBindingError, resolve_local
 from .managed_publication import valid_branch
 from .platform_admin import require_installation_owner
 from .validation_profile import (
-    VALIDATION_PROFILE_VERSION, changed_paths, classify, profile_control_bindings,
+    VALIDATION_PROFILE_VERSION, ValidationProfileResolutionError, changed_paths, classify, profile_control_bindings,
     validation_profile_identity,
 )
 
@@ -47,7 +47,10 @@ def parse_selection(value: object) -> dict[str, object]:
 
 def profile_digest(root: Path, candidate_sha: str, repair_ordinal: int) -> str:
     """Use the same candidate/profile serializer as required local validation."""
-    profile = classify(changed_paths(root, "main"))
+    try:
+        profile = classify(changed_paths(root, "main"))
+    except ValidationProfileResolutionError as error:
+        raise RunnerError("Managed adoption change evidence is unavailable.") from error
     _, digest = validation_profile_identity(
         candidate_sha=candidate_sha, currentness=repair_ordinal, selected_validation_tier=profile.tier,
         validation_profile_version=VALIDATION_PROFILE_VERSION,
@@ -152,6 +155,7 @@ def verify_selection(*, selection: object, state, root: Path, repository, centra
 def effect_authority(*, state, root: Path, central_database: Path | None, lease, connection=None, git_effect=False):
     """Serialize current adoption authority with the start of one effect.
 
+    Historical adoption stays subject to current authority in every later kind.
     Canonical binding/project writers contend on this same SQLite writer lock.
     The lock ends after a real provider process has started, before its host
     callbacks write telemetry. Explicit inline fixtures retain it only for their small local effect.
@@ -159,8 +163,7 @@ def effect_authority(*, state, root: Path, central_database: Path | None, lease,
     This does not hold a database lock during the whole
     asynchronous provider turn or replace the exclusive run lease.
     """
-    if (state.managed_candidate_adoption is None
-            or (state.transaction_kind != "IMPLEMENTATION" and not git_effect)):
+    if state.managed_candidate_adoption is None:
         yield lambda: None
         return
     if central_database is None or not central_database.is_file() or lease is None:

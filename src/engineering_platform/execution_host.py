@@ -1215,9 +1215,12 @@ class EngineeringRunner:
         return plan
 
     def _verify_adoption_continuation(self, state: TransactionState) -> None:
-        if state.managed_candidate_adoption is not None and state.transaction_kind == "IMPLEMENTATION":
+        if state.managed_candidate_adoption is not None:
             from .managed_adoption import verify_continuation
-            verify_continuation(state=state, root=self.root, central_database=self.store.central_database)
+            try:
+                verify_continuation(state=state, root=self.root, central_database=self.store.central_database)
+            except RunnerError as error:
+                raise AdoptionAuthorityError(str(error)) from error
 
     def _accept_repair_pull_request(
         self, repair: TransactionState, result: AgentResult, plan: dict[str, str],
@@ -2270,9 +2273,11 @@ class EngineeringRunner:
             try:
                 candidate_changed_paths = changed_paths(self.root, "main")
                 profile = classify(candidate_changed_paths)
-            except OSError:
-                candidate_changed_paths = ()
-                profile = classify(())
+            except (OSError, ValidationProfileResolutionError):
+                return self._save_terminal(
+                    validation, "BLOCKED", "validation_profile_evidence_unavailable",
+                    "Current candidate change evidence is unavailable; required controls cannot be selected.",
+                ), implementation
             try:
                 existing_context = load_validation_context(
                     self.root, validation.run_id, currentness=validation.repair_iterations,
@@ -3302,7 +3307,7 @@ class EngineeringRunner:
             historical = self._reject_historical_agent_pull_request(state)
             if historical is not None:
                 return historical
-            from .managed_adoption import AdoptionAuthorityError, effect_authority
+            from .managed_adoption import effect_authority
             from .providers import process_effect_scope
             try:
                 current_authority = lambda: effect_authority(
@@ -3851,7 +3856,10 @@ class EngineeringRunner:
             # Consume immutable attempt-two evidence before any fresh provider
             # preparation or repository synchronization. This preserves the
             # original branch/worktree and cannot allocate a new invocation.
-            result = self._invoke_agent_with_timing(state, "")
+            try:
+                result = self._invoke_agent_with_timing(state, "")
+            except AdoptionAuthorityError as error:
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
             if (revision_binding is not None and context.execution_mode == "MANAGED"
                     and recovery_snapshot["lifecycle_phase"] == "EXECUTE_AGENT"
                     and result.terminal_state == "COMPLETE"):
@@ -3896,24 +3904,31 @@ class EngineeringRunner:
                 return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
             self.store.save(state)
         elif context.execution_mode == "MANAGED":
+            from .managed_adoption import effect_authority
+            from .providers import process_effect_scope
             try:
                 # An exact pin is prepared by the owning repository client
                 # under this lease. It may fast forward only to that SHA,
                 # never to an ambient newer origin/main.
-                if revision_binding is not None and revision_binding.allowed_baseline_revision is None:
-                    prepare = getattr(self.repository, "prepare_main_revision", None)
-                    if not callable(prepare):
-                        raise RunnerError("MANAGED_PREPARATION_UNAVAILABLE")
-                    evidence = prepare(
-                        self.root, revision_binding.requested_revision,
-                        revision_binding.repository_identity or state.repository,
-                    )
-                else:
-                    self.repository.synchronize_main(self.root)
+                with process_effect_scope(lambda: effect_authority(
+                        state=state, root=self.root,
+                        central_database=self.store.central_database, lease=self.active_lease)):
+                    if revision_binding is not None and revision_binding.allowed_baseline_revision is None:
+                        prepare = getattr(self.repository, "prepare_main_revision", None)
+                        if not callable(prepare):
+                            raise RunnerError("MANAGED_PREPARATION_UNAVAILABLE")
+                        evidence = prepare(
+                            self.root, revision_binding.requested_revision,
+                            revision_binding.repository_identity or state.repository,
+                        )
+                    else:
+                        self.repository.synchronize_main(self.root)
                 # The initial observation predates lease acquisition. Always
                 # refresh it here: an exact pin skips synchronization, never
                 # the final branch/clean/head verification under this lease.
                 evidence = self.repository.inspect(self.root)
+            except AdoptionAuthorityError as error:
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
             except RunnerError as error:
                 return self._save_terminal(
                     state,
@@ -4105,6 +4120,8 @@ class EngineeringRunner:
                 description="implementation_agent_commit_verified",
             )
             self._persist_agent_usage(state.run_id)
+        except AdoptionAuthorityError as error:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         except ProviderReadinessBlocked as blocked:
             return blocked.state
         except CodexInvocationError as error:
@@ -4504,7 +4521,7 @@ class EngineeringRunner:
                 # synchronization belongs to finalization/cleanup, after the
                 # remote merge has been verified.
                 try:
-                    from .managed_adoption import AdoptionAuthorityError, effect_authority
+                    from .managed_adoption import effect_authority
                     from .providers import process_effect_scope
                     with process_effect_scope(lambda: effect_authority(
                             state=state, root=self.root,
@@ -4992,7 +5009,7 @@ class EngineeringRunner:
         finalization_phase = self._start_phase(state.run_id, "REPOSITORY_FINALIZATION")
         synchronize = getattr(self.repository, "synchronize_main", None)
         if callable(synchronize):
-            from .managed_adoption import AdoptionAuthorityError, effect_authority
+            from .managed_adoption import effect_authority
             from .providers import process_effect_scope
             try:
                 with process_effect_scope(lambda: effect_authority(
@@ -5061,6 +5078,9 @@ class EngineeringRunner:
                 description="finalization_commit_verified",
             )
             self._persist_agent_usage(finalization.run_id)
+        except AdoptionAuthorityError as error:
+            complete_phase(self.root, finalization_span, outcome="BLOCKED")
+            return self._save_terminal(finalization, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         except CodexHandoffTimeout:
             complete_phase(self.root, finalization_span, outcome="FAILED")
             finalization = self._record_agent_execution_time(finalization)
@@ -5136,15 +5156,32 @@ class EngineeringRunner:
         finalization_evidence = self.github.pull_request(result.pull_request)
         if finalization_evidence.state == "MERGED":
             return self._poll(finalization, result)
-        self.github.normalize_markdown_body(result.pull_request)
-        self.github.ready(result.pull_request)
+        blocked = self._prepare_later_delivery_pr_for_poll(finalization, result.pull_request)
+        if blocked is not None:
+            return blocked
         return self._poll(finalization, result)
+
+    def _prepare_later_delivery_pr_for_poll(self, state: TransactionState, number: int) -> TransactionState | None:
+        """A later provider result is evidence, never a new publication grant."""
+        from .managed_adoption import effect_authority
+        from .providers import process_effect_scope
+        current_authority = lambda: effect_authority(
+            state=state, root=self.root,
+            central_database=self.store.central_database, lease=self.active_lease)
+        try:
+            with process_effect_scope(current_authority):
+                self.github.normalize_markdown_body(number)
+            with process_effect_scope(current_authority):
+                self.github.ready(number)
+        except AdoptionAuthorityError as error:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
+        return None
 
     def _start_automatic_reconciliation(self, state: TransactionState) -> TransactionState:
         """Apply the bounded rolling-record update through a protected PR."""
         synchronize = getattr(self.repository, "synchronize_main", None)
         if callable(synchronize):
-            from .managed_adoption import AdoptionAuthorityError, effect_authority
+            from .managed_adoption import effect_authority
             from .providers import process_effect_scope
             try:
                 with process_effect_scope(lambda: effect_authority(
@@ -5208,6 +5245,9 @@ class EngineeringRunner:
                 description="end_reconciliation_commit_verified",
             )
             self._persist_agent_usage(reconciliation.run_id)
+        except AdoptionAuthorityError as error:
+            complete_phase(self.root, reconciliation_span, outcome="BLOCKED")
+            return self._save_terminal(reconciliation, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         except CodexHandoffTimeout:
             complete_phase(self.root, reconciliation_span, outcome="FAILED")
             reconciliation = self._record_agent_execution_time(reconciliation)
@@ -5269,8 +5309,9 @@ class EngineeringRunner:
         evidence = self.github.pull_request(result.pull_request)
         if evidence.state == "MERGED":
             return self._poll(reconciliation, result)
-        self.github.normalize_markdown_body(result.pull_request)
-        self.github.ready(result.pull_request)
+        blocked = self._prepare_later_delivery_pr_for_poll(reconciliation, result.pull_request)
+        if blocked is not None:
+            return blocked
         return self._poll(reconciliation, result)
 
     def _save_terminal(

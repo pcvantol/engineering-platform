@@ -14,6 +14,8 @@ PUBLICATION = 'tests.engineering.test_publication_authority_regressions.Publicat
 HEARTBEAT = 'tests.engineering.test_publication_authority_regressions.PublicationAuthorityRegressions.test_real_publication_wait_past_busy_timeout_keeps_heartbeat'
 FRESH_GIT = 'tests.engineering.test_git_effect_authority_regressions.GitEffectAuthorityRegressions.test_fresh_revocation_has_zero_git_mutations_and_identical_metadata'
 POSTMERGE_GIT = 'tests.engineering.test_git_effect_authority_regressions.GitEffectAuthorityRegressions.test_postmerge_unbind_preserves_all_target_metadata_and_attempt'
+LATER_RESUME = 'tests.engineering.test_later_adoption_and_profile_authority.LaterAdoptionAndProfileAuthority.test_public_finalization_resume_after_unbind_has_zero_native_effects'
+PARTIAL_PROFILE = 'tests.engineering.test_later_adoption_and_profile_authority.LaterAdoptionAndProfileAuthority.test_partial_adoption_revocation_never_fetches_promisor_objects'
 GENESIS = 'tests.engineering.test_recovery_authority_regressions.GenesisConsumerRegression.test_empty_specialist_consumer_supports_local_genesis_without_origin'
 
 
@@ -37,6 +39,8 @@ def main():
         ('publication_heartbeat_lock', HEARTBEAT, 'publication wait must not block the real lease heartbeat'),
         ('revoked_fresh_git', FRESH_GIT, 'revoked fresh admission must prevent every mutating Git start'),
         ('revoked_postmerge_git', POSTMERGE_GIT, 'revoked post-merge readback must prevent every mutating Git start'),
+        ('revoked_later_public_resume', LATER_RESUME, 'revoked later resume must deny every mutating host Git start'),
+        ('revoked_partial_profile', PARTIAL_PROFILE, 'revoked profile observation must keep all target Git metadata unchanged'),
     ):
         with tempfile.TemporaryDirectory(prefix='ep-recovery-fault-control-') as temporary:
             root = Path(temporary)
@@ -68,7 +72,7 @@ def main():
                     raise RuntimeError('Genesis negative-control anchor changed')
                 text = text.replace(anchor, '        baseline = evidence\n        evidence = self.repository.inspect(self.root)\n        if not state.specialist_records:', 1)
             elif name == 'revoked_publication_continuation':
-                start = text.index('            from .managed_adoption import AdoptionAuthorityError, effect_authority',
+                start = text.index('            from .managed_adoption import effect_authority',
                                    text.index('    def _continue_after_quality_control('))
                 end = text.index('        return self._poll(state, result)', start)
                 text = (text[:start] + '            self.github.normalize_markdown_body(state.pull_request)\n'
@@ -92,6 +96,39 @@ def main():
                 if text.count(anchor) != 1:
                     raise RuntimeError('postmerge Git negative-control anchor changed')
                 text = text.replace(anchor, '            self.repository.refresh_main_reference(git_root)', 1)
+            elif name == 'revoked_later_public_resume':
+                start = text.index('        elif context.execution_mode == "MANAGED":',
+                                   text.index('        if adoption_selection is not None:', text.index('    def run(')))
+                end = text.index('                # The initial observation predates lease acquisition.', start)
+                block = text[start:end]
+                scope = block.index('                with process_effect_scope(lambda: effect_authority(')
+                mutation = block.index('                    if revision_binding is not None', scope)
+                unguarded = ''.join(line[4:] if line.startswith('    ') else line
+                                    for line in block[mutation:].splitlines(keepends=True))
+                text = text[:start] + block[:scope] + unguarded + text[end:]
+                text = text.replace('if state.managed_candidate_adoption is not None:\n            from .managed_adoption import verify_continuation',
+                    'if state.managed_candidate_adoption is not None and state.transaction_kind == "IMPLEMENTATION":\n            from .managed_adoption import verify_continuation', 1)
+                authority = root / 'src/engineering_platform/managed_adoption.py'
+                content = authority.read_text()
+                anchor = '    if state.managed_candidate_adoption is None:\n        yield lambda: None'
+                if content.count(anchor) != 1:
+                    raise RuntimeError('later-kind authority negative-control anchor changed')
+                authority.write_text(content.replace(anchor,
+                    '    if (state.managed_candidate_adoption is None\n            or (state.transaction_kind != "IMPLEMENTATION" and not git_effect)):\n        yield lambda: None', 1))
+            elif name == 'revoked_partial_profile':
+                profile = root / 'src/engineering_platform/validation_profile.py'
+                content = profile.read_text()
+                if 'import subprocess\n' not in content:
+                    content = content.replace('import sys\n', 'import sys\nimport subprocess\n', 1)
+                start = content.index('def changed_paths(')
+                end = content.index('\ndef main(', start)
+                content = content[:start] + '''def changed_paths(root: Path, base: str) -> tuple[str, ...]:
+    completed = subprocess.run(("git", "diff", "--name-only", f"{base}...HEAD"), cwd=root, text=True, capture_output=True, check=False)
+    if completed.returncode:
+        return ()
+    return tuple(completed.stdout.splitlines())
+''' + content[end:]
+                profile.write_text(content)
             else:
                 provider = root / 'src/engineering_platform/providers.py'
                 transport = provider.read_text()

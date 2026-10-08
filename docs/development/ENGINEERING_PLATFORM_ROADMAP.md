@@ -2,7 +2,7 @@
 
 ## Specialist selection and disposition subset — L2 r33, 2026-10-07
 
-`L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007` selects SA-SEL/SA-LOOP and only necessary CTX/ISO/OBS extensions. [Delivery plan](SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md), plan revision 9, EP 2.3.114 candidate: IMPLEMENTING / NOT_QUALIFIED. Same writer and finite existing budgets; r32 remains closed. Independent exact-head reviews, protected delivery and final-main noneditable installed evidence remain required. Broader SA-Q/ROLE/PAR and commercial efficiency claims remain unselected.
+`L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007` selects SA-SEL/SA-LOOP and only necessary CTX/ISO/OBS extensions. [Delivery plan](SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md), plan revision 10, EP 2.3.114 candidate: IMPLEMENTING / NOT_QUALIFIED. Same writer and finite existing budgets; r32 remains closed. Independent exact-head reviews, protected delivery and final-main noneditable installed evidence remain required. Broader SA-Q/ROLE/PAR and commercial efficiency claims remain unselected.
 
 ## Deterministic validation and publication subset — L2 r32, 2026-10-07
 
