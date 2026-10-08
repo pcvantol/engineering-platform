@@ -3302,8 +3302,19 @@ class EngineeringRunner:
             historical = self._reject_historical_agent_pull_request(state)
             if historical is not None:
                 return historical
-            self.github.normalize_markdown_body(state.pull_request)
-            self.github.ready(state.pull_request)
+            from .managed_adoption import AdoptionAuthorityError, effect_authority
+            from .providers import process_effect_scope
+            try:
+                current_authority = lambda: effect_authority(
+                    state=state, root=self.root,
+                    central_database=self.store.central_database, lease=self.active_lease)
+                with process_effect_scope(current_authority):
+                    self.github.normalize_markdown_body(state.pull_request)
+                with process_effect_scope(current_authority):
+                    self.github.ready(state.pull_request)
+            except AdoptionAuthorityError:
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                                           "Current adoption authority was withdrawn before publication continuation.")
         return self._poll(state, result)
 
     def _advance_after_recovered_provider_result(
@@ -4361,6 +4372,10 @@ class EngineeringRunner:
         return self._poll(recovered)
 
     def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
+        try:
+            self._verify_adoption_continuation(state)
+        except RunnerError as error:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         if state.pull_request:
             state = self._provider_readiness_gate(
                 state, require_codex=False, require_github=True
@@ -4489,7 +4504,12 @@ class EngineeringRunner:
                 # synchronization belongs to finalization/cleanup, after the
                 # remote merge has been verified.
                 try:
-                    self.repository.refresh_main_reference(self.root)
+                    from .managed_adoption import effect_authority
+                    from .providers import process_effect_scope
+                    with process_effect_scope(lambda: effect_authority(
+                            state=state, root=self.root,
+                            central_database=self.store.central_database, lease=self.active_lease)):
+                        self.repository.refresh_main_reference(self.root)
                     evidence = self.repository.inspect(self.root)
                 except RunnerError:
                     return self._save_operator_merge_wait(state)
@@ -4779,21 +4799,43 @@ class EngineeringRunner:
             attempted = replace(state, delegated_merge_attempt=attempt,
                                 delegated_merge_actor_reference=None)
             self.store.save(attempted)
-            # Linearize revocation against the external merge call. A revoke
-            # committed before this lock is observed; one waiting for this lock
-            # can only commit after the bounded call has returned.
-            with sqlite_connection(self.store.central_database) as authority:
-                authority.execute("BEGIN IMMEDIATE")
-                final_grant = merge_delegation.load(authority, state.merge_delegation_id)
-                if (final_grant is None or not final_grant.permits(
-                        project_id=str(scope[0]), repository_id=str(scope[1]),
-                        mission_id=str(accepted.get("mission_id")),
-                        mission_revision=str(mission_revision),
-                        role=state.transaction_kind, base_branch="main")
-                        or not merge_delegation.target_selection_permits(authority, final_grant)
-                        or final_grant != current_grant):
-                    raise ValueError("merge authority changed before the external call")
-                self.github.merge(fresh.number, expected_head_sha=expected_head)
+            # Both current delegation and adoption are serialized at the
+            # native merge process start. Waiting never stalls lease renewal.
+            from contextlib import contextmanager
+            from .managed_adoption import effect_authority
+            from .providers import process_effect_scope
+            from .execution_repository import GhCliClient
+            @contextmanager
+            def merge_authority():
+                with sqlite_connection(self.store.central_database) as authority:
+                    authority.execute("BEGIN IMMEDIATE")
+                    final_grant = merge_delegation.load(authority, state.merge_delegation_id)
+                    if (final_grant is None or not final_grant.permits(
+                            project_id=str(scope[0]), repository_id=str(scope[1]),
+                            mission_id=str(accepted.get("mission_id")),
+                            mission_revision=str(mission_revision),
+                            role=state.transaction_kind, base_branch="main")
+                            or not merge_delegation.target_selection_permits(authority, final_grant)
+                            or final_grant != current_grant):
+                        raise ValueError("merge authority changed before the external call")
+                    with effect_authority(state=attempted, root=self.root,
+                            central_database=self.store.central_database, lease=self.active_lease,
+                            connection=authority) as release:
+                        # Non-adopted runs still release the delegation lock
+                        # at the real process start through this same callback.
+                        def handoff():
+                            release()
+                            if authority.in_transaction:
+                                authority.rollback()
+                        yield handoff
+            if isinstance(self.github, GhCliClient):
+                with process_effect_scope(merge_authority):
+                    self.github.merge(fresh.number, expected_head_sha=expected_head)
+            else:
+                # Existing explicit inline qualification transports have no
+                # native process; their short effect retains serialization.
+                with merge_authority():
+                    self.github.merge(fresh.number, expected_head_sha=expected_head)
             merged = self.github.pull_request(fresh.number)
             self.repository.refresh_main_reference(git_root)
             if (merged.state == "MERGED" and merged.head_sha == expected_head
@@ -4933,7 +4975,16 @@ class EngineeringRunner:
         finalization_phase = self._start_phase(state.run_id, "REPOSITORY_FINALIZATION")
         synchronize = getattr(self.repository, "synchronize_main", None)
         if callable(synchronize):
-            synchronize(self.root)
+            from .managed_adoption import AdoptionAuthorityError, effect_authority
+            from .providers import process_effect_scope
+            try:
+                with process_effect_scope(lambda: effect_authority(
+                        state=state, root=self.root,
+                        central_database=self.store.central_database, lease=self.active_lease)):
+                    synchronize(self.root)
+            except AdoptionAuthorityError as error:
+                complete_phase(self.root, finalization_phase, outcome="FAILED")
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         evidence = self.repository.inspect(self.root)
         if not evidence.clean or evidence.branch != "main":
             complete_phase(self.root, finalization_phase, outcome="FAILED")

@@ -22,7 +22,7 @@ from engineering_platform.execution_models import AgentResult, PullRequestEviden
 from engineering_platform.execution_repository import SubprocessRepositoryClient
 from engineering_platform.managed_adoption import parse_selection, profile_digest, verify_selection
 from engineering_platform.managed_publication import PublicationCandidate
-from engineering_platform.providers import GitProvider
+from engineering_platform.providers import GitProvider, process_effect_start
 from engineering_platform.storage import load_validation_context, sqlite_connection
 from tests.engineering.test_execution_host import FakeAgent, mandatory_review_result
 
@@ -105,8 +105,12 @@ class AdoptionLifecycleTests(unittest.TestCase):
             def __init__(self): self.candidates, self.creates = [], 0
             def publication_candidates(self, *args): return self.candidates
             def create_draft_publication(inner, repository, branch, base, title, body):
-                inner.creates += 1
-                inner.candidates = [PublicationCandidate(71, repository, repository, branch, "main", fixture.git("rev-parse", "HEAD"), "OPEN", True)]
+                sha = fixture.git("rev-parse", "HEAD")
+                # Only the deterministic external effect is inline; preparation
+                # and transport delay remain outside canonical serialization.
+                with process_effect_start():
+                    inner.creates += 1
+                    inner.candidates = [PublicationCandidate(71, repository, repository, branch, "main", sha, "OPEN", True)]
             def pull_request(self, number):
                 candidate = self.candidates[0]
                 return PullRequestEvidence(number, "OPEN", True, True, head_branch=candidate.branch, base_branch="main", head_sha=candidate.head_sha)

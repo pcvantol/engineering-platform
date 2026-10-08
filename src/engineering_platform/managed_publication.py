@@ -7,7 +7,7 @@ decision and the SQLite checkpoint owns its identity.
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
+from .providers import process_effect_scope
 from dataclasses import dataclass, replace
 import re
 from typing import TYPE_CHECKING
@@ -127,7 +127,7 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         # Push is also exact and compare-and-set: a foreign remote branch is
         # never overwritten. Repeat after a pre-create crash is harmless.
         try:
-            with authority_effect(state) if authority_effect is not None else nullcontext():
+            with process_effect_scope((lambda: authority_effect(state)) if authority_effect is not None else None):
                 repository.publish_candidate_branch(root, state.repository, str(state.branch), str(identity["candidate_sha"]))
         except AdoptionAuthorityError as error:
             raise PublicationRecovery(state, "managed_candidate_adoption_invalid") from error
@@ -138,7 +138,7 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         state = replace(state, publication_intent={**previous, "status": "CREATE_UNCERTAIN"})
         store.save(state, expected_publication_intent=previous)
         try:
-            with authority_effect(state) if authority_effect is not None else nullcontext():
+            with process_effect_scope((lambda: authority_effect(state)) if authority_effect is not None else None):
                 github.create_draft_publication(
                     state.repository, str(state.branch), "main",
                     f"Managed delivery: {state.branch}",

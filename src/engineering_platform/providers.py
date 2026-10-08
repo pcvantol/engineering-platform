@@ -5,6 +5,8 @@ diagnostics only; they do not grant execution, repository or network authority.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
 import os
@@ -71,16 +73,62 @@ class ProcessProvider(Protocol):
     def spawn_detached(self, root: Path, arguments: Sequence[str], environment: Mapping[str, str]) -> subprocess.Popen[bytes]: ...
 
 
+_effect_authority = ContextVar("ep_process_effect_authority", default=None)
+
+
+@contextmanager
+def process_effect_scope(authority):
+    """Bind current authority to transport primitives, without holding its lock.
+
+    Each actual process start is serialized. Waiting for the child leaves the
+    ordinary exclusive-lease heartbeat free to renew. A successful continuation
+    requires fresh authority again, including the same lease and checkpoint.
+    """
+    token = _effect_authority.set(authority)
+    try:
+        if authority is not None:
+            with authority():
+                pass
+        yield
+        if authority is not None:
+            with authority():
+                pass
+    finally:
+        _effect_authority.reset(token)
+
+
+@contextmanager
+def process_effect_start():
+    """Serialize a native child start or an explicit inline transport effect."""
+    authority = _effect_authority.get()
+    with authority() if authority is not None else nullcontext(lambda: None) as release:
+        yield release
+
+
 class LocalProcessProvider:
     """Default local process adapter; orchestration code never imports subprocess for work."""
 
     def execute(
         self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            arguments, cwd=root, env=dict(environment) if environment is not None else None,
-            text=True, capture_output=True, check=False,
-        )
+        if _effect_authority.get() is None:
+            return subprocess.run(
+                arguments, cwd=root, env=dict(environment) if environment is not None else None,
+                text=True, capture_output=True, check=False,
+            )
+        with process_effect_start() as release:
+            process = subprocess.Popen(
+                arguments, cwd=root, env=dict(environment) if environment is not None else None,
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            release()
+        try:
+            stdout, stderr = process.communicate()
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
 
     def spawn(self, root: Path, arguments: Sequence[str]) -> subprocess.Popen[str]:
         return subprocess.Popen(
@@ -623,7 +671,9 @@ class GitHubProvider:
         executable = github_cli_executable()
         if executable is None:
             raise RuntimeError("Engineering Platform GitHub CLI is unavailable")
-        completed = subprocess.run((executable, *args), text=True, capture_output=True, check=False)
+        completed = (subprocess.run((executable, *args), text=True, capture_output=True, check=False)
+                     if _effect_authority.get() is None else
+                     LocalProcessProvider().execute(Path.cwd(), (executable, *args)))
         if completed.returncode:
             raise RuntimeError(completed.stderr.strip() or "GitHub provider command failed")
         return completed.stdout.strip()

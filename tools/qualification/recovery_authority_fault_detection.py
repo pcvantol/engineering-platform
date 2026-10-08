@@ -10,6 +10,8 @@ import sys
 import tempfile
 
 AUTHORITY = 'tests.engineering.test_recovery_authority_regressions.RecoveryAuthorityRegressions.test_unbound_available_repair_has_zero_calls_and_target_writes'
+PUBLICATION = 'tests.engineering.test_publication_authority_regressions.PublicationAuthorityRegressions.test_unbind_after_create_prevents_edit_and_ready'
+HEARTBEAT = 'tests.engineering.test_publication_authority_regressions.PublicationAuthorityRegressions.test_real_publication_wait_past_busy_timeout_keeps_heartbeat'
 GENESIS = 'tests.engineering.test_recovery_authority_regressions.GenesisConsumerRegression.test_empty_specialist_consumer_supports_local_genesis_without_origin'
 
 
@@ -17,7 +19,7 @@ def run(root, test):
     environment = dict(os.environ, PYTHONPATH=str(root / 'src') + os.pathsep + str(root),
                        PYTHONDONTWRITEBYTECODE='1')
     return subprocess.run((sys.executable, '-m', 'unittest', test, '-v'), cwd=root,
-                          env=environment, text=True, capture_output=True, timeout=60)  # nosec B603
+                          env=environment, text=True, capture_output=True, timeout=90)  # nosec B603
 
 
 def main():
@@ -29,6 +31,8 @@ def main():
     for name, test, marker in (
         ('revoked_replacement', AUTHORITY, 'revoked authority must prevent every replacement call'),
         ('local_genesis_origin', GENESIS, "No such remote 'origin'"),
+        ('revoked_publication_continuation', PUBLICATION, 'revoked publication must prevent every subsequent mutation'),
+        ('publication_heartbeat_lock', HEARTBEAT, 'publication wait must not block the real lease heartbeat'),
     ):
         with tempfile.TemporaryDirectory(prefix='ep-recovery-fault-control-') as temporary:
             root = Path(temporary)
@@ -54,11 +58,26 @@ def main():
                 if text.count(guarded) != 1:
                     raise RuntimeError('authority effect-control anchor changed')
                 text = text.replace(guarded, 'with effect_authority(state=replace(state, managed_candidate_adoption=None), root=self.root,', 1)
-            else:
+            elif name == 'local_genesis_origin':
                 anchor = '        baseline = evidence\n        if not state.specialist_records:'
                 if text.count(anchor) != 1:
                     raise RuntimeError('Genesis negative-control anchor changed')
                 text = text.replace(anchor, '        baseline = evidence\n        evidence = self.repository.inspect(self.root)\n        if not state.specialist_records:', 1)
+            elif name == 'revoked_publication_continuation':
+                start = text.index('            from .managed_adoption import AdoptionAuthorityError, effect_authority',
+                                   text.index('    def _continue_after_quality_control('))
+                end = text.index('        return self._poll(state, result)', start)
+                text = (text[:start] + '            self.github.normalize_markdown_body(state.pull_request)\n'
+                        + '            self.github.ready(state.pull_request)\n' + text[end:])
+            else:
+                provider = root / 'src/engineering_platform/providers.py'
+                transport = provider.read_text()
+                anchor = '            stdout, stderr = process.communicate()'
+                if transport.count(anchor) != 1:
+                    raise RuntimeError('publication heartbeat control anchor changed')
+                transport = transport.replace(anchor,
+                    '            with process_effect_start():\n                stdout, stderr = process.communicate()', 1)
+                provider.write_text(transport)
             host.write_text(text)
             negative = run(root, test)
             output = negative.stdout + negative.stderr

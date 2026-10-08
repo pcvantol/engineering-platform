@@ -148,13 +148,14 @@ def verify_selection(*, selection: object, state, root: Path, repository, centra
 
 
 @contextmanager
-def effect_authority(*, state, root: Path, central_database: Path | None, lease):
+def effect_authority(*, state, root: Path, central_database: Path | None, lease, connection=None):
     """Serialize current adoption authority with the start of one effect.
 
     Canonical binding/project writers contend on this same SQLite writer lock.
     The lock ends after a real provider process has started, before its host
-    callbacks write telemetry. A synchronous external adapter retains the lock
-    until its call returns. This does not hold a database lock during the whole
+    callbacks write telemetry. Explicit inline fixtures retain it only for their small local effect.
+    Native Git/GitHub transports release it after Popen, before waiting.
+    This does not hold a database lock during the whole
     asynchronous provider turn or replace the exclusive run lease.
     """
     if state.managed_candidate_adoption is None or state.transaction_kind != "IMPLEMENTATION":
@@ -162,19 +163,23 @@ def effect_authority(*, state, root: Path, central_database: Path | None, lease)
         return
     if central_database is None or not central_database.is_file() or lease is None:
         raise AdoptionAuthorityError("Managed adoption effect requires current exclusive run ownership.")
-    try:
-        connection = sqlite3.connect(central_database, timeout=10)
-    except sqlite3.Error as error:
-        raise AdoptionAuthorityError("Managed adoption effect authority is unavailable.") from error
+    owned_connection = connection is None
+    if owned_connection:
+        try:
+            connection = sqlite3.connect(central_database, timeout=10)
+        except sqlite3.Error as error:
+            raise AdoptionAuthorityError("Managed adoption effect authority is unavailable.") from error
     released = False
     def release():
         nonlocal released
         if not released:
             connection.rollback()
-            connection.close()
+            if owned_connection:
+                connection.close()
             released = True
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        if not connection.in_transaction:
+            connection.execute("BEGIN IMMEDIATE")
         selected = parse_selection(state.managed_candidate_adoption)
         if (not state.owner_authorized or not state.managed_adoption_actor
                 or selected["run_id"] != state.run_id or selected["repository"] != state.repository):
@@ -194,7 +199,8 @@ def effect_authority(*, state, root: Path, central_database: Path | None, lease)
         if any(current.get(key) != json.loads(json.dumps(getattr(state, key))) for key in
                ("managed_candidate_adoption", "managed_adoption_actor", "owner_authorized",
                 "phase", "repository", "prompt_path", "branch", "transaction_kind",
-                "repair_iterations", "repair_audit", "specialist_records")):
+                "repair_iterations", "repair_audit", "specialist_records",
+                "publication_intent", "delegated_merge_attempt")):
             raise AdoptionAuthorityError("Managed adoption checkpoint changed before the effect.")
         _verify_owner_binding(selected=selected, state=state, root=root,
                               central_database=central_database, connection=connection)

@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **7**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **8**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.113** (normal PATCH; no operational activation).
 Base: `454e96c477e2305bb3240e7a457b93ae314950d3`, EP 2.3.112.
@@ -305,3 +305,58 @@ Product bytes remain exactly d81fcb0; only regression assertion ordering and
 this owning history change. This is integrated round4 convergence, consumed4
 of cumulative5; reserve round5 remains unused. Official CI must run again on
 the new test revision. Older source/installed runs retain their exact SHA labels.
+
+## Final permitted corrective round5 (plan revision 8)
+
+The completed independent whole-scope Quality/Security wave rejects d52aff3.
+Quality Q33-R4-01 proves PR body normalization/ready after canonical unbind
+following a legitimate create; Q33-R4-02 identifies four stale current plan6
+references. Security R4-S1 proves a synchronous publication holding the CENTRAL
+writer lock stops the actual heartbeat and permits a success transition after
+natural90s lease expiry.31s and96s isolated transport delays reproduce it.
+Historical rounds1–3 and round4 remain consumed. The final authorized reserve
+starts now: consumed5, cumulative maximum5, remaining0. No sixth round, reset,
+product/provider/lease budget change or reopened predecessor.
+
+Integrated correction: serialize actual trusted transport process starts and
+short inline fixture mutation boundaries with canonical authority; release the
+database lock before long network waits so the existing heartbeat continues.
+Cover all adjoining adopted PR mutation/continuation paths, current lease loss,
+uncertain receipt/recovery without duplicate create, and current plan metadata.
+Prove both concrete round4 blockers red→green before the costly full new
+qualification. Bundle known gaps before a fresh independent whole-scope wave.
+No PASS or delivery completion is conferred by this development budget booking.
+
+### Round5 compact fault proof and effect-boundary design
+
+The unmodified d52aff3 noneditable wheel fails both new owning acceptance tests:
+late canonical unbind still produces `pr edit` + `pr ready`, and a real31s
+publication delay stops the heartbeat with `active-run lease heartbeat renewal
+failed`. These are actual effect/lease discriminators, not eventual status checks.
+The new paired tests use actual CENTRAL, current exclusive leases, temporary Git
+and explicit external GitHub/provider fixtures. No authority/clock/lease doubles.
+
+Native Git/GitHub execution now serializes Popen against canonical revocation,
+then releases before communicate; the existing heartbeat renews during waits.
+Each successive publication operation checks the current checkpoint and lease
+again. Explicit fixture preparation/delay remains outside the lock; only its
+small inline external effect uses the same guard. A body GET can commit a real
+unbind before the following edit guard. Delegated merge uses its existing grant
+and current adoption on the same SQLite connection at native process start;
+there is no nested writer deadlock. Passive adopted polls and implementation
+finalization synchronization retain current authority checks. Historical later
+transaction kinds retain their existing distinct authority paths.
+
+Four actual fault controls PASS: current revoked replacement, local Genesis,
+late publication continuation and publication heartbeat acceptance; isolated
+restoration of each concrete fault is DETECTED. The original paired controls
+and all existing gates remain. The owning CI runs the entire new publication
+matrix including real31s/96s waits and natural90s lease-loss, not just the two
+negative discriminators. Adjacent provider/publication/delegation35 tests and
+four lifecycle tests PASS locally; complete official exact-head source/installed
+coverage, mandatory independent whole-scope Q/S and delivery remain open.
+
+Previous d52 owning CI37735918188 has completed SUCCESS, including coverage
+and evidence. That exact previous-head result is retained; it grants no new
+round5 bytes. Current plan references are reconciled to8; historical6/7 and
+r32 plan5 remain unchanged.
