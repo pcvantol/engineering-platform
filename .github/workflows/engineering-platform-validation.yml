@@ -65,9 +65,11 @@ jobs:
     runs-on: ubuntu-latest
     # The installed qualification runs the complete product suite once for
     # behavior and once with coverage instrumentation, after the transport and
-    # deterministic execution matrices. Keep a bounded ceiling with enough
-    # margin for the measured pass on shared GitHub runners.
-    timeout-minutes: 25
+    # deterministic execution matrices. The real crash/restart matrix retains
+    # natural 90-second leases and a five-minute late-result boundary. Two full
+    # passes now exceed the former 25-minute job ceiling; retain every gate and
+    # bound the owning CI wall time, without changing product/provider budgets.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
