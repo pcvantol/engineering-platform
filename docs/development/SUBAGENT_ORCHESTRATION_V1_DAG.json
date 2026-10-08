@@ -270,7 +270,7 @@
   "selected_delivery": {
     "assignment_id": "L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007",
     "lane_revision": "r32",
-    "plan_revision": 6,
+    "plan_revision": 5,
     "correction_rounds_consumed": 3,
     "package": "2.3.112",
     "scope": [
