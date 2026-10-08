@@ -90,6 +90,10 @@ jobs:
             tests.engineering.test_effect_execution.EffectWorkspaceTests.test_real_sandbox_denies_target_scratch_escape_and_network \
             tests.engineering.test_effect_boundaries.EffectProviderTests.test_actual_installed_cli_denies_effects_and_escalation \
             tests.engineering.test_effect_execution.EffectLifecycleTests.test_read_only_qualified_report_and_resume_leave_target_unchanged
+      - name: Qualify coupled recovery authority and local Genesis fault detection
+        run: |
+          python3 -m unittest -v tests.engineering.test_recovery_authority_regressions
+          python3 tools/qualification/recovery_authority_fault_detection.py --source-root .
       - name: Import, bytecode and qualification smoke
         run: |
           python3 -c "import engineering_platform, engineering_platform.execution_host"

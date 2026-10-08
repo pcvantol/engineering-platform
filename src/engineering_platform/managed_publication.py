@@ -7,6 +7,7 @@ decision and the SQLite checkpoint owns its identity.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 import re
 from typing import TYPE_CHECKING
@@ -84,8 +85,11 @@ def validate_transition(previous: object, current: object) -> None:
 
 
 def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
-                      repository: RepositoryClient, github: GitHubClient) -> tuple[TransactionState, int]:
+                      repository: RepositoryClient, github: GitHubClient, authority_effect=None) -> tuple[TransactionState, int]:
     """Recover or issue the sole create permitted by the durable intent."""
+    from .managed_adoption import AdoptionAuthorityError
+    if state.managed_candidate_adoption is not None and state.transaction_kind == "IMPLEMENTATION" and authority_effect is None:
+        raise PublicationRecovery(state, "managed_candidate_adoption_invalid")
     profile = state.assurance_profile or {}
     identity = {"version": "1.0", "run_id": state.run_id, "repository": state.repository,
                 "branch": state.branch, "base": "main", "candidate_sha": profile.get("candidate_sha"),
@@ -123,7 +127,10 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         # Push is also exact and compare-and-set: a foreign remote branch is
         # never overwritten. Repeat after a pre-create crash is harmless.
         try:
-            repository.publish_candidate_branch(root, state.repository, str(state.branch), str(identity["candidate_sha"]))
+            with authority_effect(state) if authority_effect is not None else nullcontext():
+                repository.publish_candidate_branch(root, state.repository, str(state.branch), str(identity["candidate_sha"]))
+        except AdoptionAuthorityError as error:
+            raise PublicationRecovery(state, "managed_candidate_adoption_invalid") from error
         except RunnerError as error:
             raise PublicationRecovery(state, "publication_branch_conflict") from error
         exact_workspace()
@@ -131,11 +138,14 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         state = replace(state, publication_intent={**previous, "status": "CREATE_UNCERTAIN"})
         store.save(state, expected_publication_intent=previous)
         try:
-            github.create_draft_publication(
-                state.repository, str(state.branch), "main",
-                f"Managed delivery: {state.branch}",
-                f"Managed run `{state.run_id}`.\n\nCandidate `{identity['candidate_sha']}` passed current required validation and independent Quality and Security assurance.",
-            )
+            with authority_effect(state) if authority_effect is not None else nullcontext():
+                github.create_draft_publication(
+                    state.repository, str(state.branch), "main",
+                    f"Managed delivery: {state.branch}",
+                    f"Managed run `{state.run_id}`.\n\nCandidate `{identity['candidate_sha']}` passed current required validation and independent Quality and Security assurance.",
+                )
+        except AdoptionAuthorityError as error:
+            raise PublicationRecovery(state, "managed_candidate_adoption_invalid") from error
         except (RunnerError, RuntimeError):
             # A transport error is indistinguishable from an accepted create
             # with lost acknowledgement. Readback is the only authority.

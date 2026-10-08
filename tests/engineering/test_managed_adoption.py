@@ -164,8 +164,15 @@ class AdoptionLifecycleTests(unittest.TestCase):
         runner = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
         state, admission_error = runner._confirm_deterministic_admission(state)
         self.assertIsNone(admission_error)
+        from engineering_platform.execution_lease import acquire, LeaseHeartbeat
+        runner.active_lease = acquire(self.root, state.run_id, identity=runner.host_identity,
+            instance_id=runner.host_instance_id, process_id=os.getpid(), central_database=self.database)
+        runner.lease_heartbeat = LeaseHeartbeat(self.root, runner.active_lease, central_database=self.database)
+        runner.lease_heartbeat.start()
+        self.addCleanup(self.stop_host, runner)
         with self.assertRaisesRegex(SystemExit, "external provider handoff"):
             runner._repair(state, "local validation failed. Correct the documentation heading.")
+        self.stop_host(runner)
         reserved = self.store.load("adopt-run")
         self.assertEqual((reserved.repair_iterations, reserved.repair_audit[-1]["outcome"]), (1, "planned"))
         # The interrupted external provider returned its committed candidate
@@ -274,6 +281,11 @@ class AdoptionLifecycleTests(unittest.TestCase):
         self.assertEqual((after.repair_iterations, github.creates), (1, 1))
         # A later reserved round must invoke its own repair prompt, never
         # consume the completed earlier replacement merely because phase agrees.
+        from engineering_platform.execution_lease import acquire, LeaseHeartbeat
+        restarted.active_lease = acquire(self.root, after.run_id, identity=restarted.host_identity,
+            instance_id=restarted.host_instance_id, process_id=os.getpid(), central_database=self.database)
+        restarted.lease_heartbeat = LeaseHeartbeat(self.root, restarted.active_lease, central_database=self.database)
+        restarted.lease_heartbeat.start()
         with self.assertRaisesRegex(SystemExit, "external provider handoff"):
             restarted._repair(after, "quality failed. Correct the new bounded finding.")
         self.assertEqual(self.store.load("adopt-run").repair_iterations, 2)

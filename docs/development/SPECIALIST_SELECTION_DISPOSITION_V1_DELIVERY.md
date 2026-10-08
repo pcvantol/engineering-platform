@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **6**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **7**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.113** (normal PATCH; no operational activation).
 Base: `454e96c477e2305bb3240e7a457b93ae314950d3`, EP 2.3.112.
@@ -14,8 +14,9 @@ Same Work session, one clean checkout/worktree at admission; no open EP PR,
 own source/test process or Git-operation lock. Preserve both old stashes,
 advisory browser lock and separate r30/native holds. r32/r31 each remain
 closed with three consumed corrective rounds. This distinct selected assignment
-uses the existing maximum three corrective rounds, currently three consumed;
-it never resets a previous provider/run/repair lineage.
+retains its initial maximum three corrective rounds and historical consumed3.
+The specific owner extension below governs the current cumulative limit5;
+no previous provider/run/repair lineage is reset.
 
 ## Code, evidence and missing delta
 
@@ -241,3 +242,52 @@ Actual exactbb GitHub validation37717089898 was cancelled at its configured25-mi
 Full byte-identical production/test qualification atbb completed:2329 tests PASS/2existing skips2709.524s; fresh exactbb installed174PASS2499.316s with196test/190packageinventories before/after. Its strict changedfile executable-line gate passed, but execution_host combined80.0568328597 failed the existing80.2 module gate; no coveragePASS claimed from that report. Eight meaningful additional real-controller/store/lease/artifact/child regressions now PASS15.548s: corrupt/missing recoveryartifact, authpause→sameoperation restore, conflicting prompt, actual changed-checkpoint before acquiredlease, stale/foreign/missing original recoverybinding. No productcode, threshold, exclusion or timeout is changed.
 
 Combine only the successful fullsuite and successful focusedsuite on byte-identical production text, with explicit equivalent checkoutpath aliases and both original execution identities retained. All163modules and14changedproductionfiles now PASS; aggregatecombined84.8641631188, minimumchanged executable-line82.6401446655, minimummodulecombined80.3151640403. Earlier interrupted/failing coverage inputs are excluded from this receipt, without excluding any source lines/modules. Current complete CI and new committed package qualification include these eight tests before independent exacthead confirmation. Correctiveconsumption stays3/3; no fourth allowance or broadTDE cleanup.
+
+## Specific r33 recovery correction extension (plan revision 7)
+
+Owner decision: `L2-R33-AUTHORITY-GENESIS-REPAIR-EXTENSION-V1-20261008`,
+Forge #142 comment6052542434. Original consumed3/maximum3 remains historical.
+Additional allowance2, cumulative maximum5. Integrated corrective round4
+starts with the current authority and Genesis correction: consumed4, remaining1.
+No product repair/provider/lease limit, prior attempt, assignment or writer reset.
+
+Both original blockers reproduced on installed001cdad: after real unbind,
+one replacement call changed HEAD before BLOCKED; recovery AVAILABLE became
+RECOVERED with repair ordinal1 unchanged. Supported installed deterministic
+E2E failed on Genesis with No such remote origin. No green result inferred
+from terminal BLOCKED or workflow SUCCESS. Complete original DoD remains pending.
+
+### Round4 concrete convergence evidence
+
+The new paired regressions actually fail on the old noneditable001cdad wheel:
+revoked continuation calls the replacement, and the empty specialist consumer
+raises No such remote origin at execution_host.py3140. The original installed
+Genesis/Managed E2E independently reproduces that same origin failure.
+
+Current WIP compact acceptance passes: real unbind, DISABLED project, rebind,
+committed-declaration drift, actual filesystem-owner mismatch, exclusive lease
+and current checkpoint, SQLite contention, valid AVAILABLE continuation and
+actual RECOVERED-result consumption. The provider-boundary revocation control
+requires zero calls, unchanged target and unchanged existing ledger/recovery;
+authority denial is an interrupted host span, never an executed provider failure.
+Two real OS crash/restarts pass with natural persisted lease expiry and the
+same replacement identity: revoked zero effects, valid exactly one replacement.
+The existing51-case specialist selection/disposition matrix passes. These are
+local convergence observations, not new official installed/full-CI qualification.
+
+A BEGIN IMMEDIATE scope reuses canonical owner/binding validation and checks
+the actual current lease/checkpoint. It serializes synchronous effects through
+return, or the actual provider launch through its trusted process-start callback.
+The database lock is then released before host callbacks write telemetry; the
+run lease continues to own the asynchronous turn. Host publication independently
+uses the same authority service on both Git push and GitHub create, and rejects
+missing adopted publication guards. Genesis skips empty specialist consumption
+before Managed inspection; Managed retains its origin checks. No fake origin,
+schema/budget/policy change, exception-swallowed success or waived gate.
+
+The owning mandatory CI runs the coupled regression module and two actual
+negative fault-detection controls in isolated copies. Reintroducing the old
+ordering must fail the no-call assertion; reintroducing unconditional Managed
+inspection must fail with the origin error. Current behavior must pass first.
+Original failed runs, reviews and interrupted/invalid local invocations remain
+retained and do not confer PASS. New official candidate qualification is pending.

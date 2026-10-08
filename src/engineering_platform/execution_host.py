@@ -22,6 +22,7 @@ import sqlite3
 from .validation_identity import is_canonical_dashboard_command
 from .central_database import DATABASE_FILENAME as CENTRAL_DATABASE_FILENAME
 from . import merge_delegation
+from .managed_adoption import AdoptionAuthorityError
 
 from .agent_state import MAX_COMMIT_EVIDENCE_RECORDS, StateError, StateStore, TransactionState, redact_diagnostic, verified_commit_evidence_record
 from .capability_review import (
@@ -1855,7 +1856,16 @@ class EngineeringRunner:
                     interruption_reason="controlled_qualification_interruption",
                 )
             invocation = getattr(self.agent, "validate", self.agent.invoke) if local_validation else self.agent.invoke
-            result = invocation(self.root, prompt)
+            from .managed_adoption import effect_authority
+            with effect_authority(state=state, root=self.root,
+                                  central_database=self.store.central_database, lease=self.active_lease) as release_authority:
+                if callable(process_callback):
+                    def admitted_process(process):
+                        if isinstance(process, dict) and isinstance(process.get("pid"), int) and process["pid"] > 0:
+                            release_authority()
+                        self._provider_process_boundary(state, process)
+                    process_callback(admitted_process)
+                result = invocation(self.root, prompt)
         except KeyboardInterrupt as error:
             # A managed SIGINT/SIGTERM while the provider is active means no
             # valid AgentResult exists. Persist the canonical interruption
@@ -1891,6 +1901,13 @@ class EngineeringRunner:
                 next_action="inspect_codex_cli",
                 terminal_condition="provider_invocation_timeout",
             ) from error
+        except AdoptionAuthorityError:
+            # Authority denial is not an executed provider failure. Keep the
+            # pre-existing launch intent, receipt, usage and reservation intact.
+            complete_phase(self.root, provider, outcome="INTERRUPTED")
+            if parent:
+                complete_phase(self.root, parent, outcome="INTERRUPTED")
+            raise
         except Exception as error:
             interruption_reason = error.interruption_reason if isinstance(error, CodexInvocationError) else None
             recovery = self._recovery_state(state.run_id)
@@ -2033,8 +2050,10 @@ class EngineeringRunner:
         launch.  This deliberately uses an iterative control flow: a provider
         exception never recursively re-enters the lifecycle method.
         """
+        self._verify_adoption_continuation(state)
         current_attempt = attempt
         while True:
+            self._verify_adoption_continuation(state)
             recovery = self._recovery_state(state.run_id)
             if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_AVAILABLE":
                 precheck = self._provider_recovery_preflight(state)
@@ -2862,11 +2881,14 @@ class EngineeringRunner:
         if not before.clean or before.branch != implementation.branch or before.head_sha != profile.get("candidate_sha"):
             return self._save_terminal(state, "BLOCKED", "implementation_publication_candidate_changed", "The reviewed candidate changed before first PR publication."), implementation
         from .managed_publication import PublicationRecovery, publish_candidate
+        from .managed_adoption import effect_authority
         publication = replace(state, branch=implementation.branch)
         try:
             publication, number = publish_candidate(
                 state=publication, store=self.store, root=self.root,
                 repository=self.repository, github=self.github,
+                authority_effect=lambda current: effect_authority(
+                    state=current, root=self.root, central_database=self.store.central_database, lease=self.active_lease),
             )
         except PublicationRecovery as error:
             if not error.pending:
@@ -3137,11 +3159,11 @@ class EngineeringRunner:
         """Consume primary decisions against actual changes, never a model's SHA claim."""
         from .capability_review import specialist_dispositions
         baseline = evidence
-        evidence = self.repository.inspect(self.root)
         if not state.specialist_records:
             if result.specialist_dispositions:
                 return self._save_terminal(state, "BLOCKED", "specialist_disposition_invalid", "Foreign optional findings cannot create a disposition.")
             return state
+        evidence = self._inspect_assurance_candidate(self.root, state.execution_mode)
         try:
             source = next(r["candidate_sha"] for r in state.specialist_records if r["kind"] == "SELECTION")
             proven_noop = evidence.head_sha == source and self._is_verified_managed_noop(state, result, baseline)
@@ -3412,6 +3434,10 @@ class EngineeringRunner:
                             "last_verified_sha", "specialist_records")
                 if current is None or any(getattr(current, key) != getattr(state, key) for key in identity):
                     raise RunnerError("checkpoint changed before exclusive repair recovery; resume current checkpoint")
+                try:
+                    self._verify_adoption_continuation(state)
+                except RunnerError as error:
+                    return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
                 result = self._durable_repair_result_for_validation_resume(state)
                 if result is None and state.phase == "REPAIR_AGENT":
                     recovery = self._recovery_state(state.run_id)
@@ -3433,6 +3459,8 @@ class EngineeringRunner:
                             return blocked.state
                         except CodexInvocationError as error:
                             return self._terminalize_provider_invocation_error(state, error)
+                        except RunnerError as error:
+                            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
                 if result is None:
                     return self._save_terminal(state, "BLOCKED", "repair_result_receipt_missing",
                         "Repair continuation has no acknowledged result or bound recovery authority; provider replay is forbidden.")
@@ -4878,6 +4906,8 @@ class EngineeringRunner:
                 "Repair agent exceeded the host-owned deadline; no further repair was started.",
                 terminal_condition="repair_agent_timeout",
             )
+        except AdoptionAuthorityError as error:
+            return self._save_terminal(repair, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         except ProviderReadinessBlocked as blocked:
             return blocked.state
         except CodexInvocationError as error:
