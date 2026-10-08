@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
 from ipaddress import IPv4Address, IPv4Network
 import os
 import pwd
@@ -74,10 +75,12 @@ class ProcessProvider(Protocol):
 
 
 _effect_authority = ContextVar("ep_process_effect_authority", default=None)
+_effect_started = ContextVar("ep_process_effect_started", default=None)
+_model_started = ContextVar("ep_model_effect_started", default=None)
 
 
 @contextmanager
-def process_effect_scope(authority):
+def process_effect_scope(authority, *, started=None, verify_exit=True):
     """Bind current authority to transport primitives, without holding its lock.
 
     Each actual process start is serialized. Waiting for the child leaves the
@@ -85,15 +88,17 @@ def process_effect_scope(authority):
     requires fresh authority again, including the same lease and checkpoint.
     """
     token = _effect_authority.set(authority)
+    started_token = _effect_started.set(started)
     try:
         if authority is not None:
             with authority():
                 pass
         yield
-        if authority is not None:
+        if verify_exit and authority is not None:
             with authority():
                 pass
     finally:
+        _effect_started.reset(started_token)
         _effect_authority.reset(token)
 
 
@@ -103,6 +108,55 @@ def process_effect_start():
     authority = _effect_authority.get()
     with authority() if authority is not None else nullcontext(lambda: None) as release:
         yield release
+
+
+@contextmanager
+def model_effect_scope(started):
+    """Model dispatch observations exclude native version/metadata probes."""
+    token = _model_started.set(started)
+    try:
+        yield
+    finally:
+        _model_started.reset(token)
+
+
+def _model_invocation_effect(method):
+    @wraps(method)
+    def invoke(*args, **kwargs):
+        callback = _model_started.get()
+        if callback is None:
+            return method(*args, **kwargs)
+        token = _effect_started.set(callback)
+        try:
+            return method(*args, **kwargs)
+        finally:
+            _effect_started.reset(token)
+    return invoke
+
+
+def process_effect_context_is_bound():
+    return _effect_authority.get() is not None
+
+
+def process_effect_started():
+    """Record an actual start after releasing canonical serialization."""
+    callback = _effect_started.get()
+    if callback is not None:
+        callback()
+
+
+def _start_process(*arguments, **options):
+    """Every native spawn shares the current effect boundary, including models."""
+    with process_effect_start() as release:
+        process = subprocess.Popen(*arguments, **options)
+        release()
+    try:
+        process_effect_started()
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    return process
 
 
 class LocalProcessProvider:
@@ -117,12 +171,10 @@ class LocalProcessProvider:
                 text=True, capture_output=True, check=False,
                 **({"timeout": timeout} if timeout is not None else {}),
             )
-        with process_effect_start() as release:
-            process = subprocess.Popen(
-                arguments, cwd=root, env=dict(environment) if environment is not None else None,
-                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            release()
+        process = _start_process(
+            arguments, cwd=root, env=dict(environment) if environment is not None else None,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except BaseException:
@@ -132,13 +184,13 @@ class LocalProcessProvider:
         return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
 
     def spawn(self, root: Path, arguments: Sequence[str]) -> subprocess.Popen[str]:
-        return subprocess.Popen(
+        return _start_process(
             tuple(arguments), cwd=root, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, start_new_session=True,
         )
 
     def spawn_detached(self, root: Path, arguments: Sequence[str], environment: Mapping[str, str]) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
+        return _start_process(
             tuple(arguments), cwd=root, env=dict(environment), start_new_session=True,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -485,7 +537,7 @@ class CodexCliProvider(LocalProcessProvider):
         """Open the provider-owned interactive Codex app-server channel."""
         if not self._executable:
             raise FileNotFoundError("Engineering Platform managed Codex CLI is unavailable")
-        return subprocess.Popen(
+        return _start_process(
             (self._executable, "app-server"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, bufsize=1,
         )
@@ -501,6 +553,7 @@ class CodexCliProvider(LocalProcessProvider):
             if stream is not None:
                 stream.close()
 
+    @_model_invocation_effect
     def invoke(
         self,
         root: Path,
@@ -526,11 +579,25 @@ class CodexCliProvider(LocalProcessProvider):
             return self.execute(root, command)
         # The executable is this provider's configured Codex launcher, never a
         # caller-selected command. Remaining values are Codex CLI arguments.
-        return subprocess.run(
+        if not process_effect_context_is_bound():
+            return subprocess.run(
+                (self._executable, *command[1:]), cwd=root,
+                env=dict(environment) if environment is not None else None, timeout=timeout,
+                text=True, input=input_text, capture_output=True, check=False,
+            )
+        process = _start_process(
             (self._executable, *command[1:]), cwd=root,
-            env=dict(environment) if environment is not None else None, timeout=timeout,
-            text=True, input=input_text, capture_output=True, check=False,
+            env=dict(environment) if environment is not None else None,
+            text=True, stdin=subprocess.PIPE if input_text is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        try:
+            stdout, stderr = process.communicate(input=input_text, timeout=timeout)
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
     def _invoke_with_output_limit(
         self, root: Path, command: tuple[str, ...], *, timeout: float | None,
@@ -552,7 +619,7 @@ class CodexCliProvider(LocalProcessProvider):
         pending_input = memoryview(input_text.encode("utf-8") if input_text is not None else b"")
         output = {"stdout": bytearray(), "stderr": bytearray()}
         retained = 0
-        with subprocess.Popen(
+        with _start_process(
             arguments, cwd=root, env=dict(environment) if environment is not None else None,
             stdin=subprocess.PIPE if input_text is not None else None,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
@@ -620,13 +687,14 @@ class CodexCliProvider(LocalProcessProvider):
             output["stderr"].decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
         )
 
+    @_model_invocation_effect
     def spawn_invocation(
         self, root: Path, arguments: tuple[str, ...], *, environment: Mapping[str, str] | None = None
     ) -> subprocess.Popen[str]:
         command = self._arguments(arguments)
         if environment is None:
             return self.spawn(root, command)
-        return subprocess.Popen(
+        return _start_process(
             (self._executable, *command[1:]), cwd=root, env=dict(environment),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
         )

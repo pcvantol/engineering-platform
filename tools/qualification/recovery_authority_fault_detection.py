@@ -16,6 +16,8 @@ FRESH_GIT = 'tests.engineering.test_git_effect_authority_regressions.GitEffectAu
 POSTMERGE_GIT = 'tests.engineering.test_git_effect_authority_regressions.GitEffectAuthorityRegressions.test_postmerge_unbind_preserves_all_target_metadata_and_attempt'
 LATER_RESUME = 'tests.engineering.test_later_adoption_and_profile_authority.LaterAdoptionAndProfileAuthority.test_public_finalization_resume_after_unbind_has_zero_native_effects'
 PARTIAL_PROFILE = 'tests.engineering.test_later_adoption_and_profile_authority.LaterAdoptionAndProfileAuthority.test_partial_adoption_revocation_never_fetches_promisor_objects'
+CONTROL = 'tests.engineering.test_control_assurance_authority.ControlAssuranceAuthority.test_original_control_regression_has_zero_effects'
+ASSURANCE = 'tests.engineering.test_control_assurance_authority.ControlAssuranceAuthority.test_last_control_to_quality_withdrawal'
 GENESIS = 'tests.engineering.test_recovery_authority_regressions.GenesisConsumerRegression.test_empty_specialist_consumer_supports_local_genesis_without_origin'
 
 
@@ -41,6 +43,8 @@ def main():
         ('revoked_postmerge_git', POSTMERGE_GIT, 'revoked post-merge readback must prevent every mutating Git start'),
         ('revoked_later_public_resume', LATER_RESUME, 'revoked later resume must deny every mutating host Git start'),
         ('revoked_partial_profile', PARTIAL_PROFILE, 'revoked profile observation must keep all target Git metadata unchanged'),
+        ('revoked_control_start', CONTROL, 'withdrawal must prevent every subsequent control target write'),
+        ('revoked_assurance_start', ASSURANCE, 'withdrawal must prevent every subsequent reviewer start'),
     ):
         with tempfile.TemporaryDirectory(prefix='ep-recovery-fault-control-') as temporary:
             root = Path(temporary)
@@ -51,7 +55,19 @@ def main():
                 raise RuntimeError(f'{name}: current acceptance regression failed\n{positive.stdout}\n{positive.stderr}')
             host = root / 'src/engineering_platform/execution_host.py'
             text = host.read_text()
-            if name == 'revoked_replacement':
+            if name == 'revoked_control_start':
+                start = text.index('    def _execute_required_validation_controls(')
+                end = text.index('    def _run_required_validation_command(', start)
+                block = text[start:end]
+                anchor = 'state=validation, root=self.root,'
+                if block.count(anchor) != 1: raise RuntimeError('control fault anchor changed')
+                block = block.replace(anchor, 'state=replace(validation, managed_candidate_adoption=None), root=self.root,', 1)
+                text = text[:start] + block + text[end:]
+            elif name == 'revoked_assurance_start':
+                anchor = 'authority=lambda: effect_authority(state=quality, root=self.root,'
+                if text.count(anchor) != 1: raise RuntimeError('assurance fault anchor changed')
+                text = text.replace(anchor, 'authority=lambda: effect_authority(state=replace(quality, managed_candidate_adoption=None), root=self.root,', 1)
+            elif name == 'revoked_replacement':
                 # Restore precisely the old ordering in an isolated negative
                 # control, including the old unguarded actual invocation.
                 start = text.index('    def _invoke_agent_with_timing(')

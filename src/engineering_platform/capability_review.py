@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Protocol
 
+from .managed_adoption import AdoptionAuthorityError
 from .agent_state import redact_diagnostic
 from .provider_context import ProviderRole, project_context
 from .provider_context_scope import ContextScope, POLICY_ID, provider_instruction
@@ -247,6 +248,8 @@ def run_reviews(
     client: ReviewerClient | None,
     progress: ReviewerProgressCallback | None = None,
     evidence: ReviewerEvidence | None = None,
+    authority=None,
+    started=None,
 ) -> tuple[ReviewerResult, ...]:
     """Run bounded read-only invocations sequentially; host validates mandatory output."""
     mandatory = len(selections) == 1 and selections[0].reviewer in {"quality", "security"} and not selections[0].specialist_binding
@@ -265,7 +268,17 @@ def run_reviews(
         if progress:
             progress(selection, "started", None)
         try:
-            result = client.review(root, replace(selection, specialist_binding=dict(selection.specialist_binding)), objective, evidence)
+            from .providers import process_effect_scope, process_effect_start, process_effect_started, model_effect_scope
+            native = getattr(client, "native_process_effects", False)
+            with model_effect_scope(started if native else None), process_effect_scope(
+                    authority, started=None if native else started, verify_exit=False):
+                if authority is not None and not native:
+                    # Explicit inline external adapters start at the call boundary.
+                    # Release before waiting; the next reviewer gets fresh authority.
+                    with process_effect_start() as release:
+                        release()
+                    process_effect_started()
+                result = client.review(root, replace(selection, specialist_binding=dict(selection.specialist_binding)), objective, evidence)
             if result.reviewer != selection.reviewer:
                 result = ReviewerResult(selection.reviewer, "Reviewer identity mismatch; primary review continues.", failed=True)
             else:
@@ -285,6 +298,8 @@ def run_reviews(
                 tuple(dict(item) for item in result.finding_dispositions if isinstance(item, dict)),
                 specialist_binding=dict(result.specialist_binding),
             )
+        except AdoptionAuthorityError:
+            raise
         except Exception:  # Reviewer failure is advisory and cannot block the transaction.
             result = ReviewerResult(selection.reviewer, "Reviewer failed; primary review continues.", failed=True)
         if progress:

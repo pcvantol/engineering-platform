@@ -24,6 +24,13 @@ class AdoptionAuthorityError(RunnerError):
     """No provider attempt began; preserve its reservation and recovery truth."""
 
 
+EFFECT_CHECKPOINT_FIELDS = (
+    "managed_candidate_adoption", "managed_adoption_actor", "owner_authorized",
+    "phase", "repository", "prompt_path", "branch", "transaction_kind",
+    "repair_iterations", "repair_audit", "specialist_records",
+    "publication_intent", "delegated_merge_attempt", "terminal", "action_intent", "execution_mode",
+)
+
 _FIELDS = {"version", "project_id", "repository_id", "repository", "branch", "candidate_sha",
            "base_sha", "run_id", "repair_ordinal", "validation_profile_digest"}
 
@@ -202,10 +209,7 @@ def effect_authority(*, state, root: Path, central_database: Path | None, lease,
         if not isinstance(current, dict):
             raise AdoptionAuthorityError("Managed adoption checkpoint is unavailable.")
         if any(current.get(key) != json.loads(json.dumps(getattr(state, key))) for key in
-               ("managed_candidate_adoption", "managed_adoption_actor", "owner_authorized",
-                "phase", "repository", "prompt_path", "branch", "transaction_kind",
-                "repair_iterations", "repair_audit", "specialist_records",
-                "publication_intent", "delegated_merge_attempt")):
+               EFFECT_CHECKPOINT_FIELDS):
             raise AdoptionAuthorityError("Managed adoption checkpoint changed before the effect.")
         _verify_owner_binding(selected=selected, state=state, root=root,
                               central_database=central_database, connection=connection)

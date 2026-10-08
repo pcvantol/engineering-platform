@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **10**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **11**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.114** (normal PATCH; no operational activation).
 Base: `9318636060706534635954e9131e42e2f63928ef`, EP 2.3.113. Historical reviewbase454e96c is retained below.
@@ -15,7 +15,8 @@ own source/test process or Git-operation lock. Preserve both old stashes,
 advisory browser lock and separate r30/native holds. r32/r31 each remain
 closed with three consumed corrective rounds. This distinct selected assignment
 retains its initial maximum three corrective rounds and historical consumed3.
-The specific round6 coordinator extension below governs the current cumulative limit6;
+The specific round8 control/assurance decision governs the current cumulative limit8;
+historical rounds1–7 remain consumed and unchanged;
 no previous provider/run/repair lineage is reset.
 
 ## Code, evidence and missing delta
@@ -480,3 +481,40 @@ Prior whole-scope REJECTs and partial/interrupted runs remain pinned historical
 evidence. Current full source/strict coverage/installed/CI and new independent
 Quality/Security still have to pass before protected/Finalization/final-main
 qualification. No seventh-round allowance grants a review or merge PASS.
+
+## Round8 integrated control and assurance closure — plan11
+
+Decision `L2-R33-CONTROL-ASSURANCE-CLOSURE-R8-V1-20261008`, Forge #142
+comment6066094873. ACK/admission6066218783 retained exact e626825/main931
+and the sole existing writer. Actual source start6066265949 consumes the eighth
+integrated correction: historical rounds1–7 remain consumed; cumulative8/8,
+remaining0. No operational provider/recovery/repair/lease budget changes.
+R7 stays Quality REJECT Q33-R7-01 P1; Security separately PASS with its P3
+introductory documentation finding. CI37804996274 is completed/SUCCESS.
+
+The original noneditable e626825 rerun fails its real post-unbind targetwrite
+assertion (`ep-r33-round8-rejected-e626825-installed-red.log`), after its linked
+positive route reached publication. The current owning route prevents all
+subsequent control/reviewer starts and target/Git writes after withdrawal.
+This is development evidence; final candidate, independent acceptance, merge,
+Finalization and exact-final-main installed qualification are still outstanding.
+
+| Owning boundary | Actual start and currentness | Results and recovery |
+| --- | --- | --- |
+| Normal/resumed local validation | Short canonical checkpoint CAS precedes the persisted phase; each required command gets a separate current owner/binding/lease/checkpoint scope | Actual command invocation is recorded after native spawn; denial stops the loop, without fabricated EXECUTED/PASS |
+| Final-delivery observation controls | Same individual deterministic executor and current effect scope | Typed denial stops the observation loop; required controls remain mandatory |
+| Mandatory Quality and Security | Distinct current scopes around each native or explicit inline adapter; native execute, bounded input and spawn share the start primitive | True first result is durable before the second reviewer; matching completed reviewer is retained on process restart; started incomplete invocation is blocked without replay |
+| Native process wait | Serialization ends at actual Popen; model dispatch excludes metadata probes | Heartbeat and canonical withdrawal remain possible during control/model waits; a started operation's actual result remains evidence |
+| Adjacent audit transitions | Canonical CAS rejects stale phase/grant changes; result writes preserve current authority fields atomically | BLOCKED audit retains current checkpoint withdrawal and all existing budgets/ledgerrows; it never restores stale owner authority |
+| Context and threads | Context scopes are restored on exit; actual Codex invocation is synchronous, while watchdog/heartbeat threads perform no model start | Protected validation rejects absent process context; deliberately standalone/Genesis execution retains its existing boundary |
+
+Owning tests use real EP services, storage, leases, native validation and Git;
+only explicit original external model/GitHub/network adapters. They cover
+before-control, between-controls, last-control→Quality, Quality→Security,
+checkpoint/lease loss, native/bounded/spawn reviewer starts, real wait/heartbeat,
+canonical audit preservation and actual new-process positive/negative recovery.
+No target metadata restoration or ledger deletion. Eight historical restored-fault
+detectors remain, with separate control and assurance detectors added to the
+existing mandatory CI gate. No new live EP environment, signing, operational
+installation or public package release. Dashboard remains NOT_ACTIVE until the
+whole r33 delivery is truly terminal.

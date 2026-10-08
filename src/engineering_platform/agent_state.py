@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import logging
 import os
@@ -734,7 +734,8 @@ class StateStore:
         except (TypeError, json.JSONDecodeError) as error:
             raise StateError("canonical checkpoint is corrupt") from error
 
-    def save(self, state: TransactionState, *, expected_publication_intent: object = _UNSPECIFIED) -> Path:
+    def save(self, state: TransactionState, *, expected_publication_intent: object = _UNSPECIFIED,
+             expected_effect_checkpoint: dict | None = None, preserve_effect_authority: bool = False) -> Path:
         from .capability_review import validate_specialist_records
         try:
             validate_specialist_records(state.specialist_records, run_id=state.run_id, repository=state.repository)
@@ -754,6 +755,18 @@ class StateStore:
                     "SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (state.run_id,)
                 ).fetchone()
                 previous_phase = str(prior[0]) if prior is not None else None
+                from .managed_adoption import EFFECT_CHECKPOINT_FIELDS
+                prior_payload = json.loads(prior[1]) if prior else None
+                if expected_effect_checkpoint is not None and (
+                        prior_payload is None or any(prior_payload.get(key) != value
+                            for key, value in expected_effect_checkpoint.items())):
+                    raise StateError("effect checkpoint changed concurrently; no stale authority write")
+                if preserve_effect_authority and prior_payload is not None and prior_payload.get("managed_candidate_adoption") is not None:
+                    state = replace(state, **{
+                        key: tuple(prior_payload[key]) if isinstance(getattr(state, key), tuple)
+                        else prior_payload[key] for key in EFFECT_CHECKPOINT_FIELDS
+                    })
+                    canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
                 previous_records = json.loads(prior[1]).get("specialist_records", []) if prior else []
                 if list(state.specialist_records[:len(previous_records)]) != previous_records:
                     raise StateError("specialist records changed concurrently or cannot be erased")

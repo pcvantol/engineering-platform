@@ -401,6 +401,7 @@ def _invocation_owned(method):
 
 
 class CodexCliClient:
+    native_process_effects = True
     def qualified_specialist_capabilities(self, root: Path) -> tuple[str, ...]:
         """Qualify the installed runtime/tool boundary, not just role names."""
         from .effect_provider import policy

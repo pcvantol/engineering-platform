@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from contextlib import closing
 from datetime import datetime, timezone
 from dataclasses import replace
 import json
@@ -949,6 +950,18 @@ class EngineeringRunner:
             )
         return state
 
+    def _save_effect_checkpoint(self, previous: TransactionState, updated: TransactionState) -> None:
+        """Short canonical CAS for a phase/audit transition, never a model wait."""
+        if previous.managed_candidate_adoption is None:
+            self.store.save(updated)
+            return
+        from .managed_adoption import EFFECT_CHECKPOINT_FIELDS
+        expected = json.loads(json.dumps({key: getattr(previous, key) for key in EFFECT_CHECKPOINT_FIELDS}))
+        try:
+            self.store.save(updated, expected_effect_checkpoint=expected)
+        except StateError as error:
+            raise AdoptionAuthorityError(str(error)) from error
+
     def _execute_required_validation_controls(self, state: TransactionState, *, currentness: int | None = None) -> TransactionState:
         """Execute already-persisted required controls before qualification."""
         if currentness is None:
@@ -969,7 +982,11 @@ class EngineeringRunner:
         if tuple(binding_by_id) != required:
             return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile control bindings are invalid.")
         validation = replace(state, phase="LOCAL_REPOSITORY_VALIDATION", next_action="execute_required_validation_controls")
-        self.store.save(validation)
+        try:
+            self._save_effect_checkpoint(state, validation)
+        except AdoptionAuthorityError:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                                       "Current checkpoint denied the validation transition.")
         write_live_status(self.root, validation, validation.next_action)
         self._managed_action(validation, "VALIDATION_EXECUTION")
         for ordinal, validation_id in enumerate(required, start=1):
@@ -1004,22 +1021,38 @@ class EngineeringRunner:
                 attempt=max(1, validation.repair_iterations + 1),
                 metadata={"validation_id": launcher.validation_id, "command_id": command_id},
             )
-            try:
+            started = False
+            def record_control_start():
+                nonlocal started
+                if started:
+                    return
+                started = True
                 record_validation_command_invocation(
                     self.root, run_id=validation.run_id, validation_id=launcher.validation_id,
                     command_id=command_id, category=launcher.category,
                     control_identity=launcher.control_identity, required_for_profile=True,
-                    started_at=observed_at, currentness=currentness,
+                    started_at=datetime.now(timezone.utc).isoformat(), currentness=currentness,
                     central_database=self.store.central_database,
                 )
-            except EngineeringStorageError:
-                complete_phase(self.root, span, outcome="FAILED")
-                return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control invocation evidence could not be persisted.")
             exit_code: int | None
             previous_run_id = os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID")
             os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = validation.run_id
             try:
-                command_outcome = self._run_required_validation_command(launcher.command)
+                from .managed_adoption import effect_authority
+                from .providers import process_effect_scope
+                with process_effect_scope(lambda: effect_authority(
+                        state=validation, root=self.root,
+                        central_database=self.store.central_database, lease=self.active_lease),
+                        started=record_control_start, verify_exit=False):
+                    command_outcome = self._run_required_validation_command(launcher.command, state=validation, started=record_control_start)
+            except AdoptionAuthorityError:
+                complete_phase(self.root, span, outcome="INTERRUPTED")
+                return self._save_terminal(validation, "BLOCKED", "managed_candidate_adoption_invalid",
+                                           "Current authority denied the next required control start.")
+            except EngineeringStorageError:
+                complete_phase(self.root, span, outcome="FAILED")
+                return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence",
+                                           "Required validation control invocation evidence could not be persisted.")
             finally:
                 if previous_run_id is None:
                     os.environ.pop("ENGINEERING_PLATFORM_VALIDATION_RUN_ID", None)
@@ -1051,7 +1084,7 @@ class EngineeringRunner:
                     self.root, run_id=validation.run_id, validation_id=launcher.validation_id,
                     category=launcher.category, control_identity=launcher.control_identity,
                     required_for_profile=True,
-                    execution_status="NOT_EXECUTED" if infrastructure_diagnostic else "EXECUTED",
+                    execution_status="NOT_EXECUTED" if infrastructure_diagnostic or not started else "EXECUTED",
                     result=result,
                     evidence_ref=(
                         f"validation_environment:{infrastructure_diagnostic}"
@@ -1098,8 +1131,11 @@ class EngineeringRunner:
                 )
         return validation
 
-    def _run_required_validation_command(self, command: tuple[str, ...]):
+    def _run_required_validation_command(self, command: tuple[str, ...], *, state: TransactionState, started):
         """Run one deterministic control, preserving unavailable terminals."""
+        from .providers import process_effect_context_is_bound
+        if state.managed_candidate_adoption is not None and not process_effect_context_is_bound():
+            raise AdoptionAuthorityError("Protected validation requires its current effect context.")
         if isinstance(self.validation_executor, DeterministicValidationExecutor):
             scratch_parent = (
                 self.store.central_database.parent / "artifacts"
@@ -1110,6 +1146,11 @@ class EngineeringRunner:
                 self.root, command, scratch_parent=scratch_parent,
                 run_id=os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID"),
             )
+        # Legacy explicit inline executors still cross an admitted call boundary.
+        from .providers import process_effect_start
+        with process_effect_start() as release:
+            release()
+        started()
         return self.validation_executor.run(self.root, command)
 
     def _managed_action(self, state: TransactionState, action: str, authority: str = "AUTONOMOUS_EP_ACTION", *, actor: str = "execution_host", evidence_ref: str = "runtime") -> None:
@@ -2266,6 +2307,11 @@ class EngineeringRunner:
             ),
             local_validation_audit=state.local_validation_audit,
         )
+        try:
+            self._save_effect_checkpoint(state, validation)
+        except AdoptionAuthorityError:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                                       "Current checkpoint denied the local validation transition."), implementation
         # The first validation is a measurement, never a corrective provider
         # turn.  A failed measurement is routed through ``_repair`` by the
         # caller, where it consumes the single run-wide repair budget.
@@ -2571,7 +2617,11 @@ class EngineeringRunner:
         if validation_profile_digest is not None:
             assurance_profile["validation_profile_digest"] = validation_profile_digest
         quality = replace(quality, assurance_profile=assurance_profile)
-        self.store.save(quality)
+        try:
+            self._save_effect_checkpoint(state, quality)
+        except AdoptionAuthorityError:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                                       "Current checkpoint denied the assurance transition."), implementation
         write_live_status(self.root, quality, quality.next_action)
         validation_assessment = self._validation_assessment_evidence(validation_context)
         evidence = ReviewerEvidence.from_repository(
@@ -2584,11 +2634,42 @@ class EngineeringRunner:
             ReviewerSelection(role, f"mandatory post-implementation {role} assurance", 1.0)
             for role in assurance_roles
         )
-        records: list[dict[str, object]] = []
+        completed_reviews = {
+            record["reviewer"]: record for record in quality.assurance_reviews
+            if record.get("candidate_sha") == candidate.head_sha
+            and record.get("profile_digest") == profile_digest
+            and record.get("reviewer") in assurance_roles
+        }
+        records: list[dict[str, object]] = list(completed_reviews.values())
+        try:
+            with closing(sqlite3.connect(self.store.central_database)
+                  if self.store.central_database is not None else open_storage(self.root)) as connection:
+                previous_invocations = connection.execute(
+                    "SELECT role,churn FROM provider_invocations WHERE run_id=? "
+                    "AND phase IN ('MANDATORY_ASSURANCE_DISPATCH','MANDATORY_ASSURANCE')",
+                    (quality.run_id,),
+                ).fetchall()
+            for reviewer, raw_binding in previous_invocations:
+                previous_binding = json.loads(raw_binding)
+                if not isinstance(previous_binding, dict):
+                    raise TypeError("Prior mandatory invocation binding is invalid.")
+                if (reviewer not in completed_reviews
+                        and previous_binding.get("candidate_sha") == candidate.head_sha
+                        and previous_binding.get("assurance_profile_digest") == profile_digest):
+                    return self._save_terminal(
+                        quality, "BLOCKED", "mandatory_assurance_interrupted",
+                        "A started mandatory invocation lacks its complete durable result; no replay.",
+                    ), implementation
+        except (sqlite3.Error, EngineeringStorageError, TypeError, ValueError):
+            return self._save_terminal(quality, "BLOCKED", "assurance_invocation_storage_unavailable",
+                                       "Prior mandatory invocation identity could not be verified."), implementation
         pending_resolutions: list[dict[str, str]] = []
         # Run sequentially: each is still a distinct sandboxed invocation, and
         # this avoids sharing mutable CLI telemetry between parallel calls.
         for selection in selections:
+            if selection.reviewer in completed_reviews:
+                continue
+            previous_quality = quality
             quality = replace(quality, assurance_review_progress=tuple(
                 {
                     "reviewer": item["reviewer"],
@@ -2599,7 +2680,11 @@ class EngineeringRunner:
                 }
                 for item in quality.assurance_review_progress
             ))
-            self.store.save(quality)
+            try:
+                self._save_effect_checkpoint(previous_quality, quality)
+            except AdoptionAuthorityError:
+                return self._save_terminal(previous_quality, "BLOCKED", "managed_candidate_adoption_invalid",
+                                           "Current checkpoint denied the next assurance transition."), implementation
             write_live_status(self.root, quality, quality.next_action)
             prior_findings = self._unresolved_assurance_findings(quality, reviewer=selection.reviewer)
             prior_finding_ids = tuple(str(finding["id"]) for finding in prior_findings)
@@ -2629,24 +2714,39 @@ class EngineeringRunner:
             binding = {"candidate_sha": candidate.head_sha,
                        "assurance_profile_digest": profile_digest,
                        "canonical_invocation_id": invocation_id}
-            dispatched = self._persist_provider_invocation(
-                quality, phase="MANDATORY_ASSURANCE_DISPATCH", role=selection.reviewer,
-                started_at=started_at, invocation_id=invocation_id + ":dispatch",
-                observed_usage={}, observed_metadata={}, observed_churn=binding,
-                observed_snapshots=(), dispatch=True,
-            )
+            dispatched = None
+            def record_review_start():
+                nonlocal dispatched, started_at
+                if dispatched is not None:
+                    return
+                started_at = datetime.now(timezone.utc).isoformat()
+                dispatched = self._persist_provider_invocation(
+                    quality, phase="MANDATORY_ASSURANCE_DISPATCH", role=selection.reviewer,
+                    started_at=started_at, invocation_id=invocation_id + ":dispatch",
+                    observed_usage={}, observed_metadata={}, observed_churn=binding,
+                    observed_snapshots=(), dispatch=True,
+                )
+                if dispatched is None:
+                    raise EngineeringStorageError("Mandatory assurance dispatch identity could not be persisted.")
+            from .managed_adoption import effect_authority
+            try:
+                result = run_reviews(
+                    assurance_root or self.root, (contracted_selection,), assurance_objective,
+                    self.agent if hasattr(self.agent, "review") else None, evidence=evidence,
+                    authority=lambda: effect_authority(state=quality, root=self.root,
+                        central_database=self.store.central_database, lease=self.active_lease),
+                    started=record_review_start,
+                )[0]
+            except AdoptionAuthorityError:
+                return self._save_terminal(
+                    quality, "BLOCKED", "managed_candidate_adoption_invalid",
+                    "Current authority denied the next mandatory assurance start.",
+                ), implementation
             if dispatched is None:
                 return self._save_terminal(
                     quality, "BLOCKED", "assurance_invocation_storage_unavailable",
-                    "Mandatory assurance dispatch identity could not be persisted.",
+                    "Mandatory assurance was not dispatched.",
                 ), implementation
-            result = run_reviews(
-                assurance_root or self.root,
-                (contracted_selection,),
-                assurance_objective,
-                self.agent if hasattr(self.agent, "review") else None,
-                evidence=evidence,
-            )[0]
             completed_at = datetime.now(timezone.utc).isoformat()
             try:
                 unchanged = self._inspect_assurance_candidate(candidate_root, state.execution_mode)
@@ -2659,7 +2759,7 @@ class EngineeringRunner:
             status = "UNRESOLVED" if assessment is None or unchanged is None or not unchanged.clean or unchanged.head_sha != candidate.head_sha else "PASS"
             findings = [
                 {
-                    "id": f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + len(records) + 1}:{item['id']}",
+                    "id": f"{quality.run_id}:{selection.reviewer}:{len(quality.assurance_reviews) + 1}:{item['id']}",
                     "fingerprint": hashlib.sha256(json.dumps(item, sort_keys=True).encode("utf-8")).hexdigest()[:32],
                     "category": item["category"], "criterion": item["criterion"],
                     "observation": item["observation"], "severity": item["severity"], "confidence": item["confidence"],
@@ -2703,7 +2803,8 @@ class EngineeringRunner:
                 }
                 for item in quality.assurance_review_progress
             ))
-            self.store.save(quality)
+            quality = replace(quality, assurance_reviews=quality.assurance_reviews + (records[-1],))
+            self.store.save(quality, preserve_effect_authority=True)
             write_live_status(self.root, quality, quality.next_action)
             repair = quality.repair_audit[-1] if quality.repair_audit else None
             if (
@@ -2719,7 +2820,6 @@ class EngineeringRunner:
                     "candidate_sha": candidate.head_sha,
                 } for item in finding_dispositions
                 if item["disposition"] == "RESOLVED" and item["finding_id"] not in already_resolved)
-        quality = replace(quality, assurance_reviews=quality.assurance_reviews + tuple(records))
         if delivery_scope is not None:
             try:
                 scope_after_reviews = observed_delivery_scope(
@@ -2728,7 +2828,7 @@ class EngineeringRunner:
             except (OSError, RuntimeError, ValueError):
                 scope_after_reviews = None
             if scope_after_reviews != delivery_scope:
-                self.store.save(quality)
+                self.store.save(quality, preserve_effect_authority=True)
                 return self._save_terminal(
                     quality, "BLOCKED", "assurance_delivery_scope_changed",
                     "The PR base or exact candidate diff changed during independent assurance.",
@@ -2741,7 +2841,7 @@ class EngineeringRunner:
                 quality,
                 assurance_resolutions=quality.assurance_resolutions + tuple(pending_resolutions),
             )
-        self.store.save(quality)
+        self.store.save(quality, preserve_effect_authority=True)
         unresolved = [record for record in records if record["status"] == "UNRESOLVED"]
         if unresolved:
             return self._save_terminal(quality, "BLOCKED", "mandatory_assurance_unresolved", "A required quality or security review was unavailable, malformed, or candidate-mismatched."), implementation
@@ -5323,6 +5423,14 @@ class EngineeringRunner:
         *,
         terminal_condition: str | None = None,
     ) -> TransactionState:
+        if action == "managed_candidate_adoption_invalid" and state.managed_candidate_adoption is not None:
+            # Denial may follow a concurrent canonical checkpoint withdrawal.
+            # Keep that withdrawal and all already committed results/budgets;
+            # the blocked audit must never restore the caller's stale grant.
+            try:
+                state = self.store.load(state.run_id)
+            except StateError:
+                state = replace(state, owner_authorized=False)
         terminal = replace(
             state,
             phase=phase,
@@ -5473,17 +5581,28 @@ class EngineeringRunner:
             observed_at = datetime.now(timezone.utc).isoformat()
             command_id = f"observation-control-{uuid.uuid4().hex[:16]}"
             try:
-                record_validation_command_invocation(
-                    self.root, run_id=state.run_id, validation_id=validation_id,
-                    command_id=command_id, category="repository",
-                    control_identity=str(binding["control_identity"]),
-                    required_for_profile=False, started_at=observed_at,
-                    currentness=currentness, central_database=self.store.central_database,
-                )
+                started = False
+                def record_observation_start():
+                    nonlocal started
+                    if started:
+                        return
+                    started = True
+                    record_validation_command_invocation(
+                        self.root, run_id=state.run_id, validation_id=validation_id,
+                        command_id=command_id, category="repository",
+                        control_identity=str(binding["control_identity"]),
+                        required_for_profile=False, started_at=observed_at,
+                        currentness=currentness, central_database=self.store.central_database,
+                    )
                 previous_run_id = os.environ.get("ENGINEERING_PLATFORM_VALIDATION_RUN_ID")
                 os.environ["ENGINEERING_PLATFORM_VALIDATION_RUN_ID"] = state.run_id
                 try:
-                    outcome = self._run_required_validation_command(command)
+                    from .managed_adoption import effect_authority
+                    from .providers import process_effect_scope
+                    with process_effect_scope(lambda: effect_authority(
+                            state=state, root=self.root, central_database=self.store.central_database,
+                            lease=self.active_lease), started=record_observation_start, verify_exit=False):
+                        outcome = self._run_required_validation_command(command, state=state, started=record_observation_start)
                 finally:
                     if previous_run_id is None:
                         os.environ.pop("ENGINEERING_PLATFORM_VALIDATION_RUN_ID", None)
@@ -5524,6 +5643,9 @@ class EngineeringRunner:
                     artifact_root=(self.store.central_database.parent / "artifacts")
                     if self.store.central_database else None,
                 )
+            except AdoptionAuthorityError:
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                                           "Current authority denied the next observation control start.")
             except (EngineeringStorageError, RunnerError, OSError):
                 return self._save_terminal(state, "BLOCKED", "delivery_observation_evidence_unavailable",
                                            "Approved observation control evidence could not be recorded.")

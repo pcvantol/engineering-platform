@@ -92,7 +92,7 @@ jobs:
             tests.engineering.test_effect_execution.EffectLifecycleTests.test_read_only_qualified_report_and_resume_leave_target_unchanged
       - name: Qualify coupled recovery authority and local Genesis fault detection
         run: |
-          python3 -m unittest -v tests.engineering.test_recovery_authority_regressions tests.engineering.test_publication_authority_regressions tests.engineering.test_git_effect_authority_regressions tests.engineering.test_later_adoption_and_profile_authority
+          python3 -m unittest -v tests.engineering.test_recovery_authority_regressions tests.engineering.test_publication_authority_regressions tests.engineering.test_git_effect_authority_regressions tests.engineering.test_later_adoption_and_profile_authority tests.engineering.test_control_assurance_authority
           python3 tools/qualification/recovery_authority_fault_detection.py --source-root .
       - name: Import, bytecode and qualification smoke
         run: |
