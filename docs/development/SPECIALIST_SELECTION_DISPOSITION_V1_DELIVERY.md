@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **5**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **6**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.113** (normal PATCH; no operational activation).
 Base: `454e96c477e2305bb3240e7a457b93ae314950d3`, EP 2.3.112.
@@ -14,7 +14,7 @@ Same Work session, one clean checkout/worktree at admission; no open EP PR,
 own source/test process or Git-operation lock. Preserve both old stashes,
 advisory browser lock and separate r30/native holds. r32/r31 each remain
 closed with three consumed corrective rounds. This distinct selected assignment
-uses the existing maximum three corrective rounds, currently two consumed;
+uses the existing maximum three corrective rounds, currently three consumed;
 it never resets a previous provider/run/repair lineage.
 
 ## Code, evidence and missing delta
@@ -213,3 +213,17 @@ Thirty-nine fast cases PASS, including an actual two-process active-owner/artifa
 ### Shared FME stateless control convergence within round 2
 
 The first complete candidate9192 exposed a genuine FME native-control regression: importing the shared credential detector from agent_state pulled sqlite3 into the readonly control runtime; the unchanged sandbox correctly denied its external SQLite library. Failed/interrupted broad attempts remain non-PASS. The one detector definition now lives in the existing stateless effect_contract module and agent_state reuses that exact object; source/result/recovery retain the same privacy rule. No filesystem, network or tool permission is widened. A real pinned native control test proves safe content accepted, all known GitHub credential families refused and sqlite3 never imported. All 34 owning FME/recovery/profile/integration/privacy cases PASS, and 39 specialist fast cases PASS. Complete fresh source/package gates remain required; round consumption stays2/3.
+
+## Complete review wave 3 and last correction (plan revision 6)
+
+Independent Security PASS on171b; complete Quality CHANGES_REQUIRED for two P1 repair-resume manifestations: a planned pre-PR reservation fell into a fresh primary dispatch; a completed same-PR RECOVERED result was blocked before the canonical recovery consumer. Third and last corrective round is consumed (3/3, remaining0); no previous provider/run/repair budget is reset. Register: https://github.com/pcvantol/forge/issues/142#issuecomment-6050399687. Source/installed/coverage PASS on171b does not override these findings and remains historical candidate evidence.
+
+Same sole writer corrects both together under the real run lease and checkpoint fence: pending REPAIR_AGENT cannot fall back to EXECUTE_AGENT; acknowledged lifecycle receipt or original phase/ordinal-bound recovery controller result owns continuation. Missing or uncertain receipt without controller authority fails closed, preserving candidate, repairordinal and specialist journal. Actual RECOVERED results use the same typed artifact consumer, current native validation, independent assurance and publication handler; existing recovery launch uses the complete original repair context, without a second engine or allowance. Actual new-process pending/recovered/available pre-PR and same-PR boundaries, foreign/stale bindings and active-owner regressions precede full exact-head requalification and fresh independent confirmation. No fourth corrective round or protected completion claim.
+
+### Last-round owner convergence and honest process boundaries
+
+Both unchanged Quality reprodrivers now give the required outcomes: pending reservation blocks with primary once and no repair dispatch; actual RECOVERED same-PR result reaches WAIT_FOR_OPERATOR_MERGE with primary once, original repair once and unchanged ordinal. Forty-three fast owning cases PASS (44.716 seconds), including actual original recovery service/child/ledger/artifact, foreign ordinal/phase, candidate drift and exclusive-owner denial.
+
+Standalone actual OS pending pre-/same-PR matrix: two PASS (184.168 seconds). Complete RECOVERY_AVAILABLE plus actual interrupted-worktree receipt: two PASS (186.195 seconds), one bounded replacement, complete original repair prompt and current controls. Incomplete availability before that receipt: two PASS (184.328 seconds), PRECHECK_FAILED with no launch claim/provider process; journal, actual observed Git head and reservation retained. Natural lease expiry and os._exit73 throughout. The current standalone RECOVERED pre-/same-PR confirmation is being completed before final current candidate proof.
+
+Earlier new-fixture attempts are explicitly not full PASS: wrong hypothetical checks_passed label, comparison to historical baseline instead of actual interrupted Git head, and optimistic replacement expectation before its required worktree receipt. Existing production submitted_for_recheck and provenance controls are retained. One newly invalid recovery-field assertion was found before its cases executed; only the identified own test PID was interrupted, log retained, then corrected to actual launch_claimed_at/provider_confirmed_active_at. No product limit, lease, privacy, native-control or review assertion is waived. Complete official source/coverage/package/CI qualification and fresh independent confirmation remain required at the new committed candidate.

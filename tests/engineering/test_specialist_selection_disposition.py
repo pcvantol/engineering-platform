@@ -368,10 +368,98 @@ class SpecialistPipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cr.specialist_findings(selection,replace(base,findings=(base.findings[0],{**base.findings[0],'summary':'Conflicting identity.'})))
 
+    def recovered_repair_checkpoint(self):
+        """Interrupt only after the existing controller has stored a real result."""
+        import os,subprocess,sys
+        from engineering_platform import execution_host as host
+        from engineering_platform.execution_lease import acquire,LeaseHeartbeat
+        from engineering_platform.provider_recovery import load_recovery_state
+        model=self.transport();model.process_callback=None
+        model.set_process_callback=lambda callback:setattr(model,'process_callback',callback)
+        runner=self.runner(model)
+        waiting=runner.run(self.fixture.prompt,run_id='specialist-run',owner_authorized=True)
+        runner.active_lease=acquire(self.root,'specialist-run',identity=runner.host_identity,
+            instance_id=runner.host_instance_id,process_id=os.getpid(),central_database=self.fixture.database)
+        runner.lease_heartbeat=LeaseHeartbeat(self.root,runner.active_lease,central_database=self.fixture.database)
+        runner.lease_heartbeat.start()
+        calls=[]
+        def repair(root,prompt):
+            self.assertIn('Integral repair method:',prompt)
+            self.assertIn(self.objective,prompt)
+            calls.append(self.store.load('specialist-run').phase)
+            child=subprocess.Popen((sys.executable,'-c','import time;time.sleep(30)'),start_new_session=True)
+            try:
+                model.process_callback({'pid':child.pid,'process_group':child.pid})
+                (root/'README.md').write_text('# Qualified repaired delivery\n\nAcceptance sentence plus recovered repair.\n')
+                self.fixture.git('add','README.md');self.fixture.git('commit','-qm','bounded recovered repair')
+                sha=self.fixture.git('rev-parse','HEAD')
+                runner.github.candidates=[replace(runner.github.candidates[0],head_sha=sha)]
+                return AgentResult('COMPLETE',self.fixture.git('branch','--show-current'),pull_request=71,commit_sha=sha)
+            finally:
+                child.terminate();child.wait(timeout=10);model.process_callback(None)
+        model.invoke=repair;terminal=host.record_replacement_terminal
+        def interrupted(*args,**kwargs):
+            recorded=terminal(*args,**kwargs)
+            if kwargs.get('outcome')=='SUCCESS' and recorded:raise SystemExit('real recovered repair')
+            return recorded
+        with patch.dict(os.environ,{'ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE':'specialist-run:REPAIR_AGENT'}),patch.object(host,'record_replacement_terminal',side_effect=interrupted):
+            with self.assertRaises(SystemExit):runner._repair(waiting,'hosted validation failed. Correct the bounded README detail.')
+        self.fixture.stop_host(runner)
+        checkpoint=self.store.load('specialist-run')
+        recovery=load_recovery_state(self.root,'specialist-run',central_database=self.fixture.database)
+        self.assertEqual((checkpoint.phase,recovery['state'],calls),('REPAIR_AGENT','RECOVERED',['REPAIR_AGENT']))
+        resumed=EngineeringRunner(self.root,self.store,self.fixture.repository,runner.github,model,lambda _:None)
+        self.addCleanup(self.fixture.stop_host,resumed)
+        return checkpoint,recovery,resumed,calls
+
+    def test_recovered_repair_foreign_ordinal_cannot_consume_or_dispatch(self):
+        from engineering_platform.execution_errors import RunnerError
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        with sqlite_connection(self.fixture.database) as connection:
+            connection.execute('UPDATE provider_invocations SET retry_ordinal=retry_ordinal+1 WHERE run_id=? AND invocation_id=?',
+                ('specialist-run',recovery['triggering_invocation_id']))
+        with self.assertRaisesRegex(RunnerError,'original reservation identity'):
+            runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual(self.store.load('specialist-run'),checkpoint)
+        self.assertEqual(calls,['REPAIR_AGENT'])
+
+    def test_recovered_repair_foreign_phase_fails_closed_without_provider(self):
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        with sqlite_connection(self.fixture.database) as connection:
+            connection.execute("UPDATE provider_invocations SET phase='IMPLEMENTATION' WHERE run_id=? AND invocation_id=?",
+                ('specialist-run',recovery['triggering_invocation_id']))
+        result=runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual((result.phase,result.next_action,result.repair_iterations),('BLOCKED','repair_result_receipt_missing',checkpoint.repair_iterations))
+        self.assertEqual(calls,['REPAIR_AGENT'])
+        self.assertEqual(result.specialist_records,checkpoint.specialist_records)
+
+    def test_recovered_repair_candidate_drift_never_relabels_old_receipt(self):
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        (self.root/'README.md').write_text('# Foreign candidate\n\nAcceptance sentence.\n')
+        self.fixture.git('add','README.md');self.fixture.git('commit','-qm','foreign current candidate')
+        result=runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        self.assertEqual(result.phase,'BLOCKED')
+        self.assertEqual(result.repair_iterations,checkpoint.repair_iterations)
+        self.assertEqual(calls,['REPAIR_AGENT'])
+        self.assertEqual(result.specialist_records,checkpoint.specialist_records)
+
+    def test_recovered_repair_active_owner_prevents_terminal_receipt_decision(self):
+        import os
+        from engineering_platform.execution_lease import acquire,release
+        from engineering_platform.execution_errors import RunnerError
+        checkpoint,recovery,runner,calls=self.recovered_repair_checkpoint()
+        lease=acquire(self.root,'specialist-run',identity='other-owner',instance_id='other-instance',process_id=os.getpid(),central_database=self.fixture.database)
+        try:
+            with self.assertRaisesRegex(RunnerError,'ownership conflict'):
+                runner.run(self.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+            self.assertEqual(self.store.load('specialist-run'),checkpoint)
+            self.assertEqual(calls,['REPAIR_AGENT'])
+        finally:release(self.root,lease,central_database=self.fixture.database)
+
     def process_boundary(self,boundary):
         import subprocess,sys,time
         from datetime import datetime,timezone
-        state=replace(self.state,repair_iterations=1 if boundary in {'repair-assurance','first-repair-receipt','first-repair-validation'} else 2)
+        state=replace(self.state,repair_iterations=1 if boundary in {'repair-assurance','first-repair-receipt','first-repair-validation','first-repair-pending','first-repair-recovered','first-repair-available','same-repair-pending','same-repair-recovered','same-repair-available','first-repair-available-incomplete','same-repair-available-incomplete'} else 2)
         self.store.save(state)
         spec=self.fixture.area/'specialist-process-input.json'
         spec.write_text(json.dumps({'root':str(self.root),'data':str(self.fixture.data),'database':str(self.fixture.database),
@@ -380,6 +468,7 @@ class SpecialistPipelineTests(unittest.TestCase):
         start=subprocess.run((*command,'start',boundary),capture_output=True,text=True,timeout=60)
         self.assertEqual(start.returncode,73,start.stdout+start.stderr)
         interrupted=self.store.load('specialist-run')
+        interrupted_head=self.fixture.git('rev-parse','HEAD')
         self.assertEqual(interrupted.repair_iterations,2)
         interrupted_controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database) if boundary in {'assurance','assurance-empty','publication','repair-assurance'} else None
         with sqlite_connection(self.fixture.database) as connection:
@@ -389,6 +478,41 @@ class SpecialistPipelineTests(unittest.TestCase):
         resume=subprocess.run((*command,'resume',boundary),capture_output=True,text=True,timeout=60)
         self.assertEqual(resume.returncode,0,resume.stdout+resume.stderr)
         after=self.store.load('specialist-run');data=cr.specialist_readback(after.specialist_records)
+        if boundary in {'first-repair-pending','same-repair-pending','first-repair-available-incomplete','same-repair-available-incomplete'}:
+            self.assertEqual((after.phase,after.next_action,after.repair_iterations),('BLOCKED','NONE' if boundary.endswith('incomplete') else 'repair_result_receipt_missing',2))
+            if boundary.endswith('incomplete'):
+                from engineering_platform.provider_recovery import load_recovery_state
+                recovery=load_recovery_state(self.root,'specialist-run',central_database=self.fixture.database)
+                self.assertEqual(recovery['state'],'PRECHECK_FAILED')
+                self.assertIsNone(recovery['launch_claimed_at'])
+                self.assertIsNone(recovery['provider_confirmed_active_at'])
+            self.assertEqual(after.specialist_records,interrupted.specialist_records)
+            self.assertEqual(self.fixture.git('rev-parse','HEAD'),interrupted_head)
+            calls=[json.loads(line) for line in (self.fixture.data/'specialist-model-calls.jsonl').read_text().splitlines()]
+            self.assertEqual(sum(c['role']=='implementation' for c in calls),1)
+            self.assertFalse(any(c['role']=='repair' or c['mode']=='resume' for c in calls))
+            self.assertEqual(after.repair_audit,interrupted.repair_audit)
+            return
+        if boundary in {'first-repair-recovered','first-repair-available','same-repair-recovered','same-repair-available'}:
+            self.assertEqual((after.phase,after.pull_request,after.repair_iterations),('WAIT_FOR_OPERATOR_MERGE',71,2))
+            self.assertEqual(after.specialist_records[:len(interrupted.specialist_records)],interrupted.specialist_records)
+            calls=[json.loads(line) for line in (self.fixture.data/'specialist-model-calls.jsonl').read_text().splitlines()]
+            self.assertEqual(sum(c['role']=='implementation' for c in calls),1)
+            self.assertEqual(sum(c['role']=='repair' for c in calls),1)
+            self.assertFalse(any(c['role']=='implementation' and c['mode']=='resume' for c in calls))
+            self.assertEqual(after.repair_audit[-1]['repair_id'],interrupted.repair_audit[-1]['repair_id'])
+            self.assertEqual(after.repair_audit[-1]['outcome'],'submitted_for_recheck')
+            controls=load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)
+            self.assertTrue(all(c['result']=='PASS' for c in controls['controls'].values()))
+            self.assertEqual(controls['candidate_sha'],self.fixture.git('rev-parse','HEAD'))
+            from engineering_platform.provider_recovery import load_recovery_state
+            recovery=load_recovery_state(self.root,'specialist-run',central_database=self.fixture.database)
+            self.assertEqual((recovery['state'],recovery['lifecycle_phase']),('RECOVERED','REPAIR_AGENT'))
+            with sqlite_connection(self.fixture.database) as connection:
+                row=connection.execute('SELECT retry_ordinal,phase,completed_at FROM provider_invocations WHERE run_id=? AND invocation_id=?',('specialist-run',recovery['replacement_invocation_id'])).fetchone()
+            self.assertEqual((row[0],row[1]),(2,'REPAIR'))
+            self.assertIsNotNone(row[2])
+            return
         if boundary=='noop-consumer':
             self.assertEqual((after.phase,after.pull_request,after.repair_iterations),('COMPLETE',None,2))
             self.assertEqual((self.fixture.git('branch','--show-current'),self.fixture.git('rev-parse','HEAD')),('main',self.fixture.base))
@@ -434,6 +558,30 @@ class SpecialistPipelineTests(unittest.TestCase):
         remote=json.loads((self.fixture.data/'specialist-remote.json').read_text())
         self.assertEqual(remote['head_sha'],self.fixture.git('rev-parse','HEAD'))
         self.assertTrue(all(c['result']=='PASS' for c in load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls'].values()))
+
+    def test_real_new_process_at_first_repair_available_incomplete_fails_closed_without_replacement(self):
+        self.process_boundary('first-repair-available-incomplete')
+
+    def test_real_new_process_at_same_repair_available_incomplete_fails_closed_without_replacement(self):
+        self.process_boundary('same-repair-available-incomplete')
+
+    def test_real_new_process_at_first_repair_pending_preserves_reservation_and_no_primary_replay(self):
+        self.process_boundary('first-repair-pending')
+
+    def test_real_new_process_at_same_repair_pending_preserves_reservation_and_no_primary_replay(self):
+        self.process_boundary('same-repair-pending')
+
+    def test_real_new_process_at_first_repair_recovered_preserves_reservation_and_no_primary_replay(self):
+        self.process_boundary('first-repair-recovered')
+
+    def test_real_new_process_at_same_repair_recovered_preserves_reservation_and_no_primary_replay(self):
+        self.process_boundary('same-repair-recovered')
+
+    def test_real_new_process_at_first_repair_available_preserves_reservation_and_no_primary_replay(self):
+        self.process_boundary('first-repair-available')
+
+    def test_real_new_process_at_same_repair_available_preserves_reservation_and_no_primary_replay(self):
+        self.process_boundary('same-repair-available')
 
     def test_real_new_process_after_prepublication_repair_receipt_never_repeats_repair(self):
         self.process_boundary('first-repair-receipt')

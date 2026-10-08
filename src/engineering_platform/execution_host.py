@@ -2009,18 +2009,22 @@ class EngineeringRunner:
                 or state.next_action == "publish_first_implementation_pull_request"):
             return False
         if state.phase == "REPAIR_AGENT":
-            connection = (sqlite3.connect(self.store.central_database) if self.store.central_database else open_storage(self.root))
-            try:
-                row = connection.execute(
-                    "SELECT retry_ordinal FROM provider_invocations WHERE run_id=? AND invocation_id=?",
-                    (state.run_id, recovery.get("triggering_invocation_id")),
-                ).fetchone()
-            finally:
-                connection.close()
-            if row is None or row[0] > state.repair_iterations or self._repair_plan(state) is None:
-                raise RunnerError("Recovered repair lacks its original reservation identity.")
-            return row[0] == state.repair_iterations
+            return self._repair_recovery_reservation_matches(state, recovery)
         return True
+
+    def _repair_recovery_reservation_matches(self, state: TransactionState, recovery: dict) -> bool:
+        """Keep replacement authority on the original canonical repair ordinal."""
+        connection = (sqlite3.connect(self.store.central_database) if self.store.central_database else open_storage(self.root))
+        try:
+            row = connection.execute(
+                "SELECT retry_ordinal,phase FROM provider_invocations WHERE run_id=? AND invocation_id=?",
+                (state.run_id, recovery.get("triggering_invocation_id")),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None or row[0] > state.repair_iterations or self._repair_plan(state) is None:
+            raise RunnerError("Recovered repair lacks its original reservation identity.")
+        return row[0] == state.repair_iterations and row[1] == "REPAIR"
 
     def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
         """Consume the durable recovery controller around individual attempts.
@@ -3383,14 +3387,12 @@ class EngineeringRunner:
                     release_lease(self.root, self.active_lease, central_database=self.store.central_database)
                     self.active_lease = None
         if resume and state is not None and state.phase in {"REPAIR_AGENT", "LOCAL_REPOSITORY_VALIDATION"} and (
-                state.pull_request is not None or self._durable_repair_result_for_validation_resume(state) is not None):
+                state.phase == "REPAIR_AGENT" or state.pull_request is not None
+                or self._repair_plan(state) is not None):
             # Resume an already-bound repair at its real validation gate.  A
             # fresh-run path here would create an unrelated provider turn.
             if Path(state.prompt_path) != prompt_path:
                 raise RunnerError("checkpoint conflicts with current prompt")
-            result = self._durable_repair_result_for_validation_resume(state)
-            if result is None:
-                return self._save_terminal(state, "BLOCKED", "repair_result_receipt_missing", "Repair validation cannot resume without its durable bound result receipt.")
             state = self._provider_readiness_gate(state, require_codex=True, require_github=True)
             if state.next_action == "provider_auth_repair_required":
                 return state
@@ -3404,6 +3406,36 @@ class EngineeringRunner:
             self.transaction = self.transaction.with_lease(self.active_lease)
             self.lease_heartbeat.start()
             try:
+                current = self.store.load(state.run_id)
+                identity = ("phase", "repository", "prompt_path", "branch", "pull_request",
+                            "transaction_kind", "repair_iterations", "repair_audit",
+                            "last_verified_sha", "specialist_records")
+                if current is None or any(getattr(current, key) != getattr(state, key) for key in identity):
+                    raise RunnerError("checkpoint changed before exclusive repair recovery; resume current checkpoint")
+                result = self._durable_repair_result_for_validation_resume(state)
+                if result is None and state.phase == "REPAIR_AGENT":
+                    recovery = self._recovery_state(state.run_id)
+                    if (isinstance(recovery, dict) and recovery.get("lifecycle_phase") == "REPAIR_AGENT"
+                            and recovery.get("state") in {"RECOVERED", "RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"}
+                            and self._repair_recovery_reservation_matches(state, recovery)):
+                        try:
+                            result = self._invoke_agent_with_timing(state, self._repair_prompt(state, self._repair_plan(state)["proposed_action"]), repair=True)
+                            state = self._record_agent_execution_time(state)
+                            state = self._record_validation_evidence(state, result)
+                            state = self._record_verified_result_commit(state, result, phase="REPAIR_AGENT",
+                                description="pull_request_repair_commit_verified")
+                            self._persist_agent_usage(state.run_id)
+                        except CodexHandoffTimeout:
+                            return self._save_terminal(state, "BLOCKED", "repair_agent_timeout",
+                                "Repair agent exceeded the host-owned deadline; no further repair was started.",
+                                terminal_condition="repair_agent_timeout")
+                        except ProviderReadinessBlocked as blocked:
+                            return blocked.state
+                        except CodexInvocationError as error:
+                            return self._terminalize_provider_invocation_error(state, error)
+                if result is None:
+                    return self._save_terminal(state, "BLOCKED", "repair_result_receipt_missing",
+                        "Repair continuation has no acknowledged result or bound recovery authority; provider replay is forbidden.")
                 return self._advance_after_repair_agent_result(state, result)
             finally:
                 if self.active_lease is not None and self.active_lease.run_id == state.run_id:
@@ -4755,6 +4787,30 @@ class EngineeringRunner:
                 ))
             return None
 
+    def _repair_prompt(self, repair: TransactionState, objective: str) -> str:
+        """Project the same complete bounded repair contract for first/replacement dispatch."""
+        impact_surfaces = sorted({
+            surface
+            for reviewer in ("quality", "security")
+            for surface in mandatory_coverage_surfaces(reviewer, repair.transaction_kind)
+        })
+        return (assemble_prompt(
+            Path(repair.prompt_path),
+            repair,
+            managed_target=self.root if repair.execution_mode == "MANAGED" else None,
+        )
+        + (
+            f"\n\nRepair objective: {objective}"
+            + ("\nAn adopted candidate repair may commit the bounded changes but must not push or create a pull request; the host publishes after current validation and both reviews."
+               if repair.managed_candidate_adoption is not None and repair.pull_request is None else "")
+            +
+            "\n\nIntegral repair method: resolve every listed open finding as one coherent change. "
+            "Reassess the complete branch against main; trace each changed contract, persistent resource "
+            "and lifecycle state through callers, consumers, startup, shutdown, maintenance, recovery and cleanup. "
+            f"Preserve or add regression evidence for these host-owned impact surfaces: {json.dumps(impact_surfaces)}. "
+            "Do not stop after the first local fix, and do not weaken an acceptance criterion or existing workflow."
+        ))
+
     def _repair(self, state: TransactionState, objective: str) -> TransactionState:
         try:
             self._verify_adoption_continuation(state)
@@ -4798,32 +4854,8 @@ class EngineeringRunner:
         repair = replace(repair, repair_audit=repair.repair_audit[:-1] + (reservation,))
         self.store.save(repair)
         write_live_status(self.root, repair, repair.next_action)
-        impact_surfaces = sorted({
-            surface
-            for reviewer in ("quality", "security")
-            for surface in mandatory_coverage_surfaces(reviewer, repair.transaction_kind)
-        })
         try:
-            result = self._invoke_agent_with_timing(
-                repair,
-                assemble_prompt(
-                    Path(repair.prompt_path),
-                    repair,
-                    managed_target=self.root if repair.execution_mode == "MANAGED" else None,
-                )
-                + (
-                    f"\n\nRepair objective: {objective}"
-                    + ("\nAn adopted candidate repair may commit the bounded changes but must not push or create a pull request; the host publishes after current validation and both reviews."
-                       if state.managed_candidate_adoption is not None and state.pull_request is None else "")
-                    +
-                    "\n\nIntegral repair method: resolve every listed open finding as one coherent change. "
-                    "Reassess the complete branch against main; trace each changed contract, persistent resource "
-                    "and lifecycle state through callers, consumers, startup, shutdown, maintenance, recovery and cleanup. "
-                    f"Preserve or add regression evidence for these host-owned impact surfaces: {json.dumps(impact_surfaces)}. "
-                    "Do not stop after the first local fix, and do not weaken an acceptance criterion or existing workflow."
-                ),
-                repair=True,
-            )
+            result = self._invoke_agent_with_timing(repair, self._repair_prompt(repair, objective), repair=True)
             repair = self._record_agent_execution_time(repair)
             repair = self._record_validation_evidence(repair, result)
             repair = self._record_verified_result_commit(
