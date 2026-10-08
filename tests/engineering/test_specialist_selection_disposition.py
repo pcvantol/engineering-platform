@@ -177,6 +177,83 @@ class SpecialistPipelineTests(unittest.TestCase):
         self.assertEqual(model.implementations,1)
         return model,self.store.load('specialist-run')
 
+    def test_recovery_privacy_rejects_raw_decisions_before_any_artifact_and_never_retries(self):
+        import subprocess,sys
+        from engineering_platform.execution_executor import CodexInvocationError
+        for variant in ('credential','private_field'):
+            with self.subTest(variant=variant):
+                case=SpecialistPipelineTests();case.setUp()
+                try:
+                    case.store.save(replace(case.state,repair_iterations=2))
+                    model=case.transport();original=model.invoke;callbacks=[None];attempts=[]
+                    model.set_process_callback=lambda value:callbacks.__setitem__(0,value)
+                    marker='ghp_'+'A'*36 if variant=='credential' else 'synthetic-private-reasoning-sentinel'
+                    def invoke(root,prompt):
+                        attempts.append('provider')
+                        if len(attempts)==1:
+                            raise CodexInvocationError('Interrupted external provider transport.','No result.',next_action='NONE',
+                                terminal_condition='provider_turn_interrupted',interruption_reason='controlled_qualification_interruption')
+                        process=subprocess.Popen((sys.executable,'-c','import time;time.sleep(30)'),start_new_session=True)
+                        try:
+                            callbacks[0]({'pid':process.pid,'process_group':process.pid})
+                            result=original(root,prompt)
+                            decisions=tuple({**item,**({'reason':marker} if variant=='credential' else {'private_reasoning':marker})}
+                                            for item in result.specialist_dispositions)
+                            return replace(result,specialist_dispositions=decisions)
+                        finally:
+                            process.terminate();process.wait(timeout=10)
+                            if callbacks[0] is not None:callbacks[0](None)
+                    model.invoke=invoke;runner=case.runner(model)
+                    result=runner.run(case.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+                    self.assertEqual(result.phase,'BLOCKED')
+                    self.assertEqual((model.implementations,len(attempts),result.repair_iterations),(1,2,2))
+                    recovery=runner._recovery_state('specialist-run')
+                    self.assertIn(recovery['state'],{'AMBIGUOUS','EXHAUSTED'})
+                    self.assertEqual(recovery['maximum_attempts'],1)
+                    with sqlite_connection(case.fixture.database) as connection:
+                        count=connection.execute("SELECT COUNT(*) FROM execution_artifact_records WHERE artifact_type='PROVIDER_RECOVERY_AGENT_RESULT'").fetchone()[0]
+                    self.assertEqual(count,0)
+                    self.assertFalse(any(r['kind']=='CONSUMER_RESULT' for r in result.specialist_records))
+                    before_head=case.fixture.git('rev-parse','HEAD')
+                    from engineering_platform.execution_errors import RunnerError
+                    try:
+                        resumed=runner.run(case.fixture.prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+                        self.assertTrue(resumed.terminal)
+                    except RunnerError:
+                        pass  # An already uncertain/terminal run is not a launch grant.
+                    persisted=case.store.load('specialist-run')
+                    self.assertTrue(persisted.terminal)
+                    self.assertEqual((model.implementations,len(attempts),persisted.repair_iterations),(1,2,2))
+                    self.assertEqual(case.fixture.git('rev-parse','HEAD'),before_head)
+                    for path in case.fixture.data.rglob('*'):
+                        if path.is_file():self.assertNotIn(marker.encode(),path.read_bytes(),str(path))
+                finally:case.doCleanups()
+
+    def test_snapshot_known_oauth_credentials_are_denied_before_provider_and_source_is_unchanged(self):
+        import subprocess
+        from engineering_platform.execution_executor import CodexCliClient
+        from engineering_platform.providers import CodexCliProvider
+        for family in ('gho_','ghu_','ghs_','ghr_'):
+            marker=family+'D'*36
+            source='# Synthetic privacy fixture\n\nObserved '+marker+'\n'
+            (self.root/'README.md').write_text(source)
+            self.fixture.git('add','README.md');self.fixture.git('commit','-qm','synthetic committed privacy input')
+            self.fixture.base=self.fixture.git('rev-parse','HEAD')
+            selected=next(item for item in self.plan().selections if item.reviewer=='documentation')
+            selected=replace(selected,specialist_binding={**selected.specialist_binding,'invocation_id':'a'*32})
+            calls=[]
+            class NoModel(CodexCliProvider):
+                def invoke(inner,root,command,**kwargs):
+                    if command==('codex','--version'):return subprocess.CompletedProcess(command,0,'codex-cli 0.160.1\n','')
+                    if command==('codex','mcp','list','--json'):return subprocess.CompletedProcess(command,0,'[]','')
+                    calls.append(command)
+                    raise AssertionError('Sensitive source became available to provider')
+            result=CodexCliClient(NoModel()).review(self.root,selected,self.objective)
+            self.assertTrue(result.failed)
+            self.assertEqual(calls,[])
+            self.assertEqual((self.root/'README.md').read_text(),source)
+            self.assertEqual(self.fixture.git('rev-parse','HEAD'),self.fixture.base)
+
     def test_completed_primary_without_catalog_before_consumer_marker_blocks_no_replay(self):
         from engineering_platform import execution_host
         model=self.transport();runner=self.runner(model)
@@ -294,7 +371,7 @@ class SpecialistPipelineTests(unittest.TestCase):
     def process_boundary(self,boundary):
         import subprocess,sys,time
         from datetime import datetime,timezone
-        state=replace(self.state,repair_iterations=1 if boundary=='repair-assurance' else 2)
+        state=replace(self.state,repair_iterations=1 if boundary in {'repair-assurance','first-repair-receipt','first-repair-validation'} else 2)
         self.store.save(state)
         spec=self.fixture.area/'specialist-process-input.json'
         spec.write_text(json.dumps({'root':str(self.root),'data':str(self.fixture.data),'database':str(self.fixture.database),
@@ -333,6 +410,13 @@ class SpecialistPipelineTests(unittest.TestCase):
             self.assertEqual((data['reserved_invocation_count'],data['uncertain_invocation_count']),(1,1))
             self.assertEqual(data['completed_invocation_count'],0)
             self.assertTrue(data['dispatch_skips'])
+        elif boundary in {'first-repair-receipt','first-repair-validation'}:
+            self.assertEqual((data['reserved_invocation_count'],data['completed_invocation_count']),(2,2))
+            self.assertEqual(sum(call['role']=='repair' for call in calls),1)
+            receipt=next(r['payload'] for r in after.specialist_records if r['kind']=='CONSUMER_RESULT')
+            self.assertNotEqual(receipt['result_candidate_sha'],self.fixture.git('rev-parse','HEAD'))
+            self.assertEqual([f['disposition'] for f in data['findings']],['DEFERRED','IMPLEMENTED'])
+            self.assertFalse(any(r['kind']=='VERIFICATION' for r in after.specialist_records))
         elif boundary=='assurance-empty':
             # Returned failed advice is completed usage, never adoption.
             self.assertEqual((data['reserved_invocation_count'],data['completed_invocation_count']),(2,2))
@@ -350,6 +434,46 @@ class SpecialistPipelineTests(unittest.TestCase):
         remote=json.loads((self.fixture.data/'specialist-remote.json').read_text())
         self.assertEqual(remote['head_sha'],self.fixture.git('rev-parse','HEAD'))
         self.assertTrue(all(c['result']=='PASS' for c in load_validation_context(self.root,'specialist-run',central_database=self.fixture.database)['controls'].values()))
+
+    def test_real_new_process_after_prepublication_repair_receipt_never_repeats_repair(self):
+        self.process_boundary('first-repair-receipt')
+
+    def test_real_new_process_at_prepublication_repair_validation_uses_current_receipt(self):
+        self.process_boundary('first-repair-validation')
+
+    def test_real_two_host_active_artifact_window_refuses_second_writer_without_terminal_change(self):
+        import subprocess,sys,time
+        self.store.save(replace(self.state,repair_iterations=2))
+        spec=self.fixture.area/'active-host-input.json'
+        spec.write_text(json.dumps({'root':str(self.root),'data':str(self.fixture.data),'database':str(self.fixture.database),
+            'prompt':str(self.fixture.prompt),'remote':str(self.fixture.remote)}))
+        command=(sys.executable,'-m','tests.engineering.specialist_delivery_process',str(spec))
+        first=subprocess.Popen((*command,'start','active-artifact'),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        try:
+            until=time.monotonic()+30
+            while not (self.fixture.data/'artifact-window-active').exists():
+                self.assertIsNone(first.poll())
+                self.assertLess(time.monotonic(),until)
+                time.sleep(.05)
+            before=self.store.load('specialist-run')
+            with sqlite_connection(self.fixture.database) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE'",('specialist-run',)).fetchone()[0],1)
+            second=subprocess.run((*command,'contend','active-artifact'),capture_output=True,text=True,timeout=30)
+            self.assertEqual(second.returncode,0,second.stdout+second.stderr)
+            after=self.store.load('specialist-run')
+            self.assertEqual((after.phase,after.terminal,after.repair_iterations),('EXECUTE_AGENT',False,2))
+            self.assertEqual(after.specialist_records,before.specialist_records)
+            (self.fixture.data/'artifact-window-release').write_text('continue\n')
+            stdout,stderr=first.communicate(timeout=60)
+            self.assertEqual(first.returncode,0,stdout+stderr)
+            result=self.store.load('specialist-run')
+            self.assertEqual((result.phase,result.pull_request,result.repair_iterations),('WAIT_FOR_OPERATOR_MERGE',71,2))
+            calls=[json.loads(line) for line in (self.fixture.data/'specialist-model-calls.jsonl').read_text().splitlines()]
+            self.assertEqual(sum(c['role']=='implementation' for c in calls),1)
+            self.assertFalse(any(c['mode']=='contend' for c in calls))
+        finally:
+            (self.fixture.data/'artifact-window-release').write_text('continue\n')
+            if first.poll() is None:first.terminate();first.communicate(timeout=10)
 
     def test_real_new_process_before_replacement_preserves_existing_recovery_authority(self):
         self.process_boundary('recovery-available')

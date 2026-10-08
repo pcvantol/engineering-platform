@@ -38,7 +38,9 @@ def digest(value: object) -> str:
 
 def require_redacted(value: object) -> None:
     """Reject detectable secrets before artifact persistence; never rewrite evidence."""
-    if _SECRET.search(json.dumps(value, ensure_ascii=False)):
+    from .agent_state import CREDENTIAL_SHAPE_PATTERN
+    text = json.dumps(value, ensure_ascii=False)
+    if _SECRET.search(text) or CREDENTIAL_SHAPE_PATTERN.search(text):
         raise EffectContractError("EFFECT_SENSITIVE_CONTENT_REJECTED")
 
 

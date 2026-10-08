@@ -607,6 +607,10 @@ def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str
     """Persist the bounded structured AgentResult once for post-crash consumption."""
     fields = ("terminal_state", "branch", "pull_request", "terminal_condition", "diagnostic", "repository_path", "commit_sha", "validation_evidence", "quality_evidence", "validation_disposition", "specialist_dispositions")
     payload = {field: getattr(result, field) for field in fields}
+    from .capability_review import validate_specialist_disposition_payload
+    from .effect_contract import require_redacted
+    validate_specialist_disposition_payload(payload["specialist_dispositions"])
+    require_redacted(payload)
     artifact_id = f"provider-recovery-result:{run_id}:{invocation_id}"
     directory = ((artifact_root / "provider-recovery-results") if artifact_root else
                  (root / ".engineering" / "artifacts" / "provider-recovery-results"))

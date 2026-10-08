@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **4**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **5**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.113** (normal PATCH; no operational activation).
 Base: `454e96c477e2305bb3240e7a457b93ae314950d3`, EP 2.3.112.
@@ -14,7 +14,7 @@ Same Work session, one clean checkout/worktree at admission; no open EP PR,
 own source/test process or Git-operation lock. Preserve both old stashes,
 advisory browser lock and separate r30/native holds. r32/r31 each remain
 closed with three consumed corrective rounds. This distinct selected assignment
-uses the existing maximum three corrective rounds, currently one consumed;
+uses the existing maximum three corrective rounds, currently two consumed;
 it never resets a previous provider/run/repair lineage.
 
 ## Code, evidence and missing delta
@@ -201,3 +201,11 @@ Before renewed mandatory review, an actual pre-replacement crash repro proved th
 ### Full owning gate convergence after controller correction
 
 Candidate acb1fce executed all 2,311 source tests with two existing skips and one genuine legacy repair-routing error; it is not a full source PASS. All 163 module coverage gates and strictly greater than 80.2 percent executable-line coverage for all 13 changed production files pass on that candidate (minimum changed line 82.7396254131, aggregate combined 84.8619819544). Fresh noneditable installed matrix: 156 PASS in 1603.364 seconds with 13 real process captures, 196 committed test and 190 package byte inventories verified before/after. The source error exposed an overrestriction added during owner convergence: an originally first-PR-authorized repair receipt can legitimately already carry its durable published PR on resume. The existing receipt rule is restored; both old first-publication and prebound-PR routing regressions and 36 fast owning cases pass. Fresh full exact-head qualification remains required before renewed mandatory grants. This is still corrective wave one of three, not another grant or budget reset.
+
+## Mandatory review wave 2 correction (plan revision 5)
+
+Full independent Quality and Security on exact7518 completed without grants. Quality's one P1 and Security's four findings group into four unique closures: actual pre-PR repair receipt selection at REPAIR_AGENT and LOCAL_REPOSITORY_VALIDATION; result join/uncertainty terminalization only after exclusive lease and current checkpoint; consistent source privacy before snapshot/provider; typed payload/privacy validation before every recovery result artifact write. Two of the existing maximum three corrective rounds are consumed, one remains. All closures are implemented by the same source writer together; pre-PR and concurrent active-owner boundaries require owning regressions and actual fresh-process proof. No source/installed PASS on7518 grants the corrected WIP. r32/r31 and their budgets remain terminal.
+
+### Round 2 owning convergence before the final mandatory wave
+
+Thirty-nine fast cases PASS, including an actual two-process active-owner/artifact-window contention: the second host receives the existing exclusive-lease error and cannot publish a terminal checkpoint; the first host completes once. Shared FME/privacy/recovery and old receipt-routing regressions: 26 PASS. Both real OS prepublication repair boundaries (acknowledged REPAIR_AGENT receipt and LOCAL_REPOSITORY_VALIDATION entry) PASS after actual unchanged lease expiry; primary once, repair once, consumed reservation unchanged, old specialist application retained as historical rather than relabelled VERIFIED. Two real valid artifact/RECOVERED restart regressions PASS. Known OAuth source shapes are refused before provider availability without altering their committed bytes. Credential and unexpected-private-field replacement results are refused before any artifact write; an additional resume preserves mutation/counters and launches no provider. Independent original repros are all closed in this same source writer. These are owner convergence receipts; full new immutable source/package qualification and fresh independent grants remain required.

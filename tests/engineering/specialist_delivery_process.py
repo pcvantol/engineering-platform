@@ -18,6 +18,8 @@ database=Path(spec['database']);repository=SubprocessRepositoryClient(LocalGitHu
 class Store(StateStore):
     def save(self,state,**kwargs):
         path=super().save(state,**kwargs)
+        if mode=='start' and boundary in {'first-repair-receipt','first-repair-validation'} and state.repair_iterations==2 and state.repair_audit and state.repair_audit[-1].get('outcome')=='submitted_for_recheck' and state.phase==('REPAIR_AGENT' if boundary=='first-repair-receipt' else 'LOCAL_REPOSITORY_VALIDATION'):
+            os._exit(73)
         if mode=='start' and boundary in {'consumer','noop-consumer'} and any(r['kind']=='CONSUMER_RESULT' for r in state.specialist_records):
             os._exit(73)
         return path
@@ -43,6 +45,12 @@ class Model(Base):
         result=super().review(root,selected,objective,evidence)
         return replace(result,findings=()) if boundary=='noop-consumer' and selected.reviewer not in {'quality','security'} else result
     def invoke(self,root,prompt):
+        if boundary in {'first-repair-receipt','first-repair-validation'} and self.implementations:
+            self.log('repair')
+            (root/'README.md').write_text('# Qualified first repaired delivery\n\nAcceptance sentence.\n')
+            git('add','README.md');git('commit','-qm','bounded prepublication repair')
+            from engineering_platform.execution_models import AgentResult
+            return AgentResult('COMPLETE',git('branch','--show-current'),commit_sha=git('rev-parse','HEAD'))
         self.log('implementation')
         if mode=='resume' and boundary not in {'dispatch','recovery-available'}:
             raise AssertionError('Durable primary consumer result was replayed through model')
@@ -61,7 +69,12 @@ class Model(Base):
                 return super().invoke(root,prompt)
             finally:
                 child.terminate();child.wait(timeout=10);self.process_callback(None)
-        return super().invoke(root,prompt)
+        result=super().invoke(root,prompt)
+        if boundary in {'first-repair-receipt','first-repair-validation'}:
+            (root/'README.md').write_text('Invalid heading causes the actual owning test to fail.\n')
+            git('add','README.md');git('commit','-qm','actual first validation failure')
+            return replace(result,commit_sha=git('rev-parse','HEAD'))
+        return result
     def set_process_callback(self,callback):
         self.process_callback=callback
 class GitHub:
@@ -82,6 +95,18 @@ class GitHub:
     def ready(self,number):pass
     def normalize_markdown_body(self,number):return False
     def find_open_pull_request(self,*args):return None
+if mode=='start' and boundary=='active-artifact':
+    from engineering_platform import execution_host
+    persist=execution_host.persist_recovery_agent_result
+    def active_artifact_window(*args,**kwargs):
+        import time
+        (data/'artifact-window-active').write_text('ledger complete; active owner\n')
+        until=time.monotonic()+45
+        while not (data/'artifact-window-release').exists():
+            if time.monotonic()>until:raise TimeoutError('Own active-owner rendezvous expired')
+            time.sleep(.05)
+        return persist(*args,**kwargs)
+    execution_host.persist_recovery_agent_result=active_artifact_window
 if mode=='start' and boundary=='recovery-available':
     from engineering_platform import execution_host
     os.environ['ENGINEERING_PLATFORM_TEST_INTERRUPT_PROVIDER_ONCE']='specialist-run:EXECUTE_AGENT'
@@ -109,7 +134,17 @@ if mode=='start' and boundary=='artifact':
 runner=EngineeringRunner(root,store,repository,GitHub(),Model(),lambda _:None)
 try:
     with patch('engineering_platform.codex_capacity.read_remaining_percent',return_value=100),patch('engineering_platform.execution_host.provider_readiness_failures',return_value=()):
-        result=runner.run(prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        try:
+            result=runner.run(prompt,run_id='specialist-run',resume=True,owner_authorized=True)
+        except Exception as error:
+            if mode!='contend' or boundary!='active-artifact':raise
+            from engineering_platform.execution_errors import RunnerError
+            assert isinstance(error,RunnerError) and 'active-run ownership conflict' in str(error),error
+            current=store.load('specialist-run')
+            assert current.phase=='EXECUTE_AGENT' and not current.terminal,current
+            (data/'active-contender-refused.json').write_text(json.dumps({'phase':current.phase,'terminal':current.terminal,'reason':'exclusive lease conflict'}))
+            sys.exit(0)
+        assert mode!='contend','Contender unexpectedly obtained execution result'
     if mode=='start' and boundary=='repair-assurance':
         from engineering_platform.execution_lease import acquire,LeaseHeartbeat
         runner.active_lease=acquire(root,'specialist-run',identity=runner.host_identity,instance_id=runner.host_instance_id,

@@ -582,9 +582,23 @@ def specialist_readback(records: tuple[dict[str, object], ...]) -> dict[str, obj
             "reserved_invocation_count": sum(r["kind"] == "DISPATCH" for r in records), "completed_invocation_count": sum(r["kind"] == "RESULT" for r in records), "uncertain_invocation_count": sum(r["kind"] == "UNCERTAIN" for r in records), "findings": list(findings.values()), "duplicate_observations": sum(r["payload"].get("duplicates", 0) for r in records if r["kind"] == "RESULT")}
 
 
+def validate_specialist_disposition_payload(supplied: object) -> None:
+    """Validate bounded public decision fields before any durable result copy."""
+    if not isinstance(supplied, (tuple, list)) or len(supplied) > 16:
+        raise ValueError("specialist_disposition_set_invalid")
+    for item in supplied:
+        if (not isinstance(item, dict) or set(item) != {"finding_id", "disposition", "reason", "changed_paths"}
+                or not _safe_text(item["finding_id"], 100)
+                or item["disposition"] not in {"ACCEPTED", "REJECTED", "DEFERRED", "IMPLEMENTED"}
+                or not _safe_text(item["reason"]) or not isinstance(item["changed_paths"], (tuple, list))
+                or len(item["changed_paths"]) > 1 or any(not _safe_path(path) for path in item["changed_paths"])):
+            raise ValueError("specialist_disposition_invalid")
+
+
 def specialist_dispositions(records: tuple[dict[str, object], ...], supplied: object, *, candidate_sha: str,
                             changed_paths: tuple[str, ...]) -> tuple[dict[str, object], ...]:
     """The existing primary owner must explicitly consume every proposed finding."""
+    validate_specialist_disposition_payload(supplied)
     pending = {f["id"]: f for f in specialist_readback(records)["findings"] if f["disposition"] == "PROPOSED"}
     if not pending and supplied in ((), []):
         return ()
@@ -614,10 +628,6 @@ def specialist_dispositions(records: tuple[dict[str, object], ...], supplied: ob
         raise ValueError("specialist_disposition_set_invalid")
     events = []
     for item in supplied:
-        if (set(item) != {"finding_id", "disposition", "reason", "changed_paths"}
-                or item["disposition"] not in {"ACCEPTED", "REJECTED", "DEFERRED", "IMPLEMENTED"}
-                or not _safe_text(item["reason"]) or not isinstance(item["changed_paths"], (tuple, list))):
-            raise ValueError("specialist_disposition_invalid")
         finding = pending[item["finding_id"]]
         if item["disposition"] == "IMPLEMENTED":
             if list(item["changed_paths"]) != [finding["path"]] or finding["path"] not in changed_paths or candidate_sha == finding["candidate_sha"]:

@@ -1974,11 +1974,17 @@ class EngineeringRunner:
         )
         replacement = self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", role=role.value, started_at=invocation_started, invocation_id=replacement_id if isinstance(replacement_id, str) else None)
         if isinstance(durable_recovery, dict) and durable_recovery.get("state") == "RECOVERY_IN_PROGRESS":
-            result_reference = persist_recovery_agent_result(
-                self.root, run_id=state.run_id, invocation_id=str(replacement_id), result=result,
-                central_database=self.store.central_database,
-                artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
-            )
+            try:
+                result_reference = persist_recovery_agent_result(
+                    self.root, run_id=state.run_id, invocation_id=str(replacement_id), result=result,
+                    central_database=self.store.central_database,
+                    artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
+                )
+            except (ValueError, TypeError) as error:
+                record_replacement_terminal(self.root, run_id=state.run_id, outcome="FAILED",
+                    central_database=self.store.central_database)
+                raise CodexInvocationError("Provider result rejected before recovery persistence.",
+                    "Bounded result/privacy validation failed; no result artifact was retained.", next_action="NONE") from error
             record_replacement_terminal(
                 self.root, run_id=state.run_id, outcome="SUCCESS", result_evidence_ref=result_reference,
                 central_database=self.store.central_database,
@@ -3161,8 +3167,11 @@ class EngineeringRunner:
                 safe_result = replace(result, diagnostic=redact_diagnostic(result.diagnostic, limit=500) if result.diagnostic else None,
                     validation_evidence=tuple({k:redact_diagnostic(v,limit=240) for k,v in item.items()} for item in result.validation_evidence),
                     quality_evidence=tuple({k:redact_diagnostic(v,limit=240) for k,v in item.items()} for item in result.quality_evidence))
-                reference = persist_recovery_agent_result(self.root, run_id=state.run_id, invocation_id=identifier, result=safe_result,
-                    central_database=self.store.central_database, artifact_root=self.store.central_database.parent / "artifacts" if self.store.central_database else None)
+                try:
+                    reference = persist_recovery_agent_result(self.root, run_id=state.run_id, invocation_id=identifier, result=safe_result,
+                        central_database=self.store.central_database, artifact_root=self.store.central_database.parent / "artifacts" if self.store.central_database else None)
+                except (ValueError, TypeError):
+                    return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_unavailable", "Primary result rejected before artifact persistence; provider replay is forbidden.")
                 original = next(r for r in state.specialist_records if r["kind"] == "DISPATCH")
                 state = replace(state, specialist_records=state.specialist_records + ({**original, "kind": "CONSUMER_RESULT", "payload": {
                     "consumer_invocation_id": identifier, "result_candidate_sha": evidence.head_sha, "result_ref": reference}},))
@@ -3373,7 +3382,8 @@ class EngineeringRunner:
                         self.lease_heartbeat = None
                     release_lease(self.root, self.active_lease, central_database=self.store.central_database)
                     self.active_lease = None
-        if resume and state is not None and state.phase in {"REPAIR_AGENT", "LOCAL_REPOSITORY_VALIDATION"} and state.pull_request is not None:
+        if resume and state is not None and state.phase in {"REPAIR_AGENT", "LOCAL_REPOSITORY_VALIDATION"} and (
+                state.pull_request is not None or self._durable_repair_result_for_validation_resume(state) is not None):
             # Resume an already-bound repair at its real validation gate.  A
             # fresh-run path here would create an unrelated provider turn.
             if Path(state.prompt_path) != prompt_path:
@@ -3484,20 +3494,9 @@ class EngineeringRunner:
         recovered_resume = self._recovered_result_matches_state(state, recovery_snapshot) and state.phase in {
             "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT",
         }
-        if (resume and recovery_snapshot is None and not recovered_resume and consumer_receipt is None
+        deferred_primary_result_join = (resume and recovery_snapshot is None and not recovered_resume and consumer_receipt is None
                 and state.transaction_kind == "IMPLEMENTATION" and state.phase == "EXECUTE_AGENT"
-                and any(r["kind"] == "DISPATCH" for r in state.specialist_records)):
-            from .provider_recovery import completed_primary_result_reference
-            try:
-                completed_primary = completed_primary_result_reference(self.root, run_id=state.run_id,
-                    central_database=self.store.central_database)
-            except ValueError:
-                return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_unavailable", "Completed primary result is uncertain; provider replay is forbidden.")
-            if completed_primary is not None:
-                # Actual candidate is checked after exclusive lease admission;
-                # the artifact remains the sole authority for result content.
-                consumer_receipt = {"consumer_invocation_id": completed_primary[0],
-                    "result_ref": completed_primary[1], "result_candidate_sha": None}
+                and any(r["kind"] == "DISPATCH" for r in state.specialist_records))
         try:
             persisted_submission = load_submission_for_run(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
@@ -3666,6 +3665,31 @@ class EngineeringRunner:
         self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
+        if deferred_primary_result_join:
+            # An active writer may be between completed ledger and artifact.
+            # Observe that join only after exclusive ownership of this run.
+            current_checkpoint = self.store.load(state.run_id)
+            identity = ("phase", "repository", "prompt_path", "branch", "pull_request", "transaction_kind",
+                        "execution_mode", "action_intent", "repair_iterations", "last_verified_sha",
+                        "execution_baseline_sha", "specialist_records")
+            if current_checkpoint is None or any(getattr(current_checkpoint, key) != getattr(state, key) for key in identity):
+                lease = self.lease_heartbeat.stop()
+                self.lease_heartbeat = None
+                release_lease(self.root, lease, central_database=self.store.central_database)
+                self.active_lease = None
+                raise RunnerError("checkpoint changed before exclusive result recovery; resume current checkpoint")
+            recovery_snapshot = self._recovery_state(state.run_id)
+            recovered_resume = self._recovered_result_matches_state(state, recovery_snapshot)
+            if recovery_snapshot is None:
+                from .provider_recovery import completed_primary_result_reference
+                try:
+                    completed_primary = completed_primary_result_reference(self.root, run_id=state.run_id,
+                        central_database=self.store.central_database)
+                except ValueError:
+                    return self._save_terminal(state, "BLOCKED", "specialist_consumer_result_unavailable", "Completed primary result is uncertain; provider replay is forbidden.")
+                if completed_primary is not None:
+                    consumer_receipt = {"consumer_invocation_id": completed_primary[0],
+                        "result_ref": completed_primary[1], "result_candidate_sha": None}
         if repair_assurance_resume:
             try:
                 self._verify_adoption_continuation(state)
