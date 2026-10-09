@@ -171,7 +171,15 @@ def _start_process(*arguments, **options):
     try:
         process_effect_started()
     except BaseException as error:
-        process.kill()
+        # Bounded native execs own a separate process group. An audit failure
+        # must reap its launcher and descendants, without touching siblings.
+        try:
+            if options.get("start_new_session"):
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            pass
         process.wait()
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None:

@@ -4202,17 +4202,15 @@ class EngineeringRunner:
         metadata = specialist_readback(state.specialist_records)
         update_phase_metadata(self.root, capability_review, {"specialist_selection_disposition": metadata})
         write_live_status(self.root, state, "Capability selection and typed findings recorded")
-        previous_state = state
-        state = (
-            replace(state, phase="EXECUTE_AGENT", next_action="invoke_agent")
-            if context.execution_mode == "GENESIS"
-            else self._reconcile(state, evidence)
-        )
-        try:
+        if context.execution_mode == "GENESIS":
+            previous_state = state
+            state = replace(state, phase="EXECUTE_AGENT", next_action="invoke_agent")
             self._save_effect_checkpoint(previous_state, state)
-        except AdoptionAuthorityError:
-            return self._save_terminal(previous_state, "BLOCKED", "managed_candidate_adoption_invalid",
-                "Current checkpoint denied post-specialist continuation.")
+        else:
+            # Reconciliation owns its projection CAS or its already durable
+            # recovery/terminal transition. Never write that result a second
+            # time against the obsolete pre-reconciliation checkpoint.
+            state = self._reconcile(state, evidence)
         write_live_status(self.root, state, state.next_action)
         complete_phase(self.root, capability_review)
         if state.terminal:
@@ -4397,11 +4395,19 @@ class EngineeringRunner:
             raise RunnerError(str(error)) from error
 
     def _reconcile(self, state: TransactionState, evidence: RepositoryEvidence) -> TransactionState:
+        def project(**changes):
+            updated = replace(state, **changes)
+            try:
+                self._save_effect_checkpoint(state, updated)
+            except AdoptionAuthorityError:
+                return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                    "Current checkpoint denied reconciliation projection.")
+            return updated
+
         if state.branch and evidence.branch not in {"main", state.branch}:
             raise RunnerError("current branch conflicts with active transaction")
         if state.pull_request:
-            return replace(
-                state,
+            return project(
                 phase="WAIT_FOR_TERMINAL_EVIDENCE",
                 last_verified_sha=evidence.head_sha,
                 next_action="poll_required_checks",
@@ -4411,8 +4417,7 @@ class EngineeringRunner:
                 # Finalization entry is persisted before its provider handoff.
                 # A new host must continue that exact same entry rather than
                 # requiring a PR that has not yet been created.
-                return replace(
-                    state,
+                return project(
                     last_verified_sha=evidence.head_sha,
                     next_action="create_finalization",
                 )
@@ -4425,8 +4430,7 @@ class EngineeringRunner:
             # Resumed-host setup temporarily projects CAPABILITY_REVIEW. Keep
             # the already durable Finalization entry instead of falling back
             # into the implementation execution phase.
-            return replace(
-                state,
+            return project(
                 phase="FINALIZE_AGENT",
                 last_verified_sha=evidence.head_sha,
                 next_action="create_finalization",
@@ -4436,8 +4440,7 @@ class EngineeringRunner:
             and state.implementation_pull_request is None
             and not state.finalization_pull_request
         ):
-            return replace(
-                state,
+            return project(
                 phase="FINALIZE_AGENT",
                 last_verified_sha=evidence.head_sha,
                 next_action="create_finalization",
@@ -4457,8 +4460,7 @@ class EngineeringRunner:
         ):
             if state.owner_authorized:
                 return self._start_finalization(state, state.implementation_pull_request or 0)
-        return replace(
-            state,
+        return project(
             phase="EXECUTE_AGENT",
             last_verified_sha=evidence.head_sha,
             next_action="invoke_agent",
