@@ -1,5 +1,11 @@
 # Engineering Platform
 
+The [bounded specialist selection and disposition subset](docs/development/SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md)
+is source-qualified on protected EP 2.3.114 main after complete independent Quality/Security.
+Ordinary NO_BUMP Finalization and fresh exact-final-main noneditable installed acceptance
+are tracked in the owning [r33 register](https://github.com/pcvantol/forge/issues/142);
+source merge alone does not close that installed gate.
+
 The [deterministic validation/publication subset](docs/development/DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md)
 is qualified on protected 2.3.112 main with noneditable installed evidence.
 The approved objective remains complete; mechanical controls and first publication

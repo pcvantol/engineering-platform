@@ -271,6 +271,14 @@ barrier against arbitrary nonconforming-provider remote writes.
 
 ### Useful optional specialists — SA-SEL / SA-LOOP
 
+The explicitly selected r33 implementation is source-qualified on protected
+EP 2.3.114 main after complete independent Quality/Security. The
+[owning delivery record](../development/SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md)
+retains exact source, current allowance10/10 and all historical evidence. Ordinary
+NO_BUMP Finalization and fresh exact-final-main noneditable installed completion
+remain required in [#142](https://github.com/pcvantol/forge/issues/142); no broad
+family or operational activation follows from source qualification.
+
 Select optional roles from explicit repository capabilities, relevant components,
 affected paths and task risk; objective keywords are secondary evidence, not the
 sole authority. Record why each role was selected or skipped, the expected
@@ -283,7 +291,7 @@ must not starve them. Keep one mutating owner per repository. Lack of capacity i
 explicit waiting/skipping according to role necessity, never a synthetic review
 PASS. Deadlines, cancellation and recovery remain host-owned; no second budget.
 
-The future consumer accepts bounded structured findings, not private reasoning or
+The selected source-qualified consumer accepts bounded structured findings, not private reasoning or
 another reviewer's transcript. Keep original IDs, evidence references and criterion
 bindings; the host records proposed/accepted/rejected/deferred/implemented/verified
 as distinct dispositions with actual decision/result references. Counts of returned

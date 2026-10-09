@@ -3,7 +3,7 @@
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
 Lane revision **r33**, plan revision **13**, sole source writer **LANE_2_WORK**.
-State: **IMPLEMENTING / NOT_QUALIFIED**.
+State: **SOURCE_QUALIFIED / FINALIZING; exact-final-main installed acceptance pending**.
 Selected version target: **2.3.114** (normal PATCH; no operational activation).
 Base: `9318636060706534635954e9131e42e2f63928ef`, EP 2.3.113. Historical reviewbase454e96c is retained below.
 Branch: `codex/ep-specialist-selection-disposition-v1`.
@@ -15,8 +15,9 @@ own source/test process or Git-operation lock. Preserve both old stashes,
 advisory browser lock and separate r30/native holds. r32/r31 each remain
 closed with three consumed corrective rounds. This distinct selected assignment
 retains its initial maximum three corrective rounds and historical consumed3.
-The specific round9 inline-start decision governs the current cumulative limit9;
-historical rounds1–8 remain consumed and unchanged;
+The historical round9 inline-start decision had cumulative limit9. The specific
+round10 decision governs the current allowance: **consumed10/max10/remaining0**;
+historical rounds1–9 remain consumed and unchanged;
 no previous provider/run/repair lineage is reset.
 
 ## Code, evidence and missing delta
@@ -692,3 +693,90 @@ Exact926 owning coverage and full validate (including complete testmatrix/contra
 The product stdin/managed-launcher delta had genuine native positives and whole source2474/installed316/strictcoverage164modules24changed PASS. The actual remaining browser cause was its declared external executable fixture reading sys.argv[-1] as prompt, which now correctly contains literal '-'. The fixture now asserts this literal marker and reads real stdin, matching native Codex transport. No productcode, authority, browser assertion, retry, timeout, maxFailures, threshold, version or budget changed in this join.
 
 Complete original translation integration13 PASS14.6s with real Chromium and noneditable926 installed modules, preserving original module-origin checks and all locale/delayed/retry/abort/validation/output/concurrency600-result assertions. The absent local pinned Chromium caused setup-only attempts before the project-local /private/tmp browser runtime was provisioned; those are nonqualified setup records, not product results. Final committed candidate and all required exact-head gates follow; no historical PASS is transferred. Same R10/plan13/consumed10/max10/remaining0, no R11 or newwriter.
+
+## Ordinary NO_BUMP Finalization after protected implementation merge
+
+Same r33 assignment, plan13, ARCHITECT_2/LANE_2_WORK, existing Work session
+and sole sourcewriter. Correction consumption stays **10/10, remaining0**;
+this is the required documentary lifecycle step, not round11 or another product
+assignment. r31/r32/GP remain closed; original provider/run/repair/time/lease
+budgets, reservations, branches, stashes, historical reports and holds remain.
+
+### Actual protected source and independent acceptance
+
+- Reviewed implementation head `d3ee57d3ee34d7cbadd2cac68d0090c2078b55a2`,
+  tree `cdf816e99e3dad4dbeafc909049364db025a22cf`, against protected
+  base `9318636060706534635954e9131e42e2f63928ef`.
+- Normal protected squash/head-CAS merged PR346 at 2026-10-09T19:57:13Z as
+  `be60bf08dac17caf437a147fe658bca67d821dd6`, with exactly the reviewed tree.
+  Normal HIGH_RISK exact-SHA OwnerAuthorization37983621624 actually SUCCESS;
+  no admin bypass or protection change. EP remains **2.3.114**.
+- Fresh complete independent [Quality PASS](https://github.com/pcvantol/engineering-platform/pull/346#issuecomment-6088227583):
+  172 own installed tests, own643 tracked source/191 package/207 test bytes
+  before/after. Raw report SHA256 `23d20190581180f6eb58c3d025efbe7e9718078ad5140dc1fe426f5b2174ac55`.
+- Fresh complete independent [Security PASS](https://github.com/pcvantol/engineering-platform/pull/346#issuecomment-6088174088):
+  164 own installed tests and own643/191/207 before/after bindings. Raw report
+  SHA256 `dd1fd7a92d63b63299331aeada219234f90d3a779fc87891472030f18f10033d`.
+  Neither reviewer read the peer-current conclusion. Both cover the whole58-file
+  selected delta and its24 changed production modules; neither is a borrowed
+  root full-suite PASS. Their shared nonblocking P3 present-tense plan12/limit9
+  prose is reconciled to plan13/consumed10/max10/remaining0 here. Historical
+  rejected reports and all earlier limits remain historical.
+
+### Complete actual implementation qualification
+
+Own exactd3 whole source2474 PASS/two existing skips, installed316 PASS,
+406 source/test and191 package/207 committed test before/after bindings PASS.
+Python3.14.8; genuine native Codex0.160.1; original controls/thresholds intact.
+Strict coverage164 modules/24 changed production files PASS: minimum changed
+executable83.2764505119454% (>80.2%), modulecombined80.32036613272311%,
+aggregatecombined84.94448805652125%. All14 restored-fault detectors PASS
+(all11 historical plus3 R10), each on its concrete behavioral assertion.
+
+[Full owning CI37965812325](https://github.com/pcvantol/engineering-platform/actions/runs/37965812325)
+SUCCESS: installedcoverage2456/one skip; installed validation2474/one skip;
+coupled102/fault14, all4 browserparts/localization, native sandbox, ingress3×2,
+parallelAction16, EP repositoryauthority8, Genesis/Managed/controlledrecovery,
+HTTP/OpenAPI/Postman, projection and deliveryevidence. Normal PR CI built merge
+revision `5afc24d88be2b809fa1cc9cb51ceba1749df4ceb`, whose tree equals the
+reviewed tree; local committed-source/wheel/installed proof separately binds
+exactd3. Separate current CodeQL check SUCCESS without dismissal/suppression/waiver.
+GoldenRegression was legitimately SKIPPED by its existing profile, not executed PASS.
+
+Exactd3 wheel SHA256 `17d19eb28da078383940b4b428b7ed586ad49f1af609d1496fde5b1ab6c5ad34`;
+sdist `05b019309b60f468324ac2c16a8e89c9b897c12bd8cccd6fc184e3d9df856b8d`.
+These implementation artifacts are historical after Finalization: no transfer
+to a new exact-final-main SHA. Own16-file evidence manifest SHA256
+`61e4d84d79d5fbe0903c1f90a07a9efee039c19dff9cafff54b64d4bad815310`;
+33 sanitized process captures retain real selected consumer/recovery receipts.
+
+### Retained failed observations and exact finish line
+
+The initial exactd3 local translationbrowser run remains12 PASS/one abortfinishjournal
+FAIL, followed by unchanged13 PASS13.7s and actual currentCI4/4 PASS. Neither
+reviewer established a unique cause; concurrent load is not a proven diagnosis.
+No assertion, timeout, retry or maxFailures was altered. Earlier926 CI browser
+FAILURE and its external argv-to-stdin fixture diagnosis remain in the history.
+TDE workflowSUCCESS remains actual assessment/policy **FAIL**, repository
+qualification **FAILED**, exit2/2 and coverageunavailable/collectionexit1.
+No policyPASS or broad TDE remediation is claimed.
+
+This documentary Finalization changes only six owning Markdown/JSON documents,
+no production/test/UI/workflow/version bytes. Fresh independent documentary
+Quality/Security, normal completeCI and protectedmerge are required on its actual
+head. **After that merge**, a new supported committed exact-final-main wheel/sdist,
+fresh noneditable installed selectedscope/process captures and before/after
+bytebinding, final normalCI and authoritative readbacks must complete. The actual
+final SHA, artifact hashes, installed results and cleanup/closure are published
+in the owning [r33 register](https://github.com/pcvantol/forge/issues/142), not
+invented here before they exist. Source merge and implementationreviews alone
+do not mark the assignment DONE. Dashboard staysQUEUED_AFTER_R33_FULL_DOD/NOT_ACTIVE
+until that actual closure; no automatic next-family pickup.
+
+Qualification covers selected SA-SEL/SA-LOOP and necessary CTX/ISO/OBS joins,
+including current recovery/Git/native/ACK/checkpoint boundaries. Actual EP host,
+Git/storage/lease/controller/ledger/consumer are real; model/GitHub transports
+are explicit deterministic fixtures. No commercial detection/savings, full
+SA-Q/ROLE/PAR, live/paid model, operational activation, productionCENTRAL,
+signing or publicrelease. EP repositoryauthority remains EP-owned; Forge
+multi-repository consumer acceptance is NOT_EVALUATED.
