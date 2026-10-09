@@ -600,3 +600,25 @@ This admits no missing control or incomplete assurance as qualified. The old
 private delivery-timeout unitfixture now uses actual checkpointstorage and a
 separate unreviewed negative fixture instead of erasing the positive history.
 The three concrete regressions pass, including readback and denied mergeassurance.
+
+
+### Complete 4f4ad4e qualification and ordering convergence
+
+The complete 4f4ad4e source pass ran2453tests with2failures/2existing skips;
+its installed matrix ran268tests with the same2failures, before/after191package
+and205testbytes exact. CI engineering suite2435tests had the same2failures and
+correctly skipped dependent validate/evidence jobs. Strict coverage separately
+met every unchanged threshold across164modules/20changed production files;
+this did not qualify the failed behavior. No official independent wave started.
+
+The concrete failures were phase rebinding from a start-audit coldread and a
+preparation-only pause before Security incorrectly retaining a pending intent.
+The audit now merges only its append-only launchhistory into the existing
+continuation binding: actual phase/grant changes remain canonical and deny the
+next start, never become a new scope. Client resolution precedes intent, so a
+known pause before launch does not fabricate an interrupted request. Lost ACK,
+post-start auditfailure and true interrupted intents retain UNKNOWN/INTENT and
+block blind retry. The original two negative/positive regression assertions
+remain unchanged; whole host/control/inline366tests OK (one existing skip),
+128.589s. This is same integrated round9 own convergence before new final reviews,
+not an extra allowance, reset or reviewgrant. Prior artifacts remain NOT_QUALIFIED.

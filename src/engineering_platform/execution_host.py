@@ -2703,6 +2703,9 @@ class EngineeringRunner:
                 "Report all concrete new findings found across the complete impact boundary in this wave; do not stop after the first blocker. "
                 + criteria
             )
+            # Resolve the external client before recording a launch attempt.
+            # A preparation-only pause has not handed any request to transport.
+            review_client = self.agent if hasattr(self.agent, "review") else None
             started_at = datetime.now(timezone.utc).isoformat()
             invocation_id = f"{quality.run_id}:{selection.reviewer}:{uuid.uuid4().hex}"
             # Reserve identity durably before native or inline handoff. An
@@ -2731,7 +2734,10 @@ class EngineeringRunner:
                 quality = replace(quality, assurance_launch_events=quality.assurance_launch_events +
                                   ({**launch_binding, "status": status},))
                 self.store.save(quality, preserve_effect_authority=True)
-                quality = self.store.load(quality.run_id)
+                # Audit can retain current revocation/phase truth in storage,
+                # but must not rebind this continuation to a changed phase.
+                observed = self.store.load(quality.run_id)
+                quality = replace(quality, assurance_launch_events=observed.assurance_launch_events)
             context_role = (ProviderRole.QUALITY_REVIEW if selection.reviewer == "quality"
                             else ProviderRole.SECURITY_REVIEW)
             self._provider_context_telemetry = project_context(context_role, assurance_objective).telemetry
@@ -2759,7 +2765,7 @@ class EngineeringRunner:
             try:
                 result = run_reviews(
                     assurance_root or self.root, (contracted_selection,), assurance_objective,
-                    self.agent if hasattr(self.agent, "review") else None, evidence=evidence,
+                    review_client, evidence=evidence,
                     authority=lambda: effect_authority(state=quality, root=self.root,
                         central_database=self.store.central_database, lease=self.active_lease),
                     started=record_review_start,
