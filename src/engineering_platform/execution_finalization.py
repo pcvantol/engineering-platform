@@ -35,6 +35,8 @@ class FinalizationCoordinator:
         try:
             store.save(cleanup, expected_effect_checkpoint=effect_checkpoint(state) if state.managed_candidate_adoption else None)
         except StateError as error:
+            if state.managed_candidate_adoption is None:
+                raise
             return save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         write_live_status(root, cleanup, "Repository cleanup in progress")
         operation = getattr(repository, "cleanup_transaction", None)

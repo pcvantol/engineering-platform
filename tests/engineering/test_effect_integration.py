@@ -1,6 +1,7 @@
 """Review regressions across the real bounded-effect integration boundaries."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -18,7 +19,7 @@ from engineering_platform.execution_host import EngineeringRunner
 from engineering_platform.execution_repository import SubprocessRepositoryClient, GhCliClient
 from engineering_platform.parity_lifecycle_dispatcher import ParityLifecycleDispatcher
 from engineering_platform.platform_version import RunnerCompatibility
-from engineering_platform.providers import CodexCliProvider
+from engineering_platform.providers import CodexCliProvider, GitHubProvider, LocalProcessProvider
 from engineering_platform.storage import sqlite_connection
 from tests.engineering import test_effect_execution as fixtures
 
@@ -142,8 +143,35 @@ class EffectIntegrationTests(unittest.TestCase):
             self.assertFalse(review["findings"][0]["blocking"])
             self.assertEqual(review["findings"][0]["disposition"], "NON_BLOCKING")
 
-    def test_delegated_protected_merge_only_fetches_into_owned_delivery(self):
-        dispatcher, remote = self.dispatcher(_DelegatedGitHub)
+    def delegated_merge_continuation(self, *, changed=False, uncertain=False):
+        fixture = self
+        committed = []
+        after_stop_calls = []
+        checkpoint_receipt = self.base / "external-checkpoint.json"
+        class External(_DelegatedGitHub, GitHubProvider):
+            def github(inner, *args):
+                if committed:
+                    after_stop_calls.append(args)
+                if args[0] == "api" and "PUT" in args and (changed or uncertain):
+                    # Genuine native external transport: its process start
+                    # releases authority before the child commits interference.
+                    import engineering_platform
+                    script = "import sys,json\nfrom pathlib import Path\nfrom dataclasses import replace\n"
+                    script += "sys.path.insert(0," + repr(str(Path(engineering_platform.__file__).parent.parent)) + ")\n"
+                    script += "from engineering_platform.storage import sqlite_connection\nfrom engineering_platform.agent_state import StateStore\n"
+                    if changed:
+                        script += "database=Path(" + repr(str(fixture.database)) + ")\n"
+                        script += "with sqlite_connection(database) as connection: run_id=connection.execute(\"SELECT run_id FROM execution_run_leases WHERE lease_state='ACTIVE'\").fetchone()[0]\n"
+                        script += "store=StateStore(Path(" + repr(str(fixture.root / '.engineering/engineering-runs')) + "),central_database=database,emit_local_projection=False)\n"
+                        script += "current=store.load(run_id)\nstore.save(replace(current,phase='QUALITY_CONTROL_AGENT',terminal=False,next_action='operator_stopped',owner_authorized=False))\n"
+                        script += "Path(" + repr(str(checkpoint_receipt)) + ").write_text(json.dumps(store.load(run_id).to_dict()))\n"
+                    script += "raise SystemExit(73)\n"
+                    completed = LocalProcessProvider().execute(fixture.root, (sys.executable, '-c', script))
+                    fixture.assertEqual(completed.returncode, 73, completed.stderr)
+                    committed.append(json.loads(checkpoint_receipt.read_text()) if changed else "ambiguous external effect")
+                    raise RunnerError("External merge response unavailable")
+                return super().github(*args)
+        dispatcher, remote = self.dispatcher(External if changed or uncertain else _DelegatedGitHub)
         remote.base_revision = self.revision
         delegation = "a" * 32
         payload = self.fixture.forge_planning_context_payload("fme-delegation")
@@ -161,10 +189,31 @@ class EffectIntegrationTests(unittest.TestCase):
         before = files(self.root)
         receipt = dispatcher.dispatch(submission)
         state = self.state(receipt.run_id)
-        self.assertEqual(receipt.state, "COMPLETE", state.diagnostic)
-        self.assertEqual(state.delegated_merge_actor_reference, "local-uid:501")
+        if changed:
+            self.assertEqual(len(committed), 1)
+            self.assertEqual(json.loads(json.dumps(state.to_dict())), committed[0],
+                "every field of newer nonterminal truth is retained in canonical JSON")
+            self.assertEqual(state.next_action, "operator_stopped")
+        elif uncertain:
+            self.assertEqual(state.phase, "WAIT_FOR_OPERATOR_MERGE")
+            self.assertEqual(state.next_action, "verify_delegated_merge_outcome")
+            self.assertEqual(state.terminal_condition, "delegated_merge_outcome_uncertain")
+            self.assertIsNotNone(state.delegated_merge_attempt)
+        else:
+            self.assertEqual(receipt.state, "COMPLETE", state.diagnostic)
+            self.assertEqual(state.delegated_merge_actor_reference, "local-uid:501")
+        self.assertEqual(after_stop_calls, [], "no remote read or effect after continuation ends")
         self.assertEqual(remote.creates, 1)
         self.assertEqual(files(self.root), before)
+
+    def test_delegated_protected_merge_only_fetches_into_owned_delivery(self):
+        self.delegated_merge_continuation()
+
+    def test_delegated_merge_nonterminal_checkpoint_conflict_ends_public_effect_runner(self):
+        self.delegated_merge_continuation(changed=True)
+
+    def test_delegated_merge_ambiguity_ends_public_effect_runner(self):
+        self.delegated_merge_continuation(uncertain=True)
 
     def test_hosted_failure_repairs_and_requalifies_the_same_pr(self):
         dispatcher, remote = self.dispatcher(_RepairGitHub)

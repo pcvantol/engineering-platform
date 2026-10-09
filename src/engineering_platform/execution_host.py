@@ -88,7 +88,7 @@ from .assurance_scope import observed_delivery_scope
 from .reconciliation_adoption import ROLLING_RECORDS
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
-from .execution_errors import ProviderReadinessBlocked
+from .execution_errors import ProviderReadinessBlocked, CheckpointContinuationStopped, checkpoint_continuation_boundary
 from .execution_timeout_policy import END_RECONCILIATION, FINALIZATION, REPAIR, SPECIALIST_REVIEW, agent_timeout
 from .provider_readiness import failures as provider_readiness_failures
 from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
@@ -3061,7 +3061,7 @@ class EngineeringRunner:
             waiting = replace(error.state, phase="WAIT_FOR_TERMINAL_EVIDENCE",
                               next_action="read_publication_receipt", terminal=False,
                               diagnostic="Publication acknowledgement is unresolved; resume reads the exact remote identity without another create.")
-            return self._save_operator_merge_wait(waiting), implementation
+            return self._save_operator_merge_wait(waiting, previous=error.state), implementation
         return publication, replace(implementation, pull_request=number)
 
     def _resume_first_publication(self, state: TransactionState, prompt_path: Path) -> TransactionState:
@@ -3534,6 +3534,7 @@ class EngineeringRunner:
             return self._advance_after_reconciliation_agent_result(state, result)
         return self._save_terminal(state, "BLOCKED", "recovered_provider_phase_invalid", "Recovered provider result has an unsupported lifecycle phase.")
 
+    @checkpoint_continuation_boundary
     def run(
         self,
         prompt_path: Path,
@@ -4225,6 +4226,8 @@ class EngineeringRunner:
         complete_phase(self.root, capability_review)
         if state.terminal:
             return state
+        if state.phase == "WAIT_FOR_OPERATOR_MERGE":
+            return state
         if state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
         if state.action_intent == "VALIDATION_ONLY":
@@ -4685,7 +4688,7 @@ class EngineeringRunner:
                             state,
                             phase="WAIT_FOR_TERMINAL_EVIDENCE",
                             next_action="retry_github_evidence",
-                        )
+                        ), previous=state,
                     )
                 wait = self._start_phase(state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_evidence_retry"})
                 self.sleep(min(30, 2**attempts))
@@ -4748,7 +4751,7 @@ class EngineeringRunner:
                 except AdoptionAuthorityError as error:
                     return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
                 except RunnerError:
-                    return self._save_operator_merge_wait(state)
+                    return self._save_operator_merge_wait(state, previous=state)
                 if pr.merge_commit and self.repository.remote_main_contains(self.root, pr.merge_commit):
                     gate_type = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE_APPROVAL", "FINALIZATION": "FINALIZATION_MERGE_APPROVAL", "RECONCILIATION": "RECONCILIATION_MERGE_APPROVAL"}[state.transaction_kind]
                     delegated_actor = state.delegated_merge_actor_reference if state.delegated_merge_attempt else None
@@ -4793,7 +4796,7 @@ class EngineeringRunner:
             )
             gate_type = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE_APPROVAL", "FINALIZATION": "FINALIZATION_MERGE_APPROVAL", "RECONCILIATION": "RECONCILIATION_MERGE_APPROVAL"}[state.transaction_kind]
             self._managed_gate(waiting, gate_type, "WAITING", state.pull_request)
-            return self._save_operator_merge_wait(waiting)
+            return self._save_operator_merge_wait(waiting, previous=state)
 
     def _autonomous_profile_selected(self, state: TransactionState) -> bool:
         """Consult the owner grant, never provider text, for phase assurance."""
@@ -5097,7 +5100,7 @@ class EngineeringRunner:
             return self._save_operator_merge_wait(replace(
                 attempted, phase="WAIT_FOR_OPERATOR_MERGE", next_action="verify_delegated_merge_outcome",
                 terminal_condition="delegated_merge_outcome_uncertain",
-            ))
+            ), previous=attempted)
         except AdoptionAuthorityError as error:
             return self._save_terminal(attempted or state, "BLOCKED",
                                        "managed_candidate_adoption_invalid", str(error))
@@ -5106,7 +5109,7 @@ class EngineeringRunner:
                 return self._save_operator_merge_wait(replace(
                     attempted, phase="WAIT_FOR_OPERATOR_MERGE", next_action="verify_delegated_merge_outcome",
                     terminal_condition="delegated_merge_outcome_uncertain",
-                ))
+                ), previous=attempted)
             return None
 
     def _repair_prompt(self, repair: TransactionState, objective: str) -> str:
@@ -5631,14 +5634,22 @@ class EngineeringRunner:
             terminal_condition=error.terminal_condition,
         )
 
-    def _save_operator_merge_wait(self, state: TransactionState) -> TransactionState:
+    def _save_operator_merge_wait(self, state: TransactionState, *, previous: TransactionState) -> TransactionState:
         """Persist a PR hand-off and release the foreground lease.
 
         The wait is deliberately durable, but there is no running agent to
         own a liveness lease while the human reviews or merges the pull
         request. The watcher recognises this checkpoint as queue-owning.
         """
-        self.store.save(state, preserve_effect_authority=True, preserve_effect_status=False)
+        from .managed_adoption import effect_checkpoint
+        superseded = False
+        try:
+            self.store.save(state, expected_effect_checkpoint=effect_checkpoint(previous))
+        except StateError:
+            # An observation never reopens or rebinds a newer canonical phase.
+            # Return that truth and end this continuation without any effect.
+            state = self.store.load(previous.run_id)
+            superseded = True
         if self.active_lease is not None and self.active_lease.run_id == state.run_id:
             if self.lease_heartbeat is not None:
                 self.active_lease = self.lease_heartbeat.stop()
@@ -5646,6 +5657,8 @@ class EngineeringRunner:
             release_lease(self.root, self.active_lease, central_database=self.store.central_database)
             self.active_lease = None
         write_live_status(self.root, state, state.next_action)
+        if superseded:
+            raise CheckpointContinuationStopped(state)
         return state
 
     def _save_post_merge_sync_wait(
@@ -5666,7 +5679,7 @@ class EngineeringRunner:
             terminal_condition="post_merge_workspace_sync_required",
             diagnostic=redact_diagnostic(diagnostic),
         )
-        return self._save_operator_merge_wait(waiting)
+        return self._save_operator_merge_wait(waiting, previous=state)
 
     def _cleanup(self, state: TransactionState) -> TransactionState:
         print("[REPOSITORY_CLEANUP] Repository cleanup in progress")

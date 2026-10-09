@@ -5615,6 +5615,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         passed = PullRequestEvidence(12, "OPEN", True, True)
         github = FakeGitHub([pending, passed])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.store.save(state)  # Genuine canonical checkpoint precedes a private continuation.
         result = runner._poll(state)
         self.assertEqual(github.calls, 2)
         self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
@@ -5839,6 +5840,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         state = TransactionState("authorized-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=14, transaction_kind="FINALIZATION", owner_authorized=True)
         github = FakeGitHub([PullRequestEvidence(14, "OPEN", True, True), PullRequestEvidence(14, "MERGED", True, True, "b" * 40)])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.store.save(state)  # Genuine canonical checkpoint precedes a private continuation.
         result = runner._poll(state)
         self.assertEqual(github.merge_calls, [])
         self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
@@ -6434,7 +6436,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                   patch("engineering_platform.execution_host.sqlite_connection", return_value=connection),
                   patch("engineering_platform.execution_host.merge_delegation.load", return_value=grant),
                   patch.object(self.store, "save"),
-                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting: waiting)):
+                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting, *, previous: waiting)):
                 self.assertIsNone(runner._attempt_delegated_merge(state, pr))
                 self.assertEqual(qualifications, [])
                 reviewed = replace(state, assurance_profile=profile,
@@ -6524,7 +6526,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             with (patch("engineering_platform.execution_host.load_submission_for_run", return_value=accepted),
                   patch("engineering_platform.execution_host.sqlite_connection", return_value=connection),
                   patch.object(self.store, "save"),
-                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting: waiting)):
+                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting, *, previous: waiting)):
                 self.assertTrue(runner._autonomous_profile_selected(state))
                 result = runner._attempt_delegated_merge(state, pr)
                 self.assertEqual(profiles, [merge_delegation.REPOSITORY_ASSURANCE_PROFILE])
@@ -6771,7 +6773,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
               patch("engineering_platform.execution_host.sqlite_connection", return_value=connection),
               patch("engineering_platform.execution_host.merge_delegation.load", return_value=grant),
               patch.object(self.store, "save") as saved,
-              patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting: waiting)):
+              patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting, *, previous: waiting)):
             result = runner._attempt_delegated_merge(state, pr)
             self.assertEqual(attempted_calls, [(17, head)])
             self.assertEqual(saved.call_args.args[0].delegated_merge_attempt, f"17:{head}")
@@ -7579,6 +7581,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             implementation_merge_commit="a" * 40,
         )
 
+        self.store.save(state)  # Genuine canonical checkpoint precedes a private continuation.
         result = runner._start_finalization(state, 908)
 
         self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")

@@ -138,7 +138,12 @@ def _model_invocation_effect(method):
         tokens = iter(arguments[1:] if arguments[:1] == ("codex",) else arguments)
         command = None
         for token in tokens:
-            if token in {"-c", "--config", "--profile", "-p", "--enable", "--disable"}:
+            if token in {"--", "--version", "-V", "--help", "-h"}:
+                break
+            if token in {"-c", "--config", "--profile", "-p", "--enable", "--disable",
+                         "-m", "--model", "-C", "--cd", "-s", "--sandbox",
+                         "-a", "--ask-for-approval", "--local-provider", "--add-dir",
+                         "--remote", "--remote-auth-token-env", "-i", "--image"}:
                 next(tokens, None)
             elif token.startswith("-"):
                 continue

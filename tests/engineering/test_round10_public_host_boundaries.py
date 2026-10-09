@@ -311,3 +311,78 @@ class Round10PublicHostBoundaries(unittest.TestCase):
         finally:request.close();worker.join(timeout=2)
         self.assertGreater(sum(map(len,observed)),0)
         self.assertLess(sum(map(len,observed)),len(request.payload)+4,'actual partial send cannot be called accepted')
+
+    def test_real_native_metadata_option_values_are_never_modelstarts(self):
+        from engineering_platform.providers import model_effect_scope, process_effect_scope
+        with tempfile.TemporaryDirectory(prefix='ep-r10-native-metadata-') as raw:
+            root=Path(raw);prefix=root/'provider';(prefix/'bin').mkdir(parents=True)
+            (prefix/'bin/codex').symlink_to(shutil.which('codex'));home=root/'home';home.mkdir()
+            with patch.dict(os.environ,{'EP_MANAGED_CODEX_CLI_PREFIX':str(prefix),'CODEX_HOME':str(home)}):
+                provider=CodexCliProvider();starts=[]
+                for args in [('codex','--version'),('codex','-c','model="exec"','--version'),('codex','-m','exec','--version'),('codex','--model=exec','--version')]:
+                    with self.subTest(arguments=args),model_effect_scope(lambda:starts.append('model_started')),process_effect_scope(None,verify_exit=False):
+                        result=provider.invoke(root,args,timeout=10,max_output_bytes=4096)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual(result.stdout.strip(),'codex-cli 0.160.1')
+                    self.assertEqual(starts,[],'metadata option values must never become a model dispatch')
+
+    def late_public_readback(self, *, terminal):
+        import inspect
+        c=adoption.AdoptionLifecycleTests();c.setUp();self.addCleanup(c.doCleanups)
+        agent,github=c.lifecycle_adapters();actual=github.pull_request;changed=[];post_stop_calls=[]
+        def readback(*args,**kwargs):
+            if changed:
+                post_stop_calls.append('github_readback')
+            result=actual(*args,**kwargs)
+            if not changed and any(frame.function=='_poll' for frame in inspect.stack()):
+                current=c.store.load('adopt-run')
+                c.store.save(replace(current,phase='BLOCKED' if terminal else 'QUALITY_CONTROL_AGENT',terminal=terminal,next_action='operator_stopped'))
+                observed=c.store.load('adopt-run');self.assertEqual(observed.terminal,terminal)
+                changed.append(observed.to_dict())
+            return result
+        github.pull_request=readback
+        runner=EngineeringRunner(c.root,c.store,c.repository,github,agent,lambda _:None);self.addCleanup(c.stop_host,runner)
+        state=runner.run(c.prompt,run_id='adopt-run',owner_authorized=True,managed_candidate=c.selection)
+        self.assertEqual(len(changed),1)
+        self.assertEqual(c.store.load('adopt-run').to_dict(),changed[0],'late PR observation must preserve the entire newer terminal checkpoint')
+        self.assertEqual(state.to_dict(),changed[0],'canonical state is returned without adopting a continuation')
+        self.assertEqual(github.creates,1,'only the pre-stop authorized publication is retained')
+        self.assertEqual(post_stop_calls,[])
+        self.assertIsNone(runner.active_lease)
+
+    def test_late_public_readback_preserves_newer_terminal_checkpoint(self):
+        self.late_public_readback(terminal=True)
+
+    def test_late_public_readback_preserves_newer_nonterminal_checkpoint(self):
+        self.late_public_readback(terminal=False)
+
+    def test_public_reconciliation_sync_wait_never_starts_provider(self):
+        import inspect
+        from engineering_platform.agent_state import TransactionState
+        c=adoption.AdoptionLifecycleTests();c.setUp();self.addCleanup(c.doCleanups)
+        c.git('switch','main');c.git('merge','--ff-only','codex/existing')
+        c.transport.command(c.root,'git','push','origin','main')
+        marker=c.root/'operator-owned-untracked.txt'
+        original=c.transport.execute
+        barriers=[]
+        def external_git(root,*args):
+            result=original(root,*args)
+            if not barriers and any(frame.function=='_start_finalization' for frame in inspect.stack()):
+                marker.write_text('preserve operator work')
+                barriers.append(True)
+            return result
+        c.transport.execute=external_git
+        state=TransactionState('sync-wait','qualification/managed',str(c.prompt),'EXECUTE_AGENT',
+            owner_authorized=True,implementation_pull_request=71,implementation_merge_commit=c.sha)
+        c.store.save(state)
+        agent,github=c.lifecycle_adapters()
+        runner=EngineeringRunner(c.root,c.store,c.repository,github,agent,lambda _:None)
+        self.addCleanup(c.stop_host,runner)
+        returned=runner.run(c.prompt,run_id=state.run_id,resume=True,owner_authorized=True)
+        self.assertEqual(barriers,[True],'real finalization synchronization must be reached')
+        self.assertEqual(returned.next_action,'await_clean_synchronized_main')
+        self.assertEqual(returned.phase,'WAIT_FOR_OPERATOR_MERGE')
+        self.assertEqual(agent.prompts,[],'no implementation or finalization provider starts after a passive return')
+        self.assertEqual(github.creates,0)
+        self.assertEqual(marker.read_text(),'preserve operator work')
+        self.assertIsNone(runner.active_lease)

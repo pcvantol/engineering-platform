@@ -21,7 +21,7 @@ from . import effect_evidence, effect_provider, effect_state, effect_validation,
 from .agent_state import TransactionState, verified_commit_evidence_record
 from .capability_review import ReviewerSelection, mandatory_assessment, mandatory_coverage_surfaces
 from .execution_lease import LeaseHeartbeat, acquire, reconcile_stale, release
-from .execution_errors import RunnerError
+from .execution_errors import RunnerError, checkpoint_continuation_boundary
 from .execution_models import AgentResult
 from .execution_repository import SubprocessRepositoryClient
 from .live_status import owned_output, write_live_status
@@ -300,6 +300,7 @@ def _controls(host, state, directory, delivery):
     return state, profile_digest
 
 
+@checkpoint_continuation_boundary
 def run(host, prompt_path: Path, run_id: str, accepted: dict[str, object], *, resume: bool, owner_authorized: bool):
     effects = contract.parse(accepted["constraints"])
     database = host.store.central_database
@@ -563,6 +564,8 @@ def _publish(host, state, directory, delivery, profile_digest):
         delegated = host._attempt_delegated_merge(state, observed, delivery_root=delivery)
         if delegated is not None:
             state = delegated
+            if state.terminal or state.next_action == "verify_delegated_merge_outcome":
+                return state
             observed = host.github.pull_request(state.pull_request)
         if observed.state == "OPEN":
             return _save(host, state, phase="WAIT_FOR_OPERATOR_MERGE", next_action="wait_for_protected_merge")
