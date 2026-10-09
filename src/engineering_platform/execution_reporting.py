@@ -1226,12 +1226,23 @@ def _format_reviewer_records(records: tuple[dict[str, object], ...], phase: str)
                 f"  - Initial observation: {record['contribution']}",
                 f"  - Accepted recommendations: {record['accepted_recommendations']}",
                 f"  - Rejected recommendations: {record['rejected_recommendations']}",
-                "  - Resolved by: implementation evidence, changed components and repository evidence in the Evidence Bundle below."
+                "  - Advisory completion is not accepted or verified adoption; consult typed dispositions and their exact evidence."
                 if phase == "COMPLETE"
                 else "  - Outcome: Not a final repository statement; consult the terminal checkpoint and diagnostics.",
             )
         )
     return "\n".join(lines)
+
+
+def _format_specialist_dispositions(state: TransactionState) -> tuple[str, ...]:
+    """Existing report readback of immutable optional proposals and real decisions."""
+    from .capability_review import specialist_readback
+    if not state.specialist_records:
+        return ()
+    data = specialist_readback(state.specialist_records)
+    return ("## Optional Specialist Selection and Disposition",
+            "Typed optional advice and explicit primary decisions; candidate-bound verification is historical at its recorded SHA and is never independent assurance or authority.",
+            "```json", json.dumps(data, sort_keys=True), "```", "")
 
 
 def _format_assurance_reviews(state: TransactionState) -> tuple[str, ...]:
@@ -1884,6 +1895,7 @@ def generate_terminal_report(
             "",
             *managed_autonomy_lines,
             *_format_assurance_reviews(state),
+            *_format_specialist_dispositions(state),
             "## Reviewer Findings",
             "Initial observations only. They are not final repository claims.",
             _format_reviewer_records(reviewer_records, state.phase),

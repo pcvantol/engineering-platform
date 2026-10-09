@@ -8,8 +8,8 @@ import json
 from pathlib import Path
 import re
 import shlex
-import subprocess
 import sys
+from .providers import GitProvider
 
 DOCUMENTATION_PREFIXES = ("docs/",)
 DASHBOARD_PREFIXES = ("src/engineering_platform/assets/",)
@@ -407,9 +407,12 @@ def phase_for_branch(branch: str | None) -> str | None:
     return "P_CENTRAL_CORE" if isinstance(branch, str) and P_CENTRAL_CORE_BRANCH.fullmatch(branch) else None
 
 def changed_paths(root: Path, base: str) -> tuple[str, ...]:
-    completed = subprocess.run(("git", "diff", "--name-only", f"{base}...HEAD"), cwd=root, text=True, capture_output=True, check=False)
+    try:
+        completed = GitProvider().execute(root, "git", "diff", "--name-only", f"{base}...HEAD")
+    except (OSError, RuntimeError) as error:
+        raise ValidationProfileResolutionError("Current change evidence is unavailable.") from error
     if completed.returncode:
-        return ()
+        raise ValidationProfileResolutionError("Current change evidence is unavailable.")
     return tuple(completed.stdout.splitlines())
 
 def main() -> int:

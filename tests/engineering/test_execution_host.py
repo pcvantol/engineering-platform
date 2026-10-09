@@ -18,7 +18,7 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
 from engineering_platform.managed_publication import PublicationCandidate
 from engineering_platform.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic, verified_commit_evidence_record
@@ -233,7 +233,10 @@ class FakeGitHub:
         self.merge_calls.append(number)
 
 
-class FakeAgent:
+from tests.engineering.inline_review_backend import InlineReviewBackend
+
+
+class FakeAgent(InlineReviewBackend):
     def __init__(self, result: AgentResult) -> None:
         self.result, self.prompts, self.roots = result, [], []
         self.command_callback: object | None = None
@@ -596,9 +599,16 @@ class ClientContractTest(unittest.TestCase):
                 encoding="utf-8",
             )
             store = StateStore(checkout / ".engineering" / "engineering-runs")
-            commit = "b" * 40
             branch = "codex/reuse-implementation-pr"
+            baseline = self._git(checkout, "rev-parse", "HEAD")
+            self._git(checkout, "switch", "-c", branch)
+            (checkout / "README.md").write_text("# Actual bounded candidate\n", encoding="utf-8")
+            self._git(checkout, "add", "README.md")
+            self._git(checkout, "commit", "-m", "bounded candidate")
+            commit = self._git(checkout, "rev-parse", "HEAD")
+            self._git(checkout, "switch", "main")
             repository = FakeRepository()
+            repository.evidence = replace(repository.evidence, head_sha=baseline)
 
             class DeliveryAgent(FakeAgent):
                 def __init__(self) -> None:
@@ -620,6 +630,7 @@ class ClientContractTest(unittest.TestCase):
                         return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
                     if "Mandatory autonomous refactor" in prompt_text:
                         return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
+                    ClientContractTest._git(checkout, "switch", branch)
                     repository.evidence = RepositoryEvidence(
                         "pcvantol/djconnect", branch, commit, True
                     )
@@ -1103,7 +1114,7 @@ class ClientContractTest(unittest.TestCase):
 
             def command(self, _: Path, *args: str) -> str:
                 self.calls.append(args)
-                return revision if args[-2:] == ("--verify", "origin/main") else ""
+                return revision + "\trefs/heads/main" if args[1] == "ls-remote" else ""
 
         provider = Provider()
         self.assertEqual(
@@ -1111,8 +1122,7 @@ class ClientContractTest(unittest.TestCase):
             revision,
         )
         self.assertEqual(provider.calls, [
-            ("git", "fetch", "origin", "main"),
-            ("git", "rev-parse", "--verify", "origin/main"),
+            ("git", "ls-remote", "--heads", "origin", "refs/heads/main"),
         ])
 
     def test_repository_protected_main_revision_rejects_an_invalid_identity(self) -> None:
@@ -2442,6 +2452,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         }
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        # These unit cases use FakeRepository's synthetic object IDs. Declare
+        # their Git observation explicitly; unavailable real objects are no
+        # longer empty-diff success. Public adoption/profile/runtime authority
+        # regressions use separate real Git fixtures without this observer.
+        self.fixture_diff_observer = patch("engineering_platform.execution_host.changed_paths", return_value=())
+        self.fixture_diff_observer.start()
+        self.addCleanup(self.fixture_diff_observer.stop)
         self.prompt = self.root / "prompt.md"
         self.prompt.write_text("# bounded objective\n", encoding="utf-8")
         manifest = self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
@@ -3489,7 +3506,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     @patch.object(EngineeringRunner, "_run_required_validation_command")
     def test_validation_only_executor_uses_the_persisted_control_binding(self, run: object) -> None:
-        run.return_value = 0  # type: ignore[attr-defined]
+        run.side_effect = lambda command, *, state, started: (started(), 0)[1]  # type: ignore[attr-defined]
         run_id = "persisted-binding-execution"
         record_validation_profile(
             self.root, run_id=run_id, selected_validation_tier="DASHBOARD", validation_profile_version="1.0",
@@ -3500,11 +3517,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
         runner._execute_required_validation_controls(TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY"))
-        run.assert_called_once_with(("fixture", "dashboard"))  # type: ignore[attr-defined]
+        run.assert_called_once_with(("fixture", "dashboard"), state=ANY, started=ANY)  # type: ignore[attr-defined]
 
     @patch.object(EngineeringRunner, "_run_required_validation_command")
     def test_validation_only_executes_required_control_before_qualification(self, run: object) -> None:
-        run.return_value = 0  # type: ignore[attr-defined]
+        run.side_effect = lambda command, *, state, started: (started(), 0)[1]  # type: ignore[attr-defined]
         run_id = "validation-only-execution"
         record_validation_profile(
             self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
@@ -3524,11 +3541,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(control["result"], "PASS")
         self.assertEqual(control["control_identity"], "npm run test:engineering-dashboard")
         self.assertEqual(agent.roots, [])
-        run.assert_called_once_with(("npm", "run", "test:engineering-dashboard"))  # type: ignore[attr-defined]
+        run.assert_called_once_with(("npm", "run", "test:engineering-dashboard"), state=ANY, started=ANY)  # type: ignore[attr-defined]
 
     @patch.object(EngineeringRunner, "_run_required_validation_command")
     def test_validation_only_executor_persists_every_required_control_result(self, run: object) -> None:
-        run.side_effect = (0, 7, None)  # type: ignore[attr-defined]
+        fixture_exits = iter((0, 7, None))
+        run.side_effect = lambda command, *, state, started: (started(), next(fixture_exits))[1]  # type: ignore[attr-defined]
         run_id = "all-required-control-results"
         record_validation_profile(
             self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
@@ -3560,7 +3578,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ])
 
     @patch.object(EngineeringRunner, "_run_required_validation_command", return_value=0)
-    def test_validation_only_report_projects_each_persisted_required_control(self, _: object) -> None:
+    def test_validation_only_report_projects_each_persisted_required_control(self, run: object) -> None:
+        run.side_effect = lambda command, *, state, started: (started(), 0)[1]  # type: ignore[attr-defined]
         run_id = "persisted-profile-report-projection"
         record_validation_profile(
             self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
@@ -3595,8 +3614,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
                     validation_profile_version="1.0", required_validation_controls=controls,
                     recorded_at="2026-08-29T00:00:00+00:00",
                 )
-                effects = list(exits)
-                run.side_effect = effects  # type: ignore[attr-defined]
+                fixture_exits = iter(exits)
+                run.side_effect = lambda command, *, state, started: (started(), next(fixture_exits))[1]  # type: ignore[attr-defined]
                 state = runner._execute_required_validation_controls(
                     TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
                 )
@@ -3819,6 +3838,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         blocked, _ = runner._run_quality_assurance(state, AgentResult("COMPLETE", "main", commit_sha="a" * 40))
         self.assertTrue(blocked.terminal)
         self.assertEqual(blocked.next_action, "mandatory_assurance_unresolved")
+        observed = self.store.load(state.run_id)
+        self.assertTrue(all(review["status"] == "UNRESOLVED" for review in observed.assurance_reviews))
+        self.assertFalse(runner._autonomous_merge_assurance_passes(observed, "a"*40))
 
     def test_mandatory_assurance_requires_complete_integral_impact_coverage(self) -> None:
         class MissingCoverageReviewer(FakeAgent):
@@ -3843,6 +3865,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertTrue(blocked.terminal)
         self.assertEqual(blocked.next_action, "mandatory_assurance_unresolved")
+        observed = self.store.load(state.run_id)
+        self.assertTrue(all(review["status"] == "UNRESOLVED" and not review["coverage"] for review in observed.assurance_reviews))
+        self.assertFalse(runner._autonomous_merge_assurance_passes(observed, "a"*40))
 
     def test_rereview_closes_each_prior_blocker_explicitly_with_integral_evidence(self) -> None:
         objectives: list[str] = []
@@ -5590,6 +5615,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         passed = PullRequestEvidence(12, "OPEN", True, True)
         github = FakeGitHub([pending, passed])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.store.save(state)  # Genuine canonical checkpoint precedes a private continuation.
         result = runner._poll(state)
         self.assertEqual(github.calls, 2)
         self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
@@ -5814,6 +5840,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         state = TransactionState("authorized-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=14, transaction_kind="FINALIZATION", owner_authorized=True)
         github = FakeGitHub([PullRequestEvidence(14, "OPEN", True, True), PullRequestEvidence(14, "MERGED", True, True, "b" * 40)])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.store.save(state)  # Genuine canonical checkpoint precedes a private continuation.
         result = runner._poll(state)
         self.assertEqual(github.merge_calls, [])
         self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
@@ -6409,7 +6436,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                   patch("engineering_platform.execution_host.sqlite_connection", return_value=connection),
                   patch("engineering_platform.execution_host.merge_delegation.load", return_value=grant),
                   patch.object(self.store, "save"),
-                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting: waiting)):
+                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting, *, previous: waiting)):
                 self.assertIsNone(runner._attempt_delegated_merge(state, pr))
                 self.assertEqual(qualifications, [])
                 reviewed = replace(state, assurance_profile=profile,
@@ -6499,7 +6526,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             with (patch("engineering_platform.execution_host.load_submission_for_run", return_value=accepted),
                   patch("engineering_platform.execution_host.sqlite_connection", return_value=connection),
                   patch.object(self.store, "save"),
-                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting: waiting)):
+                  patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting, *, previous: waiting)):
                 self.assertTrue(runner._autonomous_profile_selected(state))
                 result = runner._attempt_delegated_merge(state, pr)
                 self.assertEqual(profiles, [merge_delegation.REPOSITORY_ASSURANCE_PROFILE])
@@ -6655,7 +6682,6 @@ class LocalAgentRunnerTest(unittest.TestCase):
         with (patch.object(runner, "_autonomous_profile_selected", return_value=True),
               patch("engineering_platform.execution_host.merge_delegation.bound_github_repository", return_value=target),
               patch("engineering_platform.execution_host.write_live_status"),
-              patch.object(self.store, "save"),
               patch.object(runner, "_poll", side_effect=lambda recovered: recovered)):
             recovered = runner._recover_finalization_pull_request(state, actual.inspect(source))
             reconciliation = runner._recover_reconciliation_pull_request(
@@ -6684,12 +6710,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
             },),
         )
         blocker_runner = EngineeringRunner(source, self.store, actual, github, blocker_agent, lambda _: None)
-        unreviewed = replace(state, phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=branch,
+        unreviewed = replace(state, run_id="recovered-blocker", phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=branch,
                              pull_request=22, finalization_pull_request=22, finalization_head_sha=head)
         with (patch.object(blocker_runner, "_autonomous_profile_selected", return_value=True),
               patch("engineering_platform.execution_host.merge_delegation.bound_github_repository", return_value=target),
               patch("engineering_platform.execution_host.write_live_status"),
-              patch.object(self.store, "save"),
               patch.object(blocker_runner, "_repair", side_effect=AssertionError("recovery must not mutate main"))):
             blocked = blocker_runner._recover_autonomous_pr_assurance(unreviewed, candidate)
         self.assertTrue(blocked.terminal)
@@ -6748,7 +6773,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
               patch("engineering_platform.execution_host.sqlite_connection", return_value=connection),
               patch("engineering_platform.execution_host.merge_delegation.load", return_value=grant),
               patch.object(self.store, "save") as saved,
-              patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting: waiting)):
+              patch.object(runner, "_save_operator_merge_wait", side_effect=lambda waiting, *, previous: waiting)):
             result = runner._attempt_delegated_merge(state, pr)
             self.assertEqual(attempted_calls, [(17, head)])
             self.assertEqual(saved.call_args.args[0].delegated_merge_attempt, f"17:{head}")
@@ -6879,7 +6904,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         outcome = SimpleNamespace(exit_code=1, stdout="", stderr="Ran 1 test in 0.01s\nFAILED (failures=1)\n",
                                   diagnostic_capture_available=True, infrastructure_diagnostic=None)
-        with (patch.object(runner, "_run_required_validation_command", return_value=outcome) as execute,
+        with (patch.object(runner, "_run_required_validation_command",
+                           side_effect=lambda command, *, state, started: (started(), outcome)[1]) as execute,
               patch("engineering_platform.execution_host.record_validation_command_invocation") as invocation,
               patch("engineering_platform.execution_host.record_validation_command_terminal") as terminal,
               patch("engineering_platform.execution_host.record_validation_control_result") as control,
@@ -7239,7 +7265,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("## Reviewer Findings", body)
         self.assertIn("## Repository Truth", body)
         self.assertIn("Initial observation: The capability does not yet exist.", body)
-        self.assertIn("Resolved by: implementation evidence", body)
+        self.assertIn("Advisory completion is not accepted or verified adoption", body)
         self.assertIn("Resulting commits: implementation `" + "a" * 40, body)
         self.assertIn("Repository state: branch=main; clean=True", body)
         self.assertTrue(terminal_report_matches_state(body, state))
@@ -7555,6 +7581,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             implementation_merge_commit="a" * 40,
         )
 
+        self.store.save(state)  # Genuine canonical checkpoint precedes a private continuation.
         result = runner._start_finalization(state, 908)
 
         self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
@@ -7601,26 +7628,26 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_capability_selection_covers_documentation_validation_governance_and_finalization(self) -> None:
         selections = select_reviewers("Update governance documentation and validation diagnostics.", self.prompt, "FINALIZATION", {})
-        self.assertEqual(tuple(item.reviewer for item in selections), ("repository_governance", "validation", "documentation", "finalization"))
+        self.assertEqual(selections, ())  # Keywords/lifecycle are insufficient without a bound consumer question.
 
     def test_capability_selection_uses_memory_confidence_and_allows_no_reviewer(self) -> None:
         memory = {"reviewers": [{"reviewer": "documentation", "future_confidence": 0.4}]}
         documented = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", memory)
-        self.assertEqual(documented[0].confidence, 0.9)
+        self.assertEqual(documented, ())  # Historical completion confidence is not a selection grant.
         self.assertEqual(select_reviewers("binary objective", Path("objective.txt"), "IMPLEMENTATION", {}), ())
 
     def test_parallel_reviews_are_advisory_and_reconcile_conflicts(self) -> None:
-        selections = select_reviewers("governance documentation validation", self.prompt, "IMPLEMENTATION", {})
+        selections = (ReviewerSelection("validation", "bounded adapter test", 1.0), ReviewerSelection("documentation", "bounded adapter test", 1.0))
         reviewer = FakeReviewer()
         results = run_reviews(self.root, selections, "objective", reviewer)
-        self.assertEqual(len(results), 3)
+        self.assertEqual(len(results), 2)
         self.assertEqual(reconciled_recommendations(results), ("Use canonical wording.",))
         records = records_for_storage(selections, results)
-        self.assertEqual(records[0]["accepted_recommendations"], 1)
+        self.assertEqual(records[0]["accepted_recommendations"], 0)
         self.assertEqual(records[0]["codex_commands_executed"], 0)
 
     def test_reviewer_record_keeps_its_own_safe_command_count(self) -> None:
-        selection = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", {})
+        selection = (ReviewerSelection("documentation", "bounded adapter test", 1.0),)
         result = ReviewerResult(
             "documentation", "Review complete.", churn={"tool_loop_operations": 4}
         )
@@ -7630,7 +7657,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(records[0]["codex_commands_executed"], 4)
 
     def test_reviewer_prompt_reuses_bounded_run_scoped_facts_without_conclusions(self) -> None:
-        selection = select_reviewers("validation", self.prompt, "IMPLEMENTATION", {})[0]
+        selection = ReviewerSelection("validation", "bounded prompt test", 1.0)
         evidence = ReviewerEvidence.from_repository(
             "inbox-context", "MANAGED",
             RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True),
@@ -7653,7 +7680,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("whenever freshness is uncertain", prompt["invocation_read_reuse"])
 
     def test_reviewer_prompt_receives_candidate_bound_host_validation_receipts(self) -> None:
-        selection = select_reviewers("validation", self.prompt, "IMPLEMENTATION", {})[0]
+        selection = ReviewerSelection("validation", "bounded prompt test", 1.0)
         assessment = {
             "candidate_sha": "a" * 40,
             "profile_digest": "sha256:" + "b" * 64,
@@ -7677,7 +7704,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
 
     def test_parallel_reviewers_share_facts_but_not_reasoning(self) -> None:
-        selections = select_reviewers("governance documentation validation", self.prompt, "IMPLEMENTATION", {})
+        selections = (ReviewerSelection("validation", "bounded adapter test", 1.0), ReviewerSelection("documentation", "bounded adapter test", 1.0))
         evidence = ReviewerEvidence.from_repository(
             "inbox-context", "MANAGED",
             RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True),
@@ -7771,7 +7798,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(InvocationInvestigationLedger().reusable("source_inspection"))
 
     def test_reviewer_progress_reports_started_and_terminal_states(self) -> None:
-        selections = select_reviewers("documentation validation", self.prompt, "IMPLEMENTATION", {})
+        selections = (ReviewerSelection("validation", "bounded adapter test", 1.0), ReviewerSelection("documentation", "bounded adapter test", 1.0))
         progress: list[tuple[str, str, bool | None]] = []
 
         results = run_reviews(
@@ -7790,7 +7817,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.assertIn((selection.reviewer, "completed", False), progress)
 
     def test_reviewer_failure_never_blocks_selection(self) -> None:
-        selections = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", {})
+        selections = (ReviewerSelection("documentation", "bounded adapter test", 1.0),)
         results = run_reviews(self.root, selections, "objective", FakeReviewer(fail=True))
         self.assertTrue(results[0].failed)
         self.assertEqual(reconciled_recommendations(results), ())
@@ -7838,15 +7865,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         for objective, reviewer in cases:
             with self.subTest(reviewer=reviewer):
                 selected = select_reviewers(objective, Path("objective.txt"), "IMPLEMENTATION", {})
-                self.assertIn(reviewer, tuple(item.reviewer for item in selected))
+                self.assertEqual(selected, ())  # Product words alone are not qualified snapshot evidence.
 
     def test_cross_capability_selection_preserves_product_scope_and_generic_review(self) -> None:
         selected = select_reviewers("apps/apple/ integrates with djconnect-api REST API contract and validation", Path("objective.md"), "IMPLEMENTATION", {})
         reviewers = {item.reviewer: item for item in selected}
-        self.assertEqual(reviewers["apple_platform"].capability, "apple_platform")
-        self.assertEqual(reviewers["api"].capability, "api")
-        self.assertIn("validation", reviewers)
-        self.assertIn("documentation", reviewers)
+        self.assertEqual(reviewers, {})  # Keywords cannot confer capability, capacity or a real consumer.
 
     def test_engineering_qualification_registers_and_executes_all_scenarios(self) -> None:
         report = execute_qualification(self.root, {scenario.capability: True for scenario in SCENARIOS})
@@ -7959,9 +7983,12 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
             control_bindings=({"validation_id": "arbitrary_control", "required": True, "category": "lint", "control_identity": "arbitrary check", "command": ["arbitrary"]},),
         )
         runner = EngineeringRunner(self.root, StateStore(self.root / ".engineering" / "state.json"), None, None, None, lambda _: None)
-        runner._run_required_validation_command = lambda _: DeterministicValidationResult(  # type: ignore[method-assign]
-            exit_code=7, stdout="", stderr="permission denied", diagnostic_capture_available=True,
-        )
+        def fixture_failure(command, *, state, started):
+            started()  # Explicit existing inline diagnostic fixture.
+            return DeterministicValidationResult(
+                exit_code=7, stdout="", stderr="permission denied", diagnostic_capture_available=True,
+            )
+        runner._run_required_validation_command = fixture_failure  # type: ignore[method-assign]
         runner._execute_required_validation_controls(
             TransactionState(self.run_id, "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
         )

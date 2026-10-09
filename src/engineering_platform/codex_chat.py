@@ -198,8 +198,8 @@ CONTEXTPAKKET:
                         "--json",
                         "--model",
                         chat_model(),
-                        instruction,
-                    ), timeout=CHAT_TIMEOUT_SECONDS,
+                        "-",
+                    ), timeout=CHAT_TIMEOUT_SECONDS, input_text=instruction,
                 )
             except OSError as error:
                 raise CodexChatError("Codex Gesprek is tijdelijk niet beschikbaar.", code="CODEX_CLI_UNAVAILABLE") from error

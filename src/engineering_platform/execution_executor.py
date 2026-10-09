@@ -20,6 +20,8 @@ from typing import Callable, Mapping
 
 from .capability_review import (
     ADVISORY_REVIEW_OUTPUT_CONTRACT_VERSION,
+    SPECIALIST_CONTRACT_VERSION,
+    REVIEWER_ORDER,
     MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION,
     ReviewerResult,
     ReviewerSelection,
@@ -33,10 +35,11 @@ from .execution_timeout_policy import AUTONOMOUS_QUALITY_CONTROL, SPECIALIST_REV
 from .execution_models import AgentResult
 from .platform_version import detected_codex_cli_version
 from .provider_usage import churn_from_jsonl, usage_from_jsonl, usage_snapshots_from_jsonl
-from .providers import CodexCliProvider
+from .providers import CodexCliProvider, model_process_effect
 from .reviewer_evidence import ReviewerEvidence
 from .storage import EngineeringStorageError, open_storage, record_artifact, verify_artifact_integrity
 from .agent_state import redact_diagnostic
+from .provider_context import ProviderRole, project_context
 from .component_logging import component_logger, log_event
 
 
@@ -398,6 +401,64 @@ def _invocation_owned(method):
 
 
 class CodexCliClient:
+    native_process_effects = True
+    def qualified_specialist_capabilities(self, root: Path) -> tuple[str, ...]:
+        """Qualify the installed runtime/tool boundary, not just role names."""
+        from .effect_provider import policy
+        from .managed_adoption import AdoptionAuthorityError
+        from .capability_review import ReviewStartUncertain
+        if self._specialist_cancellation():
+            return ()
+        try:
+            policy(self, root)
+        except (AdoptionAuthorityError, ReviewStartUncertain):
+            raise
+        except (ValueError, RuntimeError, OSError):
+            return ()
+        return REVIEWER_ORDER
+
+    def _specialist_cancellation(self) -> bool:
+        if self._cancellation_check is None:
+            return False
+        cancelled = bool(self._cancellation_check())
+        self._cancellation_observed |= cancelled
+        return cancelled
+
+    def _review_specialist_snapshot(self, root: Path, selection: ReviewerSelection,
+                                   objective: str, evidence: ReviewerEvidence | None) -> ReviewerResult:
+        """Use the existing FME snapshot/policy tools for this read-only role."""
+        import hashlib
+        from . import effect_provider, effect_workspace
+        from .managed_adoption import AdoptionAuthorityError
+        from .capability_review import ReviewStartUncertain
+        try:
+            if self._specialist_cancellation():
+                return ReviewerResult(selection.reviewer, "Specialist cancelled before dispatch.", failed=True)
+            with tempfile.TemporaryDirectory(prefix="ep-specialist-readonly-") as area:
+                workspace = Path(area) / "source"
+                artifacts = Path(area) / "artifacts"
+                artifacts.mkdir(mode=0o700)
+                manifest = effect_workspace.snapshot(root, workspace, {
+                    "source_revision": selection.specialist_binding["candidate_sha"],
+                    "read_paths": list(selection.specialist_paths),
+                }, executable_source_as_text=True)
+                if set(manifest) != set(selection.specialist_paths):
+                    raise ValueError("Specialist snapshot differs from its exact paths")
+                for path, expected in selection.specialist_source_blobs:
+                    data = (workspace / path).read_bytes()
+                    # Git SHA-1 object identity; cryptographic request/profile binding uses SHA-256.
+                    actual = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data, usedforsecurity=False).hexdigest()
+                    if actual != expected:
+                        raise ValueError("Specialist source binding differs from its snapshot")
+                options = effect_provider.policy(self, workspace)
+                with effect_provider.scoped(artifacts, options, reviewer_prompt(selection, objective, evidence)):
+                    result = self.review(workspace, selection, objective, evidence)
+                effect_workspace.verify_snapshot(workspace, manifest)
+                return result
+        except (AdoptionAuthorityError, ReviewStartUncertain):
+            raise
+        except (ValueError, RuntimeError, OSError):
+            return ReviewerResult(selection.reviewer, "Specialist snapshot/tool boundary unavailable or changed.", failed=True)
     def __init__(self, provider: CodexCliProvider | None = None, *,
                  disable_multi_agent: bool = False, repository_only: bool = False) -> None:
         self.provider = provider or CodexCliProvider()
@@ -575,6 +636,11 @@ class CodexCliClient:
         objective: str,
         evidence: ReviewerEvidence | None = None,
     ) -> ReviewerResult:
+        from . import effect_provider
+        if selection.specialist_binding and project_context(ProviderRole.SPECIALIST_REVIEW, reviewer_prompt(selection, objective, evidence)).telemetry["context_budget_overflow_bytes"]:
+            return ReviewerResult(selection.reviewer, "Complete specialist context exceeds the selected role limit; no dispatch.", failed=True)
+        if selection.specialist_binding and not effect_provider.review_is_scoped():
+            return self._review_specialist_snapshot(root, selection, objective, evidence)
         self.last_usage = {}
         self.last_usage_snapshots = ()
         self.last_churn = {}
@@ -586,9 +652,11 @@ class CodexCliClient:
             name: 0 for name in ("modified", "created", "deleted", "codex_commands_executed")
         }
         mandatory = selection.reviewer in {"quality", "security"}
+        if selection.specialist_binding and project_context(ProviderRole.SPECIALIST_REVIEW, reviewer_prompt(selection, objective, evidence)).telemetry["context_budget_overflow_bytes"]:
+            return ReviewerResult(selection.reviewer, "Complete specialist context exceeds the selected role limit; no dispatch.", failed=True)
         contract_version = (
             MANDATORY_REVIEW_OUTPUT_CONTRACT_VERSION
-            if mandatory else ADVISORY_REVIEW_OUTPUT_CONTRACT_VERSION
+            if mandatory else SPECIALIST_CONTRACT_VERSION if selection.specialist_binding else ADVISORY_REVIEW_OUTPUT_CONTRACT_VERSION
         )
         required = ["contract_version", "contribution", "recommendations", "findings"]
         properties: dict[str, object] = {
@@ -616,6 +684,16 @@ class CodexCliClient:
                 },
             },
         }
+        if selection.specialist_binding:
+            required.append("specialist_binding")
+            properties["specialist_binding"] = {"type": "object", "const": selection.specialist_binding}
+            properties["findings"] = {"type": "array", "maxItems": 8, "items": {"type": "object", "additionalProperties": False,
+                "required": ["id", "summary", "path", "evidence_ref", "proposed_disposition"], "properties": {
+                    "id": {"type": "string", "maxLength": 80}, "summary": {"type": "string", "maxLength": 240},
+                    "path": {"type": "string", "enum": list(selection.specialist_paths)},
+                    "evidence_ref": {"type": "string", "enum": ["git-blob:" + sha for _, sha in selection.specialist_source_blobs]},
+                    "proposed_disposition": {"type": "string", "enum": ["ACCEPTED", "REJECTED", "DEFERRED"]}}}}
+            properties["recommendations"] = {"type": "array", "maxItems": 0, "items": {"type": "string"}}
         if mandatory:
             required.extend(("coverage", "finding_dispositions"))
             surfaces = selection.required_coverage_surfaces
@@ -671,7 +749,7 @@ class CodexCliClient:
         try:
             started = time.monotonic()
             proxy = ToolProxyEnvironment()
-            with proxy as environment:
+            with proxy as environment, model_process_effect():
                 completed = self.provider.invoke(
                     root,
                     effect_provider.restrict_review((
@@ -686,6 +764,7 @@ class CodexCliClient:
                     str(schema_path),
                         reviewer_prompt(selection, objective, evidence),
                     )), environment=environment, timeout=_reviewer_invocation_timeout_seconds(selection),
+                    **({"cancellation_check": self._specialist_cancellation} if selection.specialist_binding else {}),
                     **effect_provider.review_input(),
                 )
             self.last_context_escalations = proxy.context_escalations()
@@ -713,6 +792,14 @@ class CodexCliClient:
             )
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
+            if selection.specialist_binding and (
+                not isinstance(raw, dict) or set(raw) != {"contract_version", "contribution", "recommendations", "findings", "specialist_binding"}
+                or raw["contract_version"] != SPECIALIST_CONTRACT_VERSION or raw["recommendations"] != []
+                or not isinstance(raw["contribution"], str) or len(raw["contribution"]) > 240
+                or not isinstance(raw["findings"], list) or len(raw["findings"]) > 8
+                or raw["specialist_binding"] != selection.specialist_binding
+            ):
+                raise TypeError("optional specialist response violates the bound typed contract")
             raw_coverage = raw.get("coverage", {})
             raw_dispositions = raw.get("finding_dispositions", {})
             if mandatory and (
@@ -741,6 +828,7 @@ class CodexCliClient:
                 usage_snapshots=self.last_usage_snapshots,
                 coverage=coverage,
                 finding_dispositions=finding_dispositions,
+                specialist_binding=dict(raw.get("specialist_binding", {})),
             )
         except (IndexError, KeyError, TypeError, json.JSONDecodeError):
             return ReviewerResult(
@@ -779,6 +867,7 @@ class CodexCliClient:
                 "validation_evidence",
                 "quality_evidence",
                 "validation_disposition",
+                "specialist_dispositions",
             ],
             "properties": {
                 "terminal_state": {
@@ -811,6 +900,12 @@ class CodexCliClient:
                               "required": ["activity", "result"],
                               "properties": {"activity": {"type": "string", "enum": sorted(_QUALITY_EVIDENCE_ACTIVITIES)}, "result": {"type": "string", "maxLength": 240}}},
                 },
+                "specialist_dispositions": {"type": "array", "maxItems": 16, "items": {"type": "object", "additionalProperties": False,
+                    "required": ["finding_id", "disposition", "reason", "changed_paths"], "properties": {
+                        "finding_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+                        "disposition": {"type": "string", "enum": ["ACCEPTED", "REJECTED", "DEFERRED", "IMPLEMENTED"]},
+                        "reason": {"type": "string", "maxLength": 240},
+                        "changed_paths": {"type": "array", "maxItems": 1, "items": {"type": "string", "maxLength": 240}}}}},
                 "validation_disposition": {
                     "type": "string",
                     "enum": ["product_failure", "environmental_instability"],

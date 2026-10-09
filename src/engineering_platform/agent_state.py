@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import logging
 import os
@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 from time import sleep
 
+from .effect_contract import CREDENTIAL_SHAPE_PATTERN
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
     EngineeringStorageError,
@@ -57,6 +58,7 @@ SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
 )
 
 
+
 class StateError(ValueError):
     """Raised when local advisory state is missing, malformed, or unsafe."""
 
@@ -67,6 +69,7 @@ def redact_diagnostic(value: str, *, limit: int = MAX_DIAGNOSTIC_LENGTH) -> str:
         return "Diagnostic omitted because it was not valid text."
     compact = " ".join(value.replace("\x00", " ").split())
     compact = SENSITIVE_DIAGNOSTIC_PATTERN.sub("[REDACTED]", compact)
+    compact = CREDENTIAL_SHAPE_PATTERN.sub("[REDACTED]", compact)
     return compact[:limit]
 
 
@@ -163,7 +166,9 @@ class TransactionState:
     # immutable review records remain in ``assurance_reviews``.
     assurance_review_progress: tuple[dict[str, str], ...] = ()
     assurance_reviews: tuple[dict[str, object], ...] = ()
+    assurance_launch_events: tuple[dict[str, str], ...] = ()
     assurance_resolutions: tuple[dict[str, str], ...] = ()
+    specialist_records: tuple[dict[str, object], ...] = ()
     repair_iterations: int = 0
     repair_audit: tuple[dict[str, str], ...] = ()
     local_validation_iterations: int = 0
@@ -217,7 +222,9 @@ class TransactionState:
             "assurance_profile": None,
             "assurance_review_progress": (),
             "assurance_reviews": (),
+            "assurance_launch_events": (),
             "assurance_resolutions": (),
+            "specialist_records": (),
             "repair_iterations": 0,
             "repair_audit": (),
             "local_validation_iterations": 0,
@@ -246,6 +253,10 @@ class TransactionState:
         for field in ("implementation_changed_paths", "finalization_changed_paths", "reconciliation_changed_paths"):
             if isinstance(raw.get(field), list):
                 raw = {**raw, field: tuple(raw[field])}
+        if isinstance(raw.get("specialist_records"), list):
+            raw = {**raw, "specialist_records": tuple(raw["specialist_records"])}
+        if isinstance(raw.get("assurance_launch_events"), list):
+            raw = {**raw, "assurance_launch_events": tuple(raw["assurance_launch_events"])}
         if isinstance(raw.get("assurance_reviews"), list):
             raw = {**raw, "assurance_reviews": tuple(raw["assurance_reviews"])}
         if isinstance(raw.get("assurance_review_progress"), list):
@@ -266,6 +277,11 @@ class TransactionState:
             state = cls(**raw)
         except TypeError as error:
             raise StateError("checkpoint fields are invalid") from error
+        from .capability_review import validate_specialist_records
+        try:
+            validate_specialist_records(state.specialist_records, run_id=state.run_id, repository=state.repository)
+        except (ValueError, TypeError, KeyError) as error:
+            raise StateError("specialist checkpoint is invalid") from error
         if state.schema_version != SCHEMA_VERSION:
             raise StateError("unsupported checkpoint schema version")
         if state.publication_intent is not None:
@@ -575,7 +591,7 @@ class TransactionState:
                     or not isinstance(review.get("started_at"), str)
                     or not isinstance(review.get("completed_at"), str)
                     or not isinstance(review.get("coverage"), list)
-                    or not 1 <= len(review["coverage"]) <= 16
+                    or not (0 if review.get("status") == "UNRESOLVED" else 1) <= len(review["coverage"]) <= 16
                     or any(
                         not isinstance(item, dict) or set(item) != coverage_fields
                         or item.get("status") not in {"REVIEWED", "NOT_APPLICABLE"}
@@ -603,6 +619,7 @@ class TransactionState:
             )
         ):
             raise StateError("checkpoint assurance review evidence is invalid")
+        validate_assurance_launch_events(state.assurance_launch_events)
         resolution_fields = {"finding_id", "disposition", "resolution_ref", "candidate_sha"}
         if (
             not isinstance(state.assurance_resolutions, tuple)
@@ -722,7 +739,15 @@ class StateStore:
         except (TypeError, json.JSONDecodeError) as error:
             raise StateError("canonical checkpoint is corrupt") from error
 
-    def save(self, state: TransactionState, *, expected_publication_intent: object = _UNSPECIFIED) -> Path:
+    def save(self, state: TransactionState, *, expected_publication_intent: object = _UNSPECIFIED,
+             expected_effect_checkpoint: dict | None = None, preserve_effect_authority: bool = False,
+             preserve_effect_status: bool = True) -> Path:
+        validate_assurance_launch_events(state.assurance_launch_events)
+        from .capability_review import validate_specialist_records
+        try:
+            validate_specialist_records(state.specialist_records, run_id=state.run_id, repository=state.repository)
+        except (ValueError, TypeError, KeyError) as error:
+            raise StateError("specialist checkpoint is invalid") from error
         path = self.path_for(state.run_id)
         canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
         previous_phase: str | None = None
@@ -737,6 +762,27 @@ class StateStore:
                     "SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (state.run_id,)
                 ).fetchone()
                 previous_phase = str(prior[0]) if prior is not None else None
+                from .managed_adoption import EFFECT_CHECKPOINT_FIELDS
+                prior_payload = json.loads(prior[1]) if prior else None
+                if expected_effect_checkpoint is not None and (
+                        prior_payload is None or any(prior_payload.get(key, [] if key == "assurance_launch_events" else None) != value
+                            for key, value in expected_effect_checkpoint.items())):
+                    raise StateError("effect checkpoint changed concurrently; no stale authority write")
+                if preserve_effect_authority and prior_payload is not None and prior_payload.get("managed_candidate_adoption") is not None:
+                    fields = tuple(key for key in EFFECT_CHECKPOINT_FIELDS
+                        if key not in {"assurance_launch_events", "specialist_records"}
+                        and (preserve_effect_status or key not in {"phase", "terminal"}))
+                    state = replace(state, **{
+                        key: tuple(prior_payload[key]) if isinstance(getattr(state, key), tuple)
+                        else prior_payload[key] for key in fields
+                    })
+                    canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
+                previous_launches = prior_payload.get("assurance_launch_events", []) if prior else []
+                if list(state.assurance_launch_events[:len(previous_launches)]) != previous_launches:
+                    raise StateError("assurance launch history cannot change or be erased")
+                previous_records = json.loads(prior[1]).get("specialist_records", []) if prior else []
+                if list(state.specialist_records[:len(previous_records)]) != previous_records:
+                    raise StateError("specialist records changed concurrently or cannot be erased")
                 previous_intent = json.loads(prior[1]).get("publication_intent") if prior else None
                 prior_adoption = json.loads(prior[1]).get("managed_candidate_adoption") if prior else None
                 from .effect_state import transition as effect_transition
@@ -866,3 +912,30 @@ class StateStore:
         # Removing a compatibility projection must never erase canonical state.
         for (run_id,) in rows:
             self.path_for(str(run_id)).unlink(missing_ok=True)
+
+
+
+def validate_assurance_launch_events(events):
+    """Append-only identity and status ordering; intent is never usage proof."""
+    if (not isinstance(events, tuple) or len(events) > 128
+            or any(not isinstance(event, dict)
+                or set(event) != {"invocation_id", "reviewer", "candidate_sha", "profile_digest", "status"}
+                or any(not isinstance(value, str) or not value or len(value) > 240 for value in event.values())
+                or event["reviewer"] not in {"quality", "security"}
+                or event["status"] not in {"INTENT", "STARTED", "UNKNOWN", "DENIED", "RESULT"}
+                or not re.fullmatch(r"[0-9a-f]{40}", event["candidate_sha"])
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", event["profile_digest"])
+                for event in events)):
+        raise StateError("checkpoint assurance launch identity is invalid")
+    observed = {}
+    following = {None: {"INTENT"}, "INTENT": {"STARTED", "UNKNOWN", "DENIED"},
+                 "STARTED": {"RESULT", "UNKNOWN"}}
+    for event in events:
+        identity = event["invocation_id"]
+        prior = observed.get(identity)
+        previous_status = prior["status"] if prior else None
+        if event["status"] not in following.get(previous_status, set()):
+            raise StateError("checkpoint assurance launch ordering is invalid")
+        if prior and any(prior[key] != event[key] for key in ("reviewer", "candidate_sha", "profile_digest")):
+            raise StateError("checkpoint assurance launch binding cannot change")
+        observed[identity] = event

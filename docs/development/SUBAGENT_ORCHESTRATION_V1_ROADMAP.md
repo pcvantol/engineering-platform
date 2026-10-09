@@ -12,6 +12,10 @@ No existing executable DAG, Mission, run or policy activation is changed.
 
 ## Status and pickup priority
 
+L2 r33 selects **SA-SEL + SA-LOOP** under `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`, plan revision 13. The [selected delivery](SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md) records the sole writer, exact base/branch, typed optional question and real primary consumer boundary. Both nodes are IMPLEMENTING / NOT_QUALIFIED until protected final-main installed evidence. Necessary CTX/ISO/OBS extensions are qualified with this same slice; prior r32 receipts remain historical qualified evidence and its assignment remains closed. No full SA-Q/ROLE/PAR, model routing, utility or commercial saving claim.
+
+### Closed predecessor r32
+
 L2 r32 selects **SA-VAL + SA-PUB**, with only their necessary SA-CTX/SA-ISO/SA-OBS
 prerequisites, under assignment
 `L2-EP-DETERMINISTIC-VALIDATION-PUBLICATION-V1-20261007`.
@@ -44,8 +48,8 @@ Priority is not an additional hard dependency beyond the DAG.
 | SA-OBS | QUALIFIED_NECESSARY_SUBSET | SA-ISO | SA-F05, SA-F07, SA-F08 | Complete the invocation ledger and correct measurement semantics. Mandatory Q/S and failure/recovery IDs join usage/timing; unknown remains unknown; event replay/id deduplication; legacy proxy counters stay historical and are not fabricated adoption. |
 | SA-VAL | QUALIFIED_SELECTED_SCOPE | SA-CTX, SA-OBS | SA-F06 | Execute known validation controls without an LLM turn. Actual Managed and validation-only paths retain candidate/profile/exit evidence, full required controls and bounded failure diagnostics; zero provider calls for eligible deterministic control execution. |
 | SA-PUB | QUALIFIED_SELECTED_SCOPE | SA-VAL, SA-PUBLICATION-CONTRACT | SA-F06 | Use a deterministic host-owned first-PR publication adapter. Current validation, both independent reviews and authority precede dispatch; unchanged SHA; ambiguous response/restart reconciles one exact PR with no new provider turn or duplicate publication. |
-| SA-SEL | PLANNED | SA-OBS | SA-F03 | Select useful optional specialists under bounded capacity. Capability/path/risk selection rejects misleading md/yaml/coordinator triggers; selected/skipped rationale and consumer recorded; finite wave/concurrency allowance, mandatory work reserved and saturation tested. |
-| SA-LOOP | PLANNED | SA-CTX, SA-OBS | SA-F02, SA-F07 | Join bounded specialist findings to genuine dispositions. Actual proposed/accepted/rejected/deferred/implemented/verified transitions with references; no-consumer skip; no private-reasoning/approval sharing, invented adoption or scope/repair-budget expansion. |
+| SA-SEL | IMPLEMENTING | SA-OBS | SA-F03 | Select useful optional specialists under bounded capacity. Capability/path/risk selection rejects misleading md/yaml/coordinator triggers; selected/skipped rationale and consumer recorded; finite wave/concurrency allowance, mandatory work reserved and saturation tested. |
+| SA-LOOP | IMPLEMENTING | SA-CTX, SA-OBS | SA-F02, SA-F07 | Join bounded specialist findings to genuine dispositions. Actual proposed/accepted/rejected/deferred/implemented/verified transitions with references; no-consumer skip; no private-reasoning/approval sharing, invented adoption or scope/repair-budget expansion. |
 | SA-ROLE | PLANNED | SA-CTX, SA-OBS | SA-F09 | Qualify role rubrics and explicit provider/model/effort policy. Versioned Q/S coverage, unresolved criteria, requested versus observed settings, incompatible-capability denial and comparative detection quality; preserve existing effective-profile authority. |
 | SA-PAR | PLANNED | SA-CTX, SA-ISO, SA-OBS, SA-SEL | SA-F04, SA-F05 | Qualify bounded parallel mandatory reviews. Independent read-only invocations on one immutable candidate/profile; complete-set join, timeout/failure/cancel/stale tests and no early publication; preserve sequential behavior until qualified. |
 | SA-Q | PLANNED | SA-VAL, SA-PUB, SA-SEL, SA-LOOP, SA-ROLE, SA-PAR | SA-F01, SA-F02, SA-F03, SA-F04, SA-F05, SA-F06, SA-F07, SA-F08, SA-F09 | Qualify integrated correctness and measured efficiency. Exact-source/artifact/provider/profile comparative corpus, predeclared thresholds, complete usage coverage and wall time, unique verified findings and non-regression; installed proof separate from source merge. |

@@ -133,7 +133,8 @@ def write_file(root: Path, relative: str, content: bytes) -> None:
         os.close(descriptor)
 
 
-def snapshot(target: Path, destination: Path, contract: dict[str, object]) -> dict[str, str]:
+def snapshot(target: Path, destination: Path, contract: dict[str, object], *,
+             executable_source_as_text: bool = False) -> dict[str, str]:
     """Export only explicitly granted regular committed files, never .git."""
     if destination.exists():
         raise EffectContractError("EFFECT_SNAPSHOT_ALREADY_EXISTS")
@@ -150,7 +151,8 @@ def snapshot(target: Path, destination: Path, contract: dict[str, object]) -> di
             continue
         safe_path(path)
         mode, kind, object_id = metadata.decode("ascii").split()
-        if kind != "blob" or mode != "100644" or path.casefold() in seen:
+        permitted_modes = {"100644", "100755"} if executable_source_as_text else {"100644"}
+        if kind != "blob" or mode not in permitted_modes or path.casefold() in seen:
             raise EffectContractError("UNSAFE_EFFECT_SOURCE")
         size = int(git(target, "cat-file", "-s", object_id).decode("ascii").strip())
         if size < 0 or size > 1_048_576 or total + size > 8_388_608:
@@ -161,6 +163,8 @@ def snapshot(target: Path, destination: Path, contract: dict[str, object]) -> di
             raise EffectContractError("EFFECT_SOURCE_LIMIT")
         require_redacted(content.decode("utf-8"))
         write_file(destination, path, content)
+        if executable_source_as_text:
+            (destination / path).chmod(0o400)
         manifest[path] = hashlib.sha256(content).hexdigest()
         seen.add(path.casefold())
     if (not manifest or any(not any(contains([scope], path) for path in manifest)

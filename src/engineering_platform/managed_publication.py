@@ -7,11 +7,13 @@ decision and the SQLite checkpoint owns its identity.
 """
 from __future__ import annotations
 
+from .providers import process_effect_scope
 from dataclasses import dataclass, replace
 import re
 from typing import TYPE_CHECKING
 
 from .execution_errors import RunnerError
+from .agent_state import StateError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -84,14 +86,18 @@ def validate_transition(previous: object, current: object) -> None:
 
 
 def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
-                      repository: RepositoryClient, github: GitHubClient) -> tuple[TransactionState, int]:
+                      repository: RepositoryClient, github: GitHubClient, authority_effect=None) -> tuple[TransactionState, int]:
     """Recover or issue the sole create permitted by the durable intent."""
+    from .managed_adoption import AdoptionAuthorityError
+    if state.managed_candidate_adoption is not None and state.transaction_kind == "IMPLEMENTATION" and authority_effect is None:
+        raise PublicationRecovery(state, "managed_candidate_adoption_invalid")
     profile = state.assurance_profile or {}
     identity = {"version": "1.0", "run_id": state.run_id, "repository": state.repository,
                 "branch": state.branch, "base": "main", "candidate_sha": profile.get("candidate_sha"),
                 "validation_profile_digest": profile.get("validation_profile_digest"),
                 "assurance_profile_digest": profile.get("digest"), "repair_ordinal": state.repair_iterations}
     prepared = {**identity, "status": "PREPARED", "pull_request": None}
+    from .managed_adoption import effect_checkpoint
     try:
         validate_intent(prepared)
     except ValueError as error:
@@ -100,8 +106,15 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         if any(state.publication_intent[key] != value for key, value in identity.items()):
             raise PublicationRecovery(state, "publication_identity_changed")
     else:
+        previous_state = state
         state = replace(state, publication_intent=prepared, next_action="read_publication_receipt")
-        store.save(state, expected_publication_intent=None)
+        try:
+            store.save(state, expected_publication_intent=None,
+                expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
+        except StateError as error:
+            if previous_state.managed_candidate_adoption is None:
+                raise
+            raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
 
     def exact_workspace() -> None:
         observed = repository.inspect(root)
@@ -123,19 +136,32 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         # Push is also exact and compare-and-set: a foreign remote branch is
         # never overwritten. Repeat after a pre-create crash is harmless.
         try:
-            repository.publish_candidate_branch(root, state.repository, str(state.branch), str(identity["candidate_sha"]))
+            with process_effect_scope((lambda: authority_effect(state)) if authority_effect is not None else None):
+                repository.publish_candidate_branch(root, state.repository, str(state.branch), str(identity["candidate_sha"]))
+        except AdoptionAuthorityError as error:
+            raise PublicationRecovery(state, "managed_candidate_adoption_invalid") from error
         except RunnerError as error:
             raise PublicationRecovery(state, "publication_branch_conflict") from error
         exact_workspace()
+        previous_state = state
         previous = state.publication_intent
         state = replace(state, publication_intent={**previous, "status": "CREATE_UNCERTAIN"})
-        store.save(state, expected_publication_intent=previous)
         try:
-            github.create_draft_publication(
-                state.repository, str(state.branch), "main",
-                f"Managed delivery: {state.branch}",
-                f"Managed run `{state.run_id}`.\n\nCandidate `{identity['candidate_sha']}` passed current required validation and independent Quality and Security assurance.",
-            )
+            store.save(state, expected_publication_intent=previous,
+                expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
+        except StateError as error:
+            if previous_state.managed_candidate_adoption is None:
+                raise
+            raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
+        try:
+            with process_effect_scope((lambda: authority_effect(state)) if authority_effect is not None else None):
+                github.create_draft_publication(
+                    state.repository, str(state.branch), "main",
+                    f"Managed delivery: {state.branch}",
+                    f"Managed run `{state.run_id}`.\n\nCandidate `{identity['candidate_sha']}` passed current required validation and independent Quality and Security assurance.",
+                )
+        except AdoptionAuthorityError as error:
+            raise PublicationRecovery(state, "managed_candidate_adoption_invalid") from error
         except (RunnerError, RuntimeError):
             # A transport error is indistinguishable from an accepted create
             # with lost acknowledgement. Readback is the only authority.
@@ -152,7 +178,14 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
             or candidate.draft is not True or type(candidate.number) is not int or candidate.number < 1):
         raise PublicationRecovery(state, "publication_remote_identity_conflict")
     exact_workspace()
+    previous_state = state
     previous = state.publication_intent
     state = replace(state, publication_intent={**previous, "status": "RECONCILED", "pull_request": candidate.number})
-    store.save(state, expected_publication_intent=previous)
+    try:
+        store.save(state, expected_publication_intent=previous,
+            expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
+    except StateError as error:
+        if previous_state.managed_candidate_adoption is None:
+            raise
+        raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
     return state, candidate.number

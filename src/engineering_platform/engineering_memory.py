@@ -74,6 +74,11 @@ def capture_engineering_memory(
         if isinstance(item, dict) and isinstance(item.get("reviewer"), str)
     }
     for record in reviewer_records:
+        # Typed specialist outcomes remain in the canonical capability journal.
+        # Do not fold genuine dispositions into historical completion/confidence
+        # proxies or create an unmeasured duration/value score for new routes.
+        if record.get("measurement_semantics") == "specialist-disposition-v1":
+            continue
         reviewer = record.get("reviewer")
         if not isinstance(reviewer, str):
             continue

@@ -22,7 +22,7 @@ from engineering_platform.execution_models import AgentResult, PullRequestEviden
 from engineering_platform.execution_repository import SubprocessRepositoryClient
 from engineering_platform.managed_adoption import parse_selection, profile_digest, verify_selection
 from engineering_platform.managed_publication import PublicationCandidate
-from engineering_platform.providers import GitProvider
+from engineering_platform.providers import GitProvider, process_effect_start
 from engineering_platform.storage import load_validation_context, sqlite_connection
 from tests.engineering.test_execution_host import FakeAgent, mandatory_review_result
 
@@ -105,8 +105,12 @@ class AdoptionLifecycleTests(unittest.TestCase):
             def __init__(self): self.candidates, self.creates = [], 0
             def publication_candidates(self, *args): return self.candidates
             def create_draft_publication(inner, repository, branch, base, title, body):
-                inner.creates += 1
-                inner.candidates = [PublicationCandidate(71, repository, repository, branch, "main", fixture.git("rev-parse", "HEAD"), "OPEN", True)]
+                sha = fixture.git("rev-parse", "HEAD")
+                # Only the deterministic external effect is inline; preparation
+                # and transport delay remain outside canonical serialization.
+                with process_effect_start():
+                    inner.creates += 1
+                    inner.candidates = [PublicationCandidate(71, repository, repository, branch, "main", sha, "OPEN", True)]
             def pull_request(self, number):
                 candidate = self.candidates[0]
                 return PullRequestEvidence(number, "OPEN", True, True, head_branch=candidate.branch, base_branch="main", head_sha=candidate.head_sha)
@@ -126,10 +130,22 @@ class AdoptionLifecycleTests(unittest.TestCase):
         self.transport.command(self.root, "git", "push", "origin", "main")
         for kind, start in (("FINALIZATION", runner._start_finalization), ("RECONCILIATION", runner._start_automatic_reconciliation)):
             with self.subTest(kind=kind):
+                # The public run owns an exclusive lease before this private
+                # post-merge entry. Reproduce that real contract here; the
+                # passive operator wait has deliberately released its lease.
+                if kind in {"FINALIZATION", "RECONCILIATION"}:
+                    from engineering_platform.execution_lease import acquire, LeaseHeartbeat
+                    runner.active_lease = acquire(self.root, waiting.run_id,
+                        identity=runner.host_identity, instance_id=runner.host_instance_id,
+                        process_id=os.getpid(), central_database=self.database)
+                    runner.lease_heartbeat = LeaseHeartbeat(self.root, runner.active_lease,
+                        central_database=self.database)
+                    runner.lease_heartbeat.start()
                 # The ordinary entry saves its checkpoint before the external
                 # provider is interrupted. All host/state services remain real.
                 with self.assertRaisesRegex(SystemExit, "external provider handoff"):
-                    start(waiting, 71) if kind == "FINALIZATION" else start(waiting)
+                    start(waiting, 71) if kind == "FINALIZATION" else start(self.store.load("adopt-run"))
+                self.stop_host(runner)
                 checkpoint = self.store.load("adopt-run")
                 self.assertEqual(checkpoint.transaction_kind, kind)
                 self.assertEqual(checkpoint.publication_intent, waiting.publication_intent)
@@ -164,8 +180,15 @@ class AdoptionLifecycleTests(unittest.TestCase):
         runner = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
         state, admission_error = runner._confirm_deterministic_admission(state)
         self.assertIsNone(admission_error)
+        from engineering_platform.execution_lease import acquire, LeaseHeartbeat
+        runner.active_lease = acquire(self.root, state.run_id, identity=runner.host_identity,
+            instance_id=runner.host_instance_id, process_id=os.getpid(), central_database=self.database)
+        runner.lease_heartbeat = LeaseHeartbeat(self.root, runner.active_lease, central_database=self.database)
+        runner.lease_heartbeat.start()
+        self.addCleanup(self.stop_host, runner)
         with self.assertRaisesRegex(SystemExit, "external provider handoff"):
             runner._repair(state, "local validation failed. Correct the documentation heading.")
+        self.stop_host(runner)
         reserved = self.store.load("adopt-run")
         self.assertEqual((reserved.repair_iterations, reserved.repair_audit[-1]["outcome"]), (1, "planned"))
         # The interrupted external provider returned its committed candidate
@@ -229,8 +252,13 @@ class AdoptionLifecycleTests(unittest.TestCase):
         runner = EngineeringRunner(self.root, self.store, self.repository, github, agent, lambda _: None)
         execute = self.transport.execute
         def interrupted_transport(root, *args):
+            # Current remote preflight also uses ls-remote. Interrupt only the
+            # original PREPARED publication boundary, not earlier admission.
             if "ls-remote" in args:
-                raise SystemExit("external Git transport interrupted")
+                checkpoint = self.store.load("adopt-run")
+                if checkpoint.publication_intent is not None:
+                    self.assertEqual(checkpoint.publication_intent["status"], "PREPARED")
+                    raise SystemExit("external Git transport interrupted")
             return execute(root, *args)
         with patch.object(self.transport, "execute", side_effect=interrupted_transport):
             try:
@@ -274,6 +302,11 @@ class AdoptionLifecycleTests(unittest.TestCase):
         self.assertEqual((after.repair_iterations, github.creates), (1, 1))
         # A later reserved round must invoke its own repair prompt, never
         # consume the completed earlier replacement merely because phase agrees.
+        from engineering_platform.execution_lease import acquire, LeaseHeartbeat
+        restarted.active_lease = acquire(self.root, after.run_id, identity=restarted.host_identity,
+            instance_id=restarted.host_instance_id, process_id=os.getpid(), central_database=self.database)
+        restarted.lease_heartbeat = LeaseHeartbeat(self.root, restarted.active_lease, central_database=self.database)
+        restarted.lease_heartbeat.start()
         with self.assertRaisesRegex(SystemExit, "external provider handoff"):
             restarted._repair(after, "quality failed. Correct the new bounded finding.")
         self.assertEqual(self.store.load("adopt-run").repair_iterations, 2)

@@ -123,9 +123,10 @@ def _translate_missing(target: str, source: Sequence[str]) -> tuple[str, ...]:
                     "codex", "exec", "--sandbox", "read-only", "--ephemeral",
                     "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
                     "-C", workspace, "--json", "--model", chat_model(),
-                    "--output-schema", str(schema_path), instruction,
+                    "--output-schema", str(schema_path), "-",
                 ),
                 timeout=CHAT_TIMEOUT_SECONDS,
+                input_text=instruction,
                 max_output_bytes=MAX_PROVIDER_OUTPUT_BYTES,
             )
         except subprocess.TimeoutExpired as error:

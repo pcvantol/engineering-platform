@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 from .execution_errors import RunnerError
 from .execution_models import PullRequestEvidence, RepositoryEvidence
-from .providers import GitProvider, GitHubProvider
+from .providers import GitProvider, GitHubProvider, process_effect_start
 from .managed_publication import PublicationCandidate, valid_branch
 
 
@@ -84,6 +84,7 @@ class SubprocessRepositoryClient:
 
     def _run(self, root: Path, *args: str) -> str:
         try: return self.provider.command(root, *args)
+        except RunnerError: raise
         except RuntimeError as error: raise RunnerError(str(error)) from error
 
     def inspect(self, root: Path) -> RepositoryEvidence:
@@ -117,12 +118,19 @@ class SubprocessRepositoryClient:
         self._synchronize_command(root, "git", "fetch", "origin", "main")
 
     def protected_main_revision(self, root: Path) -> str:
-        """Return the freshly observed protected-main revision without checkout mutation."""
-        self.refresh_main_reference(root)
-        revision = self._run(root, "git", "rev-parse", "--verify", "origin/main")
-        if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        """Observe current remote main without writing refs, objects or FETCH_HEAD.
+
+        An origin/main cache is not current remote evidence. Callers that need
+        downloaded objects/ancestry use the separate authorized refresh route.
+        """
+        rows = self._run(root, "git", "ls-remote", "--heads", "origin", "refs/heads/main").splitlines()
+        if len(rows) != 1:
             raise RunnerError("protected main revision is unavailable")
-        return revision
+        fields = rows[0].split()
+        if (len(fields) != 2 or fields[1] != "refs/heads/main"
+                or re.fullmatch(r"[0-9a-f]{40}", fields[0]) is None):
+            raise RunnerError("protected main revision is unavailable")
+        return fields[0]
 
     def local_main_revision(self, root: Path) -> str:
         return self._run(root, "git", "rev-parse", "--verify", "refs/heads/main")
@@ -208,11 +216,14 @@ class SubprocessRepositoryClient:
         return re.sub(r"\s+", " ", str(error)).strip()[:512]
 
     def synchronize_main(self, root: Path) -> None:
+        from .managed_adoption import AdoptionAuthorityError
         self._synchronize_command(root, "git", "switch", "main")
         # Managed synchronization has one authority.  Do not let any local
         # branch.*.merge, pull.*, or upstream configuration select its source.
         try:
             self._synchronize_command(root, "git", "fetch", "origin", "main")
+        except AdoptionAuthorityError:
+            raise
         except RunnerError as error:
             raise RunnerError(
                 "MANAGED_MAIN_FETCH_FAILED: operation=git-fetch-origin-main "
@@ -220,6 +231,8 @@ class SubprocessRepositoryClient:
             ) from error
         try:
             self._synchronize_command(root, "git", "merge", "--ff-only", "origin/main")
+        except AdoptionAuthorityError:
+            raise
         except RunnerError as error:
             raise RunnerError(
                 "MANAGED_MAIN_FAST_FORWARD_FAILED: operation=git-merge-ff-only-origin-main "
@@ -320,7 +333,16 @@ class GhCliClient:
         # REST endpoints already carry the exact repository in their path.
         # `gh api` has no `--repo` flag; only `gh pr` accepts that selector.
         scoped = (*args, "--repo", self.repository) if self.repository and args and args[0] == "pr" else args
-        return self.provider.github(*scoped)
+        mutating = (args[:2] in {("pr", verb) for verb in
+                    ("create", "edit", "ready", "merge", "close", "reopen", "comment")}
+                    or (args and args[0] == "api" and any(
+                        method in args for method in ("POST", "PATCH", "PUT", "DELETE"))))
+        if isinstance(self.provider, GitHubProvider) or not mutating:
+            return self.provider.github(*scoped)
+        # Explicit deterministic external adapters apply their small inline
+        # effect here. Native transport releases at the real child start.
+        with process_effect_start():
+            return self.provider.github(*scoped)
 
     def publication_candidates(self, repository: str, branch: str) -> list[PublicationCandidate]:
         if repository != self.repository or not valid_branch(branch):
@@ -480,6 +502,8 @@ class GhCliClient:
         return {"pull_request_id": number, "exact_qualified_sha": head_sha, "base_revision": raw.get("baseRefOid"), "required_checks": sorted(names), "strict_checks": required.get("strict") is True, "checks": checks, "conclusion": "PASS"}
     def ready(self, number: int) -> None:
         try: self._github("pr", "ready", str(number))
+        except RunnerError:
+            raise
         except RuntimeError as error:
             if "already ready" not in str(error).lower(): raise RunnerError(str(error)) from error
 
@@ -487,6 +511,8 @@ class GhCliClient:
         """Repair only a fully escaped PR body generated by an agent."""
         try:
             raw = json.loads(self._github("pr", "view", str(number), "--json", "body"))
+        except RunnerError:
+            raise
         except (RuntimeError, json.JSONDecodeError) as error:
             raise RunnerError("Pull request Markdown could not be inspected.") from error
         body = raw.get("body") if isinstance(raw, dict) else None
@@ -497,6 +523,8 @@ class GhCliClient:
         normalized = body.replace("\\r\\n", "\n").replace("\\n", "\n")
         try:
             self._github("pr", "edit", str(number), "--body", normalized)
+        except RunnerError:
+            raise
         except RuntimeError as error:
             raise RunnerError("Pull request Markdown could not be normalized.") from error
         return True

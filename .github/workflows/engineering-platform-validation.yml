@@ -60,14 +60,14 @@ jobs:
         with: {python-version: '3.14'}
       - id: profile
         run: PYTHONPATH=src python3 -m engineering_platform.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --branch "${{ github.head_ref || github.ref_name }}" --github-output "$GITHUB_OUTPUT"
-  validate:
+  coverage:
+    name: Qualify installed production coverage
     needs: validation-profile
     runs-on: ubuntu-latest
-    # The installed qualification runs the complete product suite once for
-    # behavior and once with coverage instrumentation, after the transport and
-    # deterministic execution matrices. Keep a bounded ceiling with enough
-    # margin for the measured pass on shared GitHub runners.
-    timeout-minutes: 25
+    # Keep the entire installed suite and every strict threshold. A separate
+    # equally bounded job avoids running two full natural-lease/crash passes
+    # inside one 120-minute runner lifetime. validate requires its SUCCESS.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -82,32 +82,6 @@ jobs:
           npm ci --ignore-scripts
           echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
           bash tools/qualification/prepare_ci_native_sandbox.sh
-      - name: Qualify native filesystem, network and admission boundaries
-        run: |
-          python3 -m unittest -v \
-            tests.engineering.test_effect_execution.EffectWorkspaceTests.test_real_sandbox_denies_target_scratch_escape_and_network \
-            tests.engineering.test_effect_boundaries.EffectProviderTests.test_actual_installed_cli_denies_effects_and_escalation \
-            tests.engineering.test_effect_execution.EffectLifecycleTests.test_read_only_qualified_report_and_resume_leave_target_unchanged
-      - name: Import, bytecode and qualification smoke
-        run: |
-          python3 -c "import engineering_platform, engineering_platform.execution_host"
-          python3 -m compileall -q src/engineering_platform
-          PYTHONPATH=src python3 tools/qualification/console_route_ownership_guard.py --source-root src
-          python3 tools/qualification/platform_version_consistency.py --source-root . --installed-python "$(command -v python3)"
-          python3 -m unittest discover -s tests -p 'test_*.py'
-      - name: Qualify installed P-TRANSPORT 3×2 ingress matrix
-        run: python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
-      - name: Qualify installed parallel Action concurrency matrix
-        run: python3 tools/qualification/pa_eq_installed_matrix.py --source-root . --require-clean --receipt "$RUNNER_TEMP/pa-eq-installed-matrix.json"
-      - name: Qualify installed per-repository consumer authority
-        run: python3 tools/qualification/ep_repository_authority_installed_matrix.py --source-root . --require-clean --receipt "$RUNNER_TEMP/ep-repository-authority-installed-matrix.json"
-      - name: Qualify deterministic Genesis and Managed execution E2E
-        # The E2E script creates an isolated CENTRAL data root and a local bare
-        # Git origin for Managed.  CI therefore exercises both execution modes
-        # without mutating a GitHub repository.
-        run: python3 tools/qualification/p_deterministic_execution_e2e.py --source-root .
-      - name: Qualify HTTP JSON API, OpenAPI and Postman contract
-        run: PYTHONPATH=src python3 tools/qualification/http_json_postman_contract.py --source-root .
       - name: Enforce Engineering Platform coverage contract
         run: |
           # The standalone package is installed before this job runs.  Tell
@@ -165,6 +139,58 @@ jobs:
           if failures:
               raise SystemExit("Engineering Platform coverage contract failed:\n" + "\n".join(failures))
           PY
+
+  validate:
+    needs: [validation-profile, coverage]
+    runs-on: ubuntu-latest
+    # The complete behavior suite and every other owning gate remain here.
+    # The complete instrumented suite runs in coverage, required above. Each
+    # job keeps the existing 120-minute ceiling and unchanged product budgets.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.14'}
+      - name: Build and install committed canonical Engineering Platform wheel
+        run: |
+          python3 -m pip install build coverage jsonschema==4.25.1
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          python3 tools/qualification/build_platform_wheel.py --source-root . --version "$version" --install-python "$(command -v python3)"
+      - name: Install integrity-pinned FME sandbox qualification runtime
+        run: |
+          npm ci --ignore-scripts
+          echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+          bash tools/qualification/prepare_ci_native_sandbox.sh
+      - name: Qualify native filesystem, network and admission boundaries
+        run: |
+          python3 -m unittest -v \
+            tests.engineering.test_effect_execution.EffectWorkspaceTests.test_real_sandbox_denies_target_scratch_escape_and_network \
+            tests.engineering.test_effect_boundaries.EffectProviderTests.test_actual_installed_cli_denies_effects_and_escalation \
+            tests.engineering.test_effect_execution.EffectLifecycleTests.test_read_only_qualified_report_and_resume_leave_target_unchanged
+      - name: Qualify coupled recovery authority and local Genesis fault detection
+        run: |
+          python3 -m unittest -v tests.engineering.test_recovery_authority_regressions tests.engineering.test_publication_authority_regressions tests.engineering.test_git_effect_authority_regressions tests.engineering.test_later_adoption_and_profile_authority tests.engineering.test_control_assurance_authority tests.engineering.test_inline_review_start_authority tests.engineering.test_round10_public_host_boundaries
+          python3 tools/qualification/recovery_authority_fault_detection.py --source-root .
+      - name: Import, bytecode and qualification smoke
+        run: |
+          python3 -c "import engineering_platform, engineering_platform.execution_host"
+          python3 -m compileall -q src/engineering_platform
+          PYTHONPATH=src python3 tools/qualification/console_route_ownership_guard.py --source-root src
+          python3 tools/qualification/platform_version_consistency.py --source-root . --installed-python "$(command -v python3)"
+          python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Qualify installed P-TRANSPORT 3×2 ingress matrix
+        run: python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
+      - name: Qualify installed parallel Action concurrency matrix
+        run: python3 tools/qualification/pa_eq_installed_matrix.py --source-root . --require-clean --receipt "$RUNNER_TEMP/pa-eq-installed-matrix.json"
+      - name: Qualify installed per-repository consumer authority
+        run: python3 tools/qualification/ep_repository_authority_installed_matrix.py --source-root . --require-clean --receipt "$RUNNER_TEMP/ep-repository-authority-installed-matrix.json"
+      - name: Qualify deterministic Genesis and Managed execution E2E
+        # The E2E script creates an isolated CENTRAL data root and a local bare
+        # Git origin for Managed.  CI therefore exercises both execution modes
+        # without mutating a GitHub repository.
+        run: python3 tools/qualification/p_deterministic_execution_e2e.py --source-root .
+      - name: Qualify HTTP JSON API, OpenAPI and Postman contract
+        run: PYTHONPATH=src python3 tools/qualification/http_json_postman_contract.py --source-root .
   browser-dashboard:
     needs: validation-profile
     if: needs.validation-profile.outputs.browser_dashboard_required == 'true'

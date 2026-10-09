@@ -21,7 +21,8 @@ def main():
     root, data = Path(spec["root"]), Path(spec["data"])
     remote_receipt, turns = data / "remote-receipt.json", data / "model-turns.jsonl"
     selection = spec["selection"]
-    class Agent:
+    from tests.engineering.inline_review_backend import InlineReviewBackend
+    class Agent(InlineReviewBackend):
         def available(self): return True
         def version(self): return "0.160.1"
         def invoke(self, *args):

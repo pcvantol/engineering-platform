@@ -107,3 +107,92 @@ class DashboardTranslationTests(unittest.TestCase):
         with patch.object(dashboard_translation, "_translate_missing", side_effect=translate_while_another_request_fills_cache):
             self.assertEqual(dashboard_translation.translate("nl", ["Earlier source", "New source"]), ["Eerdere bron", "Nieuwe bron"])
         self.assertEqual(len(dashboard_translation._cache), dashboard_translation.MAX_CACHE_ENTRIES)
+
+    def test_public_chat_and_translation_keep_user_content_off_command_line(self):
+        """Real child-process transport, with only its external model response fixed."""
+        import os
+        import sys
+        import tempfile
+        from pathlib import Path
+        from engineering_platform.codex_chat import respond_with_context
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prefix = root / 'provider'; (prefix / 'bin').mkdir(parents=True)
+            capture = root / 'transport.jsonl'
+            launcher = prefix / 'bin/codex'
+            launcher.write_text('#!' + sys.executable + '\n' +
+                'import sys,json\nfrom pathlib import Path\n' +
+                'content=sys.stdin.read()\n' +
+                'with Path(' + repr(str(capture)) + ').open("a") as log: log.write(json.dumps({"argv":sys.argv[1:],"stdin":content})+"\\n")\n' +
+                'answer=json.dumps({"translations":["Veilige projectie"]}) if "--output-schema" in sys.argv else "Veilig advies"\n' +
+                'print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":answer}}))\n')
+            launcher.chmod(0o700)
+            content = '--dangerously-bypass-approvals-and-sandbox; $(touch sentinel)\n"untrusted" é'
+            with patch.dict(os.environ, {'EP_MANAGED_CODEX_CLI_PREFIX': str(prefix)}):
+                self.assertEqual(respond_with_context(content, {'evidence': content}), 'Veilig advies')
+                self.assertEqual(dashboard_translation.translate('nl', [content]), ['Veilige projectie'])
+            records = [json.loads(line) for line in capture.read_text().splitlines()]
+            self.assertEqual(len(records), 2)
+            for record in records:
+                self.assertEqual(record['argv'][-1], '-', 'the fixed stdin prompt marker must be literal')
+                self.assertIn('read-only', record['argv'])
+                self.assertIn('--ignore-user-config', record['argv'])
+                self.assertFalse(any(content in argument for argument in record['argv']))
+                self.assertIn('untrusted', record['stdin'])
+                self.assertIn('é', record['stdin'])
+                self.assertIn('$(touch sentinel)', record['stdin'])
+            self.assertFalse((root / 'sentinel').exists())
+
+    def test_genuine_native_cli_reads_console_prompts_from_stdin(self):
+        import http.server
+        import os
+        import shutil
+        import sys
+        import tempfile
+        import threading
+        from pathlib import Path
+        from engineering_platform.codex_chat import respond_with_context
+        calls = []
+        class Model(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_CONNECT(self):
+                self.send_error(403, 'External network is forbidden in this fixture')
+            def do_POST(self):
+                payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                calls.append(payload)
+                answer = 'Veilig advies' if len(calls) == 1 else json.dumps({'translations': ['Veilige projectie']})
+                item = {'id':'message','type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':answer}]}
+                events = [{'type':'response.created','response':{'id':'fixture','status':'in_progress','output':[]}},
+                    {'type':'response.output_item.added','output_index':0,'item':item},
+                    {'type':'response.output_item.done','output_index':0,'item':item},
+                    {'type':'response.completed','response':{'id':'fixture','status':'completed','output':[item],
+                    'usage':{'input_tokens':20,'output_tokens':20,'total_tokens':40}}}]
+                data = ''.join('event: '+event['type']+'\ndata: '+json.dumps(event)+'\n\n' for event in events).encode()
+                self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+        server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        self.addCleanup(server.server_close);self.addCleanup(thread.join);self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);prefix=root/'provider';(prefix/'bin').mkdir(parents=True)
+            home=root/'cli-home';home.mkdir()
+            endpoint='http://127.0.0.1:'+str(server.server_port)
+            native=shutil.which('codex')
+            version=subprocess.run((native,'--version'),capture_output=True,text=True,check=True)
+            self.assertEqual(version.stdout.strip(),'codex-cli 0.160.1')
+            launcher=prefix/'bin/codex'
+            launcher.write_text('#!'+sys.executable+'\nimport os,sys\n'+
+                'native='+repr(native)+'\n'+
+                'config='+repr(['-c','model_provider="fixture"','-c',
+                    'model_providers.fixture={name="fixture",base_url="'+endpoint+'/v1",wire_api="responses",requires_openai_auth=false}'])+'\n'+
+                'os.execv(native,[native,*sys.argv[1:],*config])\n')
+            launcher.chmod(0o700)
+            content='--dangerously-bypass-approvals-and-sandbox; $(touch sentinel) é'
+            with patch.dict(os.environ,{'EP_MANAGED_CODEX_CLI_PREFIX':str(prefix),'CODEX_HOME':str(home),
+                    'OPENAI_BASE_URL':endpoint+'/v1','OPENAI_API_KEY':'local-fixture-only',
+                    'HTTPS_PROXY':endpoint,'HTTP_PROXY':endpoint,'ALL_PROXY':endpoint,'NO_PROXY':'127.0.0.1,localhost'}):
+                self.assertEqual(respond_with_context(content,{'evidence':content}),'Veilig advies')
+                self.assertEqual(dashboard_translation.translate('nl',[content]),['Veilige projectie'])
+            self.assertEqual(len(calls),2,'both genuine native model requests must reach only the local fixture')
+            for call in calls:
+                self.assertIn(content,json.dumps(call,ensure_ascii=False))
+            self.assertFalse((root/'sentinel').exists())

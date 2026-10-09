@@ -5,7 +5,10 @@ diagnostics only; they do not grant execution, repository or network authority.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
 from ipaddress import IPv4Address, IPv4Network
 import os
 import pwd
@@ -20,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 
 @dataclass(frozen=True)
@@ -71,25 +74,160 @@ class ProcessProvider(Protocol):
     def spawn_detached(self, root: Path, arguments: Sequence[str], environment: Mapping[str, str]) -> subprocess.Popen[bytes]: ...
 
 
+_effect_authority = ContextVar("ep_process_effect_authority", default=None)
+_effect_started = ContextVar("ep_process_effect_started", default=None)
+_model_started = ContextVar("ep_model_effect_started", default=None)
+
+
+@contextmanager
+def process_effect_scope(authority, *, started=None, verify_exit=True):
+    """Bind current authority to transport primitives, without holding its lock.
+
+    Each actual process start is serialized. Waiting for the child leaves the
+    ordinary exclusive-lease heartbeat free to renew. A successful continuation
+    requires fresh authority again, including the same lease and checkpoint.
+    """
+    token = _effect_authority.set(authority)
+    started_token = _effect_started.set(started)
+    try:
+        if authority is not None:
+            with authority():
+                pass
+        yield
+        if verify_exit and authority is not None:
+            with authority():
+                pass
+    finally:
+        _effect_started.reset(started_token)
+        _effect_authority.reset(token)
+
+
+@contextmanager
+def process_effect_start():
+    """Serialize a native child start or an explicit inline transport effect."""
+    authority = _effect_authority.get()
+    with authority() if authority is not None else nullcontext(lambda: None) as release:
+        yield release
+
+
+@contextmanager
+def model_effect_scope(started):
+    """Model dispatch observations exclude native version/metadata probes."""
+    token = _model_started.set(started)
+    try:
+        yield
+    finally:
+        _model_started.reset(token)
+
+
+@contextmanager
+def model_process_effect():
+    """Audit only the chosen model exec, after metadata preparation."""
+    token = _effect_started.set(_model_started.get())
+    try:
+        yield
+    finally:
+        _effect_started.reset(token)
+
+
+def _model_invocation_effect(method):
+    @wraps(method)
+    def invoke(self, root, arguments, **kwargs):
+        # Resolve the command after CLI global options, never by searching
+        # arbitrary option values or metadata output for the word exec.
+        tokens = iter(arguments[1:] if arguments[:1] == ("codex",) else arguments)
+        command = None
+        for token in tokens:
+            if token in {"--", "--version", "-V", "--help", "-h"}:
+                break
+            if token in {"-c", "--config", "--profile", "-p", "--enable", "--disable",
+                         "-m", "--model", "-C", "--cd", "-s", "--sandbox",
+                         "-a", "--ask-for-approval", "--local-provider", "--add-dir",
+                         "--remote", "--remote-auth-token-env", "-i", "--image"}:
+                next(tokens, None)
+            elif token.startswith("-"):
+                continue
+            else:
+                command = token
+                break
+        if command == "exec" and _model_started.get() is not None:
+            with model_process_effect():
+                return method(self, root, arguments, **kwargs)
+        return method(self, root, arguments, **kwargs)
+    return invoke
+
+
+def process_effect_context_is_bound():
+    return _effect_authority.get() is not None
+
+
+def process_effect_started():
+    """Record an actual start after releasing canonical serialization."""
+    callback = _effect_started.get()
+    if callback is not None:
+        callback()
+
+
+def _start_process(*arguments, **options):
+    """Every native spawn shares the current effect boundary, including models."""
+    with process_effect_start() as release:
+        process = subprocess.Popen(*arguments, **options)
+        release()
+    try:
+        process_effect_started()
+    except BaseException as error:
+        # Bounded native execs own a separate process group. An audit failure
+        # must reap its launcher and descendants, without touching siblings.
+        try:
+            if options.get("start_new_session"):
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        process.wait()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        if isinstance(error, Exception):
+            from .capability_review import ReviewStartUncertain
+            raise ReviewStartUncertain("Actual process start could not be audited.") from error
+        raise
+    return process
+
+
 class LocalProcessProvider:
     """Default local process adapter; orchestration code never imports subprocess for work."""
 
     def execute(
-        self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None,
+        self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None, timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        if _effect_authority.get() is None:
+            return subprocess.run(
+                arguments, cwd=root, env=dict(environment) if environment is not None else None,
+                text=True, capture_output=True, check=False,
+                **({"timeout": timeout} if timeout is not None else {}),
+            )
+        process = _start_process(
             arguments, cwd=root, env=dict(environment) if environment is not None else None,
-            text=True, capture_output=True, check=False,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
 
     def spawn(self, root: Path, arguments: Sequence[str]) -> subprocess.Popen[str]:
-        return subprocess.Popen(
+        return _start_process(
             tuple(arguments), cwd=root, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, start_new_session=True,
         )
 
     def spawn_detached(self, root: Path, arguments: Sequence[str], environment: Mapping[str, str]) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
+        return _start_process(
             tuple(arguments), cwd=root, env=dict(environment), start_new_session=True,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -402,6 +540,10 @@ class ProviderOutputLimitExceeded(RuntimeError):
     """An advisory provider invocation exceeded its retained output budget."""
 
 
+class ProviderInvocationCancelled(RuntimeError):
+    """The owning Action cancelled its bounded provider process."""
+
+
 class CodexCliProvider(LocalProcessProvider):
     """Codex process adapter pinned exclusively to EP's managed launcher."""
 
@@ -432,7 +574,7 @@ class CodexCliProvider(LocalProcessProvider):
         """Open the provider-owned interactive Codex app-server channel."""
         if not self._executable:
             raise FileNotFoundError("Engineering Platform managed Codex CLI is unavailable")
-        return subprocess.Popen(
+        return _start_process(
             (self._executable, "app-server"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, bufsize=1,
         )
@@ -448,6 +590,7 @@ class CodexCliProvider(LocalProcessProvider):
             if stream is not None:
                 stream.close()
 
+    @_model_invocation_effect
     def invoke(
         self,
         root: Path,
@@ -457,6 +600,7 @@ class CodexCliProvider(LocalProcessProvider):
         environment: Mapping[str, str] | None = None,
         input_text: str | None = None,
         max_output_bytes: int | None = None,
+        cancellation_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Execute a complete Codex command; callers never spawn its CLI directly."""
         command = self._arguments(arguments)
@@ -466,21 +610,37 @@ class CodexCliProvider(LocalProcessProvider):
             return self._invoke_with_output_limit(
                 root, command, timeout=timeout, environment=environment,
                 input_text=input_text, max_output_bytes=max_output_bytes,
+                cancellation_check=cancellation_check,
             )
         if timeout is None and environment is None and input_text is None:
-            return self.execute(root, command)
+            return self.execute(root, (self._executable, *command[1:]))
         # The executable is this provider's configured Codex launcher, never a
         # caller-selected command. Remaining values are Codex CLI arguments.
-        return subprocess.run(
+        if not process_effect_context_is_bound():
+            return subprocess.run(
+                (self._executable, *command[1:]), cwd=root,
+                env=dict(environment) if environment is not None else None, timeout=timeout,
+                text=True, input=input_text, capture_output=True, check=False,
+            )
+        process = _start_process(
             (self._executable, *command[1:]), cwd=root,
-            env=dict(environment) if environment is not None else None, timeout=timeout,
-            text=True, input=input_text, capture_output=True, check=False,
+            env=dict(environment) if environment is not None else None,
+            text=True, stdin=subprocess.PIPE if input_text is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        try:
+            stdout, stderr = process.communicate(input=input_text, timeout=timeout)
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
     def _invoke_with_output_limit(
         self, root: Path, command: tuple[str, ...], *, timeout: float | None,
         environment: Mapping[str, str] | None, input_text: str | None,
         max_output_bytes: int,
+        cancellation_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Capture bounded advisory output; terminate only this invocation's group.
 
@@ -490,11 +650,13 @@ class CodexCliProvider(LocalProcessProvider):
         """
         if max_output_bytes < 1:
             raise ValueError("Provider output limit must be positive")
+        if cancellation_check is not None and cancellation_check():
+            raise ProviderInvocationCancelled("Cancelled before bounded provider launch")
         arguments = (self._executable, *command[1:])
         pending_input = memoryview(input_text.encode("utf-8") if input_text is not None else b"")
         output = {"stdout": bytearray(), "stderr": bytearray()}
         retained = 0
-        with subprocess.Popen(
+        with _start_process(
             arguments, cwd=root, env=dict(environment) if environment is not None else None,
             stdin=subprocess.PIPE if input_text is not None else None,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
@@ -512,10 +674,13 @@ class CodexCliProvider(LocalProcessProvider):
                     else:
                         process.stdin.close()
                 while streams.get_map():
+                    if cancellation_check is not None and cancellation_check():
+                        raise ProviderInvocationCancelled("Cancelled during bounded provider invocation")
                     remaining = None if deadline is None else deadline - time.monotonic()
                     if remaining is not None and remaining <= 0:
                         raise subprocess.TimeoutExpired(arguments, timeout)
-                    for key, _ in streams.select(remaining):
+                    poll = min(remaining, .1) if remaining is not None else .1
+                    for key, _ in streams.select(poll if cancellation_check is not None else remaining):
                         if key.data == "stdin":
                             try:
                                 pending_input = pending_input[os.write(key.fd, pending_input[:4096]):]
@@ -533,8 +698,16 @@ class CodexCliProvider(LocalProcessProvider):
                         if retained > max_output_bytes:
                             raise ProviderOutputLimitExceeded("Provider output byte limit exceeded")
                         output[key.data].extend(chunk)
-                remaining = None if deadline is None else max(0, deadline - time.monotonic())
-                process.wait(timeout=remaining)
+                while process.poll() is None:
+                    if cancellation_check is not None and cancellation_check():
+                        raise ProviderInvocationCancelled("Cancelled after provider output closed")
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        raise subprocess.TimeoutExpired(arguments, timeout)
+                    try:
+                        process.wait(timeout=min(remaining, .1) if remaining is not None else .1)
+                    except subprocess.TimeoutExpired:
+                        continue
             finally:
                 # This session was created above for this bounded invocation;
                 # never target another provider or the EP server's process group.
@@ -551,13 +724,14 @@ class CodexCliProvider(LocalProcessProvider):
             output["stderr"].decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
         )
 
+    @_model_invocation_effect
     def spawn_invocation(
         self, root: Path, arguments: tuple[str, ...], *, environment: Mapping[str, str] | None = None
     ) -> subprocess.Popen[str]:
         command = self._arguments(arguments)
         if environment is None:
-            return self.spawn(root, command)
-        return subprocess.Popen(
+            return self.spawn(root, (self._executable, *command[1:]))
+        return _start_process(
             (self._executable, *command[1:]), cwd=root, env=dict(environment),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
         )
@@ -584,10 +758,9 @@ class GitProvider(LocalProcessProvider):
 
     def clone_branch(self, root: Path, origin: str, branch: str, destination: Path, *, timeout: int = 120) -> None:
         """Create one bounded, disposable checkout for a pinned remote review."""
-        completed = subprocess.run(
-            ("git", "clone", "--quiet", "--single-branch", "--no-tags", "--branch", branch,
-             origin, str(destination)), cwd=root, text=True, capture_output=True,
-            check=False, timeout=timeout,
+        completed = LocalProcessProvider().execute(
+            root, ("git", "clone", "--quiet", "--single-branch", "--no-tags", "--branch", branch,
+                   origin, str(destination)), timeout=timeout,
         )
         if completed.returncode:
             raise RuntimeError("Pinned Git review checkout could not be created.")
@@ -603,7 +776,9 @@ class GitHubProvider:
         executable = github_cli_executable()
         if executable is None:
             raise RuntimeError("Engineering Platform GitHub CLI is unavailable")
-        completed = subprocess.run((executable, *args), text=True, capture_output=True, check=False)
+        completed = (subprocess.run((executable, *args), text=True, capture_output=True, check=False)
+                     if _effect_authority.get() is None else
+                     LocalProcessProvider().execute(Path.cwd(), (executable, *args)))
         if completed.returncode:
             raise RuntimeError(completed.stderr.strip() or "GitHub provider command failed")
         return completed.stdout.strip()

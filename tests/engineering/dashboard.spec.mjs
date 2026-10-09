@@ -4658,7 +4658,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Wait for that production layout pass before inspecting its scroll box.
     await expect(longBubble).toHaveClass(/chat-message--scrollable/);
     expect(await shortBody.evaluate((element) => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
-    expect(await longBody.evaluate((element) => element.scrollHeight > element.clientHeight + 1)).toBe(true);
+    await expect.poll(() => longBody.evaluate((element) => element.scrollHeight > element.clientHeight + 1)).toBe(true);
     const [messagesBox, longBubbleBox] = await Promise.all([
       page.locator("#chatMessages").boundingBox(), longBubble.boundingBox(),
     ]);
@@ -8476,7 +8476,11 @@ test.describe("Engineering Status browser smoke", () => {
       contentType: "application/json",
       body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
     }));
+    const initialSnapshot = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await initialSnapshot;
+    await expect(page.getByTestId("dashboard-splash")).toBeHidden();
+    await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => r({
       watcher_state: "WATCHER_IDLE",
       current_phase: "BLOCKED",
@@ -8490,6 +8494,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(banner).toHaveCSS("position", "relative");
     await expect(banner).toHaveCSS("background-color", "rgb(91, 29, 39)");
     await expect(page.locator(".dashboard-sticky-header")).toHaveCSS("padding-bottom", "7px");
+    await expect(page.locator(".dashboard-titlebar")).toHaveCSS("margin-bottom", "0px");
     const layout = await page.evaluate(async () => {
       const region = document.querySelector(".dashboard-scroll-region");
       const titleBar = document.querySelector(".dashboard-titlebar");
@@ -10889,6 +10894,11 @@ test.describe("Engineering Status browser smoke", () => {
       ).join("");
       modal.showModal();
     });
+    // Observe the actual mutation-observer layout pass before measuring it.
+    await expect(page.locator("#chatMessages .chat-message--scrollable")).toHaveCount(2);
+    await expect.poll(() => page.locator("#chatMessages").evaluate((container) =>
+      [...container.querySelectorAll(".chat-message__body")].every((body) => body.scrollHeight > body.clientHeight),
+    )).toBe(true);
     const measurements = await page.locator("#chatMessages").evaluate((container) => ({
       available: container.clientHeight,
       bubbles: [...container.querySelectorAll(".chat-message")].map((bubble) => {

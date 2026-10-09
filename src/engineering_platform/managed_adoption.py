@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from contextlib import closing
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 import re
+import json
+import os
+from datetime import datetime, timezone
 import sqlite3
 
 from .execution_errors import RunnerError
@@ -12,9 +15,25 @@ from .local_repository_binding import LocalRepositoryBindingError, resolve_local
 from .managed_publication import valid_branch
 from .platform_admin import require_installation_owner
 from .validation_profile import (
-    VALIDATION_PROFILE_VERSION, changed_paths, classify, profile_control_bindings,
+    VALIDATION_PROFILE_VERSION, ValidationProfileResolutionError, changed_paths, classify, profile_control_bindings,
     validation_profile_identity,
 )
+
+
+class AdoptionAuthorityError(RunnerError):
+    """No provider attempt began; preserve its reservation and recovery truth."""
+
+
+EFFECT_CHECKPOINT_FIELDS = (
+    "managed_candidate_adoption", "managed_adoption_actor", "owner_authorized",
+    "phase", "repository", "prompt_path", "branch", "transaction_kind",
+    "repair_iterations", "repair_audit", "specialist_records", "assurance_launch_events",
+    "publication_intent", "delegated_merge_attempt", "terminal", "action_intent", "execution_mode",
+)
+
+def effect_checkpoint(state):
+    """Exact existing continuation binding, including append-only evidence."""
+    return json.loads(json.dumps({key: getattr(state, key) for key in EFFECT_CHECKPOINT_FIELDS}))
 
 
 _FIELDS = {"version", "project_id", "repository_id", "repository", "branch", "candidate_sha",
@@ -40,7 +59,10 @@ def parse_selection(value: object) -> dict[str, object]:
 
 def profile_digest(root: Path, candidate_sha: str, repair_ordinal: int) -> str:
     """Use the same candidate/profile serializer as required local validation."""
-    profile = classify(changed_paths(root, "main"))
+    try:
+        profile = classify(changed_paths(root, "main"))
+    except ValidationProfileResolutionError as error:
+        raise RunnerError("Managed adoption change evidence is unavailable.") from error
     _, digest = validation_profile_identity(
         candidate_sha=candidate_sha, currentness=repair_ordinal, selected_validation_tier=profile.tier,
         validation_profile_version=VALIDATION_PROFILE_VERSION,
@@ -51,7 +73,7 @@ def profile_digest(root: Path, candidate_sha: str, repair_ordinal: int) -> str:
     return digest
 
 
-def _verify_owner_binding(*, selected, state, root: Path, central_database: Path | None) -> str:
+def _verify_owner_binding(*, selected, state, root: Path, central_database: Path | None, connection=None) -> str:
     """Re-read revocable installation and canonical target authority."""
     if central_database is None or not central_database.is_file():
         raise RunnerError("Managed adoption requires the selected CENTRAL project binding.")
@@ -62,7 +84,8 @@ def _verify_owner_binding(*, selected, state, root: Path, central_database: Path
     if state.managed_adoption_actor not in {None, actor}:
         raise RunnerError("Managed adoption owner differs from the durable authority.")
     try:
-        with closing(sqlite3.connect(f"file:{central_database}?mode=ro", uri=True)) as connection:
+        with (nullcontext(connection) if connection is not None else
+              closing(sqlite3.connect(f"file:{central_database}?mode=ro", uri=True))) as connection:
             binding = resolve_local_repository_binding(
                 connection, project_id=str(selected["project_id"]), repository_id=str(selected["repository_id"]),
                 data_root=central_database.parent,
@@ -135,8 +158,76 @@ def verify_selection(*, selection: object, state, root: Path, repository, centra
         raise RunnerError("Managed adoption candidate is stale, foreign, changed or dirty.")
     if expected_sha == selected["candidate_sha"] and profile_digest(root, observed.head_sha, state.repair_iterations) != selected["validation_profile_digest"]:
         raise RunnerError("Managed adoption validation profile differs from the current candidate.")
+    _verify_owner_binding(selected=selected, state=state, root=root, central_database=central_database)
     return replace(state, managed_candidate_adoption=selected, managed_adoption_actor=actor, branch=observed.branch,
                    implementation_branch=observed.branch, execution_baseline_sha=str(selected["base_sha"]))
+
+
+@contextmanager
+def effect_authority(*, state, root: Path, central_database: Path | None, lease, connection=None, git_effect=False):
+    """Serialize current adoption authority with the start of one effect.
+
+    Historical adoption stays subject to current authority in every later kind.
+    Canonical binding/project writers contend on this same SQLite writer lock.
+    The lock ends after a real provider process has started, before its host
+    callbacks write telemetry. Explicit inline fixtures retain it only for their small local effect.
+    Native Git/GitHub transports release it after Popen, before waiting.
+    This does not hold a database lock during the whole
+    asynchronous provider turn or replace the exclusive run lease.
+    """
+    if state.managed_candidate_adoption is None:
+        yield lambda: None
+        return
+    if central_database is None or not central_database.is_file() or lease is None:
+        raise AdoptionAuthorityError("Managed adoption effect requires current exclusive run ownership.")
+    owned_connection = connection is None
+    if owned_connection:
+        try:
+            connection = sqlite3.connect(central_database, timeout=10)
+        except sqlite3.Error as error:
+            raise AdoptionAuthorityError("Managed adoption effect authority is unavailable.") from error
+    released = False
+    def release():
+        nonlocal released
+        if not released:
+            connection.rollback()
+            if owned_connection:
+                connection.close()
+            released = True
+    try:
+        if not connection.in_transaction:
+            connection.execute("BEGIN IMMEDIATE")
+        selected = parse_selection(state.managed_candidate_adoption)
+        if (not state.owner_authorized or not state.managed_adoption_actor
+                or selected["run_id"] != state.run_id or selected["repository"] != state.repository):
+            raise RunnerError("Managed adoption continuation authority is invalid.")
+        row = connection.execute(
+            "SELECT t.payload FROM execution_run_leases l JOIN engineering_transactions t ON t.run_id=l.run_id "
+            "WHERE l.lease_id=? AND l.run_id=? AND l.host_instance_id=? AND l.process_id=? "
+            "AND l.lease_state='ACTIVE' AND l.expires_at>=?",
+            (lease.lease_id, state.run_id, lease.host_instance_id, os.getpid(),
+             datetime.now(timezone.utc).isoformat()),
+        ).fetchone()
+        if row is None:
+            raise AdoptionAuthorityError("Managed adoption effect lost exclusive run ownership.")
+        current = json.loads(row[0])
+        if not isinstance(current, dict):
+            raise AdoptionAuthorityError("Managed adoption checkpoint is unavailable.")
+        if any(current.get(key, [] if key == "assurance_launch_events" else None) != json.loads(json.dumps(getattr(state, key))) for key in
+               EFFECT_CHECKPOINT_FIELDS):
+            raise AdoptionAuthorityError("Managed adoption checkpoint changed before the effect.")
+        _verify_owner_binding(selected=selected, state=state, root=root,
+                              central_database=central_database, connection=connection)
+    except (sqlite3.Error, ValueError, OSError, RunnerError) as error:
+        release()
+        raise AdoptionAuthorityError(str(error) if isinstance(error, RunnerError) else "Managed adoption effect authority is unavailable.") from error
+    except BaseException:
+        release()
+        raise
+    try:
+        yield release
+    finally:
+        release()
 
 
 def main() -> None:

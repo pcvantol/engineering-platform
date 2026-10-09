@@ -36,7 +36,7 @@ AUTHORITATIVE, DERIVED = "AUTHORITATIVE", "DERIVED"
 _SPEED_STATES = frozenset({"FAST", "NORMAL_DEFAULT", "OTHER", "UNKNOWN"})
 _SAFE_CHURN_TEXT_FIELDS = frozenset({
     "candidate_sha", "assurance_profile_digest", "canonical_invocation_id",
-    "review_status",
+    "review_status", "request_id", "source_digest", "consumer", "repository",
     "interruption_classification",
     "interruption_reason",
     "usage_state",
@@ -514,23 +514,23 @@ def _canonical_invocation_rows(rows):
     The immutable source rows are never updated or deleted.
     """
     terminals = {row["invocation_id"]: row for row in rows
-                 if row["phase"] == "MANDATORY_ASSURANCE" and row["completed_at"] is not None}
+                 if row["phase"] in {"MANDATORY_ASSURANCE", "CAPABILITY_REVIEW"} and row["completed_at"] is not None}
     result = []
     for row in rows:
-        if row["phase"] == "MANDATORY_ASSURANCE_DISPATCH":
+        if row["phase"] in {"MANDATORY_ASSURANCE_DISPATCH", "CAPABILITY_REVIEW_DISPATCH"}:
             try:
                 binding = json.loads(row["churn"])
                 if not isinstance(binding, dict):
                     raise TypeError("Dispatch observation metadata is not an object.")
                 identifier = binding["canonical_invocation_id"]
                 terminal = terminals.get(identifier)
-                if (terminal is not None and row["invocation_id"] == identifier + ":dispatch"
+                if (terminal is not None and row["phase"].removesuffix("_DISPATCH") == terminal["phase"] and row["invocation_id"] == identifier + ":dispatch"
                         and row["completed_at"] is None and row["role"] == terminal["role"]
                         and all(row[key] == terminal[key]
                                 for key in ("run_id", "provider", "started_at"))):
                     completed = json.loads(terminal["churn"])
                     if isinstance(completed, dict) and all(binding.get(key) == completed.get(key) and binding.get(key)
-                           for key in ("canonical_invocation_id", "candidate_sha", "assurance_profile_digest")):
+                           for key in (("canonical_invocation_id", "candidate_sha", "assurance_profile_digest", "request_id", "source_digest", "consumer", "repository") if row["phase"] == "CAPABILITY_REVIEW_DISPATCH" else ("canonical_invocation_id", "candidate_sha", "assurance_profile_digest"))):
                         continue
             except (KeyError, TypeError, ValueError):
                 pass

@@ -77,6 +77,11 @@ def schema_directory(root: Path) -> Path:
     return scope[0] if scope is not None else root / ".engineering"
 
 
+def review_is_scoped() -> bool:
+    """Whether this invocation has the existing explicit tool policy boundary."""
+    return _SCOPE.get() is not None
+
+
 def restrict_review(arguments: tuple[str, ...]) -> tuple[str, ...]:
     scope = _SCOPE.get()
     if scope is None:
