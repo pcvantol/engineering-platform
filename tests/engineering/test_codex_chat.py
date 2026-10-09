@@ -52,6 +52,7 @@ class CodexChatTest(unittest.TestCase):
                 answer = respond(root, {"last_executed_run": "inbox-last", "last_executed_title": "Laatste prompt"}, "Wat is de volgende stap? secret=topsecret")
                 self.assertEqual(answer, "Veilig advies.")
                 command = run.call_args.args[1]
+                instruction = run.call_args.kwargs["input_text"]
             self.assertIn("--sandbox", command)
             self.assertIn("read-only", command)
             self.assertIn("--ephemeral", command)
@@ -60,8 +61,9 @@ class CodexChatTest(unittest.TestCase):
             self.assertIn("--ignore-rules", command)
             self.assertNotIn("--add-dir", command)
             self.assertNotIn(str(root), command)
-            self.assertIn("Laatste rapport", command[-1])
-            self.assertIn("Laatste prompt", command[-1])
+            self.assertEqual(command[-1], "-")
+            self.assertIn("Laatste rapport", instruction)
+            self.assertIn("Laatste prompt", instruction)
             saved_history = history(root, "inbox-last")
             self.assertEqual(
                 [{"role": item["role"], "text": item["text"]} for item in saved_history],
@@ -104,7 +106,7 @@ class CodexChatTest(unittest.TestCase):
             with patch("engineering_platform.codex_chat.GitProvider.execute", return_value=git), patch("engineering_platform.codex_chat.CodexCliProvider.invoke", return_value=codex) as run:
                 answer = respond(root, {"last_executed_run": "inbox-other", "last_executed_title": "Andere prompt"}, "Wat is de status?", "inbox-selected")
                 self.assertEqual(answer, "Rungebonden advies.")
-                context = run.call_args.args[1][-1]
+                context = run.call_args.kwargs["input_text"]
             self.assertIn("inbox-selected", context)
             self.assertIn("Geselecteerde prompt", context)
             self.assertNotIn("inbox-other", context)

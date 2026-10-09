@@ -613,7 +613,7 @@ class CodexCliProvider(LocalProcessProvider):
                 cancellation_check=cancellation_check,
             )
         if timeout is None and environment is None and input_text is None:
-            return self.execute(root, command)
+            return self.execute(root, (self._executable, *command[1:]))
         # The executable is this provider's configured Codex launcher, never a
         # caller-selected command. Remaining values are Codex CLI arguments.
         if not process_effect_context_is_bound():
