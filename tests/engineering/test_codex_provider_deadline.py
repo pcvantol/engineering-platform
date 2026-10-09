@@ -199,17 +199,32 @@ class CodexProviderDeadlineTests(unittest.TestCase):
                 self.assertEqual(dashboard_translation._cache, {})
 
 
-    def test_unbounded_codex_invocation_cannot_select_another_executable(self):
+    def test_codex_invocation_variants_cannot_select_another_executable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);prefix=root/'provider';(prefix/'bin').mkdir(parents=True)
             managed=prefix/'bin/codex';requested=root/'caller-selected';marker=root/'caller-started'
             managed.write_text('#!'+sys.executable+'\nprint("managed CLI boundary")\n');managed.chmod(0o700)
             requested.write_text('#!'+sys.executable+'\nfrom pathlib import Path\nPath('+repr(str(marker))+').write_text("unauthorized")\n');requested.chmod(0o700)
             with patch.dict(os.environ,{'EP_MANAGED_CODEX_CLI_PREFIX':str(prefix)}):
-                actual=providers.CodexCliProvider().invoke(root,(str(requested),'--version'))
-            self.assertEqual(actual.returncode,0,actual.stderr)
-            self.assertFalse(marker.exists(),'caller argv must never select the Codex executable')
-            self.assertEqual(actual.stdout.strip(),'managed CLI boundary')
+                provider=providers.CodexCliProvider()
+                for mode, options in [('invoke',{}),('invoke',{'timeout':5}),
+                        ('invoke',{'timeout':5,'max_output_bytes':4096}),
+                        ('spawn',{}),('spawn',{'environment':dict(os.environ)})]:
+                    with self.subTest(mode=mode,options=tuple(options)):
+                        if mode=='invoke':
+                            result=provider.invoke(root,(str(requested),'--version'),**options)
+                            code,stdout,stderr=result.returncode,result.stdout,result.stderr
+                        else:
+                            child=provider.spawn_invocation(root,(str(requested),'--version'),**options)
+                            try:
+                                stdout,stderr=child.communicate(timeout=5);code=child.returncode
+                            finally:
+                                if child.poll() is None:child.kill();child.wait()
+                                for stream in (child.stdout,child.stderr):
+                                    if stream is not None:stream.close()
+                        self.assertEqual(code,0,stderr)
+                        self.assertFalse(marker.exists(),'caller argv must never select the Codex executable')
+                        self.assertEqual(stdout.strip(),'managed CLI boundary')
 
 
 if __name__ == "__main__":

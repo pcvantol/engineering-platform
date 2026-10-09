@@ -730,7 +730,7 @@ class CodexCliProvider(LocalProcessProvider):
     ) -> subprocess.Popen[str]:
         command = self._arguments(arguments)
         if environment is None:
-            return self.spawn(root, command)
+            return self.spawn(root, (self._executable, *command[1:]))
         return _start_process(
             (self._executable, *command[1:]), cwd=root, env=dict(environment),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
