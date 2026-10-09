@@ -4,8 +4,8 @@
 Only executable selection and the translation service deadline are substituted.
 The production handler, validation, CodexCliProvider.invoke, subprocess capture,
 output validation and browser module all remain real.  This file also acts as
-the harmless selected executable: ``exec ... INPUT:`` receives the exact Codex
-arguments produced by the translation service and emits its JSON event format.
+the harmless selected executable: ``exec ... -`` receives the exact Codex
+arguments and stdin prompt produced by the service and emits its JSON event format.
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ def journal(root: Path, record: dict[str, object]) -> None:
 
 def provider() -> int:
     root = Path(os.environ["EP_TRANSLATION_FIXTURE_ROOT"])
-    instruction = sys.argv[-1]
+    assert sys.argv[-1] == "-", "Console prompts must use the native stdin transport"
+    instruction = sys.stdin.read()
     target = re.search(r"target locale `([^`]+)`", instruction).group(1)
     sources = json.loads(instruction.split("\n\nINPUT:\n", 1)[1])
     previous = (root / "provider.jsonl").read_text() if (root / "provider.jsonl").exists() else ""
