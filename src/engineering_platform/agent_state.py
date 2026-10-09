@@ -591,7 +591,7 @@ class TransactionState:
                     or not isinstance(review.get("started_at"), str)
                     or not isinstance(review.get("completed_at"), str)
                     or not isinstance(review.get("coverage"), list)
-                    or not 1 <= len(review["coverage"]) <= 16
+                    or not (0 if review.get("status") == "UNRESOLVED" else 1) <= len(review["coverage"]) <= 16
                     or any(
                         not isinstance(item, dict) or set(item) != coverage_fields
                         or item.get("status") not in {"REVIEWED", "NOT_APPLICABLE"}

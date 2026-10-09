@@ -583,3 +583,20 @@ late prepare, request acceptance, audit uncertainty, heartbeat and recovery
 qualification precedes full source/noneditable installed/CI and fresh complete
 independent Quality/Security. Protected merge, NO_BUMP-finalization and exact
 final-main installed evidence remain open; dashboard remains NOT_ACTIVE.
+
+
+### Same integrated round9 own convergence (before final reviews)
+
+First candidate e139048 preserved: complete directly affected hostcomponent
+330tests had one failure/two errors/one existing skip; its broader source and
+installed qualification were stopped as incomplete after that concrete diagnosis,
+not relabelled PASS. No fresh official mandatory review started on those bytes.
+The convergence belongs to the same booked round9/plan12, no new allowance.
+
+A genuine malformed/missing-coverage review persists UNRESOLVED with empty
+coverage. Cold checkpointreadback must retain this non-PASS observation; PASS
+and FAIL records keep the complete existing structural coverage requirement.
+This admits no missing control or incomplete assurance as qualified. The old
+private delivery-timeout unitfixture now uses actual checkpointstorage and a
+separate unreviewed negative fixture instead of erasing the positive history.
+The three concrete regressions pass, including readback and denied mergeassurance.

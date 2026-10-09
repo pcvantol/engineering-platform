@@ -3838,6 +3838,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         blocked, _ = runner._run_quality_assurance(state, AgentResult("COMPLETE", "main", commit_sha="a" * 40))
         self.assertTrue(blocked.terminal)
         self.assertEqual(blocked.next_action, "mandatory_assurance_unresolved")
+        observed = self.store.load(state.run_id)
+        self.assertTrue(all(review["status"] == "UNRESOLVED" for review in observed.assurance_reviews))
+        self.assertFalse(runner._autonomous_merge_assurance_passes(observed, "a"*40))
 
     def test_mandatory_assurance_requires_complete_integral_impact_coverage(self) -> None:
         class MissingCoverageReviewer(FakeAgent):
@@ -3862,6 +3865,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertTrue(blocked.terminal)
         self.assertEqual(blocked.next_action, "mandatory_assurance_unresolved")
+        observed = self.store.load(state.run_id)
+        self.assertTrue(all(review["status"] == "UNRESOLVED" and not review["coverage"] for review in observed.assurance_reviews))
+        self.assertFalse(runner._autonomous_merge_assurance_passes(observed, "a"*40))
 
     def test_rereview_closes_each_prior_blocker_explicitly_with_integral_evidence(self) -> None:
         objectives: list[str] = []
@@ -6674,7 +6680,6 @@ class LocalAgentRunnerTest(unittest.TestCase):
         with (patch.object(runner, "_autonomous_profile_selected", return_value=True),
               patch("engineering_platform.execution_host.merge_delegation.bound_github_repository", return_value=target),
               patch("engineering_platform.execution_host.write_live_status"),
-              patch.object(self.store, "save"),
               patch.object(runner, "_poll", side_effect=lambda recovered: recovered)):
             recovered = runner._recover_finalization_pull_request(state, actual.inspect(source))
             reconciliation = runner._recover_reconciliation_pull_request(
@@ -6703,12 +6708,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
             },),
         )
         blocker_runner = EngineeringRunner(source, self.store, actual, github, blocker_agent, lambda _: None)
-        unreviewed = replace(state, phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=branch,
+        unreviewed = replace(state, run_id="recovered-blocker", phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=branch,
                              pull_request=22, finalization_pull_request=22, finalization_head_sha=head)
         with (patch.object(blocker_runner, "_autonomous_profile_selected", return_value=True),
               patch("engineering_platform.execution_host.merge_delegation.bound_github_repository", return_value=target),
               patch("engineering_platform.execution_host.write_live_status"),
-              patch.object(self.store, "save"),
               patch.object(blocker_runner, "_repair", side_effect=AssertionError("recovery must not mutate main"))):
             blocked = blocker_runner._recover_autonomous_pr_assurance(unreviewed, candidate)
         self.assertTrue(blocked.terminal)
