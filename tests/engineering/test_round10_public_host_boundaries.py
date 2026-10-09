@@ -118,7 +118,7 @@ class Round10PublicHostBoundaries(unittest.TestCase):
         started=time.monotonic();state=runner.run(c.prompt,run_id='adopt-run',owner_authorized=True,managed_candidate=c.selection)
         self.assertTrue(withdrawn.wait(2),outcomes)
         self.assertTrue(outcomes.get('committed'), 'total ACK deadline must release authority lock for canonical withdrawal')
-        self.assertLess(outcomes['elapsed'],6,'handoff must use one <=5s total deadline')
+        self.assertLess(outcomes['elapsed'],3,'handoff must use one <=2s total deadline')
         self.assertEqual(state.next_action,'assurance_start_uncertain')
         self.assertEqual([a['reviewer'] for a in adapter.review_acceptances],['quality'])
         self.assertEqual([e['status'] for e in state.assurance_launch_events],['INTENT','UNKNOWN'])
@@ -162,15 +162,15 @@ class Round10PublicHostBoundaries(unittest.TestCase):
                 outcomes['elapsed']=time.monotonic()-started
         worker=threading.Thread(target=withdraw,daemon=True);worker.start();workers.append(worker)
         # Cross the actual unchanged 15s heartbeat tick while handoff is locked.
-        time.sleep(12)
+        time.sleep(14)
         adapter=Adapter();started=time.monotonic()
         with self.assertRaises(cr.ReviewStartUncertain):
             cr.run_reviews(c.root,(cr.ReviewerSelection('quality','bounded',1,transport_invocation_id='actual-ack-heartbeat'),),'bounded',adapter,
                 authority=lambda:effect_authority(state=state,root=c.root,central_database=c.database,lease=runner.active_lease))
-        self.assertLess(time.monotonic()-started,6)
+        self.assertLess(time.monotonic()-started,3)
         for worker in workers:worker.join(timeout=2)
         self.assertTrue(outcomes.get('committed'),outcomes)
-        self.assertLess(outcomes['elapsed'],6)
+        self.assertLess(outcomes['elapsed'],3)
         observation_deadline=time.monotonic()+5
         while True:
             with sqlite_connection(c.database) as db:
@@ -182,12 +182,47 @@ class Round10PublicHostBoundaries(unittest.TestCase):
         self.assertIsNone(runner.lease_heartbeat.error)
         self.assertEqual(len(adapter.review_acceptances),1)
 
+    def test_publication_post_push_readback_withdrawal_never_regrants(self):
+        from tests.engineering.test_git_effect_authority_regressions import target_bytes
+        c=adoption.AdoptionLifecycleTests();c.setUp();self.addCleanup(c.doCleanups)
+        agent,github=c.lifecycle_adapters();published=[];withdrawn=[];reviews=[]
+        real_push=c.repository.publish_candidate_branch;real_inspect=c.repository.inspect;real_review=agent.review
+        def publish(*args,**kwargs):
+            result=real_push(*args,**kwargs);published.append(True);return result
+        def inspect(*args,**kwargs):
+            result=real_inspect(*args,**kwargs)
+            if published and not withdrawn:
+                current=c.store.load('adopt-run');c.store.save(replace(current,owner_authorized=False))
+                self.assertFalse(c.store.load('adopt-run').owner_authorized)
+                withdrawn.append(target_bytes(c.root))
+            return result
+        def review(*args,**kwargs):
+            reviews.append((args[1].reviewer,bool(withdrawn)));return real_review(*args,**kwargs)
+        c.repository.publish_candidate_branch=publish;c.repository.inspect=inspect;agent.review=review
+        runner=EngineeringRunner(c.root,c.store,c.repository,github,agent,lambda _:None);self.addCleanup(c.stop_host,runner)
+        state=runner.run(c.prompt,run_id='adopt-run',owner_authorized=True,managed_candidate=c.selection)
+        self.assertEqual(len(published),1);self.assertEqual(len(withdrawn),1)
+        self.assertFalse(c.store.load('adopt-run').owner_authorized,'publication result CAS must preserve committed withdrawal')
+        self.assertEqual(github.creates,0,'post-push checkpoint withdrawal must prevent create')
+        self.assertEqual(reviews,[('quality',False),('security',False)])
+        self.assertEqual([r['status'] for r in state.assurance_reviews],['PASS','PASS'])
+        self.assertEqual(target_bytes(c.root),withdrawn[0],'post-withdrawal publication must not write target metadata')
+        self.assertEqual(state.next_action,'managed_candidate_adoption_invalid')
+
     def native_public_host(self, *, deny_audit=False):
         c=specialist.SpecialistPipelineTests();c.setUp();self.addCleanup(c.doCleanups)
         calls=[];starts=[];active=[True]
         def audit(event,args):
             if active[0] and event=='subprocess.Popen' and args[1] and 'codex' in str(args[1][0]):
-                starts.append('exec' if 'exec' in args[1] else 'version' if '--version' in args[1] else 'mcp' if 'mcp' in args[1] else 'other')
+                kind='exec' if 'exec' in args[1] else 'version' if '--version' in args[1] else 'mcp' if 'mcp' in args[1] else 'other'
+                starts.append(kind)
+                if kind in {'version','mcp'}:
+                    from engineering_platform.agent_state import StateError
+                    from engineering_platform.providers import process_effect_context_is_bound
+                    try:checkpoint=c.store.load('specialist-run')
+                    except StateError:checkpoint=None
+                    if checkpoint is not None and checkpoint.phase=='CAPABILITY_REVIEW':
+                        self.assertTrue(process_effect_context_is_bound(),'selected native metadata must retain its real process authority boundary')
         sys.addaudithook(audit);self.addCleanup(lambda:active.__setitem__(0,False))
         class Model(http.server.BaseHTTPRequestHandler):
             def log_message(self,*args):pass
@@ -262,7 +297,7 @@ class Round10PublicHostBoundaries(unittest.TestCase):
         request=cr.SocketReviewRequest(front,b'x'*262144)
         observed=[]
         def receive_partial():
-            time.sleep(5.5)
+            time.sleep(2.5)
             while True:
                 part=back.recv(65536)
                 if not part:break
@@ -272,7 +307,7 @@ class Round10PublicHostBoundaries(unittest.TestCase):
         started=time.monotonic()
         try:
             with self.assertRaises(cr.ReviewStartUncertain):request.start()
-            self.assertLess(time.monotonic()-started,6,'partial send must use total handoff deadline')
+            self.assertLess(time.monotonic()-started,3,'partial send must use total handoff deadline')
         finally:request.close();worker.join(timeout=2)
         self.assertGreater(sum(map(len,observed)),0)
         self.assertLess(sum(map(len,observed)),len(request.payload)+4,'actual partial send cannot be called accepted')

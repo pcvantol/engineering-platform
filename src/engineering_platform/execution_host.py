@@ -3201,7 +3201,17 @@ class EngineeringRunner:
         ) else ()
         qualify = getattr(self.agent, "qualified_specialist_capabilities", None)
         if requested and callable(qualify):
-            supported = tuple(qualify(self.root))
+            from .managed_adoption import effect_authority
+            from .providers import process_effect_scope
+            from .capability_review import ReviewStartUncertain
+            try:
+                with process_effect_scope(lambda: effect_authority(state=state, root=self.root,
+                        central_database=self.store.central_database, lease=self.active_lease),
+                        started=None, verify_exit=False):
+                    supported = tuple(qualify(self.root))
+            except (AdoptionAuthorityError, ReviewStartUncertain):
+                return self._save_terminal(state, "BLOCKED", "specialist_start_unavailable",
+                    "Current authority denied native capability preparation; no subsequent provider effect.")
         consumed = sum(r["kind"] == "DISPATCH" for r in state.specialist_records)
         plan = select_reviewers(objective, Path(state.prompt_path), state.transaction_kind, {},
             root=self.root, run_id=state.run_id, repository=state.repository, candidate_sha=next((r["candidate_sha"] for r in state.specialist_records if r["kind"] == "SELECTION"), evidence.head_sha),

@@ -183,7 +183,9 @@ class SocketReviewRequest:
             raise ValueError("Invalid bounded review transport request.")
         try:
             previous_timeout = self.connection.gettimeout()
-            limit = min(previous_timeout, 5) if previous_timeout is not None else 5
+            # Keep a three-second margin inside the existing five-second
+            # withdrawal writer timeout; do not extend any lease or budget.
+            limit = min(previous_timeout, 2) if previous_timeout is not None else 2
             deadline = time.monotonic() + limit
             pending = memoryview(struct.pack("!I", len(self.payload)) + self.payload)
             while pending:

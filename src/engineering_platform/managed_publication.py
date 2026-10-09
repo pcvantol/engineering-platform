@@ -112,6 +112,8 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
             store.save(state, expected_publication_intent=None,
                 expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
         except StateError as error:
+            if previous_state.managed_candidate_adoption is None:
+                raise
             raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
 
     def exact_workspace() -> None:
@@ -148,6 +150,8 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
             store.save(state, expected_publication_intent=previous,
                 expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
         except StateError as error:
+            if previous_state.managed_candidate_adoption is None:
+                raise
             raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
         try:
             with process_effect_scope((lambda: authority_effect(state)) if authority_effect is not None else None):
@@ -181,5 +185,7 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         store.save(state, expected_publication_intent=previous,
             expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
     except StateError as error:
+        if previous_state.managed_candidate_adoption is None:
+            raise
         raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
     return state, candidate.number
