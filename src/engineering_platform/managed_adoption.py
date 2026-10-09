@@ -27,7 +27,7 @@ class AdoptionAuthorityError(RunnerError):
 EFFECT_CHECKPOINT_FIELDS = (
     "managed_candidate_adoption", "managed_adoption_actor", "owner_authorized",
     "phase", "repository", "prompt_path", "branch", "transaction_kind",
-    "repair_iterations", "repair_audit", "specialist_records",
+    "repair_iterations", "repair_audit", "specialist_records", "assurance_launch_events",
     "publication_intent", "delegated_merge_attempt", "terminal", "action_intent", "execution_mode",
 )
 
@@ -208,7 +208,7 @@ def effect_authority(*, state, root: Path, central_database: Path | None, lease,
         current = json.loads(row[0])
         if not isinstance(current, dict):
             raise AdoptionAuthorityError("Managed adoption checkpoint is unavailable.")
-        if any(current.get(key) != json.loads(json.dumps(getattr(state, key))) for key in
+        if any(current.get(key, [] if key == "assurance_launch_events" else None) != json.loads(json.dumps(getattr(state, key))) for key in
                EFFECT_CHECKPOINT_FIELDS):
             raise AdoptionAuthorityError("Managed adoption checkpoint changed before the effect.")
         _verify_owner_binding(selected=selected, state=state, root=root,

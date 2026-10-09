@@ -2705,6 +2705,33 @@ class EngineeringRunner:
             )
             started_at = datetime.now(timezone.utc).isoformat()
             invocation_id = f"{quality.run_id}:{selection.reviewer}:{uuid.uuid4().hex}"
+            # Reserve identity durably before native or inline handoff. An
+            # interrupted handoff with no reliable audit is not "never started".
+            launch_binding = {"invocation_id": invocation_id, "reviewer": selection.reviewer,
+                              "candidate_sha": candidate.head_sha, "profile_digest": profile_digest}
+            relevant = [event for event in quality.assurance_launch_events
+                        if event["reviewer"] == selection.reviewer
+                        and event["candidate_sha"] == candidate.head_sha
+                        and event["profile_digest"] == profile_digest]
+            latest = {event["invocation_id"]: event["status"] for event in relevant}
+            if any(status in {"INTENT", "UNKNOWN"} for status in latest.values()):
+                return self._save_terminal(quality, "BLOCKED", "assurance_start_uncertain",
+                    "A prior request acceptance needs reconciliation; no blind review retry."), implementation
+            previous_quality = quality
+            quality = replace(quality, assurance_launch_events=quality.assurance_launch_events +
+                              ({**launch_binding, "status": "INTENT"},))
+            try:
+                self._save_effect_checkpoint(previous_quality, quality)
+            except AdoptionAuthorityError:
+                return self._save_terminal(previous_quality, "BLOCKED", "managed_candidate_adoption_invalid",
+                                           "Current checkpoint denied assurance intent."), implementation
+            contracted_selection = replace(contracted_selection, transport_invocation_id=invocation_id)
+            def record_launch_status(status):
+                nonlocal quality
+                quality = replace(quality, assurance_launch_events=quality.assurance_launch_events +
+                                  ({**launch_binding, "status": status},))
+                self.store.save(quality, preserve_effect_authority=True)
+                quality = self.store.load(quality.run_id)
             context_role = (ProviderRole.QUALITY_REVIEW if selection.reviewer == "quality"
                             else ProviderRole.SECURITY_REVIEW)
             self._provider_context_telemetry = project_context(context_role, assurance_objective).telemetry
@@ -2726,6 +2753,8 @@ class EngineeringRunner:
                 )
                 if dispatched is None:
                     raise EngineeringStorageError("Mandatory assurance dispatch identity could not be persisted.")
+                record_launch_status("STARTED")
+            from .capability_review import ReviewStartUncertain
             from .managed_adoption import effect_authority
             try:
                 result = run_reviews(
@@ -2735,7 +2764,12 @@ class EngineeringRunner:
                         central_database=self.store.central_database, lease=self.active_lease),
                     started=record_review_start,
                 )[0]
+            except ReviewStartUncertain:
+                record_launch_status("UNKNOWN")
+                return self._save_terminal(quality, "BLOCKED", "assurance_start_uncertain",
+                    "Review handoff or its start audit is uncertain; preserve intent and do not retry blindly."), implementation
             except AdoptionAuthorityError:
+                record_launch_status("DENIED")
                 return self._save_terminal(
                     quality, "BLOCKED", "managed_candidate_adoption_invalid",
                     "Current authority denied the next mandatory assurance start.",
@@ -2745,6 +2779,7 @@ class EngineeringRunner:
                     quality, "BLOCKED", "assurance_invocation_storage_unavailable",
                     "Mandatory assurance was not dispatched.",
                 ), implementation
+            record_launch_status("RESULT")
             completed_at = datetime.now(timezone.utc).isoformat()
             try:
                 unchanged = self._inspect_assurance_candidate(candidate_root, state.execution_mode)
@@ -3183,28 +3218,46 @@ class EngineeringRunner:
                 break
             identifier = uuid.uuid4().hex
             binding = {**selection.specialist_binding, "invocation_id": identifier}
-            selection = replace(selection, specialist_binding=binding)
+            selection = replace(selection, specialist_binding=binding, transport_invocation_id=identifier)
             if project_context(ProviderRole.SPECIALIST_REVIEW, reviewer_prompt(selection, objective, factual)).telemetry["context_budget_overflow_bytes"]:
                 original = {**binding, "invocation_id": ""}
                 state = replace(state, specialist_records=state.specialist_records + ({**original, "kind": "SKIP", "payload": {"reason": "complete_context_overflow_at_dispatch"}},))
                 self.store.save(state)
                 continue
-            dispatched = {**binding, "kind": "DISPATCH", "payload": {"status": "DISPATCHED"}}
+            dispatched = {**binding, "kind": "DISPATCH", "payload": {"status": "RESERVED"}}
             state = replace(state, specialist_records=state.specialist_records + (dispatched,))
             self.store.save(state)  # consumes the finite slot before an external call
             started = datetime.now(timezone.utc).isoformat()
             metadata = {"canonical_invocation_id": identifier, "candidate_sha": evidence.head_sha,
                         "assurance_profile_digest": binding["profile_digest"], "request_id": binding["request_id"],
                         "source_digest": binding["source_digest"], "consumer": binding["consumer"], "repository": state.repository}
-            if self._persist_provider_invocation(state, phase="CAPABILITY_REVIEW_DISPATCH", role=f"reviewer:{selection.reviewer}",
+            actual_dispatch = None
+            def record_optional_start():
+                nonlocal actual_dispatch, started
+                started = datetime.now(timezone.utc).isoformat()
+                actual_dispatch = self._persist_provider_invocation(state, phase="CAPABILITY_REVIEW_DISPATCH", role=f"reviewer:{selection.reviewer}",
                     started_at=started, observed_usage={}, observed_metadata={}, observed_churn=metadata, observed_snapshots=(),
-                    invocation_id=identifier + ":dispatch", dispatch=True) is None:
-                state = replace(state, specialist_records=state.specialist_records + ({**dispatched, "kind": "UNCERTAIN", "payload": {"reason": "ledger_unavailable_no_provider_dispatch"}},))
+                    invocation_id=identifier + ":dispatch", dispatch=True)
+                if actual_dispatch is None:
+                    raise EngineeringStorageError("Actual optional review acceptance could not be audited.")
+            clock = time.monotonic()
+            from .managed_adoption import effect_authority
+            from .capability_review import ReviewStartUncertain
+            try:
+                result = run_reviews(self.root, (selection,), objective, self.agent, evidence=factual,
+                    authority=lambda: effect_authority(state=state, root=self.root,
+                        central_database=self.store.central_database, lease=self.active_lease),
+                    started=record_optional_start,
+                    progress=lambda selected, event, value: self._publish_reviewer_progress(state, selected, event, value, phase))[0]
+            except (AdoptionAuthorityError, ReviewStartUncertain):
+                state = replace(state, specialist_records=state.specialist_records + ({**dispatched, "kind": "UNCERTAIN", "payload": {"reason": "review_start_denied_or_uncertain_no_retry"}},))
+                self.store.save(state, preserve_effect_authority=True)
+                return self._save_terminal(self.store.load(state.run_id), "BLOCKED", "specialist_start_unavailable",
+                                           "Optional review start was denied or uncertain; no retry or subsequent provider effect.")
+            if actual_dispatch is None:
+                state = replace(state, specialist_records=state.specialist_records + ({**dispatched, "kind": "UNCERTAIN", "payload": {"reason": "review_not_started_no_retry"}},))
                 self.store.save(state)
                 continue
-            clock = time.monotonic()
-            result = run_reviews(self.root, (selection,), objective, self.agent, evidence=factual,
-                progress=lambda selected, event, value: self._publish_reviewer_progress(state, selected, event, value, phase))[0]
             after = self.repository.inspect(self.root)
             try:
                 safe_findings = specialist_findings(selection, result)

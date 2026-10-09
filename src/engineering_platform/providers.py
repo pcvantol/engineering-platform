@@ -152,9 +152,12 @@ def _start_process(*arguments, **options):
         release()
     try:
         process_effect_started()
-    except BaseException:
+    except BaseException as error:
         process.kill()
         process.wait()
+        if isinstance(error, Exception):
+            from .capability_review import ReviewStartUncertain
+            raise ReviewStartUncertain("Actual process start could not be audited.") from error
         raise
     return process
 

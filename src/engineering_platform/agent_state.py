@@ -166,6 +166,7 @@ class TransactionState:
     # immutable review records remain in ``assurance_reviews``.
     assurance_review_progress: tuple[dict[str, str], ...] = ()
     assurance_reviews: tuple[dict[str, object], ...] = ()
+    assurance_launch_events: tuple[dict[str, str], ...] = ()
     assurance_resolutions: tuple[dict[str, str], ...] = ()
     specialist_records: tuple[dict[str, object], ...] = ()
     repair_iterations: int = 0
@@ -221,6 +222,7 @@ class TransactionState:
             "assurance_profile": None,
             "assurance_review_progress": (),
             "assurance_reviews": (),
+            "assurance_launch_events": (),
             "assurance_resolutions": (),
             "specialist_records": (),
             "repair_iterations": 0,
@@ -253,6 +255,8 @@ class TransactionState:
                 raw = {**raw, field: tuple(raw[field])}
         if isinstance(raw.get("specialist_records"), list):
             raw = {**raw, "specialist_records": tuple(raw["specialist_records"])}
+        if isinstance(raw.get("assurance_launch_events"), list):
+            raw = {**raw, "assurance_launch_events": tuple(raw["assurance_launch_events"])}
         if isinstance(raw.get("assurance_reviews"), list):
             raw = {**raw, "assurance_reviews": tuple(raw["assurance_reviews"])}
         if isinstance(raw.get("assurance_review_progress"), list):
@@ -615,6 +619,7 @@ class TransactionState:
             )
         ):
             raise StateError("checkpoint assurance review evidence is invalid")
+        validate_assurance_launch_events(state.assurance_launch_events)
         resolution_fields = {"finding_id", "disposition", "resolution_ref", "candidate_sha"}
         if (
             not isinstance(state.assurance_resolutions, tuple)
@@ -737,6 +742,7 @@ class StateStore:
     def save(self, state: TransactionState, *, expected_publication_intent: object = _UNSPECIFIED,
              expected_effect_checkpoint: dict | None = None, preserve_effect_authority: bool = False,
              preserve_effect_status: bool = True) -> Path:
+        validate_assurance_launch_events(state.assurance_launch_events)
         from .capability_review import validate_specialist_records
         try:
             validate_specialist_records(state.specialist_records, run_id=state.run_id, repository=state.repository)
@@ -759,17 +765,21 @@ class StateStore:
                 from .managed_adoption import EFFECT_CHECKPOINT_FIELDS
                 prior_payload = json.loads(prior[1]) if prior else None
                 if expected_effect_checkpoint is not None and (
-                        prior_payload is None or any(prior_payload.get(key) != value
+                        prior_payload is None or any(prior_payload.get(key, [] if key == "assurance_launch_events" else None) != value
                             for key, value in expected_effect_checkpoint.items())):
                     raise StateError("effect checkpoint changed concurrently; no stale authority write")
                 if preserve_effect_authority and prior_payload is not None and prior_payload.get("managed_candidate_adoption") is not None:
-                    fields = EFFECT_CHECKPOINT_FIELDS if preserve_effect_status else tuple(
-                        key for key in EFFECT_CHECKPOINT_FIELDS if key not in {"phase", "terminal"})
+                    fields = tuple(key for key in EFFECT_CHECKPOINT_FIELDS
+                        if key != "assurance_launch_events"
+                        and (preserve_effect_status or key not in {"phase", "terminal"}))
                     state = replace(state, **{
                         key: tuple(prior_payload[key]) if isinstance(getattr(state, key), tuple)
                         else prior_payload[key] for key in fields
                     })
                     canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
+                previous_launches = prior_payload.get("assurance_launch_events", []) if prior else []
+                if list(state.assurance_launch_events[:len(previous_launches)]) != previous_launches:
+                    raise StateError("assurance launch history cannot change or be erased")
                 previous_records = json.loads(prior[1]).get("specialist_records", []) if prior else []
                 if list(state.specialist_records[:len(previous_records)]) != previous_records:
                     raise StateError("specialist records changed concurrently or cannot be erased")
@@ -902,3 +912,30 @@ class StateStore:
         # Removing a compatibility projection must never erase canonical state.
         for (run_id,) in rows:
             self.path_for(str(run_id)).unlink(missing_ok=True)
+
+
+
+def validate_assurance_launch_events(events):
+    """Append-only identity and status ordering; intent is never usage proof."""
+    if (not isinstance(events, tuple) or len(events) > 128
+            or any(not isinstance(event, dict)
+                or set(event) != {"invocation_id", "reviewer", "candidate_sha", "profile_digest", "status"}
+                or any(not isinstance(value, str) or not value or len(value) > 240 for value in event.values())
+                or event["reviewer"] not in {"quality", "security"}
+                or event["status"] not in {"INTENT", "STARTED", "UNKNOWN", "DENIED", "RESULT"}
+                or not re.fullmatch(r"[0-9a-f]{40}", event["candidate_sha"])
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", event["profile_digest"])
+                for event in events)):
+        raise StateError("checkpoint assurance launch identity is invalid")
+    observed = {}
+    following = {None: {"INTENT"}, "INTENT": {"STARTED", "UNKNOWN", "DENIED"},
+                 "STARTED": {"RESULT", "UNKNOWN"}}
+    for event in events:
+        identity = event["invocation_id"]
+        prior = observed.get(identity)
+        previous_status = prior["status"] if prior else None
+        if event["status"] not in following.get(previous_status, set()):
+            raise StateError("checkpoint assurance launch ordering is invalid")
+        if prior and any(prior[key] != event[key] for key in ("reviewer", "candidate_sha", "profile_digest")):
+            raise StateError("checkpoint assurance launch binding cannot change")
+        observed[identity] = event

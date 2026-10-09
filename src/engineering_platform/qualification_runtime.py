@@ -24,7 +24,80 @@ from .managed_publication import PublicationCandidate
 from .validation_profile import control_launcher
 
 
-class DeterministicQualificationAgent:
+from dataclasses import asdict
+import hashlib
+import json
+import os
+import socket
+import struct
+import tempfile
+from threading import Thread
+
+from .capability_review import SocketReviewRequest, review_request_bytes
+
+
+def receive(connection, size):
+    value = bytearray()
+    while len(value) < size:
+        chunk = connection.recv(size - len(value))
+        if not chunk:
+            raise EOFError('external fixture request incomplete')
+        value.extend(chunk)
+    return bytes(value)
+
+
+class QualificationReviewBackend:
+    """A real full-request/acceptance transport for declared external doubles.
+
+    Preparation resolves the external handler without submitting work. The
+    backend receives the entire immutable wire request, durably accepts that
+    request before acknowledgement, then computes the response. Response work
+    is not another model invocation and never grants canonical authority.
+    """
+    def prepare_review(self, root, selection, objective, evidence=None):
+        handler = self.review  # Arbitrary property resolution precedes the guard.
+        payload = review_request_bytes(root, selection, objective, evidence)
+        frontend, backend = socket.socketpair()
+        frontend.settimeout(300)
+        backend.settimeout(300)
+        if not hasattr(self, 'review_acceptances'):
+            self.review_acceptances = []
+        journal = tempfile.NamedTemporaryFile(prefix="ep-inline-review-acceptance-", suffix=".jsonl", delete=False)
+        if not hasattr(self, "review_acceptance_journals"):
+            self.review_acceptance_journals = []
+        self.review_acceptance_journals.append(journal.name)
+        def serve():
+            try:
+                length = struct.unpack('!I', receive(backend, 4))[0]
+                if not 0 < length <= 262144:
+                    return
+                submitted = receive(backend, length)
+                if submitted != payload:
+                    return
+                accepted = {'invocation_id': selection.transport_invocation_id,
+                            'request_digest': hashlib.sha256(submitted).hexdigest(),
+                            'reviewer': selection.reviewer}
+                journal.write(json.dumps(accepted, sort_keys=True).encode()+b'\n')
+                journal.flush(); os.fsync(journal.fileno())
+                self.review_acceptances.append(accepted)
+                backend.sendall(accepted['request_digest'].encode())
+                if receive(backend, 4) != b'READ':
+                    return
+                try:
+                    response = asdict(handler(root, selection, objective, evidence))
+                except BaseException as error:
+                    response = {'error': type(error).__name__}
+                encoded = json.dumps(response, sort_keys=True).encode()
+                backend.sendall(struct.pack('!I', len(encoded))+encoded)
+            except (OSError, EOFError):
+                pass  # No submitted/accepted work is not an invocation.
+            finally:
+                backend.close(); journal.close()
+        Thread(target=serve, daemon=True).start()
+        return SocketReviewRequest(frontend, payload)
+
+
+class DeterministicQualificationAgent(QualificationReviewBackend):
     def __init__(self) -> None:
         self._process_callback = None
         self._command_callback = None

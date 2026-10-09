@@ -77,7 +77,8 @@ class ControlAssuranceAuthority(unittest.TestCase):
         agent.review=external_model
         if boundary in {'before_quality','pause_after_quality'}:
             original_agent=agent
-            class BeforeReviewAdapter:
+            from tests.engineering.inline_review_backend import InlineReviewBackend
+            class BeforeReviewAdapter(InlineReviewBackend):
                 def __getattr__(self,name): return getattr(original_agent,name)
                 @property
                 def review(self):

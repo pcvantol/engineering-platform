@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **11**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **12**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.114** (normal PATCH; no operational activation).
 Base: `9318636060706534635954e9131e42e2f63928ef`, EP 2.3.113. Historical reviewbase454e96c is retained below.
@@ -15,8 +15,8 @@ own source/test process or Git-operation lock. Preserve both old stashes,
 advisory browser lock and separate r30/native holds. r32/r31 each remain
 closed with three consumed corrective rounds. This distinct selected assignment
 retains its initial maximum three corrective rounds and historical consumed3.
-The specific round8 control/assurance decision governs the current cumulative limit8;
-historical rounds1–7 remain consumed and unchanged;
+The specific round9 inline-start decision governs the current cumulative limit9;
+historical rounds1–8 remain consumed and unchanged;
 no previous provider/run/repair lineage is reset.
 
 ## Code, evidence and missing delta
@@ -541,3 +541,45 @@ The six actual assurance-resume failure cases are separately green, including
 real new-process crash recovery. No official fresh independent review has run
 before this own convergence. These fixes remain in the same consumed round8,
 plan11, canonical writer/branch/history; no ninth round or budget reset.
+
+
+## Round9 actual inline request start — plan12
+
+Specific disposition: `L2-R33-INLINE-START-PROTOCOL-R9-V1-20261009`,
+[register6074710987](https://github.com/pcvantol/forge/issues/142#issuecomment-6074710987).
+Same writer/assignment/branch/PR346, consumed9/max9/remaining0 after actual
+integrated source start. Historical round8 ae393b8 remains independently
+REJECT and its CI CANCELLED; no old outcome is relabelled PASS.
+
+Early read-only ordering analysis completed before the integrated correction;
+this was advice, no mandatory reviewgrant. Native qualified Codex uses actual
+Popen under the existing authority boundary. Supported inline adapters prepare
+a bounded immutable full request outside serialization. The concrete socket
+primitive transmits that request and receives its exact-digest acceptance from
+the declared external backend under current authority, then releases before
+canonical dispatch/audit and responsewait. The backend records actual acceptance
+with invocation identity before ACK. Responsework belongs to that already
+accepted request, not a new call. Scoped legacy sync-only/self-claimed native
+adapters have no unguarded fallback. Explicit qualification fixtures use real
+socket request/acceptance journals, with canonical authority and Git unchanged.
+
+Mandatory launch identities are append-only checkpoint events, not usage rows.
+Intent precedes effects; STARTED follows actual start audit. Partial send/lost
+ACK or auditfailure retains UNKNOWN and blocks blind retry; an interrupted
+INTENT likewise requires reconciliation. Existing actually audited interrupted
+read-only review recovery retains its fresh-invocation policy and historical
+consumption. Actual results, revocation and earlier qualified results remain
+visible. Optional slots remain reserved before effects, while actual provider
+dispatch is recorded only at the real transport/process start.
+
+The old runner annotation explicitly states its existing two-hour ceiling was
+exceeded during the second full coverage suite. The full unchanged installed
+coverage suite/thresholds are moved to their own equally bounded job; validate
+requires coverage SUCCESS. No timeout, test, threshold, protection or runtime
+budget is relaxed. Both full passes remain mandatory.
+
+Current status IMPLEMENTING / NOT_QUALIFIED. Compact real authority/lease,
+late prepare, request acceptance, audit uncertainty, heartbeat and recovery
+qualification precedes full source/noneditable installed/CI and fresh complete
+independent Quality/Security. Protected merge, NO_BUMP-finalization and exact
+final-main installed evidence remain open; dashboard remains NOT_ACTIVE.

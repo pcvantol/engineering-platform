@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import json
 import hashlib
 import re
 import subprocess
+import socket
+import struct
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -110,6 +112,7 @@ class ReviewerSelection:
     required_coverage_surfaces: tuple[str, ...] = ()
     required_finding_ids: tuple[str, ...] = ()
     specialist_binding: dict[str, str] = field(default_factory=dict)
+    transport_invocation_id: str = ""
     specialist_question: str = ""
     specialist_paths: tuple[str, ...] = ()
     specialist_source_blobs: tuple[tuple[str, str], ...] = ()
@@ -134,6 +137,77 @@ class ReviewerResult:
     coverage: tuple[dict[str, str], ...] = ()
     finding_dispositions: tuple[dict[str, str], ...] = ()
     specialist_binding: dict[str, str] = field(default_factory=dict)
+
+
+class ReviewStartUncertain(RuntimeError):
+    """Transport may have accepted the request; do not fabricate no-start."""
+
+
+def review_request_bytes(root, selection, objective, evidence):
+    """One immutable request, shared by preparation and the transport join."""
+    return json.dumps({"root": str(root), "selection": asdict(selection),
+                       "objective": objective,
+                       "evidence": asdict(evidence) if evidence is not None else None},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
+def _review_socket_read(connection, length):
+    data = bytearray()
+    while len(data) < length:
+        part = connection.recv(length - len(data))
+        if not part:
+            raise EOFError("Review transport response interrupted.")
+        data.extend(part)
+    return bytes(data)
+
+
+@dataclass(frozen=True)
+class SocketReviewRequest:
+    """Declared inline transport: full request/acceptance before result wait.
+
+    Preparation may connect to the explicit backend but cannot submit work.
+    Only this concrete primitive performs the bounded serialized handoff; an
+    adapter-supplied callable, Future or marker is not a transport receipt.
+    """
+    connection: socket.socket
+    payload: bytes
+
+    def start(self):
+        if type(self.connection) is not socket.socket or not 0 < len(self.payload) <= 262144:
+            raise ValueError("Invalid bounded review transport request.")
+        try:
+            previous_timeout = self.connection.gettimeout()
+            self.connection.settimeout(min(previous_timeout, 5) if previous_timeout is not None else 5)
+            self.connection.sendall(struct.pack("!I", len(self.payload)) + self.payload)
+            # Backend acknowledgement binds its actual acceptance to the whole
+            # immutable request. This is not a model result or an authority grant.
+            receipt = _review_socket_read(self.connection, 64)
+            if receipt != hashlib.sha256(self.payload).hexdigest().encode("ascii"):
+                raise ReviewStartUncertain("Review acceptance identity unavailable.")
+        except (OSError, EOFError) as error:
+            raise ReviewStartUncertain("Review request handoff is uncertain.") from error
+        finally:
+            self.connection.settimeout(previous_timeout)
+        return self
+
+    def wait(self):
+        # Fetch the response for the already accepted request. This message
+        # carries no new model work or invocation identity.
+        self.connection.sendall(b"READ")
+        length = struct.unpack("!I", _review_socket_read(self.connection, 4))[0]
+        if not 0 < length <= 262144:
+            raise ValueError("Invalid bounded review response.")
+        payload = json.loads(_review_socket_read(self.connection, length))
+        if "error" in payload:
+            if payload["error"] == "SystemExit":
+                raise SystemExit("External review interrupted after acceptance.")
+            raise RuntimeError("External review failed after acceptance.")
+        for key in ("recommendations", "findings", "usage_snapshots", "coverage", "finding_dispositions"):
+            payload[key] = tuple(payload.get(key, ()))
+        return ReviewerResult(**payload)
+
+    def close(self):
+        self.connection.close()
 
 
 class ReviewerClient(Protocol):
@@ -269,16 +343,38 @@ def run_reviews(
             progress(selection, "started", None)
         try:
             from .providers import process_effect_scope, process_effect_start, process_effect_started, model_effect_scope
-            native = getattr(client, "native_process_effects", False)
+            from .execution_executor import CodexCliClient
+            native = type(client) is CodexCliClient
             with model_effect_scope(started if native else None), process_effect_scope(
                     authority, started=None if native else started, verify_exit=False):
+                selected = replace(selection, specialist_binding=dict(selection.specialist_binding))
                 if authority is not None and not native:
-                    # Explicit inline external adapters start at the call boundary.
-                    # Release before waiting; the next reviewer gets fresh authority.
-                    with process_effect_start() as release:
-                        release()
-                    process_effect_started()
-                result = client.review(root, replace(selection, specialist_binding=dict(selection.specialist_binding)), objective, evidence)
+                    # Resolve arbitrary adapter preparation BEFORE the final
+                    # guard. Scoped synchronous-only adapters have no fallback.
+                    prepare = getattr(client, "prepare_review", None)
+                    if not callable(prepare):
+                        raise AdoptionAuthorityError("Scoped inline reviewer requires a qualified start protocol.")
+                    request = prepare(root, selected, objective, evidence)
+                    if (type(request) is not SocketReviewRequest or
+                            request.payload != review_request_bytes(root, selected, objective, evidence)):
+                        raise AdoptionAuthorityError("Inline reviewer request binding is unavailable.")
+                    try:
+                        with process_effect_start() as release:
+                            # Invoke the concrete implementation, never arbitrary
+                            # instance/subclass start code inside serialization.
+                            handle = SocketReviewRequest.start(request)
+                            release()
+                        try:
+                            process_effect_started()
+                        except Exception as error:
+                            raise ReviewStartUncertain("Actual review acceptance could not be audited.") from error
+                        result = SocketReviewRequest.wait(handle)
+                    finally:
+                        SocketReviewRequest.close(request)
+                elif native:
+                    result = CodexCliClient.review(client, root, selected, objective, evidence)
+                else:
+                    result = client.review(root, selected, objective, evidence)
             if result.reviewer != selection.reviewer:
                 result = ReviewerResult(selection.reviewer, "Reviewer identity mismatch; primary review continues.", failed=True)
             else:
@@ -298,7 +394,7 @@ def run_reviews(
                 tuple(dict(item) for item in result.finding_dispositions if isinstance(item, dict)),
                 specialist_binding=dict(result.specialist_binding),
             )
-        except AdoptionAuthorityError:
+        except (AdoptionAuthorityError, ReviewStartUncertain):
             raise
         except Exception:  # Reviewer failure is advisory and cannot block the transaction.
             result = ReviewerResult(selection.reviewer, "Reviewer failed; primary review continues.", failed=True)
@@ -704,7 +800,7 @@ def validate_specialist_records(records: object, *, run_id: str, repository: str
                 or any(event[k] != selection[k] for k in _BINDING_FIELDS - {"invocation_id"})):
             raise ValueError("specialist_event_binding_invalid")
         if kind == "DISPATCH":
-            if payload != {"status": "DISPATCHED"} or len(dispatches) >= MAX_OPTIONAL_INVOCATIONS or rid in terminal_requests:
+            if payload not in ({"status": "DISPATCHED"}, {"status": "RESERVED"}) or len(dispatches) >= MAX_OPTIONAL_INVOCATIONS or rid in terminal_requests:
                 raise ValueError("specialist_dispatch_allowance_invalid")
             dispatches[rid] = event
             continue

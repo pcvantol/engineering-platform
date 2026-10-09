@@ -18,6 +18,7 @@ LATER_RESUME = 'tests.engineering.test_later_adoption_and_profile_authority.Late
 PARTIAL_PROFILE = 'tests.engineering.test_later_adoption_and_profile_authority.LaterAdoptionAndProfileAuthority.test_partial_adoption_revocation_never_fetches_promisor_objects'
 CONTROL = 'tests.engineering.test_control_assurance_authority.ControlAssuranceAuthority.test_original_control_regression_has_zero_effects'
 ASSURANCE = 'tests.engineering.test_control_assurance_authority.ControlAssuranceAuthority.test_last_control_to_quality_withdrawal'
+INLINE = 'tests.engineering.test_inline_review_start_authority.InlineStartAuthority.test_prepared_request_is_denied_before_actual_send'
 GENESIS = 'tests.engineering.test_recovery_authority_regressions.GenesisConsumerRegression.test_empty_specialist_consumer_supports_local_genesis_without_origin'
 
 
@@ -45,6 +46,7 @@ def main():
         ('revoked_partial_profile', PARTIAL_PROFILE, 'revoked profile observation must keep all target Git metadata unchanged'),
         ('revoked_control_start', CONTROL, 'withdrawal must prevent every subsequent control target write'),
         ('revoked_assurance_start', ASSURANCE, 'withdrawal must prevent every subsequent reviewer start'),
+        ('revoked_inline_actual_handoff', INLINE, 'revoked inline request must have zero subsequent actual backend acceptances'),
     ):
         with tempfile.TemporaryDirectory(prefix='ep-recovery-fault-control-') as temporary:
             root = Path(temporary)
@@ -55,7 +57,15 @@ def main():
                 raise RuntimeError(f'{name}: current acceptance regression failed\n{positive.stdout}\n{positive.stderr}')
             host = root / 'src/engineering_platform/execution_host.py'
             text = host.read_text()
-            if name == 'revoked_control_start':
+            if name == 'revoked_inline_actual_handoff':
+                review = root / 'src/engineering_platform/capability_review.py'
+                content = review.read_text()
+                anchor = '                        with process_effect_start() as release:'
+                if content.count(anchor) != 1: raise RuntimeError('inline handoff fault anchor changed')
+                content = 'from contextlib import nullcontext\n' + content if 'from __future__' not in content else content.replace('from __future__ import annotations', 'from __future__ import annotations\nfrom contextlib import nullcontext', 1)
+                review.write_text(content.replace(anchor,
+                    '                        with nullcontext(lambda: None) as release:', 1))
+            elif name == 'revoked_control_start':
                 start = text.index('    def _execute_required_validation_controls(')
                 end = text.index('    def _run_required_validation_command(', start)
                 block = text[start:end]

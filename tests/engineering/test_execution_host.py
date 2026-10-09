@@ -233,7 +233,10 @@ class FakeGitHub:
         self.merge_calls.append(number)
 
 
-class FakeAgent:
+from tests.engineering.inline_review_backend import InlineReviewBackend
+
+
+class FakeAgent(InlineReviewBackend):
     def __init__(self, result: AgentResult) -> None:
         self.result, self.prompts, self.roots = result, [], []
         self.command_callback: object | None = None
