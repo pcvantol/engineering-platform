@@ -156,7 +156,7 @@
       "id": "SA-SEL",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "IMPLEMENTING",
+      "status": "SOURCE_QUALIFIED",
       "depends_on": [
         "SA-OBS"
       ],
@@ -165,17 +165,26 @@
       ],
       "delivery": "Select useful optional specialists under bounded capacity",
       "acceptance": "Capability/path/risk selection rejects misleading md/yaml/coordinator triggers; selected/skipped rationale and consumer recorded; finite wave/concurrency allowance, mandatory work reserved and saturation tested.",
-      "qualification_evidence": [],
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/346#issuecomment-6088227583",
+        "https://github.com/pcvantol/engineering-platform/pull/346#issuecomment-6088174088",
+        "https://github.com/pcvantol/forge/issues/142#issuecomment-6088266556"
+      ],
       "assignment_id": "L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007",
       "delivery_plan": "SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md",
-      "qualification_scope": "Selected bounded specialist selection and primary disposition; NOT_QUALIFIED pending exact protected final-main installed evidence.",
-      "plan_revision": 13
+      "qualification_scope": "Selected bounded specialist selection and primary disposition source-qualified; ordinary NO_BUMP Finalization and fresh exact-final-main installed closure required in owning #142 register.",
+      "plan_revision": 13,
+      "qualified_source": "be60bf08dac17caf437a147fe658bca67d821dd6",
+      "reviewed_source": "d3ee57d3ee34d7cbadd2cac68d0090c2078b55a2",
+      "correction_rounds_consumed": 10,
+      "correction_rounds_maximum": 10,
+      "activation_authority": false
     },
     {
       "id": "SA-LOOP",
       "owner": "engineering-platform",
       "kind": "implementation",
-      "status": "IMPLEMENTING",
+      "status": "SOURCE_QUALIFIED",
       "depends_on": [
         "SA-CTX",
         "SA-OBS"
@@ -186,11 +195,20 @@
       ],
       "delivery": "Join bounded specialist findings to genuine dispositions",
       "acceptance": "Actual proposed/accepted/rejected/deferred/implemented/verified transitions with references; no-consumer skip; no private-reasoning/approval sharing, invented adoption or scope/repair-budget expansion.",
-      "qualification_evidence": [],
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/346#issuecomment-6088227583",
+        "https://github.com/pcvantol/engineering-platform/pull/346#issuecomment-6088174088",
+        "https://github.com/pcvantol/forge/issues/142#issuecomment-6088266556"
+      ],
       "assignment_id": "L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007",
       "delivery_plan": "SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md",
-      "qualification_scope": "Selected bounded specialist selection and primary disposition; NOT_QUALIFIED pending exact protected final-main installed evidence.",
-      "plan_revision": 13
+      "qualification_scope": "Selected bounded specialist selection and primary disposition source-qualified; ordinary NO_BUMP Finalization and fresh exact-final-main installed closure required in owning #142 register.",
+      "plan_revision": 13,
+      "qualified_source": "be60bf08dac17caf437a147fe658bca67d821dd6",
+      "reviewed_source": "d3ee57d3ee34d7cbadd2cac68d0090c2078b55a2",
+      "correction_rounds_consumed": 10,
+      "correction_rounds_maximum": 10,
+      "activation_authority": false
     },
     {
       "id": "SA-ROLE",
@@ -287,5 +305,26 @@
     "full_family_qualified": false,
     "activation_authority": false,
     "delivery": "DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md"
+  },
+  "specialist_selection_delivery": {
+    "assignment_id": "L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007",
+    "lane_revision": "r33",
+    "plan_revision": 13,
+    "correction_rounds_consumed": 10,
+    "correction_rounds_maximum": 10,
+    "remaining": 0,
+    "package": "2.3.114",
+    "scope": [
+      "SA-SEL",
+      "SA-LOOP"
+    ],
+    "source_main": "be60bf08dac17caf437a147fe658bca67d821dd6",
+    "reviewed_source": "d3ee57d3ee34d7cbadd2cac68d0090c2078b55a2",
+    "delivery": "SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md",
+    "status": "SOURCE_QUALIFIED_FINALIZING",
+    "exact_final_main_installed": "PENDING_NEW_FINALIZATION_MAIN_QUALIFICATION",
+    "closure_register": "https://github.com/pcvantol/forge/issues/142",
+    "full_family_qualified": false,
+    "activation_authority": false
   }
 }
