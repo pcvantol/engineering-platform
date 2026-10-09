@@ -35,7 +35,7 @@ from .execution_timeout_policy import AUTONOMOUS_QUALITY_CONTROL, SPECIALIST_REV
 from .execution_models import AgentResult
 from .platform_version import detected_codex_cli_version
 from .provider_usage import churn_from_jsonl, usage_from_jsonl, usage_snapshots_from_jsonl
-from .providers import CodexCliProvider
+from .providers import CodexCliProvider, model_process_effect
 from .reviewer_evidence import ReviewerEvidence
 from .storage import EngineeringStorageError, open_storage, record_artifact, verify_artifact_integrity
 from .agent_state import redact_diagnostic
@@ -405,10 +405,14 @@ class CodexCliClient:
     def qualified_specialist_capabilities(self, root: Path) -> tuple[str, ...]:
         """Qualify the installed runtime/tool boundary, not just role names."""
         from .effect_provider import policy
+        from .managed_adoption import AdoptionAuthorityError
+        from .capability_review import ReviewStartUncertain
         if self._specialist_cancellation():
             return ()
         try:
             policy(self, root)
+        except (AdoptionAuthorityError, ReviewStartUncertain):
+            raise
         except (ValueError, RuntimeError, OSError):
             return ()
         return REVIEWER_ORDER
@@ -425,6 +429,8 @@ class CodexCliClient:
         """Use the existing FME snapshot/policy tools for this read-only role."""
         import hashlib
         from . import effect_provider, effect_workspace
+        from .managed_adoption import AdoptionAuthorityError
+        from .capability_review import ReviewStartUncertain
         try:
             if self._specialist_cancellation():
                 return ReviewerResult(selection.reviewer, "Specialist cancelled before dispatch.", failed=True)
@@ -449,6 +455,8 @@ class CodexCliClient:
                     result = self.review(workspace, selection, objective, evidence)
                 effect_workspace.verify_snapshot(workspace, manifest)
                 return result
+        except (AdoptionAuthorityError, ReviewStartUncertain):
+            raise
         except (ValueError, RuntimeError, OSError):
             return ReviewerResult(selection.reviewer, "Specialist snapshot/tool boundary unavailable or changed.", failed=True)
     def __init__(self, provider: CodexCliProvider | None = None, *,
@@ -741,7 +749,7 @@ class CodexCliClient:
         try:
             started = time.monotonic()
             proxy = ToolProxyEnvironment()
-            with proxy as environment:
+            with proxy as environment, model_process_effect():
                 completed = self.provider.invoke(
                     root,
                     effect_provider.restrict_review((

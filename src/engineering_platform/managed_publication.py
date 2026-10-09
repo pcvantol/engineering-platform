@@ -13,6 +13,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .execution_errors import RunnerError
+from .agent_state import StateError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -96,6 +97,7 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
                 "validation_profile_digest": profile.get("validation_profile_digest"),
                 "assurance_profile_digest": profile.get("digest"), "repair_ordinal": state.repair_iterations}
     prepared = {**identity, "status": "PREPARED", "pull_request": None}
+    from .managed_adoption import effect_checkpoint
     try:
         validate_intent(prepared)
     except ValueError as error:
@@ -104,8 +106,13 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         if any(state.publication_intent[key] != value for key, value in identity.items()):
             raise PublicationRecovery(state, "publication_identity_changed")
     else:
+        previous_state = state
         state = replace(state, publication_intent=prepared, next_action="read_publication_receipt")
-        store.save(state, expected_publication_intent=None)
+        try:
+            store.save(state, expected_publication_intent=None,
+                expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
+        except StateError as error:
+            raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
 
     def exact_workspace() -> None:
         observed = repository.inspect(root)
@@ -134,9 +141,14 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
         except RunnerError as error:
             raise PublicationRecovery(state, "publication_branch_conflict") from error
         exact_workspace()
+        previous_state = state
         previous = state.publication_intent
         state = replace(state, publication_intent={**previous, "status": "CREATE_UNCERTAIN"})
-        store.save(state, expected_publication_intent=previous)
+        try:
+            store.save(state, expected_publication_intent=previous,
+                expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
+        except StateError as error:
+            raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
         try:
             with process_effect_scope((lambda: authority_effect(state)) if authority_effect is not None else None):
                 github.create_draft_publication(
@@ -162,7 +174,12 @@ def publish_candidate(*, state: TransactionState, store: StateStore, root: Path,
             or candidate.draft is not True or type(candidate.number) is not int or candidate.number < 1):
         raise PublicationRecovery(state, "publication_remote_identity_conflict")
     exact_workspace()
+    previous_state = state
     previous = state.publication_intent
     state = replace(state, publication_intent={**previous, "status": "RECONCILED", "pull_request": candidate.number})
-    store.save(state, expected_publication_intent=previous)
+    try:
+        store.save(state, expected_publication_intent=previous,
+            expected_effect_checkpoint=effect_checkpoint(previous_state) if state.managed_candidate_adoption else None)
+    except StateError as error:
+        raise PublicationRecovery(previous_state, "managed_candidate_adoption_invalid") from error
     return state, candidate.number

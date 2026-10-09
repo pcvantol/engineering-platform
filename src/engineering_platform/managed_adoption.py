@@ -31,6 +31,11 @@ EFFECT_CHECKPOINT_FIELDS = (
     "publication_intent", "delegated_merge_attempt", "terminal", "action_intent", "execution_mode",
 )
 
+def effect_checkpoint(state):
+    """Exact existing continuation binding, including append-only evidence."""
+    return json.loads(json.dumps({key: getattr(state, key) for key in EFFECT_CHECKPOINT_FIELDS}))
+
+
 _FIELDS = {"version", "project_id", "repository_id", "repository", "branch", "candidate_sha",
            "base_sha", "run_id", "repair_ordinal", "validation_profile_digest"}
 

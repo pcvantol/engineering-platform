@@ -2,7 +2,7 @@
 
 Assignment: `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`.
 Directive: `L23-SPECIALISTS-WORKLIST-CONTROL-V1-20261007`.
-Lane revision **r33**, plan revision **12**, sole source writer **LANE_2_WORK**.
+Lane revision **r33**, plan revision **13**, sole source writer **LANE_2_WORK**.
 State: **IMPLEMENTING / NOT_QUALIFIED**.
 Selected version target: **2.3.114** (normal PATCH; no operational activation).
 Base: `9318636060706534635954e9131e42e2f63928ef`, EP 2.3.113. Historical reviewbase454e96c is retained below.
@@ -622,3 +622,27 @@ block blind retry. The original two negative/positive regression assertions
 remain unchanged; whole host/control/inline366tests OK (one existing skip),
 128.589s. This is same integrated round9 own convergence before new final reviews,
 not an extra allowance, reset or reviewgrant. Prior artifacts remain NOT_QUALIFIED.
+
+## Round10 integrated native/ACK/checkpoint correction — plan13
+
+Specific decision `L2-R33-NATIVE-ACK-CHECKPOINT-R10-V1-20261009`; same r33/sole writer/branch/PR. Source start books consumed10/max10/remaining0; historical rounds1–9 and all operational budgets remain. Rejected1914ce1 reports remain historical REJECT.
+
+Joint closure: modelstart audit moves to actual chosen review model exec after real metadata policy probes; typed uncertainty/denial cross snapshot wrapper. Inline send plus digest ACK use one absolute monotonic deadline within the unchanged5s handoff limit. Post-control continuation uses checkpoint CAS; adjacent optional observations preserve canonical authority without rebinding the continuation. Full stale-write inventory and public host red/green matrix are required before exact-candidate complete qualification and fresh independent reviews. No acceptance or full DoD yet.
+
+### R10 caller/effect/checkpoint inventory
+
+| Selected chain write | Classification and current invariant | Owning discriminator |
+|---|---|---|
+| Native policy version/MCP, bounded invoke, spawn | Actual process authority remains; command-aware model callback only on the chosen `exec`, scope reset on errors. Snapshot/policy wrappers propagate typed uncertainty/denial. | Native public host: two typed optional results, real primary disposition/application, host controls, native Q/S and publication; genuine start-audit fault stops later calls. |
+| Inline framed send/ACK and response wait | One absolute monotone <=5s handoff deadline, including partial sends/all fragments. Lock released before UNKNOWN auditing; receipt wait outside guard; cleanup cannot mask uncertainty. | Fragmented valid ACK, real concurrent withdrawal and unchanged heartbeat, partial send, lost ACK, actual process crash/natural90s lease/resume retain identity. |
+| Post-control changed-path continuation | Existing full effect-checkpoint CAS after real authorized control results; changed grant/phase/checkpoint fails closed, lost lease denied at next effect. | Last native control commits/readbacks grant false, changed phase/repair checkpoint or actual lease release; retained PASS receipts, zero reviews/provider/publication; valid paired continuation. |
+| Optional selection/reservation/result/UNCERTAIN/disposition/consumer/verification | Append-only evidence with current authority preserved atomically; original continuation binding retained. StateStore preserves canonical authority fields but does not discard appended specialist/launch observations; existing prefix validation rejects rewrites. | Native result/audit fault, stored finite reservation/UNCERTAIN, no metadata ledger rows, normal primary consumption and restart tests. |
+| Mandatory launch/result/resolution | Existing authority-preserving observation saves; full CAS for role/intent continuation; audit only merges launch history, never a changed grant/phase. | Existing between-review grant/phase/checkpoint/audit/lost-ACK/new-process barriers and retained first results. |
+| Admission/readiness/recovery projections and preflight observations | Observations preserve authority and all operational budget fields; verified adopted admission uses original checkpoint CAS. | Existing revoked recovery, fresh/later admission and process-restart matrix. |
+| First publication prepare/CREATE_UNCERTAIN/reconciled | Existing publication-intent CAS plus full effect-checkpoint CAS after external readbacks; real process effect guard and lease checks unchanged. | Existing publication revoked-after-create and positive durable readback/restart tests. |
+| Post-assurance/repair/Finalization/Reconciliation/recovered-PR/delegated-attempt transitions | Full original effect-checkpoint CAS; no new grant from provider/Git/GitHub result or audit. | Existing public later lifecycle, repair and postmerge/finalization recovery tests. |
+| Cleanup/terminal/operator wait | Cleanup transition uses full CAS before native guard. Terminal and passive wait are observations preserving canonical grants/budgets; no new effect authority. | Existing later-kind native cleanup/lease/revocation and wait qualification. |
+
+The owning gate keeps all eleven historical restored-fault detectors and adds three distinct R10 detectors (native metadata modelstart, total ACK deadline, post-control grant overwrite). No guard/store/clock/lease/result-contract mocks establish the R10 public-host proof. Declared external model/GitHub/capacity/readiness fixtures remain explicitly bounded; native CLI pin0.160.1 and local HTTP are genuine. Source convergence is not installed/final-main qualification or official reviewer acceptance.
+
+R10 compact source closure evidence: joint58 public host/control/inline/later-boundary cases PASS; genuine fragmented ACK crosses the unchanged15s heartbeat tick with successful committed withdrawal and renewal; actual process exits73 before ACK, waits natural lease expiry, then new PID preserves intent/zero replay; actual backpressure yields bounded partial send/UNKNOWN. All14 restored-fault controls PASS with concrete behavioral assertions, including all11 historical plus3 R10 holes. These are source convergence receipts; official exact-candidate full source/coverage, noneditable installed, CI and independent eindreviews remain required.

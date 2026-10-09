@@ -770,7 +770,7 @@ class StateStore:
                     raise StateError("effect checkpoint changed concurrently; no stale authority write")
                 if preserve_effect_authority and prior_payload is not None and prior_payload.get("managed_candidate_adoption") is not None:
                     fields = tuple(key for key in EFFECT_CHECKPOINT_FIELDS
-                        if key != "assurance_launch_events"
+                        if key not in {"assurance_launch_events", "specialist_records"}
                         and (preserve_effect_status or key not in {"phase", "terminal"}))
                     state = replace(state, **{
                         key: tuple(prior_payload[key]) if isinstance(getattr(state, key), tuple)

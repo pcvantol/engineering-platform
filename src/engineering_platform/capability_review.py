@@ -9,6 +9,7 @@ import re
 import subprocess
 import socket
 import struct
+import time
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -151,9 +152,14 @@ def review_request_bytes(root, selection, objective, evidence):
                       sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
 
 
-def _review_socket_read(connection, length):
+def _review_socket_read(connection, length, *, deadline=None):
     data = bytearray()
     while len(data) < length:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Review handoff deadline exceeded.")
+            connection.settimeout(remaining)
         part = connection.recv(length - len(data))
         if not part:
             raise EOFError("Review transport response interrupted.")
@@ -177,17 +183,31 @@ class SocketReviewRequest:
             raise ValueError("Invalid bounded review transport request.")
         try:
             previous_timeout = self.connection.gettimeout()
-            self.connection.settimeout(min(previous_timeout, 5) if previous_timeout is not None else 5)
-            self.connection.sendall(struct.pack("!I", len(self.payload)) + self.payload)
+            limit = min(previous_timeout, 5) if previous_timeout is not None else 5
+            deadline = time.monotonic() + limit
+            pending = memoryview(struct.pack("!I", len(self.payload)) + self.payload)
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Review handoff deadline exceeded.")
+                self.connection.settimeout(remaining)
+                sent = self.connection.send(pending)
+                if not sent:
+                    raise EOFError("Review request send interrupted.")
+                pending = pending[sent:]
             # Backend acknowledgement binds its actual acceptance to the whole
             # immutable request. This is not a model result or an authority grant.
-            receipt = _review_socket_read(self.connection, 64)
+            receipt = _review_socket_read(self.connection, 64, deadline=deadline)
             if receipt != hashlib.sha256(self.payload).hexdigest().encode("ascii"):
                 raise ReviewStartUncertain("Review acceptance identity unavailable.")
         except (OSError, EOFError) as error:
             raise ReviewStartUncertain("Review request handoff is uncertain.") from error
         finally:
-            self.connection.settimeout(previous_timeout)
+            try:
+                self.connection.settimeout(previous_timeout)
+            except OSError:
+                # Cleanup cannot disguise a possibly accepted start.
+                pass
         return self
 
     def wait(self):
@@ -207,7 +227,10 @@ class SocketReviewRequest:
         return ReviewerResult(**payload)
 
     def close(self):
-        self.connection.close()
+        try:
+            self.connection.close()
+        except OSError:
+            pass
 
 
 class ReviewerClient(Protocol):

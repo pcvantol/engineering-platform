@@ -21,6 +21,10 @@ ASSURANCE = 'tests.engineering.test_control_assurance_authority.ControlAssurance
 INLINE = 'tests.engineering.test_inline_review_start_authority.InlineStartAuthority.test_prepared_request_is_denied_before_actual_send'
 GENESIS = 'tests.engineering.test_recovery_authority_regressions.GenesisConsumerRegression.test_empty_specialist_consumer_supports_local_genesis_without_origin'
 
+R10_NATIVE = 'tests.engineering.test_round10_public_host_boundaries.Round10PublicHostBoundaries.test_native_public_host_metadata_not_modelstarts_full_delivery'
+R10_ACK = 'tests.engineering.test_round10_public_host_boundaries.Round10PublicHostBoundaries.test_fragmented_ack_total_deadline_releases_public_host_lock'
+R10_CHECKPOINT = 'tests.engineering.test_round10_public_host_boundaries.Round10PublicHostBoundaries.test_last_native_control_committed_withdrawal_blocks_reviews'
+
 
 def run(root, test):
     environment = dict(os.environ, PYTHONPATH=str(root / 'src') + os.pathsep + str(root),
@@ -47,6 +51,9 @@ def main():
         ('revoked_control_start', CONTROL, 'withdrawal must prevent every subsequent control target write'),
         ('revoked_assurance_start', ASSURANCE, 'withdrawal must prevent every subsequent reviewer start'),
         ('revoked_inline_actual_handoff', INLINE, 'revoked inline request must have zero subsequent actual backend acceptances'),
+        ('native_metadata_modelstart', R10_NATIVE, 'native public host must execute both actual specialist model requests'),
+        ('fragmented_ack_total_deadline', R10_ACK, 'total ACK deadline must release authority lock for canonical withdrawal'),
+        ('postcontrol_grant_checkpoint', R10_CHECKPOINT, 'last control checkpoint change must prevent every subsequent reviewer'),
     ):
         with tempfile.TemporaryDirectory(prefix='ep-recovery-fault-control-') as temporary:
             root = Path(temporary)
@@ -57,7 +64,23 @@ def main():
                 raise RuntimeError(f'{name}: current acceptance regression failed\n{positive.stdout}\n{positive.stderr}')
             host = root / 'src/engineering_platform/execution_host.py'
             text = host.read_text()
-            if name == 'revoked_inline_actual_handoff':
+            if name == 'native_metadata_modelstart':
+                provider = root / 'src/engineering_platform/providers.py'
+                content = provider.read_text()
+                anchor = 'if command == "exec" and _model_started.get() is not None:'
+                if content.count(anchor) != 1: raise RuntimeError('native modelstart fault anchor changed')
+                provider.write_text(content.replace(anchor, 'if _model_started.get() is not None:', 1))
+            elif name == 'fragmented_ack_total_deadline':
+                review = root / 'src/engineering_platform/capability_review.py'
+                content = review.read_text()
+                anchor = '\n            remaining = deadline - time.monotonic()'
+                if content.count(anchor) != 1: raise RuntimeError('ACK deadline fault anchor changed')
+                review.write_text(content.replace(anchor, '\n            remaining = 5', 1))
+            elif name == 'postcontrol_grant_checkpoint':
+                anchor = '                self._save_effect_checkpoint(previous_validation, validation)'
+                if text.count(anchor) != 1: raise RuntimeError('postcontrol fault anchor changed')
+                text = text.replace(anchor, '                self.store.save(validation)', 1)
+            elif name == 'revoked_inline_actual_handoff':
                 review = root / 'src/engineering_platform/capability_review.py'
                 content = review.read_text()
                 anchor = '                        with process_effect_start() as release:'

@@ -120,17 +120,35 @@ def model_effect_scope(started):
         _model_started.reset(token)
 
 
+@contextmanager
+def model_process_effect():
+    """Audit only the chosen model exec, after metadata preparation."""
+    token = _effect_started.set(_model_started.get())
+    try:
+        yield
+    finally:
+        _effect_started.reset(token)
+
+
 def _model_invocation_effect(method):
     @wraps(method)
-    def invoke(*args, **kwargs):
-        callback = _model_started.get()
-        if callback is None:
-            return method(*args, **kwargs)
-        token = _effect_started.set(callback)
-        try:
-            return method(*args, **kwargs)
-        finally:
-            _effect_started.reset(token)
+    def invoke(self, root, arguments, **kwargs):
+        # Resolve the command after CLI global options, never by searching
+        # arbitrary option values or metadata output for the word exec.
+        tokens = iter(arguments[1:] if arguments[:1] == ("codex",) else arguments)
+        command = None
+        for token in tokens:
+            if token in {"-c", "--config", "--profile", "-p", "--enable", "--disable"}:
+                next(tokens, None)
+            elif token.startswith("-"):
+                continue
+            else:
+                command = token
+                break
+        if command == "exec" and _model_started.get() is not None:
+            with model_process_effect():
+                return method(self, root, arguments, **kwargs)
+        return method(self, root, arguments, **kwargs)
     return invoke
 
 
@@ -155,6 +173,9 @@ def _start_process(*arguments, **options):
     except BaseException as error:
         process.kill()
         process.wait()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
         if isinstance(error, Exception):
             from .capability_review import ReviewStartUncertain
             raise ReviewStartUncertain("Actual process start could not be audited.") from error

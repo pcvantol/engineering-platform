@@ -595,7 +595,7 @@ class EngineeringRunner:
             requested_at=str(recovery.get("requested_at") or "unknown"),
             started_at=str(recovery.get("provider_confirmed_active_at") or "not_started"),
             completed_at=str(recovery.get("completed_at") or "not_completed"),
-        ))
+        ), preserve_effect_authority=True)
 
     def _confirm_deterministic_admission(self, state: TransactionState) -> tuple[TransactionState, str | None]:
         """Confirm the persisted provider-free decision at the dispatch boundary.
@@ -629,7 +629,7 @@ class EngineeringRunner:
                     admission_completed_at=datetime.now(timezone.utc).isoformat(),
                     admission_evidence_source="WATCHER",
                 )
-                self.store.save(blocked)
+                self.store.save(blocked, preserve_effect_authority=True)
                 return blocked, "Provider dispatch refused: deterministic admission is not a persisted PASS."
             source = "WATCHER"
         admitted = replace(
@@ -638,7 +638,7 @@ class EngineeringRunner:
             admission_completed_at=datetime.now(timezone.utc).isoformat(),
             admission_evidence_source=source,
         )
-        self.store.save(admitted)
+        self.store.save(admitted, preserve_effect_authority=True)
         return admitted, None
 
     def _require_provider_dispatch_admission(self, state: TransactionState) -> None:
@@ -691,7 +691,7 @@ class EngineeringRunner:
                 auth_recovery_next_action=state.auth_recovery_next_action or state.next_action,
                 auth_recovery_providers=tuple(missing),
             )
-            self.store.save(blocked)
+            self.store.save(blocked, preserve_effect_authority=True)
             write_live_status(self.root, blocked, blocked.next_action)
             return blocked
         if state.auth_recovery_phase is not None:
@@ -703,7 +703,7 @@ class EngineeringRunner:
                 auth_recovery_next_action=None,
                 auth_recovery_providers=(),
             )
-            self.store.save(restored)
+            self.store.save(restored, preserve_effect_authority=True)
             write_live_status(self.root, restored, restored.next_action)
             return restored
         return state
@@ -954,8 +954,8 @@ class EngineeringRunner:
         if previous.managed_candidate_adoption is None:
             self.store.save(updated)
             return
-        from .managed_adoption import EFFECT_CHECKPOINT_FIELDS
-        expected = json.loads(json.dumps({key: getattr(previous, key) for key in EFFECT_CHECKPOINT_FIELDS}))
+        from .managed_adoption import effect_checkpoint
+        expected = effect_checkpoint(previous)
         try:
             self.store.save(updated, expected_effect_checkpoint=expected)
         except StateError as error:
@@ -1375,10 +1375,15 @@ class EngineeringRunner:
             return self._save_terminal(repair, "BLOCKED", "repair_plan_missing", "Repair result cannot be resumed without its persisted repair plan.")
         failed_checks, objective = plan["failed_checks"], plan["proposed_action"]
         if result.terminal_state in {"BLOCKED", "FAILED"}:
+            previous_repair = repair
             repair = self._record_repair_audit(
                 repair, failed_checks=failed_checks, objective=objective, result=result, outcome="agent_failed",
             )
-            self.store.save(repair)
+            try:
+                self._save_effect_checkpoint(previous_repair, repair)
+            except AdoptionAuthorityError:
+                return self._save_terminal(previous_repair, "BLOCKED", "managed_candidate_adoption_invalid",
+                    "Current checkpoint denied repair result audit.")
             return self._save_terminal(repair, result.terminal_state, "external_action_required", result.diagnostic)
         # Replay must authenticate the immutable, pre-existing receipt before
         # any audit projection can be updated.  Otherwise an incoming result
@@ -1387,14 +1392,20 @@ class EngineeringRunner:
         if replay:
             accepted = self._accept_repair_pull_request(repair, result, plan)
         else:
+            previous_repair = repair
             repair = self._record_repair_audit(
                 repair, failed_checks=failed_checks, objective=objective, result=result,
                 outcome="submitted_for_recheck",
             )
-            self.store.save(repair)
+            try:
+                self._save_effect_checkpoint(previous_repair, repair)
+            except AdoptionAuthorityError:
+                return self._save_terminal(previous_repair, "BLOCKED", "managed_candidate_adoption_invalid",
+                    "Current checkpoint denied repair result audit.")
             accepted = self._accept_repair_pull_request(repair, result, plan)
         if isinstance(accepted, TransactionState):
             return accepted
+        previous_repair = repair
         repair, result = accepted
         if (repair.managed_candidate_adoption is not None and repair.transaction_kind == "IMPLEMENTATION"
                 and repair.pull_request is None and repair.publication_intent is None):
@@ -1414,7 +1425,11 @@ class EngineeringRunner:
         # PR acknowledgement is a separate durable boundary from provider
         # result receipt.  Read-only validation must never erase this binding;
         # a restart can therefore continue with the same candidate and PR.
-        self.store.save(repair)
+        try:
+            self._save_effect_checkpoint(previous_repair, repair)
+        except AdoptionAuthorityError:
+            return self._save_terminal(previous_repair, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied repair acknowledgement.")
         repaired_result = replace(
             result,
             branch=result.branch or repair.branch,
@@ -2073,7 +2088,7 @@ class EngineeringRunner:
                 eligibility="ELIGIBLE", result="RECOVERED", requested_at=prior["requested_at"],
                 started_at=prior["started_at"], completed_at=datetime.now(timezone.utc).isoformat(),
             )
-            self.store.save(recovered)
+            self.store.save(recovered, preserve_effect_authority=True)
         complete_phase(self.root, provider)
         if parent:
             complete_phase(self.root, parent)
@@ -2385,11 +2400,16 @@ class EngineeringRunner:
                 "FINALIZATION": "finalization_changed_paths",
                 "RECONCILIATION": "reconciliation_changed_paths",
             }[validation.transaction_kind]
+            previous_validation = validation
             validation = replace(
                 validation,
                 **{changed_paths_field: candidate_changed_paths},
             )
-            self.store.save(validation)
+            try:
+                self._save_effect_checkpoint(previous_validation, validation)
+            except AdoptionAuthorityError:
+                return self._save_terminal(previous_validation, "BLOCKED", "managed_candidate_adoption_invalid",
+                    "Current checkpoint changed during required controls; their actual receipts remain preserved."), implementation
             write_live_status(self.root, validation, validation.next_action)
             try:
                 validation_context = load_validation_context(
@@ -3195,15 +3215,15 @@ class EngineeringRunner:
             for unstarted in tuple(state.specialist_records):
                 if unstarted["kind"] == "SELECTION" and unstarted["payload"]["status"] == "SELECTED" and unstarted["request_id"] not in dispatched_ids:
                     state = replace(state, specialist_records=state.specialist_records + ({**unstarted, "kind": "SKIP", "payload": {"reason": "optional_wave_closed_on_restart_no_retry"}},))
-                    self.store.save(state)
+                    self.store.save(state, preserve_effect_authority=True)
             completed = {r["request_id"] for r in state.specialist_records if r["kind"] in {"RESULT", "UNCERTAIN"}}
             for pending in tuple(state.specialist_records):
                 if pending["kind"] == "DISPATCH" and pending["request_id"] not in completed:
                     state = replace(state, specialist_records=state.specialist_records + ({**pending, "kind": "UNCERTAIN", "payload": {"reason": "process_restart_dispatch_uncertain_no_retry"}},))
-                    self.store.save(state)
+                    self.store.save(state, preserve_effect_authority=True)
             return state
         state = replace(state, specialist_records=plan.decisions)
-        self.store.save(state)
+        self.store.save(state, preserve_effect_authority=True)
         factual = ReviewerEvidence.from_repository(state.run_id, state.execution_mode, evidence)
         results = []
         selections = []
@@ -3220,7 +3240,7 @@ class EngineeringRunner:
             if remaining is None or remaining <= max(50, capacity_reserve_from_environment()):
                 for skipped in plan.selections[selection_index:]:
                     state = replace(state, specialist_records=state.specialist_records + ({**skipped.specialist_binding, "kind": "SKIP", "payload": {"reason": "mandatory_capacity_reserved_at_dispatch"}},))
-                    self.store.save(state)
+                    self.store.save(state, preserve_effect_authority=True)
                 break
             identifier = uuid.uuid4().hex
             binding = {**selection.specialist_binding, "invocation_id": identifier}
@@ -3228,11 +3248,11 @@ class EngineeringRunner:
             if project_context(ProviderRole.SPECIALIST_REVIEW, reviewer_prompt(selection, objective, factual)).telemetry["context_budget_overflow_bytes"]:
                 original = {**binding, "invocation_id": ""}
                 state = replace(state, specialist_records=state.specialist_records + ({**original, "kind": "SKIP", "payload": {"reason": "complete_context_overflow_at_dispatch"}},))
-                self.store.save(state)
+                self.store.save(state, preserve_effect_authority=True)
                 continue
             dispatched = {**binding, "kind": "DISPATCH", "payload": {"status": "RESERVED"}}
             state = replace(state, specialist_records=state.specialist_records + (dispatched,))
-            self.store.save(state)  # consumes the finite slot before an external call
+            self.store.save(state, preserve_effect_authority=True)  # consumes the finite slot before an external call
             started = datetime.now(timezone.utc).isoformat()
             metadata = {"canonical_invocation_id": identifier, "candidate_sha": evidence.head_sha,
                         "assurance_profile_digest": binding["profile_digest"], "request_id": binding["request_id"],
@@ -3262,7 +3282,7 @@ class EngineeringRunner:
                                            "Optional review start was denied or uncertain; no retry or subsequent provider effect.")
             if actual_dispatch is None:
                 state = replace(state, specialist_records=state.specialist_records + ({**dispatched, "kind": "UNCERTAIN", "payload": {"reason": "review_not_started_no_retry"}},))
-                self.store.save(state)
+                self.store.save(state, preserve_effect_authority=True)
                 continue
             after = self.repository.inspect(self.root)
             try:
@@ -3284,14 +3304,14 @@ class EngineeringRunner:
                 record = {**binding, "kind": "UNCERTAIN", "payload": {"reason": "terminal_ledger_unavailable_no_retry"}}
             previous_findings = {f["fingerprint"]: f for f in specialist_readback(state.specialist_records)["findings"]}
             state = replace(state, specialist_records=state.specialist_records + (record,))
-            self.store.save(state)
+            self.store.save(state, preserve_effect_authority=True)
             if record["kind"] == "RESULT":
                 for finding in safe_findings:
                     if finding["fingerprint"] in previous_findings:
                         state = replace(state, specialist_records=state.specialist_records + ({**binding, "kind": "DISPOSITION", "payload": {
                             "finding_id": finding["id"], "disposition": "DUPLICATE", "reason": "Same candidate/evidence duplicates " + previous_findings[finding["fingerprint"]]["id"],
                             "changed_paths": [], "result_candidate_sha": evidence.head_sha}},))
-                        self.store.save(state)
+                        self.store.save(state, preserve_effect_authority=True)
             selections.append(selection);results.append(result)
             if after != evidence:
                 return self._save_terminal(state, "BLOCKED", "specialist_snapshot_changed", "Read-only specialist changed the admitted snapshot.")
@@ -3363,9 +3383,9 @@ class EngineeringRunner:
                 original = next(r for r in state.specialist_records if r["kind"] == "DISPATCH")
                 state = replace(state, specialist_records=state.specialist_records + ({**original, "kind": "CONSUMER_RESULT", "payload": {
                     "consumer_invocation_id": identifier, "result_candidate_sha": evidence.head_sha, "result_ref": reference}},))
-                self.store.save(state)
+                self.store.save(state, preserve_effect_authority=True)
             state = replace(state, specialist_records=state.specialist_records + events)
-            self.store.save(state)
+            self.store.save(state, preserve_effect_authority=True)
         self._project_optional_disposition_counts(state)
         return state
 
@@ -3377,7 +3397,7 @@ class EngineeringRunner:
         events = specialist_verified(state.specialist_records, context, candidate_sha=self.repository.inspect(self.root).head_sha)
         if events:
             state = replace(state, specialist_records=state.specialist_records + events)
-            self.store.save(state)
+            self.store.save(state, preserve_effect_authority=True)
         self._project_optional_disposition_counts(state)
         return state
 
@@ -3447,6 +3467,7 @@ class EngineeringRunner:
         self, state: TransactionState, result: AgentResult, evidence: RepositoryEvidence,
     ) -> TransactionState:
         """Advance delivery only after QC is already complete."""
+        previous_state = state
         state = replace(
             state, phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=result.branch or evidence.branch,
             pull_request=result.pull_request, next_action="poll_required_checks",
@@ -3458,7 +3479,11 @@ class EngineeringRunner:
             reconciliation_pull_request=result.pull_request
             if state.transaction_kind == "RECONCILIATION" else state.reconciliation_pull_request,
         )
-        self.store.save(state)
+        try:
+            self._save_effect_checkpoint(previous_state, state)
+        except AdoptionAuthorityError:
+            return self._save_terminal(previous_state, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied the post-assurance continuation.")
         write_live_status(self.root, state, state.next_action)
         if state.owner_authorized and state.pull_request:
             historical = self._reject_historical_agent_pull_request(state)
@@ -3794,7 +3819,7 @@ class EngineeringRunner:
             managed_candidate if managed_candidate is not None else state.managed_candidate_adoption
         ) if state.transaction_kind == "IMPLEMENTATION" else None
         # Establish canonical transaction identity before persisting readiness evidence.
-        self.store.save(state)
+        self.store.save(state, preserve_effect_authority=True)
         qualification_control_wait = getattr(self.agent, "wait_for_controlled_interruption_arm", None)
         if callable(qualification_control_wait) and state.phase == "INITIALIZE":
             # Only the deterministic installed-qualification adapter exposes
@@ -3879,7 +3904,7 @@ class EngineeringRunner:
             complete_phase(self.root, reconciliation, outcome="FAILED")
             raise
         complete_phase(self.root, reconciliation)
-        self.store.save(state)
+        self.store.save(state, preserve_effect_authority=True)
         try:
             self.active_lease = acquire_lease(self.root, state.run_id, identity=self.host_identity, instance_id=self.host_instance_id, process_id=os.getpid(), central_database=self.store.central_database)
         except LeaseConflictError as error:
@@ -4052,6 +4077,7 @@ class EngineeringRunner:
         if adoption_selection is not None:
             from .managed_adoption import verify_selection
             try:
+                previous_state = state
                 state = verify_selection(
                     selection=adoption_selection, state=state, root=self.root, repository=self.repository,
                     central_database=self.store.central_database,
@@ -4059,7 +4085,11 @@ class EngineeringRunner:
                 )
             except RunnerError as error:
                 return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
-            self.store.save(state)
+            try:
+                self._save_effect_checkpoint(previous_state, state)
+            except AdoptionAuthorityError:
+                return self._save_terminal(previous_state, "BLOCKED", "managed_candidate_adoption_invalid",
+                    "Current checkpoint denied verified adoption admission.")
         elif context.execution_mode == "MANAGED":
             from .managed_adoption import effect_authority
             from .providers import process_effect_scope
@@ -4115,7 +4145,7 @@ class EngineeringRunner:
                         "Requested repository revision does not match the selected Managed baseline.",
                     )
             state = replace(state, execution_baseline_sha=evidence.head_sha)
-            self.store.save(state)
+            self.store.save(state, preserve_effect_authority=True)
         admission_phase = self._start_phase(state.run_id, "DETERMINISTIC_ADMISSION", category="ADMISSION")
         state, admission_error = self._confirm_deterministic_admission(state)
         complete_phase(
@@ -4150,8 +4180,13 @@ class EngineeringRunner:
             "provider_dispatch_before_admission": 0,
             "admission_completed": 1,
         }
+        previous_state = state
         state = replace(state, phase="CAPABILITY_REVIEW", next_action="capability_review")
-        self.store.save(state)
+        try:
+            self._save_effect_checkpoint(previous_state, state)
+        except AdoptionAuthorityError:
+            return self._save_terminal(previous_state, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied specialist selection transition.")
         capability_review = self._start_phase(state.run_id, "CAPABILITY_REVIEW")
         reviewer_evidence = (
             ReviewerEvidence.from_repository(state.run_id, state.execution_mode, evidence)
@@ -4167,12 +4202,17 @@ class EngineeringRunner:
         metadata = specialist_readback(state.specialist_records)
         update_phase_metadata(self.root, capability_review, {"specialist_selection_disposition": metadata})
         write_live_status(self.root, state, "Capability selection and typed findings recorded")
+        previous_state = state
         state = (
             replace(state, phase="EXECUTE_AGENT", next_action="invoke_agent")
             if context.execution_mode == "GENESIS"
             else self._reconcile(state, evidence)
         )
-        self.store.save(state)
+        try:
+            self._save_effect_checkpoint(previous_state, state)
+        except AdoptionAuthorityError:
+            return self._save_terminal(previous_state, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied post-specialist continuation.")
         write_live_status(self.root, state, state.next_action)
         complete_phase(self.root, capability_review)
         if state.terminal:
@@ -4478,7 +4518,11 @@ class EngineeringRunner:
             latest_repository_evidence=_repository_summary(evidence),
             latest_github_evidence=_pull_request_summary(candidate),
         )
-        self.store.save(recovered)
+        try:
+            self._save_effect_checkpoint(state, recovered)
+        except AdoptionAuthorityError:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied recovered PR transition.")
         write_live_status(self.root, recovered, recovered.next_action)
         recovered = self._recover_autonomous_pr_assurance(recovered, candidate)
         if recovered.terminal or recovered.phase == "REPAIR_AGENT":
@@ -4538,7 +4582,11 @@ class EngineeringRunner:
             latest_repository_evidence=_repository_summary(evidence),
             latest_github_evidence=_pull_request_summary(candidate),
         )
-        self.store.save(recovered)
+        try:
+            self._save_effect_checkpoint(state, recovered)
+        except AdoptionAuthorityError:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied recovered PR transition.")
         write_live_status(self.root, recovered, recovered.next_action)
         recovered = self._recover_autonomous_pr_assurance(recovered, candidate)
         if recovered.terminal or recovered.phase == "REPAIR_AGENT":
@@ -4801,9 +4849,10 @@ class EngineeringRunner:
                         or fresh.base_branch != "main"
                         or not self._autonomous_merge_assurance_passes(reviewed, head)):
                     raise ValueError("recovered PR changed during independent assurance")
+                previous_reviewed = reviewed
                 reviewed = replace(reviewed, phase="WAIT_FOR_TERMINAL_EVIDENCE",
                                    next_action="poll_required_checks")
-                self.store.save(reviewed)
+                self._save_effect_checkpoint(previous_reviewed, reviewed)
                 return reviewed
         except (OSError, subprocess.SubprocessError, RunnerError, RuntimeError, ValueError):
             return self._save_terminal(state, "BLOCKED", "delivery_assurance_recovery_unavailable",
@@ -4980,7 +5029,7 @@ class EngineeringRunner:
             # same candidate is never blindly merged twice after a restart.
             attempted = replace(state, delegated_merge_attempt=attempt,
                                 delegated_merge_actor_reference=None)
-            self.store.save(attempted)
+            self._save_effect_checkpoint(state, attempted)
             # Both current delegation and adoption are serialized at the
             # native merge process start. Waiting never stalls lease renewal.
             from contextlib import contextmanager
@@ -5031,7 +5080,7 @@ class EngineeringRunner:
                     and re.fullmatch(r"[0-9a-f]{40}", merged.merge_commit)
                     and self.repository.remote_main_contains(git_root, merged.merge_commit)):
                 confirmed = replace(attempted, delegated_merge_actor_reference=current_grant.actor_reference)
-                self.store.save(confirmed)
+                self._save_effect_checkpoint(attempted, confirmed)
                 return confirmed if confirmed.effect_execution is not None else self._poll(confirmed)
             return self._save_operator_merge_wait(replace(
                 attempted, phase="WAIT_FOR_OPERATOR_MERGE", next_action="verify_delegated_merge_outcome",
@@ -5113,7 +5162,11 @@ class EngineeringRunner:
             ) else "no",
         })
         repair = replace(repair, repair_audit=repair.repair_audit[:-1] + (reservation,))
-        self.store.save(repair)
+        try:
+            self._save_effect_checkpoint(state, repair)
+        except AdoptionAuthorityError:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied repair reservation.")
         write_live_status(self.root, repair, repair.next_action)
         try:
             result = self._invoke_agent_with_timing(repair, self._repair_prompt(repair, objective), repair=True)
@@ -5198,7 +5251,11 @@ class EngineeringRunner:
             delegated_merge_attempt=None, delegated_merge_actor_reference=None,
         )
         self._managed_action(finalization, "FINALIZATION")
-        self.store.save(finalization)
+        try:
+            self._save_effect_checkpoint(state, finalization)
+        except AdoptionAuthorityError:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied Finalization transition.")
         write_live_status(self.root, finalization, finalization.next_action)
         complete_phase(self.root, finalization_phase)
         instruction = (
@@ -5291,6 +5348,7 @@ class EngineeringRunner:
         finalization = self._assure_autonomous_delivery_pr(finalization, result)
         if finalization.terminal or finalization.phase == "REPAIR_AGENT":
             return finalization
+        previous_finalization = finalization
         finalization = replace(
             finalization,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
@@ -5303,7 +5361,11 @@ class EngineeringRunner:
             terminal_condition="repository_reconciled",
             next_action="poll_required_checks",
         )
-        self.store.save(finalization)
+        try:
+            self._save_effect_checkpoint(previous_finalization, finalization)
+        except AdoptionAuthorityError:
+            return self._save_terminal(previous_finalization, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied post-Finalization result transition.")
         write_live_status(self.root, finalization, finalization.next_action)
         # A resumed transaction can discover that its mandatory Finalization
         # PR was already merged before the agent returned it.  It is valid
@@ -5368,7 +5430,11 @@ class EngineeringRunner:
             latest_repository_evidence=_repository_summary(evidence),
         )
         self._managed_action(reconciliation, "AUTOMATIC_RECONCILIATION")
-        self.store.save(reconciliation)
+        try:
+            self._save_effect_checkpoint(state, reconciliation)
+        except AdoptionAuthorityError:
+            return self._save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied reconciliation transition.")
         write_live_status(self.root, reconciliation, reconciliation.next_action)
         reconciliation_span = self._start_phase(state.run_id, "RECONCILIATION")
         handoff_started = time.monotonic()
@@ -5450,6 +5516,7 @@ class EngineeringRunner:
         reconciliation = self._assure_autonomous_delivery_pr(reconciliation, result)
         if reconciliation.terminal or reconciliation.phase == "REPAIR_AGENT":
             return reconciliation
+        previous_reconciliation = reconciliation
         reconciliation = replace(
             reconciliation,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
@@ -5461,7 +5528,11 @@ class EngineeringRunner:
             terminal_condition="repository_reconciled",
             next_action="poll_required_checks",
         )
-        self.store.save(reconciliation)
+        try:
+            self._save_effect_checkpoint(previous_reconciliation, reconciliation)
+        except AdoptionAuthorityError:
+            return self._save_terminal(previous_reconciliation, "BLOCKED", "managed_candidate_adoption_invalid",
+                "Current checkpoint denied post-reconciliation result transition.")
         write_live_status(self.root, reconciliation, reconciliation.next_action)
         evidence = self.github.pull_request(result.pull_request)
         if evidence.state == "MERGED":
@@ -5555,7 +5626,7 @@ class EngineeringRunner:
         own a liveness lease while the human reviews or merges the pull
         request. The watcher recognises this checkpoint as queue-owning.
         """
-        self.store.save(state)
+        self.store.save(state, preserve_effect_authority=True, preserve_effect_status=False)
         if self.active_lease is not None and self.active_lease.run_id == state.run_id:
             if self.lease_heartbeat is not None:
                 self.active_lease = self.lease_heartbeat.stop()

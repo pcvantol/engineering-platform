@@ -8,7 +8,8 @@ from typing import Callable, Protocol
 from .agent_state import StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .live_status import write_live_status
-from .managed_adoption import AdoptionAuthorityError
+from .managed_adoption import AdoptionAuthorityError, effect_checkpoint
+from .agent_state import StateError
 from .providers import process_effect_scope
 
 
@@ -31,7 +32,10 @@ class FinalizationCoordinator:
         authority_effect=None,
     ) -> TransactionState:
         cleanup = replace(state, phase="REPOSITORY_CLEANUP", next_action="fetch_prune_and_remove_transaction_branches")
-        store.save(cleanup)
+        try:
+            store.save(cleanup, expected_effect_checkpoint=effect_checkpoint(state) if state.managed_candidate_adoption else None)
+        except StateError as error:
+            return save_terminal(state, "BLOCKED", "managed_candidate_adoption_invalid", str(error))
         write_live_status(root, cleanup, "Repository cleanup in progress")
         operation = getattr(repository, "cleanup_transaction", None)
         if not callable(operation):
