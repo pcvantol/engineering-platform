@@ -168,3 +168,26 @@ missing project identities. Neither is full current CI PASS. These coupled
 fixture corrections remain within already booked round2 (consumed2/max3/
 remaining1); new exact package/full owning gates and third independent pair
 remain mandatory before protected delivery.
+
+### Round2 ambient runtime-prefix convergence after resumed qualification
+
+The completed exact70fa0aa owning CI ran2461tests and failed only the three
+real-canary subcases with runtime_executable admission errors. An already
+set but unavailable managed CLI prefix bypassed the fixture's previous
+absent-only setup. Same installed70 tests with a deliberately unavailable
+ambient prefix reproduced3errors/5tests3.602s; the fixture now always selects
+its own actual PATH-resolved pinned0.160.1 executable and temporary native
+prefix, preserving the real host admission guard. Same negative ambient
+context after the correction5PASS15.883s. No product/runtime/authority guard,
+version pin, CI coverage gate or expected outcome was changed.
+
+The earlier own561 whole-source/installed runs exhausted local disk and ended
+with OSError28; these are retained NOT_QUALIFIED, not full-suite PASS. The
+user-requested storage relocation separately preserved hashes and compatible
+paths; no source family or closed predecessor was reopened. Fresh whole
+source/installed qualification on the new committed candidate remains
+required. Quality can now start; its70 matrix is interim evidence while this
+known owning-CI fixture defect converges before the official third pair.
+Security's70 complete PASS remains SHA-bound supporting evidence. New exact
+candidate reviews/CI and all original protected/Finalization/final-main gates
+remain required. Still inside already booked round2: consumed2/max3/remaining1.

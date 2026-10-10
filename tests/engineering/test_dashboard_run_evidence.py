@@ -45,18 +45,17 @@ class DashboardRunEvidenceTests(unittest.TestCase):
                     "os.environ", {"EP_QUALIFICATION_DETERMINISTIC_FLOW": "1",
                                    "ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
                 # CI already installs the exact native dependency on PATH;
-                # expose it through the actual managed-prefix contract just
-                # as the standalone installed browser job does. No fake
+                # expose it through this test-owned managed-prefix contract.
+                # An ambient prefix may refer to a removed prior fixture. No fake
                 # runtime/configuration or product admission bypass.
-                if not os.environ.get("EP_MANAGED_CODEX_CLI_PREFIX"):
-                    executable = shutil.which("codex")
-                    self.assertIsNotNone(executable)
-                    version = subprocess.check_output([executable, "--version"], text=True).strip()
-                    self.assertEqual(version, "codex-cli 0.160.1")
-                    native = Path(installation) / "native"
-                    (native / "bin").mkdir(parents=True)
-                    (native / "bin/codex").symlink_to(executable)
-                    os.environ["EP_MANAGED_CODEX_CLI_PREFIX"] = str(native)
+                executable = shutil.which("codex")
+                self.assertIsNotNone(executable)
+                version = subprocess.check_output([executable, "--version"], text=True).strip()
+                self.assertEqual(version, "codex-cli 0.160.1")
+                native = Path(installation) / "native"
+                (native / "bin").mkdir(parents=True)
+                (native / "bin/codex").symlink_to(executable)
+                os.environ["EP_MANAGED_CODEX_CLI_PREFIX"] = str(native)
                 canary = StoredConsoleCanary(finding_mode=mode)
                 try:
                     run_id = canary.generate()
