@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -148,9 +148,15 @@ test.describe("real dynamic translation provider boundary", () => {
   });
 
   test("releases an aborted browser request while the bounded provider finishes safely", async ({ page }) => {
-    const source = "changed::Browser abort preserves every source character.";
-    await installInventory(page, [source], { requestTimeoutMs: 100 });
-    await page.evaluate(() => window.translationFixture.localize());
+    const source = "abort-boundary::Browser abort preserves every source character.";
+    await installInventory(page, [source], { controlledAbort: true });
+    await page.evaluate(() => { window.translationFixture.pending = window.translationFixture.localize(); });
+    // Cancel only after the actual external process has accepted the request.
+    // A timer before process startup cannot prove this after-start boundary.
+    await expect.poll(() => providerJournal(root).filter((entry) => entry.event === "start").length,
+      { intervals: [10] }).toBe(1);
+    await page.evaluate(async () => { window.translationFixture.abort(); await window.translationFixture.pending; });
+    writeFileSync(path.join(root, "abort-provider-release"), "release\n");
     await expect(page.locator("#translation-inventory p")).toHaveText(source);
     await expect(page.locator("#translation-inventory p")).toHaveAttribute("data-translation-state", "source");
     await expect.poll(() => providerJournal(root).filter((entry) => entry.event === "finish").length).toBe(1);
@@ -364,7 +370,14 @@ async function installInventory(page, sources, options = {}) {
     const rows = sources.map((source) => {
       const element = document.createElement("p"); element.textContent = source; container.append(element); return { source, element };
     });
-    const client = createDynamicEvidenceLocalizer({ getLocale: () => "nl", sourceFallbackTitle: () => "Original evidence: translation unavailable.", ...options });
-    window.translationFixture = { client, rows, localize: () => client.localize(rows) };
+    let controller;
+    const transport = options.controlledAbort ? (url, request) => {
+      controller = new AbortController();
+      request.signal.addEventListener("abort", () => controller.abort(), { once: true });
+      return fetch(url, { ...request, signal: controller.signal });
+    } : undefined;
+    const client = createDynamicEvidenceLocalizer({ getLocale: () => "nl", sourceFallbackTitle: () => "Original evidence: translation unavailable.", ...options,
+      ...(transport ? { fetch: transport } : {}) });
+    window.translationFixture = { client, rows, localize: () => client.localize(rows), abort: () => controller.abort() };
   }, { sources, options });
 }

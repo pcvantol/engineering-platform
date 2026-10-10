@@ -39,6 +39,14 @@ def provider() -> int:
     sources = json.loads(instruction.split("\n\nINPUT:\n", 1)[1])
     previous = (root / "provider.jsonl").read_text() if (root / "provider.jsonl").exists() else ""
     journal(root, {"event": "start", "pid": os.getpid(), "locale": target, "texts": sources, "time": time.monotonic()})
+    if any(text.startswith("abort-boundary::") for text in sources):
+        # External transport handshake only. The real server's 1.5-second
+        # provider deadline remains unchanged and bounds an unreleased fixture.
+        deadline = time.monotonic() + 1.0
+        while not (root / "abort-provider-release").exists():
+            if time.monotonic() >= deadline:
+                return 1
+            time.sleep(0.005)
     if any(text.startswith("deadline::") for text in sources):
         time.sleep(4)
     if any(text.startswith("deadline-once::") and text not in previous for text in sources):
