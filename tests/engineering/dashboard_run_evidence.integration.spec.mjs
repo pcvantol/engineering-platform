@@ -139,6 +139,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       expect(stored.lifecycle.recovery.last_observed_at).toBeTruthy();
     }
     if (scenario === "provider-blocked") {
+      expect(ready.before.generation_model_requests).toBe(1);
       expect(stored.lifecycle.recovery.kind).toBe("provider_interruption");
       expect(stored.lifecycle.recovery.maximum_attempts).toBe(1);
       expect(stored.lifecycle.recovery.state).toBe("EXHAUSTED");
@@ -213,7 +214,11 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
     await page.reload({ waitUntil: "domcontentloaded" });
     if (scenario === "provider-blocked") {
-      if (await page.locator("#promptHistoryDetailModal").isVisible()) await page.locator("#promptHistoryDetailClose").click();
+      // Reload retains the genuine history deep link. Wait for its native
+      // opening, then finish closing that session before testing a new one.
+      await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
+      await page.locator("#promptHistoryDetailClose").click();
+      await expect(page).not.toHaveURL(/(?:\?|&)prompt=/);
       // Delay transport forwarding only; the eventual response is produced
       // by the real handler. No success payload or auth service is replaced.
       let releaseRead, readObserved;

@@ -244,9 +244,17 @@ class StoredConsoleCanary:
         self.console_transport = None
         self.console_git_mutations = 0
         self.console_git_transport = None
+        self.generation_model_requests = 0
 
     def generate(self):
         native_command = CodexCliProvider.command
+
+        def unavailable_terminal_analysis(provider, root, *args, **kwargs):
+            # The real terminal-report service may request external analysis.
+            # Its explicit unavailable transport exercises the real fallback;
+            # never allow it to reach the user's live model session.
+            self.generation_model_requests += 1
+            return subprocess.CompletedProcess(args, 1, "", "Declared external terminal analysis unavailable")
 
         def model_metadata(provider, *args, **kwargs):
             if args == ("login", "status"):
@@ -257,6 +265,7 @@ class StoredConsoleCanary:
 
         self.transport_patches = [
             patch.object(CodexCliProvider, "command", model_metadata),
+            patch.object(CodexCliProvider, "invoke", unavailable_terminal_analysis),
             patch("engineering_platform.codex_capacity.read_remaining_percent", return_value=50 if self.selection_mode == "no_capacity" else 100),
             patch("engineering_platform.capability_preflight.read_remaining_percent", return_value=50 if self.selection_mode == "no_capacity" else 100),
         ]
@@ -375,7 +384,8 @@ class StoredConsoleCanary:
                       for table in tables}
             stored["schema"] = [list(row) for row in connection.execute(
                 "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")]
-        return {"stored": stored, "model_calls": list(self.model.calls), "creates": getattr(getattr(self, "github", None), "creates", 0),
+        return {"stored": stored, "model_calls": list(self.model.calls), "generation_model_requests": self.generation_model_requests,
+                "creates": getattr(getattr(self, "github", None), "creates", 0),
                 "console_model_requests": self.console_model_requests,
                 "console_model_texts": self.console_model_texts,
                 "console_git_mutations": self.console_git_mutations,
