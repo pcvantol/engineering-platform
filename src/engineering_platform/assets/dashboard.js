@@ -3355,7 +3355,7 @@ function invalidateDashboardReadScope() {
   renderActiveLifecycle(null);
   humanize();
 }
-async function refreshDashboardSnapshot({ allowAfterServerPush = false, successMode, failureMode } = {}) {
+async function refreshDashboardSnapshot({ allowAfterServerPush = false, scopeOnly = false, successMode, failureMode } = {}) {
   const readEpoch = dashboardReadEpoch;
   try {
     const response = await fetch("/api/dashboard-snapshot", {
@@ -3370,11 +3370,13 @@ async function refreshDashboardSnapshot({ allowAfterServerPush = false, successM
     if (readEpoch !== dashboardReadEpoch) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardReadDenied = false;
+    if (scopeOnly) return true;
     applyDashboardSnapshot(snapshot);
     if (successMode) setUpdateMode(successMode);
     return true;
   } catch {
     if (readEpoch !== dashboardReadEpoch) return false;
+    if (scopeOnly) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardStatusStore.update(fallback);
     humanize();
@@ -3420,7 +3422,7 @@ function startDashboardUpdates() {
       setUpdateMode("refresh.reconnecting");
     // EventSource exposes no denial status. Revalidate through the existing
     // read-only HTTP snapshot; an offline transport failure is not revocation.
-    if (!dashboardScopeProbe) dashboardScopeProbe = refreshDashboardSnapshot({ allowAfterServerPush: true })
+    if (!dashboardScopeProbe) dashboardScopeProbe = refreshDashboardSnapshot({ allowAfterServerPush: true, scopeOnly: true })
       .finally(() => { dashboardScopeProbe = null; });
   };
 }

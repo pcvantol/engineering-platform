@@ -82,3 +82,20 @@ The earlier759 CI installedcoverage passed2460tests/1existing skip, but its
 remaining CI was still running; no full current correction CI claim follows.
 All original protected merge/NO_BUMP Finalization/new exact-final-main installed
 and reachable fresh screenshots/readback/cleanup gates remain open.
+
+### Round1 read-scope probe convergence
+
+An actual local whole-browser run on543 preserved a telemetry row disappearing
+between selection and style read, while the same-head three targeted repeats
+and hosted browser gates passed. Source tracing identified that scope probing
+after a stream error also applied a successful full snapshot, unnecessarily
+replacing valid UI state. The probe now validates only the existing read scope;
+it applies no successful snapshot and no offline fallback. Actual denied reads
+still invalidate the scoped evidence and callback epoch. Coupled true read
+withdrawal, ordinary offline/restart and unchanged telemetry-selection checks
+3PASS17.7s. This remains
+inside booked round1, before the next complete independent review. Full new
+exact-asset/browser/CI qualification remains required; prior local failure
+is retained, not relabelled PASS. Python production and discovered Python-unit
+bytes remain unchanged from543; any completed whole-Python receipts require
+explicit byte binding rather than a whole-package SHA transfer.
