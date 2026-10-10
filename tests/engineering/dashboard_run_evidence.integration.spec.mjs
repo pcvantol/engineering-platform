@@ -166,14 +166,14 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     await expect(findings.locator('details[data-disposition="DEFERRED"]').first()).toBeVisible();
     }
     const screenshots = [];
-    const capture = async (view, suffix, target = page.locator(`[data-run-evidence="${view}"]`)) => {
+    const capture = async (view, suffix, target = page.locator(`[data-run-evidence="${view}"]`), evidence = runEvidence) => {
       const imagePath = testInfo.outputPath(`${view}-${suffix}-fresh.png`);
       await target.screenshot({ path: imagePath, animations: "disabled" });
       screenshots.push({ scenario: view, file: path.basename(imagePath),
         sha256: createHash("sha256").update(readFileSync(imagePath)).digest("hex"),
-        run_scenario: testInfo.title, run_id: ready.run_id, finding_ids: (runEvidence?.specialists.findings || []).map((item) => item.id),
-        invocation_ids: (runEvidence?.specialists.invocations || []).map((item) => item.invocation_id),
-        publication: runEvidence?.publication || null,
+        run_scenario: testInfo.title, run_id: ready.run_id, finding_ids: (evidence?.specialists?.findings || []).map((item) => item.id),
+        invocation_ids: (evidence?.specialists?.invocations || []).map((item) => item.invocation_id),
+        publication: evidence?.publication || null,
         locale: await page.locator("#dashboardLocale").inputValue(),
         theme: await page.locator("html").getAttribute("data-theme"), viewport: page.viewportSize(),
       });
@@ -191,16 +191,6 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await expect(controls).toBeVisible();
       await capture("verification-controls", "native", findings);
     }
-    const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
-    writeFileSync(manifestPath, JSON.stringify({
-      contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
-      source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
-      wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, screenshots,
-      assets: ready.assets,
-    }, null, 2));
-    expect(screenshots.slice(0, 3).map((item) => item.scenario)).toEqual(["selection", "findings", "publication"]);
-    expect(screenshots).toHaveLength(verifiedFinding ? 4 : 3);
-    await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
     const rootUrl = ready.url.split("/?")[0];
     const foreign = await page.request.get(`${rootUrl}/api/prompt-history/${ready.run_id}/details?project=other`);
     expect(foreign.status()).toBe(404);
@@ -209,6 +199,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     for (const finding of runEvidence?.specialists.findings || []) {
       await expect(page.locator("body")).not.toContainText(finding.id);
     }
+    await capture("denied-project", "no-data", page.locator("body"), null);
     await page.goto(ready.url, { waitUntil: "domcontentloaded" });
     if (["provider-blocked", "missing"].includes(scenario)) await openStoredHistory();
     await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
@@ -252,14 +243,27 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await page.reload({ waitUntil: "domcontentloaded" });
       await expect(page.locator('[data-run-evidence="publication"]')).toContainText(DASHBOARD_MESSAGES[locale]["run_evidence.state.reconciled"]);
       const receipt = await page.request.get(`${rootUrl}/api/prompt-history/${ready.run_id}/details?project=project`);
-      const current = (await receipt.json()).lifecycle.run_evidence.publication;
+      const currentEvidence = (await receipt.json()).lifecycle.run_evidence;
+      const current = currentEvidence.publication;
       expect(current.run_id).toBe(runEvidence.publication.run_id);
       expect(current.candidate_sha).toBe(runEvidence.publication.candidate_sha);
       expect(current.branch).toBe(runEvidence.publication.branch);
       expect(current.status).toBe("RECONCILED");
+      await capture("publication", "same-run-reconciled", page.locator('[data-run-evidence="publication"]'), currentEvidence);
       child.stdin.write("snapshot\n");
       expect((await next()).after).toEqual(reconciled.reconciled_baseline);
     }
+    const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
+    writeFileSync(manifestPath, JSON.stringify({
+      contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
+      source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
+      wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, screenshots,
+      assets: ready.assets,
+    }, null, 2));
+    expect(screenshots.slice(0, 3).map((item) => item.scenario)).toEqual(["selection", "findings", "publication"]);
+    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0));
+    expect(screenshots.some((item) => item.scenario === "denied-project" && item.publication === null)).toBe(true);
+    await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
   } finally {
     if (child.exitCode === null) {
       const stopped = new Promise((resolve) => child.once("exit", resolve));
