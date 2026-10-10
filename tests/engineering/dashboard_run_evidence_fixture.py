@@ -163,6 +163,8 @@ class ExternalModel(QualificationReviewBackend):
         findings = [{"id": "missing-acceptance", "summary": "Add the acceptance sentence.",
                      "path": path, "evidence_ref": "git-blob:" + dict(selected.specialist_source_blobs)[path],
                      "proposed_disposition": "ACCEPTED"}]
+        if self.finding_mode == "privacy":
+            findings[0]["summary"] = "Add <script>alert(1)</script> from /Users/qualification/local.txt."
         if self.finding_mode == "dispositions" and selected.reviewer == "documentation":
             findings = [{**findings[0], "id": identifier, "summary": summary} for identifier, summary in (
                 ("accepted-only", "Consider the optional overview wording."),
@@ -464,6 +466,7 @@ elif __name__ == "__main__":
                           "provider-blocked": {"recovery_mode": True}})
     configuration["missing"] = {"selection_mode": "missing"}
     configuration["provider-recovered"] = {"recovery_mode": "recovered"}
+    configuration["privacy"] = {"finding_mode": "privacy"}
     canary = StoredConsoleCanary(**configuration[scenario])
     try:
         run_id = canary.generate()

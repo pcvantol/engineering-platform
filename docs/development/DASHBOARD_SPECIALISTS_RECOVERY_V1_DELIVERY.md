@@ -20,6 +20,8 @@ Canonical persisted specialist journal and provider ledger → existing read-onl
 
 The display distinguishes selected/skipped questions, responsible consumer, actual invocation evidence, proposed/disposed/applied/verified findings and bound source/result candidates. Publication intent, provider recovery and terminal lifecycle remain separate observations. Stored execution authorization and a current repository mapping never grant permission; missing/corrupt/legacy data remain explicit.
 
+The detached projection removes local host paths while retaining original stored journal/identities. A five-language notice makes that redaction explicit; HTML advice stays literal text. The real stored privacy canary covers this boundary.
+
 No new framework, publisher, recovery controller, finding store, execution route or action button. Literal bounded text; no model-provided executable links, private reasoning or browser-persistent finding cache. Existing project/run read scope remains authoritative. Opening/filtering/refreshing/restarting must add no execution, provider, repair, Git-fetch or PR effects. Existing UI auditing is distinct from execution.
 
 ## Qualification composition

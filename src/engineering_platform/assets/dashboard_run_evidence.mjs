@@ -56,6 +56,7 @@ export function renderStoredRunEvidence(evidence, recovery, { document, t, card,
     field(t("run_evidence.reservations"), value(specialists.reserved_invocation_count)),
     field(t("run_evidence.results"), value(specialists.completed_invocation_count)),
     field(t("run_evidence.uncertain"), value(specialists.uncertain_invocation_count))];
+  if (evidence?.presentation_redacted) selectionFields.push(field(t("run_evidence.stored_only"), t("run_evidence.host_paths_hidden")));
   for (const item of selections) selectionFields.push(detail(
     `${reviewerLabel(item.reviewer)} · ${state(item.kind === "SKIP" ? "SKIPPED" : item.payload?.status)}`,
     [field(t("detail.specialist_review"), reviewerLabel(item.reviewer)),

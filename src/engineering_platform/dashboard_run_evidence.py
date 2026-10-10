@@ -2,11 +2,28 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 
 from .agent_state import TransactionState
 from .capability_review import specialist_readback, validate_specialist_records
 from .managed_publication import validate_intent
+
+
+_HOST_PATH = re.compile(r'''(?<![\w:/.\-<])(?:file://|~?/|[A-Za-z]:[\\/]|\\\\)[^\s<>"']+''')
+
+
+def _presentation(value, redacted):
+    """Remove host paths from the detached view, never from stored evidence."""
+    if isinstance(value, str):
+        safe, count = _HOST_PATH.subn("[REDACTED]", value)
+        redacted[0] = redacted[0] or bool(count)
+        return safe
+    if isinstance(value, dict):
+        return {key: _presentation(item, redacted) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_presentation(item, redacted) for item in value)
+    return value
 
 
 def projection(checkpoint: dict[str, object], run_id: str, *, invocations=None) -> dict[str, object]:
@@ -96,9 +113,13 @@ def projection(checkpoint: dict[str, object], run_id: str, *, invocations=None) 
             recorded_candidate = state.assurance_profile["candidate_sha"]
     except (ValueError, TypeError, KeyError):
         pass
+    redacted = [False]
+    specialists = _presentation(specialists, redacted)
+    publication = _presentation(publication, redacted)
     return {
         "contract_version": "ep-console-run-evidence/v1", "run_id": run_id,
         "specialists": specialists, "publication": publication,
+        "presentation_redacted": redacted[0],
         "recorded_candidate_sha": recorded_candidate,
         "recorded_execution_authorized": checkpoint.get("owner_authorized")
             if isinstance(checkpoint.get("owner_authorized"), bool) else None,

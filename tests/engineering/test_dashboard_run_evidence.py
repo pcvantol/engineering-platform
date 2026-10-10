@@ -6,13 +6,32 @@ import copy
 
 from engineering_platform import server
 from engineering_platform.capability_review import specialist_readback
-from engineering_platform.dashboard_run_evidence import projection
+from engineering_platform.dashboard_run_evidence import projection, _presentation
 from engineering_platform.provider_usage import canonical_provider_invocations
 from engineering_platform.storage import sqlite_connection
 from tests.engineering import test_specialist_selection_disposition as pipeline
 
 
 class DashboardRunEvidenceTests(unittest.TestCase):
+    def test_detached_view_redacts_host_paths_without_changing_stored_advice_or_identity(self):
+        supplied = {"run_id": "run-own", "profile": "sha256:" + "a" * 64,
+                    "paths": ["docs/readme.md", "validation://run-own/control"],
+                    "advice": ("Read /Users/example/file.txt", "Read C:\\Users\\example\\file.txt",
+                               "Read \\\\server\\private\\file.txt", "Read ~/local.txt",
+                               "Read file:///etc/local.txt", "<script>alert(1)</script>"),
+                    "unknown": None, "count": 0}
+        original = copy.deepcopy(supplied)
+        flag = [False]
+        detached = _presentation(supplied, flag)
+        self.assertTrue(flag[0])
+        self.assertEqual(supplied, original)
+        self.assertEqual(detached["run_id"], supplied["run_id"])
+        self.assertEqual(detached["profile"], supplied["profile"])
+        self.assertEqual(detached["paths"], supplied["paths"])
+        self.assertEqual(detached["advice"], ("Read [REDACTED]",) * 5 + ("<script>alert(1)</script>",))
+        self.assertIsNone(detached["unknown"])
+        self.assertEqual(detached["count"], 0)
+
     def test_missing_legacy_evidence_is_unknown_not_zero_or_authority(self):
         for checkpoint in ({}, {"specialist_records": []}, {"specialist_records": None}):
             with self.subTest(checkpoint=checkpoint):

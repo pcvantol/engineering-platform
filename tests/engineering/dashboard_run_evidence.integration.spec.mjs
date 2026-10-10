@@ -33,7 +33,7 @@ async function passiveProcess(python, environment, dataRoot) {
   return { child, next, ready: await next() };
 }
 
-const cases = ["prepared", "uncertain", "no-consumer", "no-capacity", "irrelevant", "dispositions", "withdrawn", "provider-recovered", "provider-blocked", "missing"]
+const cases = ["prepared", "uncertain", "no-consumer", "no-capacity", "irrelevant", "dispositions", "withdrawn", "provider-recovered", "provider-blocked", "missing", "privacy"]
   .map((scenario) => ({ scenario, locale: "en", theme: "dark", width: 1280, height: 720 }));
 for (const locale of ["en", "nl", "de", "fr", "es"]) for (const theme of ["dark", "light"]) {
   for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
@@ -107,6 +107,14 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     const stored = await actualDetail.json();
     const noSpecialists = ["no-consumer", "no-capacity", "irrelevant", "missing"].includes(scenario);
     const runEvidence = stored.lifecycle.run_evidence;
+    if (scenario === "privacy") {
+      expect(JSON.stringify(runEvidence)).not.toContain("/Users/qualification/local.txt");
+      expect(runEvidence.presentation_redacted).toBe(true);
+      await expect(page.locator('[data-run-evidence="selection"]')).toContainText(DASHBOARD_MESSAGES[locale]["run_evidence.host_paths_hidden"]);
+      await expect(page.locator('[data-run-evidence="findings"]')).not.toContainText("/Users/qualification/local.txt");
+      await expect(page.locator("[data-run-evidence] script")).toHaveCount(0);
+      await expect(page.locator('[data-run-evidence="findings"]')).toContainText("<script>alert(1)</script>");
+    }
     if (scenario === "missing") {
       expect(stored.lifecycle.available).toBe(false);
       expect(runEvidence).toBeUndefined();
