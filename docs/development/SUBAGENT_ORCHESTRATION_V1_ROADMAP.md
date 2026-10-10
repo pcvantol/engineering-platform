@@ -149,3 +149,7 @@ original reproduction files retained byte-for-byte with scope limitations; and n
 source, test, workflow, package, active policy, grant or executable programme changes.
 Historical Python files under the evidence directory are standalone diagnostics,
 not runtime implementation or CI qualification. The version classification is NO_BUMP.
+
+## Serial Console follow-up — r34, 2026-10-10
+
+The selected [dashboard specialists/recovery delivery](DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md) follows closed r33 ([final receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007)). Same ARCHITECT_2 / LANE_2_WORK, source base `05e530d` and branch `codex/ep-dashboard-specialists-recovery-v1`; r34 / plan1, formal corrections 0 / max3 after the first complete independent Q/S. Normal PATCH target 2.3.115 is prepared. This is a read-only storage→Server→existing Console slice with real installed/browser/coverage/screenshot qualification; no execution or activation authority. The broader family node statuses and edges remain unchanged. r34 is not yet installed-qualified or delivered.

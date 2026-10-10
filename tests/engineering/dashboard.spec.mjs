@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import {
   createTranslator,
   DASHBOARD_MESSAGES,
@@ -2350,6 +2350,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: "inbox-context", status: "COMPLETE", title: "Context prompt", executed_at: "2026-08-30T08:00:00Z",
     }] } }));
     await page.route("**/api/prompt-history/inbox-context/details", (route) => route.fulfill({ json: {
+        project_id: "dashboard-fixture",
       history: {
         run_id: "inbox-context", status: "COMPLETE", title: "Context prompt", executed_at: "2026-08-30T08:00:00Z",
         execution_context: {
@@ -2386,6 +2387,7 @@ test.describe("Engineering Status browser smoke", () => {
     }] } }));
     await page.route("**/api/prompt-history/inbox-modal/details", (route) => route.fulfill({
       json: {
+        project_id: "dashboard-fixture",
         history: {
           run_id: "inbox-modal",
           status: "BLOCKED",
@@ -2578,6 +2580,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: runId, status: "BLOCKED", title: "Status recovery", executed_at: "2026-08-17T05:42:00Z",
     }] } }));
     await page.route(`**/api/prompt-history/${runId}/details`, (route) => route.fulfill({ json: {
+        project_id: "dashboard-fixture",
       history: { run_id: runId, status: "BLOCKED", title: "Status recovery" },
       lifecycle: {
         run_id: runId,
@@ -2605,6 +2608,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: runId, status: "COMPLETE", title: "Deeplink prompt", executed_at: "2026-08-04T08:00:00Z",
     }] } }));
     await page.route(`**/api/prompt-history/${runId}/details`, (route) => route.fulfill({ json: {
+        project_id: "dashboard-fixture",
       history: { run_id: runId, status: "COMPLETE", title: "Deeplink prompt" }, execution: {}, evidence: [],
     } }));
 
@@ -2651,7 +2655,7 @@ test.describe("Engineering Status browser smoke", () => {
       runs: [{ run_id: "inbox-fixture", status: "COMPLETE", title: "Fixture" }],
     } }));
     await page.route("**/api/prompt-history/inbox-row-focus/details", (route) => route.fulfill({
-      json: { history: { run_id: "inbox-row-focus", status: "COMPLETE", title: "Focused row" } },
+      json: { project_id: "dashboard-fixture", history: { run_id: "inbox-row-focus", status: "COMPLETE", title: "Focused row" } },
     }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -4223,6 +4227,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: "inbox-handoff", status: "COMPLETE", title: "Forge handoff", executed_at: "2026-08-04T08:00:00Z",
     }] } }));
     await page.route("**/api/prompt-history/inbox-handoff/details", (route) => route.fulfill({ json: {
+        project_id: "dashboard-fixture",
       history: { run_id: "inbox-handoff", status: "COMPLETE", title: "Forge handoff", executed_at: "2026-08-04T08:00:00Z" },
       recommendation_handoff: {
         artifact_path: "forge/recommendation.json", projection_status: "COMPLETE", missing_fields: [],
@@ -5550,7 +5555,7 @@ test.describe("Engineering Status browser smoke", () => {
         external_wait_ms: 0, largest_phase: "PROVIDER_EXECUTION",
       }],
     } }));
-    await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({ json: { history: { run_id: "inbox-telemetry-row" } } }));
+    await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({ json: { project_id: "dashboard-fixture", history: { run_id: "inbox-telemetry-row" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => window.executionTelemetry([{
       date: "2026-08-16", prompt_count: 1, average_execution_seconds: 0,
@@ -10379,6 +10384,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
     await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({
       json: {
+        project_id: "dashboard-fixture",
         history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", producer_id: "forge", producer_type: "FORGE", producer_version: "2.7.2", producer_submission_contract_version: "1.0", submission_id: "submission-0006", execution_context_version: "1.0", mission_id: "MISSION-0006", engineering_action_id: "action-0006", correlation_id: "correlation-0006", execution_context: { context_version: "1.0", mission_id: "MISSION-0006", producer_host_id: "forge-host-alpha", mission_revision: "5", intent_id: "intent-0006", intent_revision: "1", runtime_prompt_id: "prompt-0006", runtime_prompt_digest: "sha256:aaaaaaaa", retry_of_correlation_id: "correlation-0005" }, execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 }, execution_activity_summary: { activity: { primary_codex_commands_total: 1 }, terminal_delivery_diff: { total_unique_changed_paths: 0 } } },
         execution: { seconds: 42, total_seconds: 61 },
         runtime: { runtime_provider: "codex_cli", codex_cli_version: "0.146.0" },
@@ -11887,7 +11893,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(({ components, component_model }) => renderPlatformHealth({ components, component_model }), {
       components, component_model: canonicalPlatformComponentModel(),
     });
-    await page.locator("#platformHealth > summary").click({ force: true });
+    if (await page.locator("#platformHealth").getAttribute("open") === null) await page.locator("#platformHealth > summary").click();
     await page.locator(".platform-health__component[aria-label='Meer informatie over HTTP/API-ingang']").click();
     await expect(page.locator("#componentModalContent")).toContainText("Gezond");
     await expect(page.locator("#componentModalContent")).not.toContainText("dashboard.health");

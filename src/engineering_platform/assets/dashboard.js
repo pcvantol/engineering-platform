@@ -1,6 +1,7 @@
 import { createDashboardStatusStore } from "./dashboard_status_store.mjs";
 import { createLocaleService, DASHBOARD_MESSAGES, normalizeLocale, preferredLocale } from "./dashboard_locales.mjs";
 import { createDynamicEvidenceLocalizer } from "./dashboard_translation.mjs";
+import { renderStoredRunEvidence, syncStoredRunEvidence } from "./dashboard_run_evidence.mjs";
 
 function initialDashboardLocale() {
   try {
@@ -87,8 +88,9 @@ function formatDiagnosticProjection(value) {
     ".\n",
   );
 }
+const knownStatusFallbacks = new Set(Object.values(DASHBOARD_MESSAGES).map((messages) => messages["dashboard.status_unavailable"]));
 function dynamicDiagnosticSource(value) {
-  if (typeof value !== "string" || !value.trim() || operationalTranslation(value)) return false;
+  if (typeof value !== "string" || !value.trim() || operationalTranslation(value) || knownStatusFallbacks.has(value.trim())) return false;
   const literal = value.trim();
   // These are syntactic technical literals, not prose language detection.
   // Only the existing diagnostic prose field is eligible; raw logs, prompts,
@@ -2637,6 +2639,10 @@ function renderActivePullRequests(execution, lifecycle) {
 }
 function renderActiveLifecycle(projection, execution = {}) {
   const current = $("currentRun")?.querySelector(".current-run__grid"); if (!current) return;
+  syncStoredRunEvidence(current, projection?.run_id ? projection.run_evidence : null, projection?.recovery, {
+    document, t, card: promptDetailCard, locale: dashboardLocale, scope: document.body.dataset.projectId,
+    reviewerLabel: (role) => reviewerLabel(role, t("detail.specialist_review")),
+  });
   const previous = current.querySelector(".execution-lifecycle"),
     previousScroll = previous?.querySelector(".execution-lifecycle__scroll"),
     sameRun = previous?.dataset.runId === String(projection?.run_id || ""),
@@ -5956,6 +5962,7 @@ let promptHistoryEntries = [],
   promptHistorySelectedRunId = null,
   promptHistorySort = { key: "executed_at", direction: "desc" },
   promptHistoryDetailRunId = "",
+  promptHistoryDetailRequestId = 0,
   promptHistoryDetailLocationSyncing = false,
   promptHistoryDetailPayload = null;
 function promptHistoryDetailFilename(extension) {
@@ -6103,6 +6110,18 @@ function promptHistoryMarkdownRecovery(recovery) {
     [t("detail.recorded_evidence"), t("status_reconciliation.description")],
   ]);
 }
+function promptHistoryMarkdownStoredEvidence(payload) {
+  const cards = renderStoredRunEvidence(payload?.lifecycle?.run_evidence || { run_id: payload?.history?.run_id }, payload?.lifecycle?.recovery, {
+    document, t, card: promptDetailCard,
+    reviewerLabel: (role) => reviewerLabel(role, t("detail.specialist_review")),
+  });
+  // Literal evidence remains literal in the existing Markdown export too.
+  const literal = (text) => String(text || "").replace(/[\\`*_[\]<>]/g, "\\$&");
+  return cards.map((card) => promptHistoryMarkdownSection(card.querySelector("h3").textContent,
+    [...card.querySelectorAll("p.field")].map((field) => [
+      literal(field.firstElementChild.textContent), literal(field.lastElementChild.textContent),
+    ]))).join("\n");
+}
 function promptHistoryMarkdownRecommendationHandoff(handoff) {
   if (!handoff || typeof handoff !== "object") return "";
   const recommendation = handoff.recommendation || {};
@@ -6232,6 +6251,7 @@ function promptHistoryDetailMarkdown(payload, title) {
     promptHistoryMarkdownPullRequests(payload?.pull_requests),
     promptHistoryMarkdownCommitTimeline(payload?.commit_timeline),
     promptHistoryMarkdownLifecycle(payload?.lifecycle),
+    promptHistoryMarkdownStoredEvidence(payload),
     promptHistoryMarkdownRepairHistory(payload),
     promptHistoryMarkdownReviewers(payload?.reviewers),
     promptHistoryMarkdownAssuranceReviews(payload),
@@ -6969,6 +6989,8 @@ dashboardLocaleMenu.addEventListener("click", (event) => {
   if (!option) return;
   dashboardLocaleSelector.value = option.dataset.dashboardLocale;
   changeDashboardLocale(option.dataset.dashboardLocale);
+  setLocaleMenuOpen(false);
+  if (!document.activeElement?.closest("dialog[open]")) dashboardLocaleButton.focus({ preventScroll: true });
 });
 document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".dashboard-locale__picker")) setLocaleMenuOpen(false);
@@ -8986,6 +9008,10 @@ function renderPromptHistoryDetail(payload) {
       promptDetailProviderReviewSections(usage, reviewers, commitTimeline),
       promptDetailAssuranceReviewsSection(assuranceReviews),
       promptDetailRecommendationHandoff(recommendationHandoff),
+      ...renderStoredRunEvidence(payload?.lifecycle?.run_evidence || { run_id: payload?.history?.run_id }, payload?.lifecycle?.recovery, {
+        document, t, field: detailField, card: promptDetailCard,
+        reviewerLabel: (role) => reviewerLabel(role, t("detail.specialist_review")),
+      }),
     ].filter(Boolean),
   );
 }
@@ -8997,6 +9023,7 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   if (!entry?.run_id) return;
   retryDynamicEvidence();
   const runId = String(entry.run_id);
+  const requestId = ++promptHistoryDetailRequestId, projectId = document.body.dataset.projectId;
   void recordUserAction("prompt_history_detail_opened", runId);
   if (updateUrl) updatePromptHistoryDetailUrl(runId);
   promptHistoryDetailRunId = runId;
@@ -9013,11 +9040,21 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   fetch("/api/prompt-history/" + encodeURIComponent(runId) + "/details", { cache: "no-store" })
     .then((response) => response.ok ? response.json() : Promise.reject())
     .then((payload) => {
-      if (promptHistoryDetailRunId === runId && modal.open) renderPromptHistoryDetail(payload);
+      if (promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open
+          && document.body.dataset.projectId === projectId
+          && (!projectId || payload.project_id === projectId)) renderPromptHistoryDetail(payload);
+      else if (promptHistoryDetailRequestId === requestId && modal.open) {
+        setPromptHistoryDetailDownloads(null);
+        content.textContent = t("history.details_unavailable");
+        $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");
+      }
     })
     .catch(() => {
-      if (promptHistoryDetailRunId === runId && modal.open)
+      if (promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open) {
+        setPromptHistoryDetailDownloads(null);
         content.textContent = t("history.details_unavailable");
+        $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");
+      }
     });
 }
 function reconcilePromptHistoryDetailFromUrl() {
@@ -9057,8 +9094,11 @@ $("promptHistoryDetailModal").addEventListener("click", (event) => {
   if (event.target === $("promptHistoryDetailModal")) closePromptHistoryDetail();
 });
 $("promptHistoryDetailModal").addEventListener("close", () => {
+  promptHistoryDetailRequestId += 1;
   promptHistoryDetailRunId = "";
   setPromptHistoryDetailDownloads(null);
+  $("promptHistoryDetailContent").replaceChildren();
+  $("promptHistoryDetailTitle").textContent = "";
   if (!promptHistoryDetailLocationSyncing && promptHistoryDetailRunFromUrl())
     updatePromptHistoryDetailUrl("");
 });

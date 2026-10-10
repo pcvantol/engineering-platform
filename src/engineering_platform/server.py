@@ -3674,11 +3674,31 @@ def _central_console_run_records(
 
 def _central_console_lifecycle(data_root: Path, run_id: str) -> dict[str, object]:
     """Project one run's persisted lifecycle from CENTRAL only."""
-    return lifecycle_projection(
+    result = lifecycle_projection(
         data_root,
         run_id,
         central_database=data_root / SERVER_DATABASE_FILENAME,
     )
+    evidence = result.get("run_evidence")
+    if isinstance(evidence, dict):
+        # Current mapping is a separate observation from a historical grant.
+        # It neither evaluates nor grants permission to execute this run.
+        evidence["current_repository_binding"] = "NOT_RECORDED"
+        try:
+            connection = sqlite3.connect(f"file:{(data_root / SERVER_DATABASE_FILENAME).resolve()}?mode=ro", uri=True)
+            try:
+                row = connection.execute(
+                    "SELECT b.state FROM ep_parity_lifecycle_dispatches d "
+                    "LEFT JOIN ep_local_repository_bindings b ON b.project_id=d.project_id AND b.repository_id=d.repository_id "
+                    "WHERE d.run_id=?", (run_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+            if row and row[0] in {"BOUND", "UNBOUND"}:
+                evidence["current_repository_binding"] = row[0]
+        except (OSError, sqlite3.DatabaseError):
+            evidence["current_repository_binding"] = "UNAVAILABLE"
+    return result
 
 
 def _central_console_execution_projection(
@@ -5632,6 +5652,7 @@ def _selected_project_console_document(project_id: str, projects: list[dict[str,
 
 _CONSOLE_STATIC_ASSETS = {
     "/assets/dashboard_translation.mjs": ("dashboard_translation.mjs", "text/javascript; charset=utf-8"),
+    "/assets/dashboard_run_evidence.mjs": ("dashboard_run_evidence.mjs", "text/javascript; charset=utf-8"),
     "/assets/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
     "/assets/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
     "/assets/dashboard_locales.mjs": ("dashboard_locales.mjs", "text/javascript; charset=utf-8"),

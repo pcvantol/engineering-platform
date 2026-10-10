@@ -326,5 +326,23 @@
     "closure_register": "https://github.com/pcvantol/forge/issues/142",
     "full_family_qualified": false,
     "activation_authority": false
+  },
+  "dashboard_specialists_recovery_delivery": {
+    "assignment_id": "L2-EP-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008",
+    "lane_revision": "r34",
+    "plan_revision": 1,
+    "writer": "ARCHITECT_2 / LANE_2_WORK",
+    "branch": "codex/ep-dashboard-specialists-recovery-v1",
+    "base": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
+    "package_target": "2.3.115",
+    "correction_rounds_consumed": 0,
+    "correction_rounds_maximum": 3,
+    "remaining": 3,
+    "status": "IMPLEMENTING_NOT_INSTALLED_QUALIFIED",
+    "predecessor_closed_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007",
+    "admission": "https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221",
+    "delivery": "DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md",
+    "execution_authority": false,
+    "full_family_qualified": false
   }
 }
