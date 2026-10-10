@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import hashlib
 import io
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import subprocess
@@ -191,7 +191,7 @@ class ExternalModel(QualificationReviewBackend):
                      "path": path, "evidence_ref": "git-blob:" + dict(selected.specialist_source_blobs)[path],
                      "proposed_disposition": "ACCEPTED"}]
         if self.finding_mode == "privacy":
-            findings[0]["summary"] = "Add <script>alert(1)</script> from /Users/qualification/local.txt and </Users/qualification/private-note.txt>."
+            findings[0]["summary"] = "Add <script>alert(1)</script> from /Users/qualification/local.txt and </Users/qualification/private-note.txt>; Source:/Users/qualification/label-note.txt."
         if self.finding_mode == "dispositions" and selected.reviewer == "documentation":
             findings = [{**findings[0], "id": identifier, "summary": summary} for identifier, summary in (
                 ("accepted-only", "Consider the optional overview wording."),
@@ -447,6 +447,46 @@ class StoredConsoleCanary:
         finally:
             self.console_transport.start(); self.console_git_transport.start()
 
+    def dispatch_operator_retry(self):
+        """Execute only the successor admitted by the real public retry API."""
+        with sqlite_connection(self.fixture.database) as connection:
+            row = connection.execute(
+                "SELECT resolution_submission_id,operator_resolution FROM ep_parity_lifecycle_dispatches WHERE run_id=?",
+                (self.run_id,),
+            ).fetchone()
+        if not row or row[1] != "RETRIED" or not row[0]:
+            raise AssertionError("Public retry did not admit a successor")
+        self.fixture.stop_host(self.runner)
+        self.console_git_transport.stop(); self.console_transport.stop()
+        self.model.recovery_mode = False  # Declared external transport recovers.
+        native_command = CodexCliProvider.command
+        def metadata(provider, *args, **kwargs):
+            if args == ("login", "status"):
+                return subprocess.CompletedProcess(args, 0, "Declared external transport ready", "")
+            return native_command(provider, *args, **kwargs)
+        def unavailable_analysis(*args, **kwargs):
+            self.generation_model_requests += 1
+            return subprocess.CompletedProcess(args, 1, "", "Declared terminal analysis unavailable")
+        def factory(root):
+            _, self.github = self.fixture.lifecycle_adapters()
+            self.runner = EngineeringRunner(root, self.fixture.store, self.fixture.repository,
+                                            self.github, self.model, lambda _: None)
+            return self.runner
+        try:
+            with ExitStack() as stack, redirect_stdout(io.StringIO()):
+                stack.enter_context(patch.object(CodexCliProvider, "command", metadata))
+                stack.enter_context(patch.object(CodexCliProvider, "invoke", unavailable_analysis))
+                stack.enter_context(patch("engineering_platform.codex_capacity.read_remaining_percent", return_value=100))
+                stack.enter_context(patch("engineering_platform.capability_preflight.read_remaining_percent", return_value=100))
+                receipt = ParityLifecycleDispatcher(self.fixture.data, runner_factory=factory).dispatch(row[0])
+            self.run_id = receipt.run_id
+            state = self.fixture.store.load(self.run_id)
+            if state.phase != "WAIT_FOR_OPERATOR_MERGE":
+                raise AssertionError((state.phase, state.diagnostic))
+        finally:
+            self.console_transport.start(); self.console_git_transport.start()
+        return {"run_id": self.run_id, "state": state.phase, "baseline": self.effect_snapshot()}
+
     def close(self):
         if self.listener:
             self.listener.shutdown()
@@ -530,6 +570,8 @@ elif __name__ == "__main__":
                 print(json.dumps({"after": canary.effect_snapshot()}), flush=True)
             elif instruction.strip() == "reconcile":
                 print(json.dumps({"reconciled_baseline": canary.reconcile_publication()}), flush=True)
+            elif instruction.strip() == "dispatch-retry":
+                print(json.dumps(canary.dispatch_operator_retry()), flush=True)
             elif instruction.strip() == "revoke-read":
                 # Negative persisted scope input only in this own fixture.
                 # The real Server policy/read routes must observe it directly.

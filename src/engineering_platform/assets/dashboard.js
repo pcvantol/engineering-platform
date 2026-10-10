@@ -2984,6 +2984,7 @@ function renderDashboardStatus(status, snapshot) {
   void refreshPlatformHealth();
 }
 function r(status, snapshot = {}) {
+  if (dashboardReadDenied) return;
   dashboardStatusStore.update(status, snapshot);
 }
 // A successful main switch deliberately restarts the platform.  Until the old
@@ -3324,7 +3325,10 @@ function setUpdateMode(key) {
   updateModeKey = key;
   $("updateMode").textContent = t(key);
 }
-function applyDashboardSnapshot(snapshot) {
+function applyDashboardSnapshot(snapshot, readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId) {
+  if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId)
+    return false;
+  if (projectId && snapshot?.project_id !== projectId) return false;
   if (!snapshot || typeof snapshot.status !== "object")
     throw Error(t("dashboard.status_invalid"));
   dashboardStatusStore.update(snapshot.status, snapshot);
@@ -3337,6 +3341,7 @@ function applyDashboardSnapshot(snapshot) {
   }
   humanize();
   checkBuild(snapshot.build_commit);
+  return true;
 }
 function invalidateDashboardReadScope() {
   dashboardReadEpoch += 1;
@@ -3356,26 +3361,27 @@ function invalidateDashboardReadScope() {
   humanize();
 }
 async function refreshDashboardSnapshot({ allowAfterServerPush = false, scopeOnly = false, successMode, failureMode } = {}) {
-  const readEpoch = dashboardReadEpoch;
+  const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
   try {
     const response = await fetch("/api/dashboard-snapshot", {
       cache: "no-store",
     });
-    if (readEpoch !== dashboardReadEpoch) return false;
+    if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
     if (!response.ok) {
       if ([401, 403, 404, 409].includes(response.status)) invalidateDashboardReadScope();
       throw Error(t("dashboard.status_unavailable"));
     }
     const snapshot = await response.json();
-    if (readEpoch !== dashboardReadEpoch) return false;
+    if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
+    if (projectId && snapshot?.project_id !== projectId) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardReadDenied = false;
     if (scopeOnly) return true;
-    applyDashboardSnapshot(snapshot);
+    if (!applyDashboardSnapshot(snapshot, readEpoch, projectId)) return false;
     if (successMode) setUpdateMode(successMode);
     return true;
   } catch {
-    if (readEpoch !== dashboardReadEpoch) return false;
+    if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
     if (scopeOnly) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardStatusStore.update(fallback);
@@ -3408,7 +3414,7 @@ function startDashboardUpdates() {
     if (!$("autoRefresh").checked || dashboardReadDenied) return;
     try {
       const snapshot = JSON.parse(x.data);
-      applyDashboardSnapshot(snapshot);
+      if (!applyDashboardSnapshot(snapshot)) return;
       receivedDashboardServerPush = true;
       setUpdateMode("refresh.connected");
     } catch {
@@ -6688,11 +6694,11 @@ function renderPromptHistory() {
 }
 let promptHistoryRefreshRetry = null;
 function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
-  const readEpoch = dashboardReadEpoch;
+  const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
   return fetch("/api/prompt-history", { cache: "no-store" })
     .then((response) => (response.ok ? response.json() : Promise.reject()))
     .then((payload) => {
-      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied) return;
+      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
       if (!Array.isArray(payload?.runs)) throw Error("invalid prompt history");
       promptHistoryEntries = payload.runs;
       renderPromptHistory();
@@ -6708,7 +6714,7 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
       }
     })
     .catch(() => {
-      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied) return;
+      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
       promptHistoryEntries = [];
       renderPromptHistory();
       reconcilePromptHistoryDetailFromUrl();
@@ -6721,6 +6727,8 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
     });
 }
 async function refreshAfterOperatorAction({ dismissedRunId = null } = {}) {
+  const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
+  if (dashboardReadDenied) return;
   // The operator just received a successful acknowledgement. Reflect it in
   // the visible history immediately, then reconcile from storage. This keeps
   // a slow status snapshot from leaving a stale dismiss action on screen.
@@ -6732,14 +6740,8 @@ async function refreshAfterOperatorAction({ dismissedRunId = null } = {}) {
     );
     renderPromptHistory();
   }
-  const snapshot = await fetch("/api/dashboard-snapshot", { cache: "no-store" })
-    .then((response) => (response.ok ? response.json() : null))
-    .catch(() => null);
-  if (snapshot && typeof snapshot.status === "object") {
-    dashboardStatusStore.update(snapshot.status, snapshot);
-    humanize();
-    checkBuild(snapshot.build_commit);
-  }
+  await refreshDashboardSnapshot({ allowAfterServerPush: true });
+  if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return;
   await refreshPromptHistory();
 }
 $("promptHistoryFilter").addEventListener("input", () => {
@@ -9060,7 +9062,7 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   if (!entry?.run_id) return;
   retryDynamicEvidence();
   const runId = String(entry.run_id);
-  const requestId = ++promptHistoryDetailRequestId, projectId = document.body.dataset.projectId;
+  const requestId = ++promptHistoryDetailRequestId, projectId = document.body.dataset.projectId, readEpoch = dashboardReadEpoch;
   void recordUserAction("prompt_history_detail_opened", runId);
   if (updateUrl) updatePromptHistoryDetailUrl(runId);
   promptHistoryDetailRunId = runId;
@@ -9077,17 +9079,19 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   fetch("/api/prompt-history/" + encodeURIComponent(runId) + "/details", { cache: "no-store" })
     .then((response) => response.ok ? response.json() : Promise.reject())
     .then((payload) => {
-      if (promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open
+      if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open
           && document.body.dataset.projectId === projectId
           && (!projectId || payload.project_id === projectId)) renderPromptHistoryDetail(payload);
-      else if (promptHistoryDetailRequestId === requestId && modal.open) {
+      else if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && promptHistoryDetailRequestId === requestId && modal.open
+          && document.body.dataset.projectId === projectId) {
         setPromptHistoryDetailDownloads(null);
         content.textContent = t("history.details_unavailable");
         $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");
       }
     })
     .catch(() => {
-      if (promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open) {
+      if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && document.body.dataset.projectId === projectId
+          && promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open) {
         setPromptHistoryDetailDownloads(null);
         content.textContent = t("history.details_unavailable");
         $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");

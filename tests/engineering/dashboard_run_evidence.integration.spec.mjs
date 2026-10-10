@@ -110,6 +110,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     if (scenario === "privacy") {
       expect(JSON.stringify(runEvidence)).not.toContain("/Users/qualification/local.txt");
       expect(JSON.stringify(runEvidence)).not.toContain("/Users/qualification/private-note.txt");
+      expect(JSON.stringify(runEvidence)).not.toContain("/Users/qualification/label-note.txt");
       expect(runEvidence.presentation_redacted).toBe(true);
       await expect(page.locator('[data-run-evidence="selection"]')).toContainText(DASHBOARD_MESSAGES[locale]["run_evidence.host_paths_hidden"]);
       await expect(page.locator('[data-run-evidence="findings"]')).not.toContainText("/Users/qualification/local.txt");
@@ -357,4 +358,98 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     }
   }
 });
+}
+
+for (const revoked of [false, true]) {
+  test(`operator snapshot after real retry ${revoked ? "cannot restore revoked scope" : "preserves permitted scope"}`, async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
+    const environment = { ...process.env, EP_QUALIFICATION_DETERMINISTIC_FLOW: "1", PYTHONPATH: path.join(repository, "src") };
+    const installedPython = process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON;
+    if (installedPython) delete environment.PYTHONPATH;
+    const child = spawn(installedPython || process.env.EP_BROWSER_PYTHON || "python3", [fixture, "provider-blocked"], {
+      cwd: installedPython ? path.dirname(installedPython) : repository, env: environment, stdio: ["pipe", "pipe", "pipe"],
+    });
+    let buffer = "", stderr = "", pending; const messages = [];
+    child.stderr.on("data", (data) => { stderr += data; });
+    child.stdout.on("data", (data) => {
+      buffer += data;
+      while (buffer.includes("\n")) {
+        const end = buffer.indexOf("\n"), line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+        if (line.startsWith("{")) { const value = JSON.parse(line); if (pending) { const resolve = pending; pending = null; resolve(value); } else messages.push(value); }
+      }
+    });
+    const next = () => messages.length ? Promise.resolve(messages.shift()) : new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`Actual retry canary timed out: ${stderr}`)), 30_000);
+      pending = (value) => { clearTimeout(deadline); resolve(value); };
+      child.once("exit", (code) => { clearTimeout(deadline); reject(new Error(`Actual retry canary exited ${code}: ${stderr}`)); });
+    });
+    const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
+    const held = deferred(), fetchAllowed = deferred(), fetched = deferred(), responseAllowed = deferred(), delivered = deferred();
+    let armed = false, captured = false, actualResponse, actualBytes, snapshot;
+    try {
+      const ready = await next();
+      if (installedPython) expect(ready.module).toContain("site-packages/engineering_platform/");
+      if (process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1") expect(installedPython).toBeTruthy();
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await page.goto(ready.url, { waitUntil: "domcontentloaded" });
+      await page.route("**/api/dashboard-snapshot*", async (route) => {
+        if (!armed || captured) { await route.continue(); return; }
+        captured = true; held.resolve(); await fetchAllowed.promise;
+        actualResponse = await route.fetch(); actualBytes = await actualResponse.body(); snapshot = JSON.parse(actualBytes.toString()); fetched.resolve();
+        await responseAllowed.promise;
+        // Original status/body/headers: only delivery is delayed, never forged.
+        await route.fulfill({ response: actualResponse }); delivered.resolve();
+      });
+      if (!revoked) await page.locator("#autoRefresh").uncheck();
+      if (await page.locator("#promptHistory").getAttribute("open") === null) await page.locator("#promptHistory > summary").click();
+      await expect(page.locator("#promptHistoryRows .prompt-history-row")).toHaveCount(1);
+      await page.locator("#promptHistoryRows .execution-history-action").filter({ hasText: "Retry execution" }).click();
+      armed = true;
+      const retryAck = page.waitForResponse((response) => response.url().includes("/api/execution-retry") && response.request().method() === "POST");
+      await page.locator("#confirmationModalConfirm").click();
+      expect((await retryAck).status()).toBe(200); await held.promise;
+      child.stdin.write("dispatch-retry\n"); const successor = await next();
+      expect(successor.state).toBe("WAIT_FOR_OPERATOR_MERGE");
+      fetchAllowed.resolve(); await fetched.promise;
+      expect(actualResponse.status()).toBe(200);
+      expect(snapshot.status.run_id).toBe(successor.run_id);
+      const evidence = snapshot.status.lifecycle.run_evidence;
+      expect(evidence.run_id).toBe(successor.run_id);
+      let baseline = successor.baseline;
+      if (revoked) {
+        await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+        child.stdin.write("revoke-read\n"); baseline = (await next()).revoked_baseline;
+        const denied = await page.request.get(`${ready.url.split("/?")[0]}/api/prompt-history/${successor.run_id}/details?project=project`);
+        expect(denied.status()).toBe(409);
+        await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      } else {
+        // Native auto-refresh is off: only the genuine operator response may
+        // establish the successor's active cards in the paired positive case.
+        await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      }
+      responseAllowed.resolve(); await delivered.promise;
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(revoked ? 0 : 3);
+      if (revoked) {
+        await expect(page.locator("#promptHistoryDetailContent")).toBeEmpty();
+        for (const finding of evidence.specialists.findings) await expect(page.locator("body")).not.toContainText(finding.id);
+      } else await expect(page.locator('[data-run-evidence="selection"]')).toContainText(successor.run_id);
+      child.stdin.write("snapshot\n"); expect((await next()).after).toEqual(baseline);
+      const imagePath = testInfo.outputPath(`operator-${revoked ? "revoked" : "positive"}-fresh.png`);
+      await page.screenshot({ path: imagePath, fullPage: true, animations: "disabled" });
+      const capture = { scenario: revoked ? "operator-revoked" : "operator-positive", file: path.basename(imagePath),
+        sha256: createHash("sha256").update(readFileSync(imagePath)).digest("hex"), run_scenario: testInfo.title,
+        run_id: successor.run_id, predecessor_run_id: ready.run_id, finding_ids: revoked ? [] : evidence.specialists.findings.map((item) => item.id),
+        invocation_ids: revoked ? [] : evidence.specialists.invocations.map((item) => item.invocation_id), publication: revoked ? null : evidence.publication,
+        actual_response_sha256: createHash("sha256").update(actualBytes).digest("hex"), locale: "en", theme: "dark", viewport: page.viewportSize() };
+      const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
+      writeFileSync(manifestPath, JSON.stringify({ contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
+        source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
+        wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, assets: ready.assets, screenshots: [capture] }, null, 2));
+      await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
+    } finally {
+      fetchAllowed.resolve(); responseAllowed.resolve();
+      if (child.exitCode === null) { const stopped = new Promise((resolve) => child.once("exit", resolve)); child.stdin.write("stop\n"); await stopped; }
+    }
+  });
 }

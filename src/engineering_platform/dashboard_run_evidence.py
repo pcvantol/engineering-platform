@@ -10,7 +10,7 @@ from .capability_review import specialist_readback, validate_specialist_records
 from .managed_publication import validate_intent
 
 
-_HOST_PATH = re.compile(r'''(?<![\w:/.\-])(?!(?<=<)/(?:script|style|div|span|p|b|i|em|strong|a|code|pre|li|ul|ol|h[1-6])>)(?:file://|~?/|[A-Za-z]:[\\/]|\\\\)[^\s<>"']+''', re.IGNORECASE)
+_HOST_PATH = re.compile(r'''(?<![\w/.\-])(?!(?<=:)/{2})(?!(?<=<)/(?:script|style|div|span|p|b|i|em|strong|a|code|pre|li|ul|ol|h[1-6])>)(?:file://|~?/|[A-Za-z]:[\\/]|\\\\)[^\s<>"']+''', re.IGNORECASE)
 
 
 def _presentation(value, redacted):

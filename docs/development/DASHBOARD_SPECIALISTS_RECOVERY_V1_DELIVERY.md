@@ -7,7 +7,7 @@ Lane **r34**, plan **1**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after first complete independent Quality/Security: **consumed1/max3/remaining2**. Operational budgets remain unchanged.
+Formal corrections after first complete independent Quality/Security: **consumed2/max3/remaining1**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -99,3 +99,46 @@ exact-asset/browser/CI qualification remains required; prior local failure
 is retained, not relabelled PASS. Python production and discovered Python-unit
 bytes remain unchanged from543; any completed whole-Python receipts require
 explicit byte binding rather than a whole-package SHA transfer.
+
+## Second complete independent pair and integrated round2
+
+Both whole-delta independent reviews of
+`eed23ebab467b5c151a84373f97ef949af0c9c45` returned REJECT: one actual public
+operator-retry/late-snapshot P1 and one label-adjacent hostpath P2. Complete
+original reports and before/after inventories remain locally retained; safe
+public [round2 admission](https://github.com/pcvantol/forge/issues/142#issuecomment-6096208232)
+books consumed2/max3/remaining1 before source. Writer, branch, history and
+all operational budgets remain unchanged; no fourth round is authorized.
+
+Round2 routes operator refresh through the same captured-epoch/project read
+function, rejects stale/denied/foreign snapshot application centrally, and
+joins history/detail/error callbacks to their captured context. Valid positive
+refresh remains available; success/offline scope probes do not replace state.
+Label punctuation now permits hostpath recognition while protocol URI double
+slashes and repository-relative paths remain distinct. Detached output changes
+no authoritative journal or identity.
+
+The committed positive/negative browser pair clicks the existing public retry,
+executes the actual admitted successor through the host, then delays only a
+genuine authorized HTTP response. Actual read withdrawal returns409 and clears
+three cards; the old response cannot restore them. The paired positive disables
+native auto-refresh, so only the delayed genuine operator response establishes
+the successor cards. Both retain execution-table/schema/Git/provider/create
+snapshots from the separately completed explicit retry. No success payload,
+permission, storage, lease, host or dispatcher is fabricated.
+
+Focused source5PASS9.937s; actual privacy and two public-retry browserprobes
+3PASS17.5s; Node42PASS and allfive locale contracts PASS. FileProvider archive
+delay caused two pretest setup failures; retained NOT_QUALIFIED. Stable exact
+previous source plus byte-copied current sole-writer changes supplied the
+readable qualification copy; no second writer. These are source convergence,
+not new installed/current full-suite acceptance.
+
+New exact committed package, complete37-case installed browser with mandatory
+fresh manifests (35 regular scenarios plus two genuine operator-response
+probes), strict current Python/JS coverage, owning CI and a THIRD fresh complete
+independent pair remain required. Prior complete local browser470PASS and
+171captures remain bound to eed; its correct-context fullPython/coverage runs
+continue as historical inputs, not automatic round2 PASS. Protected merge,
+normal NO_BUMP Finalization and new exact-final-main installed/browser/CI with
+reachable fresh capture previews/readbacks/own cleanup remain mandatory.
