@@ -33,7 +33,7 @@ async function passiveProcess(python, environment, dataRoot) {
   return { child, next, ready: await next() };
 }
 
-const cases = ["prepared", "uncertain", "no-consumer", "no-capacity", "irrelevant", "dispositions", "withdrawn", "provider-recovered", "provider-blocked", "missing", "privacy"]
+const cases = ["prepared", "uncertain", "no-consumer", "no-capacity", "irrelevant", "dispositions", "withdrawn", "provider-recovered", "provider-blocked", "missing", "privacy", "failed", "uncertain-result", "duplicate", "read-revoked"]
   .map((scenario) => ({ scenario, locale: "en", theme: "dark", width: 1280, height: 720 }));
 for (const locale of ["en", "nl", "de", "fr", "es"]) for (const theme of ["dark", "light"]) {
   for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
@@ -98,7 +98,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await page.locator("#promptHistoryRows .prompt-history-row").press("Enter");
       await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
     };
-    if (["provider-blocked", "missing"].includes(scenario)) await openStoredHistory();
+    if (["provider-blocked", "missing", "uncertain-result", "failed"].includes(scenario)) await openStoredHistory();
     // Operator-wait is still an active run, not a fabricated terminal history.
     await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
     await expect(page.locator('[data-run-evidence="selection"] h3')).toHaveText(DASHBOARD_MESSAGES[locale]["run_evidence.specialists"]);
@@ -109,6 +109,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     const runEvidence = stored.lifecycle.run_evidence;
     if (scenario === "privacy") {
       expect(JSON.stringify(runEvidence)).not.toContain("/Users/qualification/local.txt");
+      expect(JSON.stringify(runEvidence)).not.toContain("/Users/qualification/private-note.txt");
       expect(runEvidence.presentation_redacted).toBe(true);
       await expect(page.locator('[data-run-evidence="selection"]')).toContainText(DASHBOARD_MESSAGES[locale]["run_evidence.host_paths_hidden"]);
       await expect(page.locator('[data-run-evidence="findings"]')).not.toContainText("/Users/qualification/local.txt");
@@ -121,9 +122,9 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await expect(page.locator('[data-run-evidence="selection"]')).toContainText(DASHBOARD_MESSAGES[locale]["run_evidence.not_recorded"]);
     } else {
     expect(runEvidence.run_id).toBe(ready.run_id);
-    expect(runEvidence.specialists.actual_model_invocation_count).toBe(noSpecialists ? 0 : 2);
+    expect(runEvidence.specialists.actual_model_invocation_count).toBe(noSpecialists ? 0 : scenario === "uncertain-result" ? null : 2);
     expect(runEvidence.publication.status).toBe(
-      ({ prepared: "PREPARED", uncertain: "CREATE_UNCERTAIN", "provider-blocked": "NOT_RECORDED" })[scenario] || "RECONCILED",
+      ({ prepared: "PREPARED", uncertain: "CREATE_UNCERTAIN", "provider-blocked": "NOT_RECORDED", "uncertain-result": "NOT_RECORDED", failed: "NOT_RECORDED" })[scenario] || "RECONCILED",
     );
     }
     if (scenario === "withdrawn") {
@@ -145,7 +146,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       expect(stored.lifecycle.recovery.state).toBe("EXHAUSTED");
       expect(stored.lifecycle.run_evidence.specialists.findings.every((item) => item.disposition === "PROPOSED")).toBe(true);
     }
-    if (["provider-blocked", "missing"].includes(scenario)) {
+    if (["provider-blocked", "missing", "uncertain-result", "failed"].includes(scenario)) {
       const markdownEvent = page.waitForEvent("download");
       await page.locator("#promptHistoryDetailDownloadMarkdown").click();
       const markdown = await markdownEvent;
@@ -159,20 +160,42 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       expect(exported.history.run_id).toBe(ready.run_id);
       expect(exported.lifecycle.run_evidence).toEqual(runEvidence);
     }
+    if (["failed", "uncertain-result"].includes(scenario)) {
+      const expected = scenario === "failed" ? "FAILED" : "UNCERTAIN";
+      expect(runEvidence.specialists.outcomes.every((item) => item.state === expected)).toBe(true);
+      expect(runEvidence.specialists.failed_invocation_count).toBe(scenario === "failed" ? 2 : 0);
+      expect(runEvidence.specialists.successful_invocation_count).toBe(0);
+      await expect(page.locator('[data-run-evidence="selection"]')).toContainText(DASHBOARD_MESSAGES[locale][`run_evidence.state.${expected.toLowerCase()}`]);
+
+      const event = page.waitForEvent("download");
+      await page.locator("#promptHistoryDetailDownloadJson").click();
+      const download = await event;
+      expect(JSON.parse(readFileSync(await download.path(), "utf8")).lifecycle.run_evidence).toEqual(runEvidence);
+
+    }
+    if (scenario === "duplicate") {
+      expect(runEvidence.specialists.duplicate_finding_count).toBe(1);
+      expect(runEvidence.specialists.duplicate_observations).toBe(0);
+      await expect(page.locator('[data-run-evidence="findings"]')).toContainText(DASHBOARD_MESSAGES[locale]["run_evidence.state.duplicate"]);
+      await page.locator('[data-run-evidence="findings"] select').selectOption("DUPLICATE");
+      await expect(page.locator('details[data-disposition="DUPLICATE"]:visible')).toHaveCount(1);
+      await expect(page.locator('details[data-disposition="VERIFIED"]:visible')).toHaveCount(0);
+      await page.locator('[data-run-evidence="findings"] select').selectOption("ALL");
+    }
     const findings = page.locator('[data-run-evidence="findings"]');
-    await expect(findings.locator("details[data-disposition]")).toHaveCount(noSpecialists ? 0 : scenario === "dispositions" ? 5 : 2);
+    await expect(findings.locator("details[data-disposition]")).toHaveCount(noSpecialists || ["failed", "uncertain-result"].includes(scenario) ? 0 : scenario === "dispositions" ? 5 : 2);
     if (scenario === "dispositions") {
       expect(stored.lifecycle.run_evidence.specialists.duplicate_observations).toBe(1);
       expect(new Set(stored.lifecycle.run_evidence.specialists.findings.map((item) => item.disposition)))
         .toEqual(new Set(["ACCEPTED", "REJECTED", "DEFERRED", "VERIFIED"]));
     }
-    if (!noSpecialists && scenario !== "provider-blocked") {
+    if (!noSpecialists && !["provider-blocked", "failed", "uncertain-result"].includes(scenario)) {
     await findings.locator('details[data-disposition="VERIFIED"] > summary').click();
     await expect(findings.locator('details[data-disposition="VERIFIED"]')).toContainText("README.md");
     await findings.locator("select").selectOption("VERIFIED");
     await expect(findings.locator('details[data-disposition="DEFERRED"]:visible')).toHaveCount(0);
     await findings.locator("select").selectOption("ALL");
-    await expect(findings.locator('details[data-disposition="DEFERRED"]').first()).toBeVisible();
+    if (scenario !== "duplicate") await expect(findings.locator('details[data-disposition="DEFERRED"]').first()).toBeVisible();
     }
     const screenshots = [];
     const capture = async (view, suffix, target = page.locator(`[data-run-evidence="${view}"]`), evidence = runEvidence) => {
@@ -210,10 +233,10 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     }
     await capture("denied-project", "no-data", page.locator("body"), null);
     await page.goto(ready.url, { waitUntil: "domcontentloaded" });
-    if (["provider-blocked", "missing"].includes(scenario)) await openStoredHistory();
+    if (["provider-blocked", "missing", "uncertain-result", "failed"].includes(scenario)) await openStoredHistory();
     await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
     await page.reload({ waitUntil: "domcontentloaded" });
-    if (scenario === "provider-blocked") {
+    if (["provider-blocked", "uncertain-result", "failed"].includes(scenario)) {
       // Reload retains the genuine history deep link. Wait for its native
       // opening, then finish closing that session before testing a new one.
       await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
@@ -304,6 +327,18 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       child.stdin.write("snapshot\n");
       expect((await next()).after).toEqual(advanced.advanced_baseline);
     }
+    if (scenario === "read-revoked") {
+      child.stdin.write("revoke-read\n");
+      const revoked = await next();
+      const denied = await page.request.get(`${rootUrl}/api/prompt-history/${ready.run_id}/details?project=project`);
+      expect(denied.status()).toBe(409);
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      await expect(page.locator("#promptHistoryDetailContent")).toBeEmpty();
+      for (const item of runEvidence.specialists.findings) await expect(page.locator("body")).not.toContainText(item.id);
+      await capture("read-revoked", "scope-cleared", page.locator("body"), null);
+      child.stdin.write("snapshot\n");
+      expect((await next()).after).toEqual(revoked.revoked_baseline);
+    }
     const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
     writeFileSync(manifestPath, JSON.stringify({
       contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
@@ -312,7 +347,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       assets: ready.assets,
     }, null, 2));
     expect(screenshots.slice(0, 3).map((item) => item.scenario)).toEqual(["selection", "findings", "publication"]);
-    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0));
+    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0) + (scenario === "read-revoked" ? 1 : 0));
     expect(screenshots.some((item) => item.scenario === "denied-project" && item.publication === null)).toBe(true);
     await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
   } finally {

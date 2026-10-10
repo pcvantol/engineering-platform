@@ -19,6 +19,8 @@ import sys
 import threading
 import tempfile
 import os
+import socket
+import struct
 from unittest.mock import patch
 
 # The standalone canary imports only installed product services and declared
@@ -133,6 +135,7 @@ class ExternalModel(QualificationReviewBackend):
         self.run_id = None
         self.calls = []
         self.finding_mode = finding_mode
+        if finding_mode == "duplicate": self.qualified_specialist_roles = ("documentation", "finalization")
         self.recovery_mode = recovery_mode
         self.process_callback = None
         self.runtime_metadata_callback = None
@@ -149,6 +152,26 @@ class ExternalModel(QualificationReviewBackend):
     def version(self):
         return CodexCliProvider().command("--version").stdout.strip().removeprefix("codex-cli ")
 
+    def prepare_review(self, root, selected, objective, evidence=None):
+        if self.finding_mode != "uncertain-result" or not selected.specialist_binding:
+            return super().prepare_review(root, selected, objective, evidence)
+        self.run_id = dict(selected.specialist_binding)["run_id"]
+        payload = cr.review_request_bytes(root, selected, objective, evidence)
+        front, back = socket.socketpair()
+        front.settimeout(2)
+        def lose_acceptance():
+            try:
+                # External transport receives the actual immutable request,
+                # then loses its acceptance response. Real host must classify
+                # uncertainty without inventing a recorded process start.
+                from engineering_platform.qualification_runtime import receive
+                size = struct.unpack("!I", receive(back, 4))[0]
+                if receive(back, size) != payload: raise AssertionError("Request differs")
+            finally:
+                back.close()
+        threading.Thread(target=lose_acceptance, daemon=True).start()
+        return cr.SocketReviewRequest(front, payload)
+
     def review(self, root, selected, objective, evidence=None):
         self.calls.append(selected.reviewer)
         if selected.reviewer in {"quality", "security"}:
@@ -159,12 +182,16 @@ class ExternalModel(QualificationReviewBackend):
                 coverage=tuple({"surface": surface, "status": "REVIEWED", "evidence_ref": "Declared synthetic transport assessment"}
                                for surface in cr.mandatory_coverage_surfaces(selected.reviewer, "IMPLEMENTATION")))
         self.run_id = dict(selected.specialist_binding)["run_id"]
+        if self.finding_mode == "failed":
+            raise OSError("Declared external specialist transport failed")
+        if self.finding_mode == "uncertain-result":
+            raise cr.ReviewStartUncertain("Declared external specialist acceptance uncertain")
         path = selected.specialist_paths[0]
         findings = [{"id": "missing-acceptance", "summary": "Add the acceptance sentence.",
                      "path": path, "evidence_ref": "git-blob:" + dict(selected.specialist_source_blobs)[path],
                      "proposed_disposition": "ACCEPTED"}]
         if self.finding_mode == "privacy":
-            findings[0]["summary"] = "Add <script>alert(1)</script> from /Users/qualification/local.txt."
+            findings[0]["summary"] = "Add <script>alert(1)</script> from /Users/qualification/local.txt and </Users/qualification/private-note.txt>."
         if self.finding_mode == "dispositions" and selected.reviewer == "documentation":
             findings = [{**findings[0], "id": identifier, "summary": summary} for identifier, summary in (
                 ("accepted-only", "Consider the optional overview wording."),
@@ -216,6 +243,7 @@ class ExternalModel(QualificationReviewBackend):
         self.fixture.git("commit", "-qm", "synthetic bounded documentation")
         choices = []
         for item in findings:
+            if item["disposition"] != "PROPOSED": continue
             disposition = ({"accepted-only": "ACCEPTED", "rejected-detail": "REJECTED", "deferred-detail": "DEFERRED"}
                            .get(item.get("provider_finding_id"), "IMPLEMENTED" if item["path"] == "README.md" else "DEFERRED"))
             choices.append({"finding_id": item["id"], "disposition": disposition,
@@ -278,6 +306,9 @@ class StoredConsoleCanary:
                 {"reviewer": "validation", "question": "Which documentation test edge case needs checking?",
                  "paths": ["tests/test_docs.py"], "consumer": "EXECUTE_AGENT", "risk": "HIGH"},
             ]
+            if self.model.finding_mode == "duplicate":
+                requests[1] = {"reviewer": "finalization", "question": "Which README evidence needs finalization?",
+                               "paths": ["README.md"], "consumer": "EXECUTE_AGENT", "risk": "NORMAL"}
             if self.selection_mode == "no_consumer":
                 for request in requests:
                     request["consumer"] = "NONE"
@@ -332,7 +363,7 @@ class StoredConsoleCanary:
             if expected_intent:
                 if state.publication_intent["status"] != expected_intent:
                     raise AssertionError(state.publication_intent)
-            elif self.recovery_mode is True:
+            elif self.recovery_mode is True or self.model.finding_mode == "uncertain-result":
                 if state.phase not in {"BLOCKED", "FAILED"}:
                     raise AssertionError((state.phase, state.next_action))
             elif state.phase != "WAIT_FOR_OPERATOR_MERGE":
@@ -477,6 +508,9 @@ elif __name__ == "__main__":
     configuration["missing"] = {"selection_mode": "missing"}
     configuration["provider-recovered"] = {"recovery_mode": "recovered"}
     configuration["privacy"] = {"finding_mode": "privacy"}
+    configuration.update({name: {"finding_mode": name} for name in ("failed", "uncertain-result", "duplicate")})
+    configuration["failed"]["recovery_mode"] = True
+    configuration["read-revoked"] = {}
     canary = StoredConsoleCanary(**configuration[scenario])
     try:
         run_id = canary.generate()
@@ -496,6 +530,12 @@ elif __name__ == "__main__":
                 print(json.dumps({"after": canary.effect_snapshot()}), flush=True)
             elif instruction.strip() == "reconcile":
                 print(json.dumps({"reconciled_baseline": canary.reconcile_publication()}), flush=True)
+            elif instruction.strip() == "revoke-read":
+                # Negative persisted scope input only in this own fixture.
+                # The real Server policy/read routes must observe it directly.
+                with sqlite_connection(canary.fixture.database) as connection:
+                    connection.execute("UPDATE ep_project_registrations SET status='DISABLED' WHERE project_id='project'")
+                print(json.dumps({"revoked_baseline": canary.effect_snapshot()}), flush=True)
             elif instruction.strip() == "advance-target":
                 # Explicit local fixture authoring, never a Console action:
                 # retain the actual stored run and its verification receipt.

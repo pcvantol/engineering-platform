@@ -7,7 +7,7 @@ Lane **r34**, plan **1**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after first complete independent Quality/Security: **consumed0/max3/remaining3**. Operational budgets remain unchanged.
+Formal corrections after first complete independent Quality/Security: **consumed1/max3/remaining2**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -45,3 +45,40 @@ Prepared intent and uncertain create are produced by interrupting only their ext
 - Required after own complete convergence: fresh independent Quality and Security against exact head, full CI, protected merge, normal Finalization, new exact-final-main noneditable installed/browser qualification and fresh screenshots, current readbacks and own cleanup. TDE policy stays separately labeled.
 
 Only completion of all these gates closes r34. No next family is selected automatically.
+
+## First complete independent review and integrated correction round1
+
+Complete independent Quality and Security reviewed the whole candidate
+`75901e7d7d9246319fe64ce380aea8f2dea88572` and returned REJECT.
+The [round1 admission](https://github.com/pcvantol/forge/issues/142#issuecomment-6095763766)
+books one combined correction before source start, consumed1/max3/remaining2.
+All operational budgets and writer/branch/history remain unchanged.
+Original full independent reports/provenance remain locally retained; public
+progress intentionally excludes their hostpaths and internal fixture metadata.
+
+Four unique findings are corrected together: actual read denial after native
+SSE failure now revalidates the existing HTTP scope and invalidates active
+evidence/history/detail/download payloads and pending callbacks; offline
+transport failure remains distinct. Validated terminal journal outcomes preserve
+FAILED/UNCERTAIN/COMPLETE independently of actual process-start evidence.
+Canonical DUPLICATE is localized/filterable with its own finding count, separate
+from transport duplicate observations. Angle-delimited hostpaths are redacted
+in the detached view while stored journals/identities and literal markup remain.
+
+Own focused source checks: five real storage/runner tests PASS10.188s; actual
+privacy/failed/uncertain/read-revoked browser4PASS20.6s and corrected actual
+DUPLICATE browser1PASS5.6s; Node42PASS and allfive localization contracts PASS.
+Initial canary setup/disposition failures remain retained, not claimed as
+product acceptance. These are source convergence, not installed or final-main
+acceptance. The uncertain external request loses its true acceptance response;
+actual model-start count stays unknown rather than invented zero. Positive
+runs use actual supported services/Git/CENTRAL; only external transports are
+fixtures. Read withdrawal changes canonical project status only in the own
+negative fixture, with no auth guard or successful record injection.
+
+New committed noneditable installed package, complete owning/browser/coverage
+gates and fresh complete independent Q/S remain required on the corrected head.
+The earlier759 CI installedcoverage passed2460tests/1existing skip, but its
+remaining CI was still running; no full current correction CI claim follows.
+All original protected merge/NO_BUMP Finalization/new exact-final-main installed
+and reachable fresh screenshots/readback/cleanup gates remain open.

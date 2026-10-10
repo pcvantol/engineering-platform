@@ -10,7 +10,7 @@ from .capability_review import specialist_readback, validate_specialist_records
 from .managed_publication import validate_intent
 
 
-_HOST_PATH = re.compile(r'''(?<![\w:/.\-<])(?:file://|~?/|[A-Za-z]:[\\/]|\\\\)[^\s<>"']+''', re.IGNORECASE)
+_HOST_PATH = re.compile(r'''(?<![\w:/.\-])(?!(?<=<)/(?:script|style|div|span|p|b|i|em|strong|a|code|pre|li|ul|ol|h[1-6])>)(?:file://|~?/|[A-Za-z]:[\\/]|\\\\)[^\s<>"']+''', re.IGNORECASE)
 
 
 def _presentation(value, redacted):
@@ -38,8 +38,10 @@ def projection(checkpoint: dict[str, object], run_id: str, *, invocations=None) 
         "dispatch_skips": [], "findings": [], "history": [],
         "reserved_invocation_count": None, "completed_invocation_count": None,
         "uncertain_invocation_count": None, "duplicate_observations": None,
+        "failed_invocation_count": None, "successful_invocation_count": None,
+        "duplicate_finding_count": None,
         "actual_model_invocation_count": None,
-        "invocations": [], "invocation_evidence_state": "NOT_RECORDED",
+        "invocations": [], "outcomes": [], "invocation_evidence_state": "NOT_RECORDED",
     }
     records = checkpoint.get("specialist_records")
     if isinstance(records, (tuple, list)) and records:
@@ -47,6 +49,16 @@ def projection(checkpoint: dict[str, object], run_id: str, *, invocations=None) 
             bound = tuple(records)
             validate_specialist_records(bound, run_id=run_id, repository=checkpoint.get("repository"))
             specialists.update(specialist_readback(bound))
+            terminals = {event["invocation_id"]: event for event in bound
+                         if event["kind"] in {"RESULT", "UNCERTAIN"}}
+            specialists.update(
+                outcomes=[{"request_id": event["request_id"], "invocation_id": event["invocation_id"],
+                           "state": "UNCERTAIN" if event["kind"] == "UNCERTAIN" else event["payload"]["status"]}
+                          for event in terminals.values()],
+                failed_invocation_count=sum(event["kind"] == "RESULT" and event["payload"]["status"] == "FAILED" for event in terminals.values()),
+                successful_invocation_count=sum(event["kind"] == "RESULT" and event["payload"]["status"] == "COMPLETE" for event in terminals.values()),
+                duplicate_finding_count=sum(item["disposition"] == "DUPLICATE" for item in specialists["findings"]),
+            )
             specialists.update(available=True, state="RECORDED", history=[
                 event for event in bound
                 if event["kind"] in {"DISPOSITION", "APPLICATION", "VERIFICATION"}
@@ -79,10 +91,12 @@ def projection(checkpoint: dict[str, object], run_id: str, *, invocations=None) 
                     completed = datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None
                     if started.tzinfo is None or (completed is not None and (completed.tzinfo is None or completed < started)):
                         raise ValueError("invocation evidence has invalid observation times")
+                    terminal = terminals.get(identifier)
+                    outcome = ("UNCERTAIN" if terminal["kind"] == "UNCERTAIN" else terminal["payload"]["status"]) if terminal else "UNKNOWN"
                     observations.append({"invocation_id": identifier, "request_id": event["request_id"],
                                          "reviewer": event["reviewer"], "started_at": row["started_at"],
                                          "completed_at": row["completed_at"],
-                                         "state": "COMPLETED" if row["completed_at"] else "UNKNOWN"})
+                                         "state": outcome})
                 if len({item["invocation_id"] for item in observations}) != len(observations):
                     raise ValueError("conflicting canonical invocation observations")
                 if observations:

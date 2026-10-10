@@ -3315,6 +3315,9 @@ document.addEventListener("click", (event) => {
   else if (event.target.closest("#workspaceOpenPullRequestsRefresh")) void refreshOpenPullRequests({ announce: true });
 });
 let receivedDashboardServerPush = false,
+  dashboardReadEpoch = 0,
+  dashboardReadDenied = false,
+  dashboardScopeProbe = null,
   initialDashboardStatusLoaded = false,
   updateModeKey = "refresh.connecting";
 function setUpdateMode(key) {
@@ -3335,18 +3338,43 @@ function applyDashboardSnapshot(snapshot) {
   humanize();
   checkBuild(snapshot.build_commit);
 }
+function invalidateDashboardReadScope() {
+  dashboardReadEpoch += 1;
+  dashboardReadDenied = true;
+  promptHistoryDetailRequestId += 1;
+  closePromptHistoryDetail();
+  promptHistoryDetailRunId = "";
+  setPromptHistoryDetailDownloads(null);
+  $("promptHistoryDetailContent").replaceChildren();
+  $("promptHistoryDetailTitle").textContent = "";
+  clearTimeout(promptHistoryRefreshRetry);
+  promptHistoryEntries = [];
+  promptHistorySelectedRunId = null;
+  renderPromptHistory();
+  dashboardStatusStore.update(fallback, { status: fallback });
+  renderActiveLifecycle(null);
+  humanize();
+}
 async function refreshDashboardSnapshot({ allowAfterServerPush = false, successMode, failureMode } = {}) {
+  const readEpoch = dashboardReadEpoch;
   try {
     const response = await fetch("/api/dashboard-snapshot", {
       cache: "no-store",
     });
-    if (!response.ok) throw Error(t("dashboard.status_unavailable"));
+    if (readEpoch !== dashboardReadEpoch) return false;
+    if (!response.ok) {
+      if ([401, 403, 404, 409].includes(response.status)) invalidateDashboardReadScope();
+      throw Error(t("dashboard.status_unavailable"));
+    }
     const snapshot = await response.json();
+    if (readEpoch !== dashboardReadEpoch) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
+    dashboardReadDenied = false;
     applyDashboardSnapshot(snapshot);
     if (successMode) setUpdateMode(successMode);
     return true;
   } catch {
+    if (readEpoch !== dashboardReadEpoch) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardStatusStore.update(fallback);
     humanize();
@@ -3375,7 +3403,7 @@ function startDashboardUpdates() {
   void loadInitialDashboardStatus();
   const events = new EventSource("/api/events");
   events.addEventListener("dashboard", (x) => {
-    if (!$("autoRefresh").checked) return;
+    if (!$("autoRefresh").checked || dashboardReadDenied) return;
     try {
       const snapshot = JSON.parse(x.data);
       applyDashboardSnapshot(snapshot);
@@ -3390,6 +3418,10 @@ function startDashboardUpdates() {
   events.onerror = () => {
     $("autoRefresh").checked &&
       setUpdateMode("refresh.reconnecting");
+    // EventSource exposes no denial status. Revalidate through the existing
+    // read-only HTTP snapshot; an offline transport failure is not revocation.
+    if (!dashboardScopeProbe) dashboardScopeProbe = refreshDashboardSnapshot({ allowAfterServerPush: true })
+      .finally(() => { dashboardScopeProbe = null; });
   };
 }
 $("loadComponentLogs").addEventListener("click", loadComponentLogs);
@@ -6654,9 +6686,11 @@ function renderPromptHistory() {
 }
 let promptHistoryRefreshRetry = null;
 function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
+  const readEpoch = dashboardReadEpoch;
   return fetch("/api/prompt-history", { cache: "no-store" })
     .then((response) => (response.ok ? response.json() : Promise.reject()))
     .then((payload) => {
+      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied) return;
       if (!Array.isArray(payload?.runs)) throw Error("invalid prompt history");
       promptHistoryEntries = payload.runs;
       renderPromptHistory();
@@ -6672,6 +6706,7 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
       }
     })
     .catch(() => {
+      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied) return;
       promptHistoryEntries = [];
       renderPromptHistory();
       reconcilePromptHistoryDetailFromUrl();

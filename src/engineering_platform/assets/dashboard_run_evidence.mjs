@@ -25,7 +25,7 @@ export function renderStoredRunEvidence(evidence, recovery, { document, t, card,
   const value = (item) => item === null || item === undefined || item === "" ? unknown()
     : Array.isArray(item) ? item.join("\n") || unknown() : String(item);
   const state = (item) => {
-    const allowed = new Set(["SELECTED", "SKIPPED", "PROPOSED", "ACCEPTED", "REJECTED", "DEFERRED", "IMPLEMENTED", "VERIFIED", "PREPARED", "CREATE_UNCERTAIN", "RECONCILED", "AVAILABLE", "RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS", "RECOVERED", "EXHAUSTED", "PRECHECK_FAILED", "AMBIGUOUS", "BLOCKED", "FAILED", "RECORDED", "NOT_STARTED", "NOT_RECORDED", "UNAVAILABLE"]);
+    const allowed = new Set(["SELECTED", "SKIPPED", "PROPOSED", "ACCEPTED", "REJECTED", "DEFERRED", "DUPLICATE", "IMPLEMENTED", "VERIFIED", "PREPARED", "CREATE_UNCERTAIN", "RECONCILED", "AVAILABLE", "RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS", "RECOVERED", "EXHAUSTED", "PRECHECK_FAILED", "AMBIGUOUS", "BLOCKED", "FAILED", "UNCERTAIN", "RECORDED", "NOT_STARTED", "NOT_RECORDED", "UNAVAILABLE"]);
     return t(`run_evidence.state.${allowed.has(item) ? item.toLowerCase() : "not_recorded"}`);
   };
   const selectionReasons = new Set(["complete_context_overflow_at_dispatch", "no_relevant_question_or_consumer", "invalid_specialist_requests", "ambiguous_specialist_requests", "selected", "no_consumer", "no_primary_consumer_for_lifecycle", "irrelevant_task_paths", "capability_unqualified", "capacity_unknown", "mandatory_controls_assurance_and_repair_reserved", "finite_optional_allowance_exhausted", "complete_context_overflow", "missing_snapshot_path", "overlapping_question", "overlapping_or_ambiguous_question", "invalid_question_contract"]);
@@ -36,13 +36,13 @@ export function renderStoredRunEvidence(evidence, recovery, { document, t, card,
     node.append(summary, ...fields); if (identity) node.dataset.evidenceId = identity;
     return node;
   };
-  const observation = (item) => (evidence?.specialists?.invocations || []).find((entry) => entry.request_id === item.request_id);
+  const observation = (item) => [...(evidence?.specialists?.invocations || []), ...(evidence?.specialists?.outcomes || [])].find((entry) => entry.request_id === item.request_id);
   const binding = (item) => [
     field(t("run_evidence.run"), value(item.run_id || evidence?.run_id)),
     field(t("run_evidence.request"), value(item.request_id)),
     field(t("run_evidence.invocation"), value(item.invocation_id || observation(item)?.invocation_id)),
-    field(t("run_evidence.invocation_result"), observation(item)?.state === "COMPLETED"
-      ? t("run_evidence.completed_result") : observation(item)?.state === "UNKNOWN" ? t("run_evidence.unknown_result") : unknown()),
+    field(t("run_evidence.invocation_result"), observation(item)?.state === "COMPLETE"
+      ? t("run_evidence.completed_result") : ["FAILED", "UNCERTAIN"].includes(observation(item)?.state) ? state(observation(item).state) : observation(item)?.state === "UNKNOWN" ? t("run_evidence.unknown_result") : unknown()),
     field(t("run_evidence.consumer"), value(item.consumer)),
     field(t("run_evidence.candidate"), value(item.candidate_sha)),
     field(t("run_evidence.profile"), value(item.profile_digest)),
@@ -55,6 +55,8 @@ export function renderStoredRunEvidence(evidence, recovery, { document, t, card,
     field(t("run_evidence.model_evidence"), state(specialists.invocation_evidence_state)),
     field(t("run_evidence.reservations"), value(specialists.reserved_invocation_count)),
     field(t("run_evidence.results"), value(specialists.completed_invocation_count)),
+    field(t("run_evidence.successful_results"), value(specialists.successful_invocation_count)),
+    field(t("run_evidence.failed_results"), value(specialists.failed_invocation_count)),
     field(t("run_evidence.uncertain"), value(specialists.uncertain_invocation_count))];
   if (evidence?.presentation_redacted) selectionFields.push(field(t("run_evidence.stored_only"), t("run_evidence.host_paths_hidden")));
   for (const item of selections) selectionFields.push(detail(
@@ -74,7 +76,7 @@ export function renderStoredRunEvidence(evidence, recovery, { document, t, card,
 
   const findingFields = [], filter = document.createElement("select"), label = document.createElement("label");
   label.textContent = t("run_evidence.filter"); filter.setAttribute("aria-label", t("run_evidence.filter"));
-  for (const item of ["ALL", "PROPOSED", "ACCEPTED", "REJECTED", "DEFERRED", "IMPLEMENTED", "VERIFIED"]) {
+  for (const item of ["ALL", "PROPOSED", "ACCEPTED", "REJECTED", "DEFERRED", "DUPLICATE", "IMPLEMENTED", "VERIFIED"]) {
     const option = document.createElement("option"); option.value = item;
     option.textContent = item === "ALL" ? t("run_evidence.all") : state(item); filter.append(option);
   }
@@ -105,7 +107,8 @@ export function renderStoredRunEvidence(evidence, recovery, { document, t, card,
   });
   if (!findings.length) findingFields.push(field(t("run_evidence.evidence"),
     specialists.available === true ? t("run_evidence.no_findings") : unknown()));
-  findingFields.push(field(t("run_evidence.duplicates"), value(specialists.duplicate_observations)));
+  findingFields.push(field(t("run_evidence.duplicates"), value(specialists.duplicate_observations)),
+    field(t("run_evidence.duplicate_findings"), value(specialists.duplicate_finding_count)));
   const findingCard = card(t("run_evidence.findings"), findingFields, true, "prompt-detail-card--run-evidence");
   findingCard.dataset.runEvidence = "findings";
 

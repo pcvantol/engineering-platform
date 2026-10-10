@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import unittest
 import copy
+from unittest.mock import patch
 
 from engineering_platform import server
 from engineering_platform.capability_review import specialist_readback
@@ -18,7 +19,7 @@ class DashboardRunEvidenceTests(unittest.TestCase):
                     "paths": ["docs/readme.md", "validation://run-own/control"],
                     "advice": ("Read /Users/example/file.txt", "Read C:\\Users\\example\\file.txt",
                                "Read \\\\server\\private\\file.txt", "Read ~/local.txt",
-                               "Read file:///etc/local.txt", "Read FILE:///etc/local.txt", "<script>alert(1)</script>"),
+                               "Read file:///etc/local.txt", "Read FILE:///etc/local.txt", "Read </Users/example/file.txt>.", "<script>alert(1)</script>"),
                     "unknown": None, "count": 0}
         original = copy.deepcopy(supplied)
         flag = [False]
@@ -28,9 +29,32 @@ class DashboardRunEvidenceTests(unittest.TestCase):
         self.assertEqual(detached["run_id"], supplied["run_id"])
         self.assertEqual(detached["profile"], supplied["profile"])
         self.assertEqual(detached["paths"], supplied["paths"])
-        self.assertEqual(detached["advice"], ("Read [REDACTED]",) * 6 + ("<script>alert(1)</script>",))
+        self.assertEqual(detached["advice"], ("Read [REDACTED]",) * 6 + ("Read <[REDACTED]>.", "<script>alert(1)</script>",))
         self.assertIsNone(detached["unknown"])
         self.assertEqual(detached["count"], 0)
+
+    def test_actual_failed_uncertain_and_host_duplicate_outcomes_preserve_read_effects(self):
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
+        for mode in ("failed", "uncertain-result", "duplicate"):
+            with self.subTest(mode=mode), patch.dict("os.environ", {"EP_QUALIFICATION_DETERMINISTIC_FLOW": "1"}):
+                canary = StoredConsoleCanary(finding_mode=mode)
+                try:
+                    run_id = canary.generate()
+                    before = canary.effect_snapshot()
+                    evidence = server._central_console_lifecycle(canary.fixture.data, run_id)["run_evidence"]["specialists"]
+                    if mode == "duplicate":
+                        self.assertEqual(evidence["duplicate_finding_count"], 1)
+                        self.assertEqual(evidence["duplicate_observations"], 0)
+                        self.assertIn("DUPLICATE", {item["disposition"] for item in evidence["findings"]})
+                    else:
+                        expected = "FAILED" if mode == "failed" else "UNCERTAIN"
+                        self.assertEqual({item["state"] for item in evidence["outcomes"]}, {expected})
+                        if mode == "uncertain-result": self.assertIsNone(evidence["actual_model_invocation_count"])
+                        self.assertEqual(evidence["failed_invocation_count"], 2 if mode == "failed" else 0)
+                        self.assertEqual(evidence["successful_invocation_count"], 0)
+                    self.assertEqual(canary.effect_snapshot(), before)
+                finally:
+                    canary.close()
 
     def test_missing_legacy_evidence_is_unknown_not_zero_or_authority(self):
         for checkpoint in ({}, {"specialist_records": []}, {"specialist_records": None}):
