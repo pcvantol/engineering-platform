@@ -483,6 +483,15 @@ elif __name__ == "__main__":
                 print(json.dumps({"after": canary.effect_snapshot()}), flush=True)
             elif instruction.strip() == "reconcile":
                 print(json.dumps({"reconciled_baseline": canary.reconcile_publication()}), flush=True)
+            elif instruction.strip() == "advance-target":
+                # Explicit local fixture authoring, never a Console action:
+                # retain the actual stored run and its verification receipt.
+                path = canary.fixture.root / "README.md"
+                path.write_text(path.read_text() + "\nLater unrelated target revision.\n")
+                canary.fixture.git("add", "README.md")
+                canary.fixture.git("commit", "-qm", "later target revision")
+                print(json.dumps({"target_head": canary.fixture.git("rev-parse", "HEAD"),
+                                  "advanced_baseline": canary.effect_snapshot()}), flush=True)
             elif instruction.strip() == "stop":
                 break
     finally:

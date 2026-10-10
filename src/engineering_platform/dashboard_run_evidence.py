@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 
+from .agent_state import TransactionState
 from .capability_review import specialist_readback, validate_specialist_records
 from .managed_publication import validate_intent
 
@@ -87,11 +87,19 @@ def projection(checkpoint: dict[str, object], run_id: str, *, invocations=None) 
             publication = {**intent, "available": True}
         except (ValueError, TypeError, KeyError):
             publication["status"] = "UNAVAILABLE"
+    # TransactionState has no generic commit_sha field. Read the validated
+    # stored assurance candidate, never the current target Git HEAD.
+    recorded_candidate = None
+    try:
+        state = TransactionState.from_dict(checkpoint)
+        if state.run_id == run_id and state.assurance_profile is not None:
+            recorded_candidate = state.assurance_profile["candidate_sha"]
+    except (ValueError, TypeError, KeyError):
+        pass
     return {
         "contract_version": "ep-console-run-evidence/v1", "run_id": run_id,
         "specialists": specialists, "publication": publication,
-        "recorded_candidate_sha": checkpoint.get("commit_sha") if isinstance(checkpoint.get("commit_sha"), str)
-            and re.fullmatch(r"[0-9a-f]{40}", checkpoint["commit_sha"]) else None,
+        "recorded_candidate_sha": recorded_candidate,
         "recorded_execution_authorized": checkpoint.get("owner_authorized")
             if isinstance(checkpoint.get("owner_authorized"), bool) else None,
         "observation": "STORED_EVIDENCE_ONLY", "execution_authority": False,

@@ -42,6 +42,7 @@ class DashboardRunEvidenceTests(unittest.TestCase):
             value = server._central_console_lifecycle(case.fixture.data, stored.run_id)
             evidence = value["run_evidence"]
             self.assertEqual(evidence["run_id"], stored.run_id)
+            self.assertEqual(evidence["recorded_candidate_sha"], stored.assurance_profile["candidate_sha"])
             self.assertEqual(evidence["specialists"]["findings"], expected["findings"])
             self.assertEqual(evidence["specialists"]["completed_invocation_count"], 2)
             self.assertEqual(evidence["specialists"]["actual_model_invocation_count"], 2)

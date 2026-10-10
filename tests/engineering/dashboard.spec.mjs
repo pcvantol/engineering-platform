@@ -5569,7 +5569,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(runRow.locator(".telemetry-run-link")).toHaveCSS("text-decoration-line", "none");
     await runRow.hover();
     const hoverBackgrounds = await runRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    expect(new Set(hoverBackgrounds).size).toBe(2);
+    await expect.poll(() => runRow.evaluate((row) => row.matches(":hover"))).toBe(true);
+    await expect.poll(() => runRow.locator("td").evaluateAll((cells) =>
+      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
     expect(hoverBackgrounds[0]).not.toBe("rgba(0, 0, 0, 0)");
     const runId = runRow.locator(".telemetry-run-link");
     await runId.click();
@@ -9230,9 +9232,10 @@ test.describe("Engineering Status browser smoke", () => {
     // while a transient layout update settles.
     await rows.nth(1).hover({ force: true });
     const hoverRowSurface = await rows.nth(1).locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    // The frozen first column keeps its category tint while the remaining
-    // cells receive the common hover fill.
-    expect(new Set(hoverRowSurface).size).toBe(2);
+    // Interactive log rows share the existing continuous hover contract.
+    await expect.poll(() => rows.nth(1).evaluate((row) => row.matches(":hover"))).toBe(true);
+    await expect.poll(() => rows.nth(1).locator("td").evaluateAll((cells) =>
+      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
     expect(hoverRowSurface[0]).not.toBe("rgba(0, 0, 0, 0)");
     await rows.nth(0).click();
     await rows.nth(2).click({ modifiers: ["Meta"] });

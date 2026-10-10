@@ -204,8 +204,29 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     if (["provider-blocked", "missing"].includes(scenario)) await openStoredHistory();
     await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
     await page.reload({ waitUntil: "domcontentloaded" });
+    if (scenario === "provider-blocked") {
+      if (await page.locator("#promptHistoryDetailModal").isVisible()) await page.locator("#promptHistoryDetailClose").click();
+      // Delay transport forwarding only; the eventual response is produced
+      // by the real handler. No success payload or auth service is replaced.
+      let releaseRead, readObserved;
+      const heldRead = new Promise((resolve) => { releaseRead = resolve; });
+      const observedRead = new Promise((resolve) => { readObserved = resolve; });
+      const detailPattern = "**/api/prompt-history/*/details";
+      await page.route(detailPattern, async (route) => { readObserved(); await heldRead; await route.continue(); });
+      await openStoredHistory();
+      await observedRead;
+      await page.locator("#promptHistoryDetailClose").click();
+      const actualLateResponse = page.waitForResponse((response) => response.url().includes(`/api/prompt-history/${ready.run_id}/details`));
+      releaseRead(); await actualLateResponse;
+      await page.unroute(detailPattern);
+      await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+      await expect(page.locator("#promptHistoryDetailContent")).toBeEmpty();
+    }
     if (scenario === "normal" && locale === "en" && theme === "dark" && width === 1280) {
       await page.context().setOffline(true);
+      expect(await page.evaluate(async () => {
+        try { await fetch("/api/dashboard-snapshot", { cache: "no-store" }); return false; } catch { return true; }
+      })).toBe(true);
       await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
       await page.context().setOffline(false);
       await page.reload({ waitUntil: "domcontentloaded" });
@@ -253,6 +274,23 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       child.stdin.write("snapshot\n");
       expect((await next()).after).toEqual(reconciled.reconciled_baseline);
     }
+    const historicalTarget = scenario === "normal" && locale === "en" && theme === "dark" && width === 1280;
+    if (historicalTarget) {
+      child.stdin.write("advance-target\n");
+      const advanced = await next();
+      expect(advanced.target_head).not.toBe(runEvidence.recorded_candidate_sha);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      const recordedFinding = page.locator('[data-run-evidence="findings"] details[data-disposition="VERIFIED"]');
+      await recordedFinding.locator("summary").click();
+      await expect(recordedFinding.locator(".field").filter({ hasText: runEvidence.recorded_candidate_sha }).first()).toBeVisible();
+      await expect(page.locator('[data-run-evidence="findings"]')).not.toContainText(advanced.target_head);
+      const historical = await page.request.get(`${rootUrl}/api/prompt-history/${ready.run_id}/details?project=project`);
+      expect((await historical.json()).lifecycle.run_evidence).toEqual(runEvidence);
+      await capture("historical-verification", "later-target-head", page.locator('[data-run-evidence="findings"]'));
+      screenshots.at(-1).observed_target_head = advanced.target_head;
+      child.stdin.write("snapshot\n");
+      expect((await next()).after).toEqual(advanced.advanced_baseline);
+    }
     const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
     writeFileSync(manifestPath, JSON.stringify({
       contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
@@ -261,7 +299,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       assets: ready.assets,
     }, null, 2));
     expect(screenshots.slice(0, 3).map((item) => item.scenario)).toEqual(["selection", "findings", "publication"]);
-    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0));
+    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0));
     expect(screenshots.some((item) => item.scenario === "denied-project" && item.publication === null)).toBe(true);
     await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
   } finally {
