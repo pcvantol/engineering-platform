@@ -18,7 +18,7 @@ class DashboardRunEvidenceTests(unittest.TestCase):
                     "paths": ["docs/readme.md", "validation://run-own/control"],
                     "advice": ("Read /Users/example/file.txt", "Read C:\\Users\\example\\file.txt",
                                "Read \\\\server\\private\\file.txt", "Read ~/local.txt",
-                               "Read file:///etc/local.txt", "<script>alert(1)</script>"),
+                               "Read file:///etc/local.txt", "Read FILE:///etc/local.txt", "<script>alert(1)</script>"),
                     "unknown": None, "count": 0}
         original = copy.deepcopy(supplied)
         flag = [False]
@@ -28,7 +28,7 @@ class DashboardRunEvidenceTests(unittest.TestCase):
         self.assertEqual(detached["run_id"], supplied["run_id"])
         self.assertEqual(detached["profile"], supplied["profile"])
         self.assertEqual(detached["paths"], supplied["paths"])
-        self.assertEqual(detached["advice"], ("Read [REDACTED]",) * 5 + ("<script>alert(1)</script>",))
+        self.assertEqual(detached["advice"], ("Read [REDACTED]",) * 6 + ("<script>alert(1)</script>",))
         self.assertIsNone(detached["unknown"])
         self.assertEqual(detached["count"], 0)
 
