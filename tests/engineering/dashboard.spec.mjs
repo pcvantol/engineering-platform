@@ -10348,10 +10348,13 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator('#promptHistory th[data-history-sort-key="git_commit"]')).toHaveCount(0);
     const firstPromptHistoryRow = page.locator("#promptHistoryRows .prompt-history-row").first();
     await firstPromptHistoryRow.hover();
+    // Existing CSS explicitly requires one continuous interactive-row hover
+    // surface, including the frozen first cell. Prove actual hover as well as
+    // equal nontransparent cell fills; an idle row cannot satisfy this check.
+    await expect.poll(() => firstPromptHistoryRow.evaluate((row) => row.matches(":hover"))).toBe(true);
     const promptHistoryHover = await firstPromptHistoryRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    // The frozen first column retains its category tint; the data cells share
-    // the hover fill.
-    expect(new Set(promptHistoryHover).size).toBe(2);
+    await expect.poll(() => firstPromptHistoryRow.locator("td").evaluateAll((cells) =>
+      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
     expect(promptHistoryHover[0]).not.toBe("rgba(0, 0, 0, 0)");
     await expect(page.locator("#promptHistoryRows tr").first().locator("td")).toHaveCount(9);
     await expect(page.locator("#promptHistoryPagination")).toContainText("Pagina 1 van 3 · 26 uitvoeringen");
