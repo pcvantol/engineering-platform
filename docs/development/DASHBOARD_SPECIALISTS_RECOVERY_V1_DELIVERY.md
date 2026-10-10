@@ -7,7 +7,7 @@ Lane **r34**, plan **1**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after first complete independent Quality/Security: **consumed2/max3/remaining1**. Operational budgets remain unchanged.
+Formal corrections after complete independent Quality/Security pairs: **consumed3/max3/remaining0**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -191,3 +191,44 @@ known owning-CI fixture defect converges before the official third pair.
 Security's70 complete PASS remains SHA-bound supporting evidence. New exact
 candidate reviews/CI and all original protected/Finalization/final-main gates
 remain required. Still inside already booked round2: consumed2/max3/remaining1.
+
+
+## Third complete pair and final integrated round3
+
+Exacta20 Quality COMPLETE REJECT identified one P2: legitimate PLATFORM/no-project
+snapshots are rejected because documentproject=`none` is mistaken for a selected
+project. Security COMPLETE PASS is independently SHA-bound, with its initial
+browser18PASS1FAIL and unchangedtargeted3PASS retained. Full original reports
+and provenance remain local. [Round3 admission](https://github.com/pcvantol/forge/issues/142#issuecomment-6097218144)
+books consumed3/max3/remaining0 BEFORE source; no fourth correction is authorized.
+All operational budgets/writer/branch/history and closed predecessors stay fixed.
+
+Both HTTP and central/SSE snapshot entrances now share explicit scope matching:
+a selected project requires its exact project_id; absent/`none` context accepts
+only canonical PLATFORM with no project_id. Captured epoch/current document,
+read-denial and stale-callback guards remain in force. No auth policy, action,
+route, provider or underlying storage contract is replaced.
+
+Two new real-controller/native-browser regressions navigate selected→none→same
+selected using the existing public selector. HTTP-only and genuine CDP-observed
+SSE-only routes use actual Server projections; the latter intentionally aborts
+the competing HTTP snapshot to prove independent SSE application. Both preserve
+all13executiontables/schema/Git/provider/create observations, reject the actual
+foreign project run, retain zero no-project evidence cards, and capture fresh
+source/tree/wheel/assets/locale/theme/viewport manifests. Before product correction
+both failed on actual version rendering (HTTPLoading; SSEunavailable) despite
+real PLATFORM delivery. An earlier harness referenced a module-private helper;
+that attempt is retained NOT_QUALIFIED, not counted as the product red proof.
+
+Current source convergence is not installed/current full acceptance. New exact
+package/full39scenario browser/fresh175PNG/strictcoverage/currentCI and a FOURTH
+fresh COMPLETE independent wholepair remain mandatory. Further source correction
+after a rejecting complete pair requires new specific authority; none is assumed.
+Protected source merge, normalNO_BUMPFinalization and new exact-final-main
+installed/browser/CI/reachablefreshpreviews/readbacks/owncleanup stay mandatory.
+
+Round3 source convergence: genuine HTTP/SSE/no-project and preserved real
+operator-positive/withdrawn/read-revoked regression set5PASS25.0s, retries0.
+Each PLATFORM case retains actualforeign-run404 and selected→none→selected
+positive navigation without new execution effects. Exact installed/current
+full qualification and independent review remain required.

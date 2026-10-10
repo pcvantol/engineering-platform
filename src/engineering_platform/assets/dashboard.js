@@ -3325,10 +3325,14 @@ function setUpdateMode(key) {
   updateModeKey = key;
   $("updateMode").textContent = t(key);
 }
+function dashboardSnapshotMatchesScope(snapshot, projectId) {
+  if (projectId && projectId !== "none") return snapshot?.project_id === projectId;
+  return snapshot?.scope === "PLATFORM" && snapshot.project_id == null;
+}
 function applyDashboardSnapshot(snapshot, readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId) {
   if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId)
     return false;
-  if (projectId && snapshot?.project_id !== projectId) return false;
+  if (!dashboardSnapshotMatchesScope(snapshot, projectId)) return false;
   if (!snapshot || typeof snapshot.status !== "object")
     throw Error(t("dashboard.status_invalid"));
   dashboardStatusStore.update(snapshot.status, snapshot);
@@ -3373,7 +3377,7 @@ async function refreshDashboardSnapshot({ allowAfterServerPush = false, scopeOnl
     }
     const snapshot = await response.json();
     if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
-    if (projectId && snapshot?.project_id !== projectId) return false;
+    if (!dashboardSnapshotMatchesScope(snapshot, projectId)) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardReadDenied = false;
     if (scopeOnly) return true;

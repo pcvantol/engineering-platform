@@ -454,3 +454,95 @@ for (const revoked of [false, true]) {
     }
   });
 }
+
+for (const ingress of ["http", "sse"]) {
+  test(`actual PLATFORM no-project ${ingress} snapshot preserves strict selected scope`, async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
+    const installedPython = process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON;
+    const environment = { ...process.env, EP_QUALIFICATION_DETERMINISTIC_FLOW: "1", PYTHONPATH: path.join(repository, "src") };
+    if (installedPython) delete environment.PYTHONPATH;
+    if (process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1") expect(installedPython).toBeTruthy();
+    const child = spawn(installedPython || process.env.EP_BROWSER_PYTHON || "python3", [fixture, "normal"], {
+      cwd: installedPython ? path.dirname(installedPython) : repository, env: environment, stdio: ["pipe", "pipe", "pipe"],
+    });
+    let buffer = "", stderr = "", pending; const messages = [];
+    child.stderr.on("data", (data) => { stderr += data; });
+    child.stdout.on("data", (data) => {
+      buffer += data;
+      while (buffer.includes("\n")) {
+        const end = buffer.indexOf("\n"), line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+        if (line.startsWith("{")) { const value = JSON.parse(line); if (pending) { const resolve = pending; pending = null; resolve(value); } else messages.push(value); }
+      }
+    });
+    const next = () => messages.length ? Promise.resolve(messages.shift()) : new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`PLATFORM canary timeout: ${stderr}`)), 30_000);
+      pending = (value) => { clearTimeout(timer); resolve(value); };
+      child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`PLATFORM canary exited ${code}: ${stderr}`)); });
+    });
+    try {
+      const ready = await next(), platformUrl = new URL(ready.url); platformUrl.search = "";
+      const errors = []; page.on("pageerror", (error) => errors.push(error.message));
+      const cdp = await page.context().newCDPSession(page); await cdp.send("Network.enable");
+      const streams = [];
+      cdp.on("Network.eventSourceMessageReceived", (event) => {
+        if (event.eventName === "dashboard") streams.push(JSON.parse(event.data));
+      });
+      if (ingress === "http") await page.route("**/api/events*", (route) => route.abort());
+      else await page.route("**/api/dashboard-snapshot*", (route) => {
+        if (new URL(route.request().url()).searchParams.get("project")) return route.continue();
+        return route.abort(); // The real PLATFORM event must independently populate the UI.
+      });
+      await page.goto(ready.url, { waitUntil: "domcontentloaded" });
+      await expect(page.locator("#dashboardSplash")).toBeHidden();
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      const selectedResponse = await page.request.get(new URL("/api/dashboard-snapshot?project=project", ready.url).href);
+      const platformResponse = await page.request.get(new URL("/api/dashboard-snapshot", ready.url).href);
+      expect(selectedResponse.status()).toBe(200); expect(platformResponse.status()).toBe(200);
+      const selected = await selectedResponse.json(), platform = await platformResponse.json();
+      expect(selected.project_id).toBe("project");
+      expect(platform.scope).toBe("PLATFORM"); expect(platform.project_id).toBeUndefined();
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      const http = ingress === "http" ? page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return url.pathname === "/api/dashboard-snapshot" && !url.searchParams.get("project") && response.status() === 200;
+      }) : null;
+      await page.locator("#dashboardProject").selectOption("");
+      await page.waitForURL((url) => !url.searchParams.get("project"));
+      await expect(page.locator("body")).toHaveAttribute("data-project-id", "none");
+      await expect(page.locator("#dashboardSplash")).toBeHidden();
+      if (http) expect((await (await http).json()).scope).toBe("PLATFORM");
+      else await expect.poll(() => streams.filter((snapshot) => snapshot.scope === "PLATFORM").length).toBeGreaterThan(0);
+      await expect(page.locator("#platformVersion")).toHaveText(platform.status.platform_version);
+      if (ingress === "sse") {
+        const lang = await page.locator("html").getAttribute("lang");
+        await expect(page.locator("#updateMode")).toHaveText(DASHBOARD_MESSAGES[lang]["refresh.connected"]);
+      }
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      const foreign = await page.request.get(new URL(`/api/prompt-history/${ready.run_id}/details?project=other`, ready.url).href);
+      expect(foreign.status()).toBe(404);
+      child.stdin.write("snapshot\n"); const after = await next();
+      expect(after.after).toEqual(ready.before); expect(errors).toEqual([]);
+      const imagePath = testInfo.outputPath(`platform-${ingress}-fresh.png`);
+      await page.screenshot({ path: imagePath, fullPage: true, animations: "disabled" });
+      const capture = { scenario: `platform-${ingress}`, file: path.basename(imagePath),
+        sha256: createHash("sha256").update(readFileSync(imagePath)).digest("hex"), run_scenario: testInfo.title,
+        run_id: ready.run_id, finding_ids: [], invocation_ids: [], publication: null,
+        actual_platform_snapshot_sha256: createHash("sha256").update(JSON.stringify(platform)).digest("hex"),
+        locale: await page.locator("#dashboardLocale").inputValue(), theme: await page.locator("html").getAttribute("data-theme"), viewport: page.viewportSize() };
+      const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
+      writeFileSync(manifestPath, JSON.stringify({ contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
+        source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
+        wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, assets: ready.assets, screenshots: [capture] }, null, 2));
+      await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
+      await page.locator("#dashboardProject").selectOption("project");
+      await page.waitForURL((url) => url.searchParams.get("project") === "project");
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      child.stdin.write("snapshot\n"); expect((await next()).after).toEqual(ready.before);
+    } finally {
+      if (child.exitCode === null) {
+        const stopped = new Promise((resolve) => child.once("exit", resolve)); child.stdin.write("stop\n"); await stopped;
+      }
+    }
+  });
+}
