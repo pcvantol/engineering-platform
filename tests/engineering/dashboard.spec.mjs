@@ -7421,7 +7421,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({
+      body: JSON.stringify({ project_id: "dashboard-fixture",
         status: {
           watcher_state: "WATCHER_IDLE",
           platform_version: "2.0.0",
@@ -7648,7 +7648,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -8083,7 +8083,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.setViewportSize({ width: 1440, height: 900 });
     const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
@@ -8165,7 +8165,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -8407,7 +8407,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -8458,7 +8458,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -8481,7 +8481,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     const initialSnapshot = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -8528,7 +8528,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const banner = page.getByTestId("codex-usage-limit-banner");
@@ -8558,7 +8558,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -8577,7 +8577,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
