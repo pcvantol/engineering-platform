@@ -441,7 +441,8 @@ for (const revoked of [false, true]) {
         sha256: createHash("sha256").update(readFileSync(imagePath)).digest("hex"), run_scenario: testInfo.title,
         run_id: successor.run_id, predecessor_run_id: ready.run_id, finding_ids: revoked ? [] : evidence.specialists.findings.map((item) => item.id),
         invocation_ids: revoked ? [] : evidence.specialists.invocations.map((item) => item.invocation_id), publication: revoked ? null : evidence.publication,
-        actual_response_sha256: createHash("sha256").update(actualBytes).digest("hex"), locale: "en", theme: "dark", viewport: page.viewportSize() };
+        actual_response_sha256: createHash("sha256").update(actualBytes).digest("hex"),
+        locale: await page.locator("#dashboardLocale").inputValue(), theme: await page.locator("html").getAttribute("data-theme"), viewport: page.viewportSize() };
       const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
       writeFileSync(manifestPath, JSON.stringify({ contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
         source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
