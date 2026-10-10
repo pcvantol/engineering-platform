@@ -9226,11 +9226,10 @@ test.describe("Engineering Status browser smoke", () => {
     const divider = await rows.nth(0).locator("td").first().evaluate((cell) => getComputedStyle(cell).borderBottomColor);
     expect(divider).not.toBe("rgb(61, 54, 81)");
     expect(divider).not.toBe("rgb(212, 222, 235)");
-    // The fixed fixture already proves that this row exists.  For this
-    // visual :hover assertion, bypass Playwright's unrelated actionability
-    // wait so parallel dashboard shards cannot consume the test deadline
-    // while a transient layout update settles.
-    await rows.nth(1).hover({ force: true });
+    // Prove a real pointer hover; forcing a covered/offscreen coordinate can
+    // leave the row unhovered while its resting cell colours look plausible.
+    await rows.nth(1).scrollIntoViewIfNeeded();
+    await rows.nth(1).hover();
     const hoverRowSurface = await rows.nth(1).locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
     // Interactive log rows share the existing continuous hover contract.
     await expect.poll(() => rows.nth(1).evaluate((row) => row.matches(":hover"))).toBe(true);
