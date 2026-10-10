@@ -18,6 +18,7 @@ SHARDS = ("1/4", "2/4", "3/4", "4/4")
 PLAYWRIGHT_COMMAND = (
     "npx", "playwright", "test", "tests/engineering/dashboard.spec.mjs",
     "tests/engineering/dashboard_translation.integration.spec.mjs",
+    "tests/engineering/dashboard_run_evidence.integration.spec.mjs",
 )
 LOCK_COMPONENT = "dashboard-browser-validation"
 LOCAL_BATCH_TIMEOUT_SECONDS = 300

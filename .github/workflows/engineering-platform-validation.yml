@@ -215,10 +215,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: {python-version: '3.14'}
-      - name: Install Engineering Platform runtime
-        run: python3 -m pip install .
+      - name: Build and install exact committed browser qualification wheel
+        run: |
+          python3 -m pip install build jsonschema==4.25.1
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          python3 tools/qualification/build_platform_wheel.py --source-root . --version "$version" --wheel-directory "$RUNNER_TEMP/ep-browser-wheel" --install-python "$(command -v python3)"
+          echo "EP_RUN_EVIDENCE_INSTALLED_PYTHON=$(command -v python3)" >> "$GITHUB_ENV"
+          echo "EP_RUN_EVIDENCE_REQUIRE_INSTALLED=1" >> "$GITHUB_ENV"
+          echo "EP_RUN_EVIDENCE_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "EP_RUN_EVIDENCE_SOURCE_TREE=$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+          echo "EP_RUN_EVIDENCE_WHEEL_SHA256=$(sha256sum "$RUNNER_TEMP"/ep-browser-wheel/*.whl | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
       - name: Install browser validation dependencies
         run: npm ci
+      - name: Pin genuine native CLI metadata for the declared external-model canary
+        run: |
+          mkdir -p "$RUNNER_TEMP/ep-browser-native/bin"
+          ln -s "$GITHUB_WORKSPACE/node_modules/.bin/codex" "$RUNNER_TEMP/ep-browser-native/bin/codex"
+          echo "EP_MANAGED_CODEX_CLI_PREFIX=$RUNNER_TEMP/ep-browser-native" >> "$GITHUB_ENV"
       - name: Install Chromium for browser validation
         # ubuntu-latest already provides the system libraries Playwright needs.
         # Avoid refreshing third-party apt repositories here: their transient
@@ -236,7 +249,29 @@ jobs:
           path: |
             test-results/**
             tests/engineering/dashboard.spec.mjs-snapshots/**
-          if-no-files-found: warn
+          if-no-files-found: error
+  browser-executable-coverage:
+    name: Qualify exact-asset JavaScript executable-line coverage
+    needs: [validation-profile, browser-dashboard]
+    if: needs.validation-profile.outputs.browser_dashboard_required == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with: {node-version: '24'}
+      - run: npm ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: engineering-status-browser-screenshots-*
+          path: browser-shard-evidence
+      - name: Enforce all selected production JavaScript files strictly above 80.2 percent
+        run: node tools/qualification/dashboard_js_coverage.mjs . browser-shard-evidence dashboard-executable-coverage.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dashboard-executable-coverage
+          path: dashboard-executable-coverage.json
+          if-no-files-found: error
   localization-gate:
     name: UI-GOLDEN-LOCALIZATION
     needs: validation-profile
@@ -246,15 +281,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v22
         with: {node-version: '22'}
+      - name: Install pinned browser validation dependencies
+        run: npm ci --ignore-scripts
       - name: Enforce five-locale Console contract
         run: npm run test:ui-localization && npm run test:engineering-dashboard-logic
   trusted-delivery-evidence:
     name: Qualify trusted delivery evidence
-    needs: [validation-profile, validate, browser-dashboard, localization-gate]
+    needs: [validation-profile, validate, browser-dashboard, browser-executable-coverage, localization-gate]
     if: >-
       always() && needs.validate.result == 'success' &&
       (needs.validation-profile.outputs.browser_dashboard_required != 'true' ||
-      needs.browser-dashboard.result == 'success') &&
+      (needs.browser-dashboard.result == 'success' && needs.browser-executable-coverage.result == 'success')) &&
       (needs.validation-profile.outputs.localization_required != 'true' ||
       needs.localization-gate.result == 'success')
     runs-on: ubuntu-latest

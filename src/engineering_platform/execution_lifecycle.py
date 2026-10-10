@@ -6,13 +6,16 @@ does not coordinate transitions, repair, retry, resume, liveness, or telemetry.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 import sqlite3
 
 from .storage import EngineeringStorageError, load_run_qualification_snapshot, open_storage
-from .agent_state import TransactionState
+from .agent_state import TransactionState, redact_diagnostic
 from .provider_recovery import load_recovery_state
 from .status_reconciliation import is_stale_rolling_status_block
+from .dashboard_run_evidence import projection as run_evidence_projection
+from .provider_usage import canonical_provider_invocations
 
 
 TERMINAL = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
@@ -154,6 +157,10 @@ def projection(
             row = connection.execute(
                 "SELECT payload,phase FROM engineering_transactions WHERE run_id=?", (run_id,)
             ).fetchone()
+            try:
+                invocations = canonical_provider_invocations(connection, run_id)
+            except sqlite3.DatabaseError:
+                invocations = None
             events = connection.execute(
                 "SELECT phase,checkpoint,recorded_at FROM execution_lifecycle_events WHERE run_id=? ORDER BY id",
                 (run_id,),
@@ -477,7 +484,19 @@ def projection(
                 "recovery_ordinal": provider_recovery.get("recovery_ordinal"),
                 "maximum_attempts": provider_recovery.get("maximum_attempts"),
                 "lifecycle_phase": provider_recovery.get("lifecycle_phase"),
+                "diagnostic_code": provider_recovery.get("diagnostic_code"),
+                "last_observed_at": next((provider_recovery.get(key) for key in (
+                    "completed_at", "provider_confirmed_active_at", "launch_claimed_at", "requested_at",
+                ) if provider_recovery.get(key)), None),
             }
+            code = recovery["diagnostic_code"]
+            if not (isinstance(code, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_:]{0,119}", code)
+                    and redact_diagnostic(code) == code):
+                recovery["diagnostic_code"] = None
+            observed = recovery["last_observed_at"]
+            if not (isinstance(observed, str) and re.fullmatch(
+                    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})", observed)):
+                recovery["last_observed_at"] = None
     qualification = load_run_qualification_snapshot(
         root,
         run_id,
@@ -491,6 +510,7 @@ def projection(
         "current_step": display_phase if display_phase in path else None,
         "steps": steps,
         "recovery": recovery,
+        "run_evidence": run_evidence_projection(checkpoint, run_id, invocations=invocations),
         "qualification": {
             "required_validation_state": qualification.get("required_validation_state", "UNAVAILABLE"),
             "run_qualification": qualification.get("run_qualification", "UNAVAILABLE"),

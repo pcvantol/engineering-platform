@@ -1,6 +1,7 @@
 import { createDashboardStatusStore } from "./dashboard_status_store.mjs";
 import { createLocaleService, DASHBOARD_MESSAGES, normalizeLocale, preferredLocale } from "./dashboard_locales.mjs";
 import { createDynamicEvidenceLocalizer } from "./dashboard_translation.mjs";
+import { renderStoredRunEvidence, syncStoredRunEvidence } from "./dashboard_run_evidence.mjs";
 
 function initialDashboardLocale() {
   try {
@@ -34,7 +35,7 @@ window.__engineeringPlatformDashboardTranslate = (key) => t(key);
 document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
-  NO_PROJECT_SELECTED = document.body.dataset.projectId === "none",
+  NO_PROJECT_SELECTED = window.ENGINEERING_PLATFORM_NO_PROJECT === true,
   CENTRAL_CONSOLE = window.ENGINEERING_PLATFORM_CENTRAL_CONSOLE === true,
   DASHBOARD_BUILD = window.ENGINEERING_PLATFORM_DASHBOARD_BUILD || "",
   DASHBOARD_BUILD_KEY = "engineering-platform-dashboard-build",
@@ -87,8 +88,9 @@ function formatDiagnosticProjection(value) {
     ".\n",
   );
 }
+const knownStatusFallbacks = new Set(Object.values(DASHBOARD_MESSAGES).map((messages) => messages["dashboard.status_unavailable"]));
 function dynamicDiagnosticSource(value) {
-  if (typeof value !== "string" || !value.trim() || operationalTranslation(value)) return false;
+  if (typeof value !== "string" || !value.trim() || operationalTranslation(value) || knownStatusFallbacks.has(value.trim())) return false;
   const literal = value.trim();
   // These are syntactic technical literals, not prose language detection.
   // Only the existing diagnostic prose field is eligible; raw logs, prompts,
@@ -2637,6 +2639,10 @@ function renderActivePullRequests(execution, lifecycle) {
 }
 function renderActiveLifecycle(projection, execution = {}) {
   const current = $("currentRun")?.querySelector(".current-run__grid"); if (!current) return;
+  syncStoredRunEvidence(current, projection?.run_id ? projection.run_evidence : null, projection?.recovery, {
+    document, t, card: promptDetailCard, locale: dashboardLocale, scope: document.body.dataset.projectId,
+    reviewerLabel: (role) => reviewerLabel(role, t("detail.specialist_review")),
+  });
   const previous = current.querySelector(".execution-lifecycle"),
     previousScroll = previous?.querySelector(".execution-lifecycle__scroll"),
     sameRun = previous?.dataset.runId === String(projection?.run_id || ""),
@@ -2978,6 +2984,7 @@ function renderDashboardStatus(status, snapshot) {
   void refreshPlatformHealth();
 }
 function r(status, snapshot = {}) {
+  if (dashboardReadDenied) return;
   dashboardStatusStore.update(status, snapshot);
 }
 // A successful main switch deliberately restarts the platform.  Until the old
@@ -3309,13 +3316,24 @@ document.addEventListener("click", (event) => {
   else if (event.target.closest("#workspaceOpenPullRequestsRefresh")) void refreshOpenPullRequests({ announce: true });
 });
 let receivedDashboardServerPush = false,
+  dashboardReadEpoch = 0,
+  dashboardReadDenied = false,
+  dashboardScopeProbe = null,
   initialDashboardStatusLoaded = false,
   updateModeKey = "refresh.connecting";
 function setUpdateMode(key) {
   updateModeKey = key;
   $("updateMode").textContent = t(key);
 }
-function applyDashboardSnapshot(snapshot) {
+function dashboardSnapshotMatchesScope(snapshot, projectId) {
+  if (NO_PROJECT_SELECTED) return snapshot?.scope === "PLATFORM" && snapshot.project_id == null;
+  return Boolean(projectId) && snapshot?.project_id === projectId
+    && (CENTRAL_CONSOLE ? snapshot.scope === "PROJECT" : snapshot.scope !== "PLATFORM");
+}
+function applyDashboardSnapshot(snapshot, readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId) {
+  if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId)
+    return false;
+  if (!dashboardSnapshotMatchesScope(snapshot, projectId)) return false;
   if (!snapshot || typeof snapshot.status !== "object")
     throw Error(t("dashboard.status_invalid"));
   dashboardStatusStore.update(snapshot.status, snapshot);
@@ -3328,19 +3346,48 @@ function applyDashboardSnapshot(snapshot) {
   }
   humanize();
   checkBuild(snapshot.build_commit);
+  return true;
 }
-async function refreshDashboardSnapshot({ allowAfterServerPush = false, successMode, failureMode } = {}) {
+function invalidateDashboardReadScope() {
+  dashboardReadEpoch += 1;
+  dashboardReadDenied = true;
+  promptHistoryDetailRequestId += 1;
+  closePromptHistoryDetail();
+  promptHistoryDetailRunId = "";
+  setPromptHistoryDetailDownloads(null);
+  $("promptHistoryDetailContent").replaceChildren();
+  $("promptHistoryDetailTitle").textContent = "";
+  clearTimeout(promptHistoryRefreshRetry);
+  promptHistoryEntries = [];
+  promptHistorySelectedRunId = null;
+  renderPromptHistory();
+  dashboardStatusStore.update(fallback, { status: fallback });
+  renderActiveLifecycle(null);
+  humanize();
+}
+async function refreshDashboardSnapshot({ allowAfterServerPush = false, scopeOnly = false, successMode, failureMode } = {}) {
+  const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
   try {
     const response = await fetch("/api/dashboard-snapshot", {
       cache: "no-store",
     });
-    if (!response.ok) throw Error(t("dashboard.status_unavailable"));
+    if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
+    if (!response.ok) {
+      if ([401, 403, 404, 409].includes(response.status)) invalidateDashboardReadScope();
+      throw Error(t("dashboard.status_unavailable"));
+    }
     const snapshot = await response.json();
+    if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
+    if (!dashboardSnapshotMatchesScope(snapshot, projectId)) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
-    applyDashboardSnapshot(snapshot);
+    dashboardReadDenied = false;
+    if (scopeOnly) return true;
+    if (!applyDashboardSnapshot(snapshot, readEpoch, projectId)) return false;
     if (successMode) setUpdateMode(successMode);
     return true;
   } catch {
+    if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
+    if (scopeOnly) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardStatusStore.update(fallback);
     humanize();
@@ -3369,10 +3416,10 @@ function startDashboardUpdates() {
   void loadInitialDashboardStatus();
   const events = new EventSource("/api/events");
   events.addEventListener("dashboard", (x) => {
-    if (!$("autoRefresh").checked) return;
+    if (!$("autoRefresh").checked || dashboardReadDenied) return;
     try {
       const snapshot = JSON.parse(x.data);
-      applyDashboardSnapshot(snapshot);
+      if (!applyDashboardSnapshot(snapshot)) return;
       receivedDashboardServerPush = true;
       setUpdateMode("refresh.connected");
     } catch {
@@ -3384,6 +3431,10 @@ function startDashboardUpdates() {
   events.onerror = () => {
     $("autoRefresh").checked &&
       setUpdateMode("refresh.reconnecting");
+    // EventSource exposes no denial status. Revalidate through the existing
+    // read-only HTTP snapshot; an offline transport failure is not revocation.
+    if (!dashboardScopeProbe) dashboardScopeProbe = refreshDashboardSnapshot({ allowAfterServerPush: true, scopeOnly: true })
+      .finally(() => { dashboardScopeProbe = null; });
   };
 }
 $("loadComponentLogs").addEventListener("click", loadComponentLogs);
@@ -5956,6 +6007,7 @@ let promptHistoryEntries = [],
   promptHistorySelectedRunId = null,
   promptHistorySort = { key: "executed_at", direction: "desc" },
   promptHistoryDetailRunId = "",
+  promptHistoryDetailRequestId = 0,
   promptHistoryDetailLocationSyncing = false,
   promptHistoryDetailPayload = null;
 function promptHistoryDetailFilename(extension) {
@@ -6103,6 +6155,18 @@ function promptHistoryMarkdownRecovery(recovery) {
     [t("detail.recorded_evidence"), t("status_reconciliation.description")],
   ]);
 }
+function promptHistoryMarkdownStoredEvidence(payload) {
+  const cards = renderStoredRunEvidence(payload?.lifecycle?.run_evidence || { run_id: payload?.history?.run_id }, payload?.lifecycle?.recovery, {
+    document, t, card: promptDetailCard,
+    reviewerLabel: (role) => reviewerLabel(role, t("detail.specialist_review")),
+  });
+  // Literal evidence remains literal in the existing Markdown export too.
+  const literal = (text) => String(text || "").replace(/[\\`*_[\]<>]/g, "\\$&");
+  return cards.map((card) => promptHistoryMarkdownSection(card.querySelector("h3").textContent,
+    [...card.querySelectorAll("p.field")].map((field) => [
+      literal(field.firstElementChild.textContent), literal(field.lastElementChild.textContent),
+    ]))).join("\n");
+}
 function promptHistoryMarkdownRecommendationHandoff(handoff) {
   if (!handoff || typeof handoff !== "object") return "";
   const recommendation = handoff.recommendation || {};
@@ -6232,6 +6296,7 @@ function promptHistoryDetailMarkdown(payload, title) {
     promptHistoryMarkdownPullRequests(payload?.pull_requests),
     promptHistoryMarkdownCommitTimeline(payload?.commit_timeline),
     promptHistoryMarkdownLifecycle(payload?.lifecycle),
+    promptHistoryMarkdownStoredEvidence(payload),
     promptHistoryMarkdownRepairHistory(payload),
     promptHistoryMarkdownReviewers(payload?.reviewers),
     promptHistoryMarkdownAssuranceReviews(payload),
@@ -6634,9 +6699,11 @@ function renderPromptHistory() {
 }
 let promptHistoryRefreshRetry = null;
 function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
+  const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
   return fetch("/api/prompt-history", { cache: "no-store" })
     .then((response) => (response.ok ? response.json() : Promise.reject()))
     .then((payload) => {
+      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
       if (!Array.isArray(payload?.runs)) throw Error("invalid prompt history");
       promptHistoryEntries = payload.runs;
       renderPromptHistory();
@@ -6652,6 +6719,7 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
       }
     })
     .catch(() => {
+      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
       promptHistoryEntries = [];
       renderPromptHistory();
       reconcilePromptHistoryDetailFromUrl();
@@ -6664,6 +6732,8 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
     });
 }
 async function refreshAfterOperatorAction({ dismissedRunId = null } = {}) {
+  const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
+  if (dashboardReadDenied) return;
   // The operator just received a successful acknowledgement. Reflect it in
   // the visible history immediately, then reconcile from storage. This keeps
   // a slow status snapshot from leaving a stale dismiss action on screen.
@@ -6675,14 +6745,8 @@ async function refreshAfterOperatorAction({ dismissedRunId = null } = {}) {
     );
     renderPromptHistory();
   }
-  const snapshot = await fetch("/api/dashboard-snapshot", { cache: "no-store" })
-    .then((response) => (response.ok ? response.json() : null))
-    .catch(() => null);
-  if (snapshot && typeof snapshot.status === "object") {
-    dashboardStatusStore.update(snapshot.status, snapshot);
-    humanize();
-    checkBuild(snapshot.build_commit);
-  }
+  await refreshDashboardSnapshot({ allowAfterServerPush: true });
+  if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return;
   await refreshPromptHistory();
 }
 $("promptHistoryFilter").addEventListener("input", () => {
@@ -6969,6 +7033,8 @@ dashboardLocaleMenu.addEventListener("click", (event) => {
   if (!option) return;
   dashboardLocaleSelector.value = option.dataset.dashboardLocale;
   changeDashboardLocale(option.dataset.dashboardLocale);
+  setLocaleMenuOpen(false);
+  if (!document.activeElement?.closest("dialog[open]")) dashboardLocaleButton.focus({ preventScroll: true });
 });
 document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".dashboard-locale__picker")) setLocaleMenuOpen(false);
@@ -8986,6 +9052,10 @@ function renderPromptHistoryDetail(payload) {
       promptDetailProviderReviewSections(usage, reviewers, commitTimeline),
       promptDetailAssuranceReviewsSection(assuranceReviews),
       promptDetailRecommendationHandoff(recommendationHandoff),
+      ...renderStoredRunEvidence(payload?.lifecycle?.run_evidence || { run_id: payload?.history?.run_id }, payload?.lifecycle?.recovery, {
+        document, t, field: detailField, card: promptDetailCard,
+        reviewerLabel: (role) => reviewerLabel(role, t("detail.specialist_review")),
+      }),
     ].filter(Boolean),
   );
 }
@@ -8997,6 +9067,7 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   if (!entry?.run_id) return;
   retryDynamicEvidence();
   const runId = String(entry.run_id);
+  const requestId = ++promptHistoryDetailRequestId, projectId = document.body.dataset.projectId, readEpoch = dashboardReadEpoch;
   void recordUserAction("prompt_history_detail_opened", runId);
   if (updateUrl) updatePromptHistoryDetailUrl(runId);
   promptHistoryDetailRunId = runId;
@@ -9013,11 +9084,23 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   fetch("/api/prompt-history/" + encodeURIComponent(runId) + "/details", { cache: "no-store" })
     .then((response) => response.ok ? response.json() : Promise.reject())
     .then((payload) => {
-      if (promptHistoryDetailRunId === runId && modal.open) renderPromptHistoryDetail(payload);
+      if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open
+          && document.body.dataset.projectId === projectId
+          && (!projectId || payload.project_id === projectId)) renderPromptHistoryDetail(payload);
+      else if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && promptHistoryDetailRequestId === requestId && modal.open
+          && document.body.dataset.projectId === projectId) {
+        setPromptHistoryDetailDownloads(null);
+        content.textContent = t("history.details_unavailable");
+        $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");
+      }
     })
     .catch(() => {
-      if (promptHistoryDetailRunId === runId && modal.open)
+      if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && document.body.dataset.projectId === projectId
+          && promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open) {
+        setPromptHistoryDetailDownloads(null);
         content.textContent = t("history.details_unavailable");
+        $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");
+      }
     });
 }
 function reconcilePromptHistoryDetailFromUrl() {
@@ -9057,8 +9140,11 @@ $("promptHistoryDetailModal").addEventListener("click", (event) => {
   if (event.target === $("promptHistoryDetailModal")) closePromptHistoryDetail();
 });
 $("promptHistoryDetailModal").addEventListener("close", () => {
+  promptHistoryDetailRequestId += 1;
   promptHistoryDetailRunId = "";
   setPromptHistoryDetailDownloads(null);
+  $("promptHistoryDetailContent").replaceChildren();
+  $("promptHistoryDetailTitle").textContent = "";
   if (!promptHistoryDetailLocationSyncing && promptHistoryDetailRunFromUrl())
     updatePromptHistoryDetailUrl("");
 });

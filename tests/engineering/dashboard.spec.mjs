@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import {
   createTranslator,
   DASHBOARD_MESSAGES,
@@ -912,7 +912,7 @@ test.describe("Engineering Status browser smoke", () => {
         { path: "/tmp/open", branch: "codex/open", decision: "keep", reason: "pull_request_open", removable: false, pull_request: { number: 967, url: "https://github.com/pcvantol/djconnect/pull/967", state: "OPEN" } },
       ],
     } }));
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", workspace_worktrees: projection } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
     await page.locator("#autoRefresh").uncheck();
@@ -938,7 +938,7 @@ test.describe("Engineering Status browser smoke", () => {
       { path: "/workspace", branch: "main", commit: "123456789abc" },
       { path: "/tmp/merged-worktree", branch: "codex/merged-worktree", commit: "abcdef123456" },
     ] };
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: worktreeProjection } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", workspace_worktrees: worktreeProjection } }));
     await page.route("**/api/worktree-removal-analysis", (route) => route.fulfill({ json: { available: true, worktrees: [
       { path: "/workspace", branch: "main", decision: "baseline", reason: "main_baseline", removable: false },
       { path: "/tmp/merged-worktree", branch: "codex/merged-worktree", decision: "removable", reason: "safe_to_remove", removable: true, pull_request: { number: 964, url: "https://github.com/pcvantol/djconnect/pull/964", state: "MERGED" } },
@@ -998,7 +998,7 @@ test.describe("Engineering Status browser smoke", () => {
       { path: "/workspace", branch: "main", commit: "123456789abc" },
       { path: "/tmp/selected-worktree", branch: "codex/selected-worktree", commit: "abcdef123456" },
     ] };
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", workspace_worktrees: projection } }));
     let switchPayload = null;
     await page.route("**/api/workspace-switch-to-worktree", async (route) => {
       switchPayload = JSON.parse(route.request().postData());
@@ -1318,7 +1318,7 @@ test.describe("Engineering Status browser smoke", () => {
     // let the live event stream replace it with the test dashboard's own
     // (usually empty) background snapshot while the page is hydrating.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: {}, rate_limits: { provider: "Codex CLI", provider_version: "0.149.0", windows: [{ label: "5-hour window", used_percent: 20, resets_at: 1 }], reset_credits: 0 },
     } }));
     await page.route("**/api/configuration", async (route) => {
@@ -1356,7 +1356,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Keep the controlled quota fixture authoritative for this test; the
     // production SSE stream is covered independently by stream tests.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE" }, rate_limits: { windows: [{ label: "5-hour window", used_percent: 53 }] },
     } }));
     await page.route("**/api/configuration", (route) => route.fulfill({ json: {
@@ -1380,7 +1380,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("shows the capacity reserve banner and hides it immediately after lowering the reserve", async ({ page }) => {
     const writes = [];
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE" },
       rate_limits: { windows: [{ label: "5-hour window", used_percent: 80 }] },
     } }));
@@ -1824,7 +1824,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/worktree-removal-analysis", (route) => route.fulfill({ json: {
       available: true, worktrees: [],
     } }));
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       workspace_worktrees: { available: true, worktrees: [{ path: "/workspace", branch: "main", commit: "123456789abc" }] },
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -1851,7 +1851,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("translates reviewer and operational machine codes in every supported locale", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     for (const language of SUPPORTED_LOCALES) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -1983,7 +1983,7 @@ test.describe("Engineering Status browser smoke", () => {
     test.slow();
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const dashboardSource = readFileSync(
       path.join(repository, "src/engineering_platform/assets/dashboard.js"),
@@ -2345,11 +2345,12 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("formats structured execution-context snapshots as readable fields", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
       run_id: "inbox-context", status: "COMPLETE", title: "Context prompt", executed_at: "2026-08-30T08:00:00Z",
     }] } }));
     await page.route("**/api/prompt-history/inbox-context/details", (route) => route.fulfill({ json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
       history: {
         run_id: "inbox-context", status: "COMPLETE", title: "Context prompt", executed_at: "2026-08-30T08:00:00Z",
         execution_context: {
@@ -2386,6 +2387,7 @@ test.describe("Engineering Status browser smoke", () => {
     }] } }));
     await page.route("**/api/prompt-history/inbox-modal/details", (route) => route.fulfill({
       json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
         history: {
           run_id: "inbox-modal",
           status: "BLOCKED",
@@ -2578,6 +2580,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: runId, status: "BLOCKED", title: "Status recovery", executed_at: "2026-08-17T05:42:00Z",
     }] } }));
     await page.route(`**/api/prompt-history/${runId}/details`, (route) => route.fulfill({ json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
       history: { run_id: runId, status: "BLOCKED", title: "Status recovery" },
       lifecycle: {
         run_id: runId,
@@ -2605,6 +2608,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: runId, status: "COMPLETE", title: "Deeplink prompt", executed_at: "2026-08-04T08:00:00Z",
     }] } }));
     await page.route(`**/api/prompt-history/${runId}/details`, (route) => route.fulfill({ json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
       history: { run_id: runId, status: "COMPLETE", title: "Deeplink prompt" }, execution: {}, evidence: [],
     } }));
 
@@ -2651,7 +2655,7 @@ test.describe("Engineering Status browser smoke", () => {
       runs: [{ run_id: "inbox-fixture", status: "COMPLETE", title: "Fixture" }],
     } }));
     await page.route("**/api/prompt-history/inbox-row-focus/details", (route) => route.fulfill({
-      json: { history: { run_id: "inbox-row-focus", status: "COMPLETE", title: "Focused row" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", history: { run_id: "inbox-row-focus", status: "COMPLETE", title: "Focused row" } },
     }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -2729,7 +2733,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses the active-execution card surface for lifecycle and execution context", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.setViewportSize({ width: 920, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -2797,7 +2801,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps active human producer provenance visible in the Central context", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -2823,7 +2827,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("refreshes available AI capacity with a selected project", async ({ page }) => {
     let requests = 0;
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/provider-capacity", async (route) => {
       requests += 1;
       await route.fulfill({ json: {
@@ -2841,7 +2845,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("translates a host-owned provider deadline in active and historical views", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const diagnostic = "Provider action exceeded the 15-minute host-owned deadline.";
     await page.evaluate((reason) => {
@@ -2860,7 +2864,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("translates execution phase in the active context and historical status", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -2900,7 +2904,7 @@ test.describe("Engineering Status browser smoke", () => {
       "Leg een begrensde beheerde dashboard-acceptatiekwalificatie vast.",
     ];
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/dashboard-translate", async (route) => {
       expect(route.request().method()).toBe("POST");
       expect(await route.request().postDataJSON()).toEqual({ locale: "nl", texts: [business, engineering, action] });
@@ -3008,7 +3012,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps lease-lost finalization visible for safe recovery", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_STALE",
@@ -3029,7 +3033,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("explains the managed and Genesis execution modes from the active execution", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: {
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {
         watcher_state: "ENGINEERING_RUN_ACTIVE",
         run_id: "inbox-execution-mode",
         prompt_title: "Execution mode fixture",
@@ -3074,7 +3078,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("renders execution-lifecycle nodes without button chrome", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3125,7 +3129,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses green only for the terminal complete lifecycle result", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "JOB_COMPLETED",
@@ -3149,7 +3153,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses amber only for an operator merge wait, not ordinary active work", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "WAITING_FOR_OPERATOR_MERGE",
@@ -3179,7 +3183,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses neutral connectors for lifecycle steps not yet reached", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3207,7 +3211,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses a decorative rocket only for the lifecycle start boundary", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3232,7 +3236,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows pull-request check repair and keeps Merge visibly blocked", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3265,7 +3269,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows localized local-validation iterations as lifecycle evidence", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3300,7 +3304,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("refreshes an open validation popup and separates repeated validation passes", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const activeStep = {
       id: "LOCAL_REPOSITORY_VALIDATION",
@@ -3347,7 +3351,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("projects specialist reviewers and implementation result into their step popups", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "step-evidence", github_repository: "pcvantol/forge",
@@ -3399,7 +3403,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("places a visual divider between repair rounds", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "repair-divider",
@@ -3422,7 +3426,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("places finalization pull-request repair after Finalization and before its merge", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3461,7 +3465,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("places the estimate directly below execution identity and before the lifecycle", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3493,7 +3497,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("returns active-execution blocks to two columns when their container permits it", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.setViewportSize({ width: 920, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -3598,7 +3602,7 @@ test.describe("Engineering Status browser smoke", () => {
     // update may otherwise replace the injected lifecycle while measurements
     // are pending, making this visual contract nondeterministic.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3666,7 +3670,7 @@ test.describe("Engineering Status browser smoke", () => {
     // The fixture owns this lifecycle; a delayed server-push snapshot must not
     // replace it between injection and the interaction assertion.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3710,7 +3714,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("explains translated stale timing without downgrading a completed execution result", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     for (const language of SUPPORTED_LOCALES) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -3743,7 +3747,7 @@ test.describe("Engineering Status browser smoke", () => {
     // This fixture owns the lifecycle projection; an asynchronous server
     // snapshot must not replace its node while the click is being asserted.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3818,7 +3822,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("localizes repair audit sentinel values", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3841,7 +3845,7 @@ test.describe("Engineering Status browser smoke", () => {
     const source = "No changed behavior or executable test surface exists, so no regression test was applicable.";
     const translated = "Er is geen gewijzigd gedrag of uitvoerbaar testoppervlak, dus er was geen regressietest van toepassing.";
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/dashboard-translate", async (route) => {
       expect(route.request().method()).toBe("POST");
       expect(await route.request().postDataJSON()).toEqual({ locale: "nl", texts: [source] });
@@ -3870,7 +3874,7 @@ test.describe("Engineering Status browser smoke", () => {
     const evidence = ["Security observation in English.", "Failed validation in English.", "Repair action in English.", "Repair summary in English."];
     const translations = Object.fromEntries(evidence.map((source, index) => [source, `Nederlandse vertaling ${index + 1}`]));
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/dashboard-translate", async (route) => {
       const { texts } = await route.request().postDataJSON();
       await route.fulfill({ json: { translations: texts.map((text) => translations[text]) } });
@@ -3896,7 +3900,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("retains dynamic quality evidence when translation is unavailable", async ({ page }) => {
     const source = "No documented behavior changed; documentation remained unchanged.";
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/dashboard-translate", (route) => route.fulfill({
       status: 503, json: { error: "DASHBOARD_TRANSLATION_UNAVAILABLE" },
     }));
@@ -4010,7 +4014,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("hides checkout-bound merge hand-off controls from CENTRAL", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {
       watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
       run_id: "inbox-merge-wait", pull_request: 832, target_repository: "pcvantol/djconnect",
     } } }));
@@ -4021,7 +4025,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("does not call the checkout-bound merge-status route from CENTRAL", async ({ page }) => {
     let checkCount = 0;
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {
       watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
       run_id: "inbox-merge-check", pull_request: 832, target_repository: "pcvantol/djconnect",
     } } }));
@@ -4040,7 +4044,7 @@ test.describe("Engineering Status browser smoke", () => {
       number: 841, title: "Finalization merge", url: "https://github.com/pcvantol/djconnect/pull/841",
       branch: "codex/finalization", status: "ready_for_review",
     }] } }));
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
@@ -4067,7 +4071,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("renders automatic reconciliation without an operator handoff", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "RECONCILE_AGENT",
@@ -4109,7 +4113,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows a bound repair PR with its host-observed candidate before delivery", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "LOCAL_REPOSITORY_VALIDATION",
@@ -4139,7 +4143,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("labels a newly linked phase PR once beside earlier run PRs", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-finalization-pr",
@@ -4158,7 +4162,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("renders only the merge boundaries recorded for the lifecycle", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const render = (steps) => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", lifecycle: {
       available: true, run_id: "lifecycle-conditional-merges", terminal_state: "ACTIVE", steps,
@@ -4184,7 +4188,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses explicit localized labels for PR repair and both merge hand-offs", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", lifecycle: {
       available: true, run_id: "lifecycle-explicit-labels", terminal_state: "ACTIVE",
@@ -4223,6 +4227,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: "inbox-handoff", status: "COMPLETE", title: "Forge handoff", executed_at: "2026-08-04T08:00:00Z",
     }] } }));
     await page.route("**/api/prompt-history/inbox-handoff/details", (route) => route.fulfill({ json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
       history: { run_id: "inbox-handoff", status: "COMPLETE", title: "Forge handoff", executed_at: "2026-08-04T08:00:00Z" },
       recommendation_handoff: {
         artifact_path: "forge/recommendation.json", projection_status: "COMPLETE", missing_fields: [],
@@ -4447,7 +4452,7 @@ test.describe("Engineering Status browser smoke", () => {
     // The modal assertions own their projection; avoid a live snapshot racing
     // one of the locale-triggered page reloads under the parallel CI suite.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     const error = "Preflight failed: Unstaged changes are present. Recovery: Commit, stash, or remove unstaged changes before execution.";
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const language of SUPPORTED_LOCALES) {
@@ -4469,7 +4474,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("localizes an unavailable operator action for every supported language", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const language of SUPPORTED_LOCALES) {
       await selectDashboardLocale(page, language);
@@ -4703,7 +4708,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("changes visible interface copy for each supported language", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     const expectations = [
       ["en", "Language", "Refresh automatically", "AI analysis", "Passed", "Execution", "Recover blocked execution", "Active execution", "Execution queue", "New assignments wait for execution in order of creation date.", "EP Operations", "Loading data…", "Diagnostics", "Engineering Platform", "version", "Automatic refresh is off"],
@@ -4766,7 +4771,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("localizes dashboard chrome and dynamic runtime copy for every supported language", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const expectations = [
       ["en", "Specialist reviewers", "Run cumulative input tokens", "Use reset"],
@@ -5073,7 +5078,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("renders host, workspace and capability preflight fields through one presentation", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
     }));
     const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -5242,7 +5247,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(downloadedJson.suggestedFilename()).toBe("telemetry-detail-dashboard-fixture-utc-day-detail-2026-08-24.json");
     const jsonContent = JSON.parse(readFileSync(await downloadedJson.path(), "utf8"));
     expect(jsonContent.export_schema_version).toBe("telemetry-export@1.1");
-    expect(jsonContent.selection).toMatchObject({ project_id: "dashboard-fixture", scope: "UTC_DAY_DETAIL", date: "2026-08-24" });
+    expect(jsonContent.selection).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture", scope: "UTC_DAY_DETAIL", date: "2026-08-24" });
     expect(jsonContent.data.day_detail.runs.map((run) => run.run_id)).toContain("inbox-day-export");
     expect(markdownContent).toContain(jsonContent.snapshot_id);
     setSyntheticTelemetryRun("inbox-day-export", "2026-08-24", false);
@@ -5280,7 +5285,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("gives every table a coloured first column and sorts telemetry columns", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/telemetry*", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/events", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => window.executionTelemetry([
@@ -5401,7 +5406,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("sorts telemetry detail tables with the same header treatment as logs", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
       summary: {},
@@ -5550,7 +5555,7 @@ test.describe("Engineering Status browser smoke", () => {
         external_wait_ms: 0, largest_phase: "PROVIDER_EXECUTION",
       }],
     } }));
-    await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({ json: { history: { run_id: "inbox-telemetry-row" } } }));
+    await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", history: { run_id: "inbox-telemetry-row" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => window.executionTelemetry([{
       date: "2026-08-16", prompt_count: 1, average_execution_seconds: 0,
@@ -5564,7 +5569,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(runRow.locator(".telemetry-run-link")).toHaveCSS("text-decoration-line", "none");
     await runRow.hover();
     const hoverBackgrounds = await runRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    expect(new Set(hoverBackgrounds).size).toBe(2);
+    await expect.poll(() => runRow.evaluate((row) => row.matches(":hover"))).toBe(true);
+    await expect.poll(() => runRow.locator("td").evaluateAll((cells) =>
+      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
     expect(hoverBackgrounds[0]).not.toBe("rgba(0, 0, 0, 0)");
     const runId = runRow.locator(".telemetry-run-link");
     await runId.click();
@@ -5584,7 +5591,7 @@ test.describe("Engineering Status browser smoke", () => {
     // asynchronous initial dashboard snapshot while this modal is opened.
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
       summary: { executions: 1, completed: 1, blocked: 0, failed: 0 },
@@ -6143,7 +6150,7 @@ test.describe("Engineering Status browser smoke", () => {
     test.slow();
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.route("**/api/logs/**", (route) => route.fulfill({
       contentType: "application/x-ndjson",
@@ -6310,7 +6317,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: history } }));
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, last_executed_run: "inbox-actions" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, last_executed_run: "inbox-actions" } },
     }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -6559,7 +6566,7 @@ test.describe("Engineering Status browser smoke", () => {
       },
     } }));
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: {
+      json: { scope: "PROJECT", project_id: "dashboard-fixture",
         status: {
           watcher_state: "ENGINEERING_RUN_ACTIVE",
           current_phase: "EXECUTE_AGENT",
@@ -7414,7 +7421,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture",
         status: {
           watcher_state: "WATCHER_IDLE",
           platform_version: "2.0.0",
@@ -7641,7 +7648,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -7691,7 +7698,7 @@ test.describe("Engineering Status browser smoke", () => {
       },
     };
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: {
         watcher_state: "HOST_PREFLIGHT_FAILED",
         current_phase: "INITIALIZE",
@@ -7924,7 +7931,7 @@ test.describe("Engineering Status browser smoke", () => {
     // while the three presentation states below are asserted.
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -7988,7 +7995,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("keeps terminal specialist reviews visible as historical run evidence", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -8029,7 +8036,7 @@ test.describe("Engineering Status browser smoke", () => {
     test.setTimeout(60_000);
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const reviewerAgents = [
@@ -8076,7 +8083,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.setViewportSize({ width: 1440, height: 900 });
     const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
@@ -8158,7 +8165,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -8181,7 +8188,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses phase-aware comparable telemetry for the remaining duration", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -8205,7 +8212,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("stops reporting one minute once a phase-aware range is exhausted", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -8231,7 +8238,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("stops reporting one minute once the coarse range is exhausted", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -8252,7 +8259,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("shows the elapsed duration explanation only once without learned history", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
@@ -8268,7 +8275,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("localizes active phases without mistaking them for whole-run time remaining", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const [phase, label] of [
       ["CAPABILITY_REVIEW", "Specialistenreview"],
@@ -8286,7 +8293,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows an honest total and phase context during autonomous PR quality control", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "QUALITY_CONTROL_AGENT", run_id: "pr-quality-run",
@@ -8299,7 +8306,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("unknown active phase retains total uncertainty without inventing a phase duration", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "", run_id: "transition-run" }, { duration_estimate: {} }));
     await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
@@ -8373,7 +8380,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("formats the CENTRAL start time and never renders a JSON diagnostic error", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.route("**/api/execution-diagnostic/current", (route) => route.fulfill({
       status: 404,
@@ -8400,7 +8407,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -8451,7 +8458,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -8474,7 +8481,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     const initialSnapshot = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -8521,7 +8528,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const banner = page.getByTestId("codex-usage-limit-banner");
@@ -8551,7 +8558,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -8570,7 +8577,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -9219,15 +9226,15 @@ test.describe("Engineering Status browser smoke", () => {
     const divider = await rows.nth(0).locator("td").first().evaluate((cell) => getComputedStyle(cell).borderBottomColor);
     expect(divider).not.toBe("rgb(61, 54, 81)");
     expect(divider).not.toBe("rgb(212, 222, 235)");
-    // The fixed fixture already proves that this row exists.  For this
-    // visual :hover assertion, bypass Playwright's unrelated actionability
-    // wait so parallel dashboard shards cannot consume the test deadline
-    // while a transient layout update settles.
-    await rows.nth(1).hover({ force: true });
+    // Prove a real pointer hover; forcing a covered/offscreen coordinate can
+    // leave the row unhovered while its resting cell colours look plausible.
+    await rows.nth(1).scrollIntoViewIfNeeded();
+    await rows.nth(1).hover();
     const hoverRowSurface = await rows.nth(1).locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    // The frozen first column keeps its category tint while the remaining
-    // cells receive the common hover fill.
-    expect(new Set(hoverRowSurface).size).toBe(2);
+    // Interactive log rows share the existing continuous hover contract.
+    await expect.poll(() => rows.nth(1).evaluate((row) => row.matches(":hover"))).toBe(true);
+    await expect.poll(() => rows.nth(1).locator("td").evaluateAll((cells) =>
+      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
     expect(hoverRowSurface[0]).not.toBe("rgba(0, 0, 0, 0)");
     await rows.nth(0).click();
     await rows.nth(2).click({ modifiers: ["Meta"] });
@@ -10343,10 +10350,13 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator('#promptHistory th[data-history-sort-key="git_commit"]')).toHaveCount(0);
     const firstPromptHistoryRow = page.locator("#promptHistoryRows .prompt-history-row").first();
     await firstPromptHistoryRow.hover();
+    // Existing CSS explicitly requires one continuous interactive-row hover
+    // surface, including the frozen first cell. Prove actual hover as well as
+    // equal nontransparent cell fills; an idle row cannot satisfy this check.
+    await expect.poll(() => firstPromptHistoryRow.evaluate((row) => row.matches(":hover"))).toBe(true);
     const promptHistoryHover = await firstPromptHistoryRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    // The frozen first column retains its category tint; the data cells share
-    // the hover fill.
-    expect(new Set(promptHistoryHover).size).toBe(2);
+    await expect.poll(() => firstPromptHistoryRow.locator("td").evaluateAll((cells) =>
+      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
     expect(promptHistoryHover[0]).not.toBe("rgba(0, 0, 0, 0)");
     await expect(page.locator("#promptHistoryRows tr").first().locator("td")).toHaveCount(9);
     await expect(page.locator("#promptHistoryPagination")).toContainText("Pagina 1 van 3 · 26 uitvoeringen");
@@ -10379,6 +10389,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
     await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({
       json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
         history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", producer_id: "forge", producer_type: "FORGE", producer_version: "2.7.2", producer_submission_contract_version: "1.0", submission_id: "submission-0006", execution_context_version: "1.0", mission_id: "MISSION-0006", engineering_action_id: "action-0006", correlation_id: "correlation-0006", execution_context: { context_version: "1.0", mission_id: "MISSION-0006", producer_host_id: "forge-host-alpha", mission_revision: "5", intent_id: "intent-0006", intent_revision: "1", runtime_prompt_id: "prompt-0006", runtime_prompt_digest: "sha256:aaaaaaaa", retry_of_correlation_id: "correlation-0005" }, execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 }, execution_activity_summary: { activity: { primary_codex_commands_total: 1 }, terminal_delivery_diff: { total_unique_changed_paths: 0 } } },
         execution: { seconds: 42, total_seconds: 61 },
         runtime: { runtime_provider: "codex_cli", codex_cli_version: "0.146.0" },
@@ -10974,7 +10985,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("retains severity colours in the light component-log table", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -11115,7 +11126,7 @@ test.describe("Engineering Status browser smoke", () => {
     let resetRequests = 0;
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: {
+      json: { scope: "PROJECT", project_id: "dashboard-fixture",
         status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 },
         rate_limits: { provider: "Codex CLI", provider_version: "0.146.0", windows: [], reset_credits: 1 },
       },
@@ -11158,7 +11169,7 @@ test.describe("Engineering Status browser smoke", () => {
     // legitimately replace the component log with its empty-state projection.
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" }, component_log_versions: {} },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" }, component_log_versions: {} },
     }));
     await page.route("**/api/logs/**", (route) =>
       route.fulfill({ contentType: "application/x-ndjson", body: "" }),
@@ -11230,7 +11241,7 @@ test.describe("Engineering Status browser smoke", () => {
       { filename: "keep-waiting.md", title: "Blijft wachten", modified_at: "2026-08-02T10:02:00Z" },
     ];
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE", queue_depth: 2, queue_items: queued },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
@@ -11244,7 +11255,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("maps CENTRAL queue actions to their matching confirmation modal", async ({ page }) => {
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
@@ -11312,7 +11323,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("keeps legacy Inbox items display-only in CENTRAL", async ({ page }) => {
     let deferRequests = 0;
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: {
         watcher_state: "WATCHER_IDLE",
         queue_depth: 1,
@@ -11337,7 +11348,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("keeps the checkout-bound Codex CLI blocker out of the CENTRAL Inbox", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -11364,7 +11375,7 @@ test.describe("Engineering Status browser smoke", () => {
       await route.fulfill({ json: { previous_branch: "codex/ui-polish", branch: "main", watcher: "restarted" }, status: 202 });
     });
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WORKSPACE_PREFLIGHT_FAILED", queue_depth: 1 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WORKSPACE_PREFLIGHT_FAILED", queue_depth: 1 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -11389,7 +11400,7 @@ test.describe("Engineering Status browser smoke", () => {
       await route.fulfill({ json: { state: "free", recovered: true }, status: 202 });
     });
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -11429,7 +11440,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("does not expose retired local branch cleanup", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#workspaceCard")).toHaveCount(0);
@@ -11638,7 +11649,7 @@ test.describe("Engineering Status browser smoke", () => {
       dismissed = true;
       return route.fulfill({ json: { dismissed: "inbox-dismiss" } });
     });
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE", last_executed_run: "inbox-newer-terminal", queue_depth: 0, queue_items: [] },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
@@ -11678,7 +11689,7 @@ test.describe("Engineering Status browser smoke", () => {
       cancelled = true;
       return route.fulfill({ json: { run_id: "inbox-pa-e3", state: "CANCEL_REQUESTED" } });
     });
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
@@ -11887,7 +11898,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(({ components, component_model }) => renderPlatformHealth({ components, component_model }), {
       components, component_model: canonicalPlatformComponentModel(),
     });
-    await page.locator("#platformHealth > summary").click({ force: true });
+    if (await page.locator("#platformHealth").getAttribute("open") === null) await page.locator("#platformHealth > summary").click();
     await page.locator(".platform-health__component[aria-label='Meer informatie over HTTP/API-ingang']").click();
     await expect(page.locator("#componentModalContent")).toContainText("Gezond");
     await expect(page.locator("#componentModalContent")).not.toContainText("dashboard.health");
@@ -11964,7 +11975,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => {
       snapshots += 1;
-      return route.fulfill({ json: {
+      return route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
         status: { watcher_state: "WATCHER_IDLE" },
         component_log_versions: { operations_console: String(snapshots) },
       } });
