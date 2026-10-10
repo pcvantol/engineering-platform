@@ -142,3 +142,29 @@ independent pair remain required. Prior complete local browser470PASS and
 continue as historical inputs, not automatic round2 PASS. Protected merge,
 normal NO_BUMP Finalization and new exact-final-main installed/browser/CI with
 reachable fresh capture previews/readbacks/own cleanup remain mandatory.
+
+### Round2 owning-suite fixture convergence
+
+Exact0d browser shards exposed older successful snapshot doubles missing the
+canonical top-level CENTRAL project identity. Explicit successful snapshot
+fixtures now carry `dashboard-fixture`; explicit foreign identities and denied
+responses are preserved. Product scope/epoch/withdrawal guards stay unchanged,
+and the existing mobile visual golden is not updated. Targeted13browser checks
+PASS15.0s, including reserve settings, execution modes, queue display, mobile
+visual reference and genuine paired public-retry/read-withdrawal regressions.
+
+The owning CI uncovered three genuine new-canary fixture admission errors:
+the unit job installs the exact native CLI on PATH but does not declare the
+managed prefix. Each mode now uses its own installation and resolves only the
+actual installed0.160.1 executable into that installation's native prefix.
+The real runtime admission remains enforced. The unchanged CI-style context
+first reproduced3errors; after fixture correction5tests PASS7.792s. No fake
+runtime, authority record or internal guard replacement is introduced.
+
+Historical exacteed full source2479tests PASS2existing skips3502.269s and
+installed2461tests PASS1existing skip3508.766s completed. Hosted eed CI failed
+on the three runtime fixture errors; current0d browser shards failed on the
+missing project identities. Neither is full current CI PASS. These coupled
+fixture corrections remain within already booked round2 (consumed2/max3/
+remaining1); new exact package/full owning gates and third independent pair
+remain mandatory before protected delivery.

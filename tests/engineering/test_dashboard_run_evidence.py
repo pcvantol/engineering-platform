@@ -3,6 +3,11 @@ from __future__ import annotations
 
 import unittest
 import copy
+import tempfile
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 from engineering_platform import server
@@ -36,7 +41,22 @@ class DashboardRunEvidenceTests(unittest.TestCase):
     def test_actual_failed_uncertain_and_host_duplicate_outcomes_preserve_read_effects(self):
         from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
         for mode in ("failed", "uncertain-result", "duplicate"):
-            with self.subTest(mode=mode), patch.dict("os.environ", {"EP_QUALIFICATION_DETERMINISTIC_FLOW": "1"}):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="ep-run-evidence-installation-") as installation, patch.dict(
+                    "os.environ", {"EP_QUALIFICATION_DETERMINISTIC_FLOW": "1",
+                                   "ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+                # CI already installs the exact native dependency on PATH;
+                # expose it through the actual managed-prefix contract just
+                # as the standalone installed browser job does. No fake
+                # runtime/configuration or product admission bypass.
+                if not os.environ.get("EP_MANAGED_CODEX_CLI_PREFIX"):
+                    executable = shutil.which("codex")
+                    self.assertIsNotNone(executable)
+                    version = subprocess.check_output([executable, "--version"], text=True).strip()
+                    self.assertEqual(version, "codex-cli 0.160.1")
+                    native = Path(installation) / "native"
+                    (native / "bin").mkdir(parents=True)
+                    (native / "bin/codex").symlink_to(executable)
+                    os.environ["EP_MANAGED_CODEX_CLI_PREFIX"] = str(native)
                 canary = StoredConsoleCanary(finding_mode=mode)
                 try:
                     run_id = canary.generate()
