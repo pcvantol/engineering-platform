@@ -167,7 +167,13 @@ class DashboardExternalTransportTests(unittest.TestCase):
                     self.assertEqual(response.status, 200)
                     payload = json.load(response)
                 self.assertEqual(payload["rate_limits"]["windows"][0]["used_percent"], 0)
+                with urlopen(origin + "/api/provider-login-status", timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    readiness = json.load(response)["providers"]
+                self.assertEqual(readiness["codex"]["state"], "READY")
+                self.assertEqual(readiness["github"]["state"], "READY")
                 observed = canary.external_transport.snapshot()
+                self.assertGreaterEqual(observed["readiness_metadata_requests"], 2)
                 self.assertEqual(observed["metadata_requests"], 1)
                 self.assertEqual(observed["metadata_sessions"], 1)
                 self.assertEqual(observed["native_app_server_starts"], 0)

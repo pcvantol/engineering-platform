@@ -285,3 +285,23 @@ main or whole acceptance. A new fixed candidate, full source/installed/browser/
 strictcoverage/currentCI and fresh complete independent Q/S remain required,
 followed by protected merge, normalNO_BUMPFinalization and NEW exact-final-main
 installed/fullbrowser/fresh reachable screenshot links/previews/readbacks/cleanup.
+
+
+Round4 own convergence additionally exposed a known GitHub auth-status metadata
+read through LocalProcessProvider in the actual readiness handler. The broader
+new guard rejected it before a live launch; c3a516b's partial local whole runs
+are preserved NOT_QUALIFIED_INTERRUPTED, not PASS. Native legacy browser shards
+2/3/4 completed107/107/105PASS on that candidate; no current-head carry-over.
+The same integrated round now supplies bounded Codex/GitHub readiness responses
+at the external method/process boundaries with a distinct readiness-metadata
+counter. Login/logout/account execution remains rejected. The real host-status
+handler/classification and capacity services are retained. No whole peer-review
+pair had started and no new correction round or operational allowance is used.
+
+
+Round4 convergence preserves the failed history-modal reopening observation;
+its unchanged targeted trace runPASS5.6s, not an original fullmatrixPASS.
+Selected CENTRAL snapshots additionally require canonical scopePROJECT as well
+as exact project identity, while the explicit no-project document requires
+PLATFORM/absentidentity. Legacy negative/positive transport fixtures now state
+their canonical PROJECT scope explicitly; assertions/guards remain unchanged.

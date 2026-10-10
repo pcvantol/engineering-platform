@@ -3327,7 +3327,8 @@ function setUpdateMode(key) {
 }
 function dashboardSnapshotMatchesScope(snapshot, projectId) {
   if (NO_PROJECT_SELECTED) return snapshot?.scope === "PLATFORM" && snapshot.project_id == null;
-  return Boolean(projectId) && snapshot?.scope !== "PLATFORM" && snapshot?.project_id === projectId;
+  return Boolean(projectId) && snapshot?.project_id === projectId
+    && (CENTRAL_CONSOLE ? snapshot.scope === "PROJECT" : snapshot.scope !== "PLATFORM");
 }
 function applyDashboardSnapshot(snapshot, readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId) {
   if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId)

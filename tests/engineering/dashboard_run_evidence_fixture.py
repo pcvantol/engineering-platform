@@ -262,7 +262,7 @@ class IsolatedProviderTransport:
     """
     def __init__(self, *, remaining=100, authenticated=True):
         self.remaining, self.authenticated = remaining, authenticated
-        self.metadata_sessions = self.metadata_requests = 0
+        self.metadata_sessions = self.metadata_requests = self.readiness_requests = 0
         self.unexpected = []
         self.processes = []
         self.stack = ExitStack()
@@ -272,6 +272,7 @@ class IsolatedProviderTransport:
         adapter = self
         def command(provider, *args, **kwargs):
             if args == ("login", "status"):
+                adapter.readiness_requests += 1
                 return subprocess.CompletedProcess(args, 0 if adapter.authenticated else 1,
                                                    "Declared local external readiness response", "")
             if args == ("--version",):
@@ -317,11 +318,14 @@ for line in sys.stdin:
         # and account-launch commands at this process transport boundary too.
         for name in ("execute", "spawn", "spawn_detached"):
             original = getattr(LocalProcessProvider, name)
-            def local_process(provider, root, arguments, *extra, _original=original, _name=name, **kwargs):
+            def local_process(provider, root, arguments, _original=original, _name=name, **kwargs):
                 executable = Path(arguments[0]).name.lower() if arguments else ""
+                if executable == "gh" and tuple(arguments[1:]) == ("auth", "status", "--hostname", "github.com"):
+                    adapter.readiness_requests += 1
+                    return subprocess.CompletedProcess(arguments, 0, "Declared external GitHub readiness fixture", "")
                 if executable in {"codex", "gh", "osascript"} and tuple(arguments[1:]) != ("--version",):
                     return adapter.deny(f"local_{_name}", arguments)
-                return _original(provider, root, arguments, *extra, **kwargs)
+                return _original(provider, root, arguments, **kwargs)
             self.stack.enter_context(patch.object(LocalProcessProvider, name, local_process))
         self.stack.enter_context(patch.object(CodexCliProvider, "command", command))
         self.stack.enter_context(patch.object(CodexCliProvider, "app_server", app_server))
@@ -338,6 +342,7 @@ for line in sys.stdin:
         if self.unexpected:
             raise AssertionError(f"Unexpected external transport attempts: {self.unexpected}")
         return {"metadata_sessions": self.metadata_sessions, "metadata_requests": self.metadata_requests,
+                "readiness_metadata_requests": self.readiness_requests,
                 "unexpected_transport_attempts": 0, "native_app_server_starts": 0}
 
     def close(self):
@@ -390,10 +395,6 @@ class StoredConsoleCanary:
             return subprocess.CompletedProcess(args, 1, "", "Declared external terminal analysis unavailable")
 
         def model_metadata(provider, *args, **kwargs):
-            if args == ("login", "status"):
-                if self.selection_mode == "missing":
-                    return subprocess.CompletedProcess(args, 1, "", "Declared external transport authentication unavailable")
-                return subprocess.CompletedProcess(args, 0, "External fixture model transport ready", "")
             return native_command(provider, *args, **kwargs)
 
         self.transport_patches = [
@@ -532,8 +533,6 @@ class StoredConsoleCanary:
             raise AssertionError("Only the stored uncertain operation may be reconciled")
         native_command = CodexCliProvider.command
         def model_metadata(provider, *args, **kwargs):
-            if args == ("login", "status"):
-                return subprocess.CompletedProcess(args, 0, "Declared external model transport ready", "")
             return native_command(provider, *args, **kwargs)
         stored = self.fixture.store.load(self.run_id)
         calls, creates = list(self.model.calls), self.github.creates
@@ -565,8 +564,6 @@ class StoredConsoleCanary:
         self.model.recovery_mode = False  # Declared external transport recovers.
         native_command = CodexCliProvider.command
         def metadata(provider, *args, **kwargs):
-            if args == ("login", "status"):
-                return subprocess.CompletedProcess(args, 0, "Declared external transport ready", "")
             return native_command(provider, *args, **kwargs)
         def unavailable_analysis(*args, **kwargs):
             self.generation_model_requests += 1
