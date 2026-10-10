@@ -280,8 +280,14 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
         const response = await freshPage.request.get(`${reader.ready.url.split("/?")[0]}/api/prompt-history/${ready.run_id}/details?project=project`);
         expect(response.ok()).toBe(true);
         expect((await response.json()).lifecycle.run_evidence).toEqual(stored.lifecycle.run_evidence);
+        const capacity = await freshPage.request.get(`${reader.ready.url.split("/?")[0]}/api/provider-capacity`);
+        expect(capacity.ok()).toBe(true); expect((await capacity.json()).rate_limits.windows[0].used_percent).toBe(0);
         reader.child.stdin.write("snapshot\n");
-        expect((await reader.next()).passive_effects).toEqual({ model: 0, git: 0 });
+        const observed = await reader.next();
+        expect(observed.passive_effects).toEqual({ model: 0, git: 0 });
+        expect(observed.transport_observations.metadata_requests).toBeGreaterThan(0);
+        expect(observed.transport_observations.unexpected_transport_attempts).toBe(0);
+        expect(observed.transport_observations.native_app_server_starts).toBe(0);
       } finally {
         await freshBrowser.close();
         if (reader.child.exitCode === null) {
@@ -293,6 +299,9 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     child.stdin.write("snapshot\n");
     const after = await next();
     expect(after.after).toEqual(ready.before);
+    expect(after.transport_observations.metadata_requests).toBeGreaterThan(0);
+    expect(after.transport_observations.unexpected_transport_attempts).toBe(0);
+    expect(after.transport_observations.native_app_server_starts).toBe(0);
     if (scenario === "uncertain") {
       child.stdin.write("reconcile\n");
       const reconciled = await next();
@@ -345,7 +354,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
       source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
       wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, screenshots,
-      assets: ready.assets,
+      assets: ready.assets, external_transport_observations: after.transport_observations,
     }, null, 2));
     expect(screenshots.slice(0, 3).map((item) => item.scenario)).toEqual(["selection", "findings", "publication"]);
     expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0) + (scenario === "read-revoked" ? 1 : 0));
@@ -489,11 +498,23 @@ for (const ingress of ["http", "sse"]) {
       });
       if (ingress === "http") await page.route("**/api/events*", (route) => route.abort());
       else await page.route("**/api/dashboard-snapshot*", (route) => {
-        if (new URL(route.request().url()).searchParams.get("project")) return route.continue();
-        return route.abort(); // The real PLATFORM event must independently populate the UI.
+        return route.abort(); // Real selected AND PLATFORM events independently populate the UI.
       });
       await page.goto(ready.url, { waitUntil: "domcontentloaded" });
       await expect(page.locator("#dashboardSplash")).toBeHidden();
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      await page.locator("#dashboardProject").selectOption("none");
+      await page.waitForURL((url) => url.searchParams.get("project") === "none");
+      expect(await page.evaluate(() => window.ENGINEERING_PLATFORM_NO_PROJECT === true)).toBe(false);
+      const noneResponse = await page.request.get(new URL("/api/dashboard-snapshot?project=none", ready.url).href);
+      expect(noneResponse.status()).toBe(200);
+      const none = await noneResponse.json();
+      expect(none.scope).toBe("PROJECT"); expect(none.project_id).toBe("none");
+      if (ingress === "sse") await expect.poll(() => streams.filter((snapshot) => snapshot.scope === "PROJECT" && snapshot.project_id === "none").length).toBeGreaterThan(0);
+      await expect(page.locator("#platformVersion")).toHaveText(none.status.platform_version);
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      await page.locator("#dashboardProject").selectOption("project");
+      await page.waitForURL((url) => url.searchParams.get("project") === "project");
       await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
       const selectedResponse = await page.request.get(new URL("/api/dashboard-snapshot?project=project", ready.url).href);
       const platformResponse = await page.request.get(new URL("/api/dashboard-snapshot", ready.url).href);
@@ -522,7 +543,10 @@ for (const ingress of ["http", "sse"]) {
       const foreign = await page.request.get(new URL(`/api/prompt-history/${ready.run_id}/details?project=other`, ready.url).href);
       expect(foreign.status()).toBe(404);
       child.stdin.write("snapshot\n"); const after = await next();
-      expect(after.after).toEqual(ready.before); expect(errors).toEqual([]);
+      expect(after.after).toEqual(ready.before);
+    expect(after.transport_observations.metadata_requests).toBeGreaterThan(0);
+    expect(after.transport_observations.unexpected_transport_attempts).toBe(0);
+    expect(after.transport_observations.native_app_server_starts).toBe(0); expect(errors).toEqual([]);
       const imagePath = testInfo.outputPath(`platform-${ingress}-fresh.png`);
       await page.screenshot({ path: imagePath, fullPage: true, animations: "disabled" });
       const capture = { scenario: `platform-${ingress}`, file: path.basename(imagePath),

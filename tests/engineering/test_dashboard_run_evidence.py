@@ -150,3 +150,74 @@ class DashboardRunEvidenceTests(unittest.TestCase):
                 self.assertEqual(canonical_provider_invocations(connection, stored.run_id), rows)
         finally:
             case.doCleanups()
+
+
+class DashboardExternalTransportTests(unittest.TestCase):
+    def test_real_capacity_handler_uses_local_metadata_transport_and_preserves_execution(self):
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
+        from urllib.request import urlopen
+        import json
+        with tempfile.TemporaryDirectory(prefix="ep-dashboard-metadata-install-") as installation, patch.dict(
+                os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+            canary = StoredConsoleCanary()
+            try:
+                baseline = canary.effect_snapshot()
+                origin = canary.start_listener()
+                with urlopen(origin + "/api/provider-capacity", timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    payload = json.load(response)
+                self.assertEqual(payload["rate_limits"]["windows"][0]["used_percent"], 0)
+                observed = canary.external_transport.snapshot()
+                self.assertEqual(observed["metadata_requests"], 1)
+                self.assertEqual(observed["metadata_sessions"], 1)
+                self.assertEqual(observed["native_app_server_starts"], 0)
+                self.assertEqual(canary.console_model_requests, 0)
+                self.assertEqual(canary.effect_snapshot(), baseline)
+            finally:
+                canary.close()
+
+    def test_removed_metadata_adapter_fails_before_live_process_and_account_use(self):
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary, CodexCliProvider
+        from urllib.request import urlopen
+        native_app_server = CodexCliProvider.app_server
+        escaped = []
+        def deny_start(*args, **kwargs):
+            escaped.append("native_app_server")
+            raise OSError("Independent rejecting boundary: no account/process allowed")
+        with tempfile.TemporaryDirectory(prefix="ep-dashboard-removed-guard-") as installation, patch.dict(
+                os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+            canary = StoredConsoleCanary()
+            try:
+                origin = canary.start_listener()
+                with patch.object(CodexCliProvider, "app_server", native_app_server), patch(
+                        "engineering_platform.providers._start_process", deny_start):
+                    with urlopen(origin + "/api/provider-capacity", timeout=10) as response:
+                        self.assertEqual(response.status, 200)
+                        response.read()
+                self.assertEqual(escaped, ["native_app_server"])
+                self.assertEqual(canary.console_model_requests, 0)
+                # The mandatory new observation fails under this deliberate
+                # guard removal; the lower rejecting boundary prevents escape.
+                with self.assertRaises(AssertionError):
+                    self.assertGreater(canary.external_transport.snapshot()["metadata_requests"], 0)
+            finally:
+                canary.close()
+
+    def test_unexpected_execution_transport_fails_closed_even_when_caller_catches_it(self):
+        from tests.engineering.dashboard_run_evidence_fixture import IsolatedProviderTransport, CodexCliProvider
+        transport = IsolatedProviderTransport().start()
+        try:
+            with patch("engineering_platform.providers._start_process") as native:
+                with self.assertRaisesRegex(AssertionError, "Unexpected external"):
+                    CodexCliProvider().spawn(Path.cwd(), ("codex", "exec", "unexpected"))
+                native.assert_not_called()
+            from engineering_platform.providers import LocalProcessProvider
+            with patch("engineering_platform.providers.subprocess.run") as native:
+                with self.assertRaisesRegex(AssertionError, "Unexpected external"):
+                    LocalProcessProvider().execute(Path.cwd(), ("codex", "app-server"))
+                native.assert_not_called()
+            with self.assertRaisesRegex(AssertionError, "Unexpected external transport attempts"):
+                transport.snapshot()
+        finally:
+            with self.assertRaises(AssertionError):
+                transport.close()

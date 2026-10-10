@@ -35,7 +35,7 @@ window.__engineeringPlatformDashboardTranslate = (key) => t(key);
 document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
-  NO_PROJECT_SELECTED = document.body.dataset.projectId === "none",
+  NO_PROJECT_SELECTED = window.ENGINEERING_PLATFORM_NO_PROJECT === true,
   CENTRAL_CONSOLE = window.ENGINEERING_PLATFORM_CENTRAL_CONSOLE === true,
   DASHBOARD_BUILD = window.ENGINEERING_PLATFORM_DASHBOARD_BUILD || "",
   DASHBOARD_BUILD_KEY = "engineering-platform-dashboard-build",
@@ -3326,8 +3326,8 @@ function setUpdateMode(key) {
   $("updateMode").textContent = t(key);
 }
 function dashboardSnapshotMatchesScope(snapshot, projectId) {
-  if (projectId && projectId !== "none") return snapshot?.project_id === projectId;
-  return snapshot?.scope === "PLATFORM" && snapshot.project_id == null;
+  if (NO_PROJECT_SELECTED) return snapshot?.scope === "PLATFORM" && snapshot.project_id == null;
+  return Boolean(projectId) && snapshot?.scope !== "PLATFORM" && snapshot?.project_id === projectId;
 }
 function applyDashboardSnapshot(snapshot, readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId) {
   if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId)

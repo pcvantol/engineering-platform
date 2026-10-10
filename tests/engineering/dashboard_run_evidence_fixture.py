@@ -37,7 +37,7 @@ from engineering_platform.execution_repository import SubprocessRepositoryClient
 from engineering_platform.agent_state import StateStore
 from engineering_platform.managed_publication import PublicationCandidate
 from engineering_platform.parity_lifecycle_dispatcher import ParityLifecycleDispatcher, ParityLifecycleDispatchError
-from engineering_platform.providers import CodexCliProvider, GitProvider, process_effect_start
+from engineering_platform.providers import CodexCliProvider, GitProvider, LocalProcessProvider, process_effect_start
 from engineering_platform.qualification_runtime import QualificationReviewBackend
 from engineering_platform.storage import sqlite_connection
 
@@ -253,13 +253,118 @@ class ExternalModel(QualificationReviewBackend):
                            specialist_dispositions=tuple(choices))
 
 
+class IsolatedProviderTransport:
+    """Own every provider boundary for the full fixture lifetime.
+
+    Only native version inspection is passed through. Account responses travel
+    over a local Python pipe with an empty environment, never a Codex process.
+    Unexpected execution is recorded and fails qualification before spawning.
+    """
+    def __init__(self, *, remaining=100, authenticated=True):
+        self.remaining, self.authenticated = remaining, authenticated
+        self.metadata_sessions = self.metadata_requests = 0
+        self.unexpected = []
+        self.processes = []
+        self.stack = ExitStack()
+
+    def start(self):
+        native_command = CodexCliProvider.command
+        adapter = self
+        def command(provider, *args, **kwargs):
+            if args == ("login", "status"):
+                return subprocess.CompletedProcess(args, 0 if adapter.authenticated else 1,
+                                                   "Declared local external readiness response", "")
+            if args == ("--version",):
+                return native_command(provider, *args, **kwargs)
+            return adapter.deny("command", args)
+        def app_server(provider):
+            adapter.metadata_sessions += 1
+            # Isolated child knows only the fixed response. No filesystem,
+            # credential, account, native CLI or network API is consulted.
+            script = """import sys,json
+remaining=float(sys.argv[1])
+for line in sys.stdin:
+ request=json.loads(line);method=request.get('method')
+ if method=='initialize': result={}
+ elif method=='initialized': continue
+ elif method=='account/rateLimits/read':
+  result={'rateLimits':{'primary':{'usedPercent':100-remaining,'windowDurationMins':300,'resetsAt':2000000000}}}
+ else: raise RuntimeError('Unexpected external metadata method')
+ print(json.dumps({'id':request['id'],'result':result}),flush=True)
+"""
+            process = subprocess.Popen((sys.executable, "-I", "-c", script, str(adapter.remaining)),
+                                       env={}, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, bufsize=1)
+            adapter.processes.append(process)
+            underlying = process.stdin
+            class ObservedInput:
+                def write(self, value):
+                    for line in value.splitlines():
+                        message = json.loads(line)
+                        if message.get("method") not in {"initialize", "initialized", "account/rateLimits/read"}:
+                            return adapter.deny("metadata", message.get("method"))
+                        if message.get("method") == "account/rateLimits/read":
+                            adapter.metadata_requests += 1
+                    return underlying.write(value)
+                def flush(self):
+                    return underlying.flush()
+                def close(self):
+                    return underlying.close()
+            process.stdin = ObservedInput()
+            return process
+        # Server identity/login code also uses the shared local executor.
+        # Keep native Git/control processes real, but guard external provider
+        # and account-launch commands at this process transport boundary too.
+        for name in ("execute", "spawn", "spawn_detached"):
+            original = getattr(LocalProcessProvider, name)
+            def local_process(provider, root, arguments, *extra, _original=original, _name=name, **kwargs):
+                executable = Path(arguments[0]).name.lower() if arguments else ""
+                if executable in {"codex", "gh", "osascript"} and tuple(arguments[1:]) != ("--version",):
+                    return adapter.deny(f"local_{_name}", arguments)
+                return _original(provider, root, arguments, *extra, **kwargs)
+            self.stack.enter_context(patch.object(LocalProcessProvider, name, local_process))
+        self.stack.enter_context(patch.object(CodexCliProvider, "command", command))
+        self.stack.enter_context(patch.object(CodexCliProvider, "app_server", app_server))
+        for name in ("invoke", "execute", "spawn", "spawn_detached"):
+            self.stack.enter_context(patch.object(CodexCliProvider, name,
+                                     lambda *args, _name=name, **kwargs: adapter.deny(_name, args)))
+        return self
+
+    def deny(self, channel, arguments):
+        self.unexpected.append(channel)
+        raise AssertionError(f"Unexpected external provider transport: {channel}")
+
+    def snapshot(self):
+        if self.unexpected:
+            raise AssertionError(f"Unexpected external transport attempts: {self.unexpected}")
+        return {"metadata_sessions": self.metadata_sessions, "metadata_requests": self.metadata_requests,
+                "unexpected_transport_attempts": 0, "native_app_server_starts": 0}
+
+    def close(self):
+        try:
+            for process in self.processes:
+                if process.poll() is None:
+                    CodexCliProvider().close_app_server(process)
+                if process.stderr:
+                    process.stderr.close()
+            self.snapshot()
+        finally:
+            self.stack.close()
+
+
 class StoredConsoleCanary:
     def __init__(self, *, publication_mode="normal", selection_mode="normal", finding_mode="normal", recovery_mode=False):
         self.fixture = RealTopologyFixture()
+        self.external_transport = IsolatedProviderTransport(
+            remaining=50 if selection_mode == "no_capacity" else 100,
+            authenticated=selection_mode != "missing").start()
         with redirect_stdout(io.StringIO()):
             if server.main(["bootstrap-topology", "--data-root", str(self.fixture.data),
                             "--project-id", "other", "--repository-id", "other-repo"]) != 0:
                 raise AssertionError("Second read-scope topology was not registered")
+            if server.main(["bootstrap-topology", "--data-root", str(self.fixture.data),
+                            "--project-id", "none", "--repository-id", "none-repo"]) != 0:
+                raise AssertionError("Valid project identity none was not registered")
         self.model = ExternalModel(self.fixture, finding_mode=finding_mode, recovery_mode=recovery_mode)
         self.runner = None
         self.listener = None
@@ -294,8 +399,6 @@ class StoredConsoleCanary:
         self.transport_patches = [
             patch.object(CodexCliProvider, "command", model_metadata),
             patch.object(CodexCliProvider, "invoke", unavailable_terminal_analysis),
-            patch("engineering_platform.codex_capacity.read_remaining_percent", return_value=50 if self.selection_mode == "no_capacity" else 100),
-            patch("engineering_platform.capability_preflight.read_remaining_percent", return_value=50 if self.selection_mode == "no_capacity" else 100),
         ]
         for transport in self.transport_patches:
             transport.start()
@@ -375,6 +478,7 @@ class StoredConsoleCanary:
             self.transport_patches = []
 
     def start_listener(self):
+        server._CODEX_RATE_LIMIT_CACHE = None
         def unavailable_external_model(*args, **kwargs):
             self.console_model_requests += 1
             instruction = kwargs.get("input_text", "")
@@ -437,7 +541,7 @@ class StoredConsoleCanary:
         # explicit controller action owns effects. Product authority stays real.
         self.console_git_transport.stop(); self.console_transport.stop()
         try:
-            with patch.object(CodexCliProvider, "command", model_metadata), patch("engineering_platform.codex_capacity.read_remaining_percent", return_value=100):
+            with patch.object(CodexCliProvider, "command", model_metadata):
                 state = self.runner.run(Path(stored.prompt_path), run_id=self.run_id, resume=True)
             if state.publication_intent["status"] != "RECONCILED" or state.phase != "WAIT_FOR_OPERATOR_MERGE":
                 raise AssertionError((state.phase, state.publication_intent))
@@ -476,8 +580,6 @@ class StoredConsoleCanary:
             with ExitStack() as stack, redirect_stdout(io.StringIO()):
                 stack.enter_context(patch.object(CodexCliProvider, "command", metadata))
                 stack.enter_context(patch.object(CodexCliProvider, "invoke", unavailable_analysis))
-                stack.enter_context(patch("engineering_platform.codex_capacity.read_remaining_percent", return_value=100))
-                stack.enter_context(patch("engineering_platform.capability_preflight.read_remaining_percent", return_value=100))
                 receipt = ParityLifecycleDispatcher(self.fixture.data, runner_factory=factory).dispatch(row[0])
             self.run_id = receipt.run_id
             state = self.fixture.store.load(self.run_id)
@@ -501,6 +603,7 @@ class StoredConsoleCanary:
         for transport in reversed(self.transport_patches):
             transport.stop()
         self.fixture.close()
+        self.external_transport.close()
 
 
 def passive_reader(data_root):
@@ -515,6 +618,8 @@ def passive_reader(data_root):
             counts["git"] += 1
             raise OSError("No execution Git effect allowed in passive qualification")
         return original_git(provider, root, *args)
+    transport = IsolatedProviderTransport().start()
+    server._CODEX_RATE_LIMIT_CACHE = None
     with patch.object(CodexCliProvider, "invoke", no_live_model), patch.object(GitProvider, "execute", no_execution_git):
         listener = ThreadingHTTPServer(("127.0.0.1", 0), server._HealthHandler)
         listener.data_root = data_root
@@ -527,11 +632,12 @@ def passive_reader(data_root):
             print(json.dumps({"url": f"http://127.0.0.1:{listener.server_address[1]}/?project=project", "module": server.__file__}), flush=True)
             for instruction in sys.stdin:
                 if instruction.strip() == "snapshot":
-                    print(json.dumps({"passive_effects": counts}), flush=True)
+                    print(json.dumps({"passive_effects": counts, "transport_observations": transport.snapshot()}), flush=True)
                 elif instruction.strip() == "stop":
                     break
         finally:
             listener.shutdown(); listener.server_close(); worker.join()
+            transport.close()
 
 
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--read":
@@ -567,7 +673,7 @@ elif __name__ == "__main__":
                           "before": before}), flush=True)
         for instruction in sys.stdin:
             if instruction.strip() == "snapshot":
-                print(json.dumps({"after": canary.effect_snapshot()}), flush=True)
+                print(json.dumps({"after": canary.effect_snapshot(), "transport_observations": canary.external_transport.snapshot()}), flush=True)
             elif instruction.strip() == "reconcile":
                 print(json.dumps({"reconciled_baseline": canary.reconcile_publication()}), flush=True)
             elif instruction.strip() == "dispatch-retry":

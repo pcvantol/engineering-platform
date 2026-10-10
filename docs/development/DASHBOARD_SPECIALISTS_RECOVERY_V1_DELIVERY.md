@@ -3,11 +3,11 @@
 Assignment: `L2-EP-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Directive: `L2-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221), under the full [6058358032 mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6058358032).
-Lane **r34**, plan **1**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
+Lane **r34**, plan **2**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after complete independent Quality/Security pairs: **consumed3/max3/remaining0**. Operational budgets remain unchanged.
+Formal corrections after complete independent Quality/Security pairs: **consumed4/max4/remaining0**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -232,3 +232,56 @@ operator-positive/withdrawn/read-revoked regression set5PASS25.0s, retries0.
 Each PLATFORM case retains actualforeign-run404 and selected→none→selected
 positive navigation without new execution effects. Exact installed/current
 full qualification and independent review remain required.
+
+
+## Specific fourth integrated correction — r34 plan2
+
+[Explicit decision6098089657](https://github.com/pcvantol/forge/issues/142#issuecomment-6098089657)
+and [ACK/round booking6098444341](https://github.com/pcvantol/forge/issues/142#issuecomment-6098444341)
+authorize exactly one integrated round4, consumed4/max4/remaining0 AFTER booking
+and BEFORE source. Previous three rounds and all operational budgets remain
+consumed/unchanged. No fifth correction is authorized. Same sourcewriter,
+branch, base, history and closed predecessors.
+
+The fourth whole pair on4fe was QualityPASS/SecurityREJECT with two P2's.
+Both original red receipts remain retained: valid project ID `none` collides
+with the global sentinel; Console's model-only spy omitted the reachable
+app-server/account metadata transport. Old captures remain SHA-bound with
+that explicit isolation limitation, even though owning CI38050526664 later
+completed SUCCESS. They are not retrospectively fully isolated evidence.
+
+The UI now uses the Server's explicit ENGINEERING_PLATFORM_NO_PROJECT flag;
+the shared predicate separates canonical PLATFORM/absent project from exact
+selected identity, including `none`, and rejects PLATFORM in selected context.
+All HTTP/SSE epoch, current project, read-denial and late-response fences remain.
+No topology identity, read policy or stored record is changed as a workaround.
+
+One lifetime-owned qualification transport guards Codex command/invoke/execute/
+spawn/detached/app-server boundaries across generation, listeners, explicit
+reconciliation/retry and new passive-reader processes. Actual pinned native
+version inspection remains real. Login/capacity answers are external responses;
+capacity services, handler, normalization, policy, storage and authority remain
+production code. Account metadata is exchanged with a local isolated Python
+pipe child with an empty environment, never a native app-server or account.
+Only bounded initialize/initialized/account-rate-limit-read are accepted.
+Unexpected commands or execution fail before launch and remain a failing
+observation even if caught by a caller. Model and metadata observations are
+separate; real Console auditing/capacity history remains distinct from execution.
+Higher capacity-service return-value substitutions were removed from these paths.
+
+Targeted installed convergence: both real HTTP/SSE project-none regressions
+failed before product correction, despite genuine PROJECT/200 snapshots.
+After correction9 public browser cases PASS49.3s, including project→validnone→
+project→explicitglobal→project, real foreign/read-withdrawn/late retry guards,
+reconciliation/provider recovery and a new installed passive reader.
+Three actual metadata/guard tests PASS1.425s: real handler/local response with
+zero execution changes; deliberate metadata guard removal reaches an independent
+rejecting lower process boundary and fails the new observation without live
+escape; unexpected execution records failure before launch. Original negative
+proofs, intermediate build diagnostics and prior capture limitations are kept.
+
+These are convergence proofs on noneditable2.3.115 source bytes, not exact-final-
+main or whole acceptance. A new fixed candidate, full source/installed/browser/
+strictcoverage/currentCI and fresh complete independent Q/S remain required,
+followed by protected merge, normalNO_BUMPFinalization and NEW exact-final-main
+installed/fullbrowser/fresh reachable screenshot links/previews/readbacks/cleanup.
