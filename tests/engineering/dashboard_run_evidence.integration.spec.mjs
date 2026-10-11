@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import { chromium } from "@playwright/test";
+import { observeConsoleDocument } from "./dashboard_document_observer.mjs";
 import { DASHBOARD_MESSAGES } from "../../src/engineering_platform/assets/dashboard_locales.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -375,7 +376,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     }
     const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
     writeFileSync(manifestPath, JSON.stringify({
-      contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
+      contract: "ep-console-run-evidence-screenshots/v1", qualification: process.env.EP_RUN_EVIDENCE_CONVERGENCE === "1" ? "INSTALLED_CONVERGENCE" : installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
       source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
       wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, screenshots,
       assets: ready.assets, external_transport_observations: after.transport_observations,
@@ -474,7 +475,7 @@ for (const revoked of [false, true]) {
         actual_response_sha256: createHash("sha256").update(actualBytes).digest("hex"),
         locale: await page.locator("#dashboardLocale").inputValue(), theme: await page.locator("html").getAttribute("data-theme"), viewport: page.viewportSize() };
       const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
-      writeFileSync(manifestPath, JSON.stringify({ contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
+      writeFileSync(manifestPath, JSON.stringify({ contract: "ep-console-run-evidence-screenshots/v1", qualification: process.env.EP_RUN_EVIDENCE_CONVERGENCE === "1" ? "INSTALLED_CONVERGENCE" : installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
         source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
         wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, assets: ready.assets, screenshots: [capture] }, null, 2));
       await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
@@ -512,6 +513,7 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
     try {
       const ready = await next(), platformUrl = new URL(ready.url); platformUrl.search = "";
       const errors = []; page.on("pageerror", (error) => errors.push(error.message));
+      const observer = await observeConsoleDocument(page), contexts = [];
       const cdp = await page.context().newCDPSession(page); await cdp.send("Network.enable");
       const streams = [];
       cdp.on("Network.eventSourceMessageReceived", (event) => {
@@ -523,7 +525,7 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
       });
       await page.goto(ready.url, { waitUntil: "domcontentloaded" });
       await expect(page.locator("#dashboardSplash")).toBeHidden();
-      await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      contexts.push(await observer.scope(ingress, "project"));
       const quotaExpected = quotaMode === "limited" ? { limited: true, reset_at: 2000000000 } : { limited: false };
       // Both first/cold and repeat reads use the actual installed handler and
       // parser, including error/invalid transport responses. Quota has no cache.
@@ -531,8 +533,7 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
         const quota = await page.request.get(new URL("/api/github-rate-limit", ready.url).href);
         expect(quota.status()).toBe(200); expect(await quota.json()).toEqual(quotaExpected);
       }
-      await page.locator("#dashboardProject").selectOption("none");
-      await page.waitForURL((url) => url.searchParams.get("project") === "none");
+      contexts.push(await observer.select("none", ingress));
       expect(await page.evaluate(() => window.ENGINEERING_PLATFORM_NO_PROJECT === true)).toBe(false);
       const noneResponse = await page.request.get(new URL("/api/dashboard-snapshot?project=none", ready.url).href);
       expect(noneResponse.status()).toBe(200);
@@ -541,8 +542,7 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
       if (ingress === "sse") await expect.poll(() => streams.filter((snapshot) => snapshot.scope === "PROJECT" && snapshot.project_id === "none").length).toBeGreaterThan(0);
       await expect(page.locator("#platformVersion")).toHaveText(none.status.platform_version);
       await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
-      await page.locator("#dashboardProject").selectOption("project");
-      await page.waitForURL((url) => url.searchParams.get("project") === "project");
+      contexts.push(await observer.select("project", ingress));
       await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
       const selectedResponse = await page.request.get(new URL("/api/dashboard-snapshot?project=project", ready.url).href);
       const platformResponse = await page.request.get(new URL("/api/dashboard-snapshot", ready.url).href);
@@ -555,8 +555,7 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
         const url = new URL(response.url());
         return url.pathname === "/api/dashboard-snapshot" && !url.searchParams.get("project") && response.status() === 200;
       }) : null;
-      await page.locator("#dashboardProject").selectOption("");
-      await page.waitForURL((url) => !url.searchParams.get("project"));
+      contexts.push(await observer.select(null, ingress));
       await expect(page.locator("body")).toHaveAttribute("data-project-id", "none");
       await expect(page.locator("#dashboardSplash")).toBeHidden();
       if (http) expect((await (await http).json()).scope).toBe("PLATFORM");
@@ -568,6 +567,7 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
       }
       await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
       await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      const browserQuota = await observer.quota(quotaExpected);
       if (quotaMode === "limited") {
         await expect(page.locator("#githubRateLimitBanner")).toBeVisible();
         const repeated = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/github-rate-limit");
@@ -589,19 +589,135 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
       const capture = { scenario: `platform-${ingress}`, file: path.basename(imagePath),
         sha256: createHash("sha256").update(readFileSync(imagePath)).digest("hex"), run_scenario: testInfo.title,
         run_id: ready.run_id, finding_ids: [], invocation_ids: [], publication: null,
+        document_contexts: contexts, browser_quota: browserQuota, direct_quota_controls: 2,
         actual_platform_snapshot_sha256: createHash("sha256").update(JSON.stringify(platform)).digest("hex"),
         locale: await page.locator("#dashboardLocale").inputValue(), theme: await page.locator("html").getAttribute("data-theme"), viewport: page.viewportSize() };
       const manifestPath = testInfo.outputPath("fresh-evidence-manifest.json");
-      writeFileSync(manifestPath, JSON.stringify({ contract: "ep-console-run-evidence-screenshots/v1", qualification: installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
+      writeFileSync(manifestPath, JSON.stringify({ contract: "ep-console-run-evidence-screenshots/v1", qualification: process.env.EP_RUN_EVIDENCE_CONVERGENCE === "1" ? "INSTALLED_CONVERGENCE" : installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
         source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
         wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, assets: ready.assets, screenshots: [capture] }, null, 2));
       await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
-      await page.locator("#dashboardProject").selectOption("project");
-      await page.waitForURL((url) => url.searchParams.get("project") === "project");
+      contexts.push(await observer.select("project", ingress));
       await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
       child.stdin.write("snapshot\n"); expect((await next()).after).toEqual(ready.before);
+      const finished = JSON.parse(readFileSync(manifestPath));
+      finished.screenshots[0].document_contexts = contexts;
+      writeFileSync(manifestPath, JSON.stringify(finished, null, 2));
     } finally {
       await stopIsolatedCanary(child, next, testInfo);
     }
   });
 }
+
+async function causalStoredCanary(scenario) {
+  const python = process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON || process.env.EP_BROWSER_PYTHON || 'python3';
+  const env = { ...process.env, EP_QUALIFICATION_DETERMINISTIC_FLOW: '1', PYTHONPATH: path.join(repository, 'src') };
+  if (process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON) delete env.PYTHONPATH;
+  const child = spawn(python, [fixture, scenario], { cwd: path.dirname(python), env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let buffer = '', stderr = '', pending; const queued = [];
+  child.stderr.on('data', d => { stderr += d; });
+  child.stdout.on('data', d => {
+    buffer += d;
+    while (buffer.includes('\n')) {
+      const index = buffer.indexOf('\n'), line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+      if (line.startsWith('{')) { const value = JSON.parse(line); if (pending) { const resolve = pending; pending = null; resolve(value); } else queued.push(value); }
+    }
+  });
+  const next = () => queued.length ? Promise.resolve(queued.shift()) : new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Causal canary timeout: ${stderr}`)), 30_000);
+    pending = value => { clearTimeout(timer); resolve(value); };
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`Causal canary exited ${code}: ${stderr}`)); });
+  });
+  return { child, next, ready: await next() };
+}
+
+for (const project of ['project', 'none', null]) {
+  test(`current HTTP scope probe repairs first interrupted snapshot ${project ?? 'PLATFORM'}`, async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
+    const canary = await causalStoredCanary('normal');
+    try {
+      const observer = await observeConsoleDocument(page); let first = true;
+      await page.route('**/api/events*', route => route.abort());
+      await page.route('**/api/dashboard-snapshot*', route => {
+        if (first) { first = false; return route.abort(); }
+        return route.continue();
+      });
+      const url = new URL(canary.ready.url); if (project === null) url.search = ''; else url.searchParams.set('project', project);
+      await page.goto(url.href, { waitUntil: 'domcontentloaded' });
+      const applied = await observer.scope('http', project);
+      expect(observer.records().some(record => record.path === '/api/dashboard-snapshot' && record.failure)).toBe(true);
+      canary.child.stdin.write('snapshot\n'); const after = await canary.next(); expect(after.after).toEqual(canary.ready.before);
+      const output = testInfo.outputPath('causal-context-readback.json');
+      writeFileSync(output, JSON.stringify({ project, first_client_request_interrupted: true, applied, requests: observer.records() }, null, 2));
+      await testInfo.attach('causal-context-readback', { path: output, contentType: 'application/json' });
+      await causalManifest(page, testInfo, canary.ready, `causal-http-${project ?? 'PLATFORM'}`, { applied });
+    } finally { await stopIsolatedCanary(canary.child, canary.next, testInfo); }
+  });
+}
+
+for (const mode of ['available', 'unavailable']) {
+  test(`browser quota completion distinguishes pending transport ${mode}`, async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
+    const canary = await causalStoredCanary(`quota-${mode}`), observer = await observeConsoleDocument(page);
+    let release, entered; const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+    try {
+      await page.route('**/api/dashboard-snapshot*', route => route.abort());
+      await page.route('**/api/github-rate-limit', async route => { entered(); await gate; await route.continue(); });
+      const url = new URL(canary.ready.url); url.search = '';
+      await page.goto(url.href, { waitUntil: 'domcontentloaded' }); await started;
+      const context = await observer.scope('sse', null);
+      for (let index = 0; index < 2; index += 1) {
+        const response = await page.request.get(new URL('/api/github-rate-limit', url).href);
+        expect(response.status()).toBe(200); expect(await response.json()).toEqual({ limited: false });
+      }
+      await expect(page.locator('#githubRateLimitBanner')).toBeHidden();
+      canary.child.stdin.write('snapshot\n'); const pending = await canary.next();
+      expect(pending.transport_observations.github_quota_requests).toBe(2);
+      // The original assertion is genuinely red at the wrong completion point.
+      expect(() => expect(pending.transport_observations.github_quota_requests).toBeGreaterThanOrEqual(3)).toThrow();
+      expect(observer.records().filter(record => record.path === '/api/github-rate-limit' && record.completed)).toHaveLength(0);
+      release(); const browser = await observer.quota({ limited: false });
+      expect(browser.document_id).toBe(context.document_id);
+      canary.child.stdin.write('snapshot\n'); const after = await canary.next();
+      expect(after.transport_observations.github_quota_requests).toBe(3); expect(after.after).toEqual(canary.ready.before);
+      const output = testInfo.outputPath('causal-quota-readback.json');
+      writeFileSync(output, JSON.stringify({ mode, direct_controls: 2, pending_count: 2, completed_count: 3, browser, context }, null, 2));
+      await testInfo.attach('causal-quota-readback', { path: output, contentType: 'application/json' });
+      await causalManifest(page, testInfo, canary.ready, `causal-quota-${mode}`, { context, browser, direct_controls: 2 });
+    } finally { release(); await stopIsolatedCanary(canary.child, canary.next, testInfo); }
+  });
+}
+
+
+async function causalManifest(page, testInfo, ready, scenario, proof) {
+  const imagePath = testInfo.outputPath(`${scenario}-fresh.png`);
+  await page.screenshot({ path: imagePath, fullPage: true, animations: 'disabled' });
+  const capture = { scenario, file: path.basename(imagePath), sha256: createHash('sha256').update(readFileSync(imagePath)).digest('hex'),
+    run_scenario: testInfo.title, run_id: ready.run_id, finding_ids: [], invocation_ids: [], publication: null,
+    locale: await page.locator('#dashboardLocale').inputValue(), theme: await page.locator('html').getAttribute('data-theme'), viewport: page.viewportSize(), proof };
+  const manifest = testInfo.outputPath('fresh-evidence-manifest.json');
+  writeFileSync(manifest, JSON.stringify({ contract: 'ep-console-run-evidence-screenshots/v1',
+    qualification: process.env.EP_RUN_EVIDENCE_CONVERGENCE === '1' ? 'INSTALLED_CONVERGENCE' : 'INSTALLED',
+    source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
+    wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, assets: ready.assets, screenshots: [capture] }, null, 2));
+  await testInfo.attach('fresh-evidence-manifest', { path: manifest, contentType: 'application/json' });
+}
+
+test('current history document retains deep link after an interrupted index read', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  const canary = await causalStoredCanary('provider-blocked');
+  try {
+    const observer = await observeConsoleDocument(page); let first = true;
+    await page.route('**/api/events*', route => route.abort());
+    await page.route('**/api/prompt-history', route => { if (first) { first = false; return route.abort(); } return route.continue(); });
+    const history = page.waitForResponse(response => new URL(response.url()).pathname === '/api/prompt-history' && response.status() === 200);
+    const url = new URL(canary.ready.url); url.searchParams.set('prompt', canary.ready.run_id);
+    await page.goto(url.href, { waitUntil: 'domcontentloaded' });
+    const index = await (await history).json(); expect(index.runs.some(run => run.run_id === canary.ready.run_id)).toBe(true);
+    const applied = await observer.scope('http', 'project');
+    await expect(page).toHaveURL(url.href); await expect(page.locator('#promptHistoryDetailModal')).toBeVisible();
+    await expect(page.locator('#promptHistoryDetailContent [data-run-evidence]')).toHaveCount(3);
+    canary.child.stdin.write('snapshot\n'); const after = await canary.next(); expect(after.after).toEqual(canary.ready.before);
+    await causalManifest(page, testInfo, canary.ready, 'causal-history-document', { applied, original_url_retained: true, direct_quota_controls: 0 });
+  } finally { await stopIsolatedCanary(canary.child, canary.next, testInfo); }
+});

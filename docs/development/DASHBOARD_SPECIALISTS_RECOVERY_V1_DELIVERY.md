@@ -3,11 +3,11 @@
 Assignment: `L2-EP-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Directive: `L2-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221), under the full [6058358032 mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6058358032).
-Lane **r34**, plan **4**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
+Lane **r34**, plan **5**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after complete independent Quality/Security pairs: **consumed6/max6/remaining0**. Operational budgets remain unchanged.
+Formal corrections after complete independent Quality/Security pairs: **consumed7/max7/remaining0**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -399,3 +399,48 @@ The production parser currently reports limited=false for an unavailable or
 invalid external quota response: the tests preserve that existing diagnostic
 interpretation rather than inventing readiness success or changing product
 semantics. Full exact-head gates and final-main delivery remain pending.
+
+
+## Integrated correction round7 — current document and completed browser reads
+
+[Decision6107474840](https://github.com/pcvantol/forge/issues/142#issuecomment-6107474840),
+[single BEFORE-edit booking6107551199](https://github.com/pcvantol/forge/issues/142#issuecomment-6107551199)
+and [causal readback6107746283](https://github.com/pcvantol/forge/issues/142#issuecomment-6107746283)
+retain the assignment, sole writer, branch/history/version and operational
+budgets. Plan5, consumed7/max7/remaining0; round6 remains consumed.
+
+Preserved installed e41 causal controls distinguish two demonstrated faults.
+After a controlled first clientdisconnect, the actual current-scope HTTP probe
+returns200/version2.3.115, but the old scopeOnly branch never applies it and the
+view remains unavailable for the unchanged5s. The minimal repair applies this
+validated current response only when the store has no matching scoped snapshot;
+all epoch/project/denial guards remain and existing scoped data is retained.
+This demonstrates the initial-positive-recheck defect; the cause of every
+historical timeout is not thereby proven.
+
+A separately held real browser quota request proves that the initial hidden
+banner can coexist with only the two direct API controls. The old counter
+assertion fails at that point; after releasing that one real request, its
+response/parser/UI completes in the same document and the count reaches3.
+The passive CDP observer now binds actual completed HTTP/SSE/quota responses to
+the active document loader and current native bootstrap scope, with visible
+applied state. Selector transitions require a genuinely new document load;
+old SSE events and an equal version string cannot establish current scope.
+No product flags/payloads are injected, extra quota reads issued, sleeps added,
+thresholds lowered or deadlines increased. The independent lower native guard
+and request/worker/group lifetime proof remain unchanged.
+
+All45 prior cases/48 receipts/181 PNGs remain. Three genuine first-read repair
+contexts, two pending-quota faultcontrols and the interrupted history-index
+document regression are added:51 selected cases,54 final receipts and187 PNGs, each with source/wheel/assets/proof and final
+cleanup bindings. WIP convergence is explicitly INSTALLED_CONVERGENCE, never
+an exact-head grant. Complete candidate qualification and Finalization remain
+pending; the old roadmap summary reconciles during normal Finalization.
+
+The actual shard-context provider-blocked reload failure was separately proven:
+a first interrupted history-index read clears the deep-link as though the run
+is missing; the existing bounded retry later returns the actual stored run,
+but its modal cannot reopen because the URL intent is gone. The error path now
+retains the URL intent while clearing data/downloads and invalidating pending
+detail responses. A genuine successful absent index still reconciles absence;
+no retry, deadline, execution grant or scope bypass is added.

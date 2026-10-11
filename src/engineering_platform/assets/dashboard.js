@@ -3381,7 +3381,14 @@ async function refreshDashboardSnapshot({ allowAfterServerPush = false, scopeOnl
     if (!dashboardSnapshotMatchesScope(snapshot, projectId)) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
     dashboardReadDenied = false;
-    if (scopeOnly) return true;
+    if (scopeOnly) {
+      // A reconnect probe also repairs a failed initial read. Its actual
+      // current-scope response may populate an empty/fallback view; keep an
+      // already applied scoped snapshot intact during an offline probe.
+      if (!dashboardSnapshotMatchesScope(dashboardStatusStore.snapshot, projectId))
+        return applyDashboardSnapshot(snapshot, readEpoch, projectId);
+      return true;
+    }
     if (!applyDashboardSnapshot(snapshot, readEpoch, projectId)) return false;
     if (successMode) setUpdateMode(successMode);
     return true;
@@ -6722,7 +6729,15 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
       if (readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
       promptHistoryEntries = [];
       renderPromptHistory();
-      reconcilePromptHistoryDetailFromUrl();
+      // An unavailable index is not an authoritative missing run. Retain the
+      // document's deep-link intent for the existing bounded retry, but clear
+      // data/downloads and invalidate any pending detail response.
+      promptHistoryDetailRequestId += 1;
+      setPromptHistoryDetailDownloads(null);
+      if ($("promptHistoryDetailModal").open) {
+        $("promptHistoryDetailContent").textContent = t("history.details_unavailable");
+        $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");
+      }
       if (retryEmptyOnce) {
         clearTimeout(promptHistoryRefreshRetry);
         promptHistoryRefreshRetry = setTimeout(() => {
