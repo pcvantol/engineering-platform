@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "./dashboard_coverage_fixture.mjs";
+import { retainWorkerLogs, finishWorkerLogs } from "./dashboard_worker_logs.mjs";
 import { DASHBOARD_MESSAGES } from "../../src/engineering_platform/assets/dashboard_locales.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -40,31 +41,40 @@ async function startFixture(root, diagnostic = sourceDiagnostic) {
   delete environment.OPENAI_API_KEY; delete environment.CODEX_API_KEY;
   const python = installedPython || "python3";
   const child = spawn(python, [fixture, "--server", root], { cwd: installedPython ? root : repository, env: environment, stdio: ["ignore", "pipe", "pipe"] });
-  let output = "", errors = "";
-  child.stderr.on("data", (data) => { errors += data; });
-  const port = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { child.kill("SIGTERM"); reject(new Error(`Translation fixture startup timeout: ${errors}`)); }, 15_000);
-    child.once("error", (error) => { clearTimeout(timeout); reject(error); });
-    child.once("exit", (code) => { clearTimeout(timeout); reject(new Error(`Translation fixture exited ${code}: ${errors}`)); });
-    child.stdout.on("data", (data) => {
-      output += data;
-      const port = Number.parseInt(output, 10);
-      if (port > 0) { clearTimeout(timeout); resolve(port); }
+  retainWorkerLogs(child, test.info(), "translation");
+  let output = "";
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { child.kill("SIGTERM"); reject(new Error(`Translation fixture startup timeout: raw worker logs retained privately`)); }, 15_000);
+      child.once("error", () => { clearTimeout(timeout); reject(new Error("Translation fixture could not start; raw worker logs retained privately.")); });
+      child.once("exit", (code) => { clearTimeout(timeout); reject(new Error(`Translation fixture exited ${code}: raw worker logs retained privately`)); });
+      child.stdout.on("data", (data) => {
+        output += data;
+        const port = Number.parseInt(output, 10);
+        if (port > 0) { clearTimeout(timeout); resolve(port); }
+      });
     });
-  });
-  const origin = JSON.parse(readFileSync(path.join(root, "module-origin.json"), "utf8"));
-  expect(origin.deadline_seconds).toBe(1.5);
-  if (installedPython) {
-    expect(origin.translation).toContain("site-packages/engineering_platform/");
-    expect(origin.providers).toContain("site-packages/engineering_platform/");
-    expect(origin.translation.startsWith(repository)).toBe(false);
+    const origin = JSON.parse(readFileSync(path.join(root, "module-origin.json"), "utf8"));
+    expect(origin.deadline_seconds).toBe(1.5);
+    if (installedPython) {
+      expect(origin.translation).toContain("site-packages/engineering_platform/");
+      expect(origin.providers).toContain("site-packages/engineering_platform/");
+      expect(origin.translation.startsWith(repository)).toBe(false);
+    }
+    return { child, environment, python, url: `http://127.0.0.1:${port}/?project=translation-fixture` };
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+    }
+    await finishWorkerLogs(child, test.info());
+    throw error;
   }
-  return { child, environment, python, url: `http://127.0.0.1:${port}/?project=translation-fixture` };
 }
 
 test.describe("real dynamic translation provider boundary", () => {
   let root, server;
   test.beforeEach(async ({ page }, testInfo) => {
+    server = null;
     root = mkdtempSync(path.join(tmpdir(), "ep-translation-integrated-"));
     server = await startFixture(root, testInfo.title.includes("known deterministic")
       ? "Provider action exceeded the 1-minute host-owned deadline." : sourceDiagnostic);
@@ -75,6 +85,7 @@ test.describe("real dynamic translation provider boundary", () => {
   test.afterEach(async () => {
     // Reads only immutable evidence tables: ordinary UI audit rows are allowed.
     try {
+      if (!server) return; // Startup already failed and retained its own closed raw logs.
       const after = execFileSync(server.python, [fixture, "--evidence", root], { cwd: root, env: server.environment, encoding: "utf8" }).trim();
       expect(JSON.parse(after)).toEqual(JSON.parse(readFileSync(path.join(root, "evidence-before.json"), "utf8")));
       const pids = providerJournal(root).filter((entry) => entry.event === "start").map((entry) => entry.pid);
@@ -84,7 +95,8 @@ test.describe("real dynamic translation provider boundary", () => {
         const exited = new Promise((resolve) => server.child.once("exit", resolve));
         server.child.kill("SIGTERM"); await exited;
       }
-      rmSync(root, { recursive: true, force: true });
+      if (server?.child) await finishWorkerLogs(server.child, test.info());
+      if (root) rmSync(root, { recursive: true, force: true });
     }
   });
 
