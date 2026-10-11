@@ -263,8 +263,12 @@ class IsolatedProviderTransport:
     over a local Python pipe with an empty environment, never a Codex process.
     Unexpected execution is recorded and fails qualification before spawning.
     """
-    def __init__(self, *, remaining=100, authenticated=True):
+    def __init__(self, *, remaining=100, authenticated=True, quota_mode="available", quota_marker=None):
         self.remaining, self.authenticated = remaining, authenticated
+        if quota_mode not in {"available", "limited", "unavailable", "invalid"}:
+            raise ValueError("Unknown declared quota response")
+        self.quota_mode, self.quota_marker = quota_mode, quota_marker
+        self.github_quota_requests = 0
         self.metadata_sessions = self.metadata_requests = self.readiness_requests = 0
         self.unexpected = []
         self.processes = []
@@ -274,6 +278,28 @@ class IsolatedProviderTransport:
         native_command = CodexCliProvider.command
         known_executables = {CodexCliProvider()._executable, providers.github_cli_executable()}
         adapter = self
+        def github(provider, *args):
+            # This is the actual external transport join, including the direct
+            # subprocess caller. The installed Server and quota parser stay real.
+            if args != ("api", "rate_limit"):
+                return adapter.deny("github_quota_command", args)
+            adapter.github_quota_requests += 1
+            if adapter.quota_marker:
+                adapter.quota_marker.with_suffix(".paused").write_text("quota transport entered")
+                deadline = time.monotonic() + 5
+                while not adapter.quota_marker.with_suffix(".release").exists():
+                    if time.monotonic() >= deadline:
+                        raise OSError("Controlled quota pause exceeded metadata deadline")
+                    time.sleep(.01)
+            if adapter.quota_mode == "unavailable":
+                raise OSError("Declared external GitHub quota unavailable")
+            if adapter.quota_mode == "invalid":
+                return "not JSON"
+            return json.dumps({"resources": {name: {"remaining": 0 if adapter.quota_mode == "limited" else 100,
+                                                   "reset": 2000000000}
+                                              for name in ("core", "graphql", "search")}})
+        self.guarded_github = github
+        self.stack.enter_context(patch.object(providers.GitHubProvider, "github", github))
         def command(provider, *args, **kwargs):
             if args == ("login", "status"):
                 adapter.readiness_requests += 1
@@ -347,6 +373,7 @@ for line in sys.stdin:
         if self.unexpected:
             raise AssertionError(f"Unexpected external transport attempts: {self.unexpected}")
         return {"metadata_sessions": self.metadata_sessions, "metadata_requests": self.metadata_requests,
+                "github_quota_requests": self.github_quota_requests,
                 "readiness_metadata_requests": self.readiness_requests,
                 "unexpected_transport_attempts": 0, "native_app_server_starts": 0}
 
@@ -426,10 +453,13 @@ class TrackedRequestHandler(server._HealthHandler):
 
 class OwnedReadWorker:
     """Only this fixture's worker/process group; never a source writer."""
-    def __init__(self, data_root, *, remaining=100, authenticated=True, marker=None, restore_fault=False, omit_metadata_adapter=False, bind_port=0):
+    def __init__(self, data_root, *, remaining=100, authenticated=True, marker=None, restore_fault=False, omit_metadata_adapter=False, bind_port=0,
+                 quota_mode="available", quota_marker=None, omit_quota_adapter=False):
         options = {"remaining": remaining, "authenticated": authenticated,
                    "marker": str(marker) if marker else None, "restore_fault": restore_fault,
-                   "omit_metadata_adapter": omit_metadata_adapter, "bind_port": bind_port}
+                   "omit_metadata_adapter": omit_metadata_adapter, "bind_port": bind_port,
+                   "quota_mode": quota_mode, "quota_marker": str(quota_marker) if quota_marker else None,
+                   "omit_quota_adapter": omit_quota_adapter}
         environment = os.environ.copy()
         environment[server.SERVER_ENVIRONMENT_DATA_ROOT] = str(data_root)
         self.process = subprocess.Popen((sys.executable, str(Path(__file__).absolute()),
@@ -529,6 +559,7 @@ def isolated_read_worker(data_root, options):
     original_execute = LocalProcessProvider.execute
     original_run = subprocess.run
     native_app_server = CodexCliProvider.app_server
+    native_github = providers.GitHubProvider.github
     marker = Path(options["marker"]) if options.get("marker") else None
     stack = ExitStack()
     known_executables = {CodexCliProvider()._executable, providers.github_cli_executable()}
@@ -559,9 +590,12 @@ def isolated_read_worker(data_root, options):
     stack.enter_context(patch.object(providers, "_start_process", reject_native))
     stack.enter_context(patch.object(subprocess, "run", reject_direct))
     stack.enter_context(patch.object(LocalProcessProvider, "execute", version_boundary))
-    transport = IsolatedProviderTransport(remaining=options["remaining"], authenticated=options["authenticated"]).start()
+    transport = IsolatedProviderTransport(remaining=options["remaining"], authenticated=options["authenticated"],
+        quota_mode=options["quota_mode"], quota_marker=Path(options["quota_marker"]) if options["quota_marker"] else None).start()
     if options.get("omit_metadata_adapter"):
         stack.enter_context(patch.object(CodexCliProvider, "app_server", native_app_server))
+    if options.get("omit_quota_adapter"):
+        stack.enter_context(patch.object(providers.GitHubProvider, "github", native_github))
     original_git = GitProvider.execute
     def no_model(*args, **kwargs):
         counters["model"] += 1
@@ -599,7 +633,8 @@ def isolated_read_worker(data_root, options):
             thread.join(timeout=1)
             final = observed()
             print(json.dumps({**status, "admission_closed": listener.admission_closed,
-                              "guard_retained": CodexCliProvider.app_server is transport.guarded_app_server,
+                              "guard_retained": (CodexCliProvider.app_server is transport.guarded_app_server
+                                                 and providers.GitHubProvider.github is transport.guarded_github),
                               "native_attempts": counters["native_attempts"],
                               "final_observation": final}), flush=True)
             # Keep all patches installed. The parent owns process termination,
@@ -612,11 +647,11 @@ def isolated_read_worker(data_root, options):
 
 
 class StoredConsoleCanary:
-    def __init__(self, *, publication_mode="normal", selection_mode="normal", finding_mode="normal", recovery_mode=False):
+    def __init__(self, *, publication_mode="normal", selection_mode="normal", finding_mode="normal", recovery_mode=False, quota_mode="available"):
         self.fixture = RealTopologyFixture()
         self.external_transport = IsolatedProviderTransport(
             remaining=50 if selection_mode == "no_capacity" else 100,
-            authenticated=selection_mode != "missing").start()
+            authenticated=selection_mode != "missing", quota_mode=quota_mode).start()
         with redirect_stdout(io.StringIO()):
             if server.main(["bootstrap-topology", "--data-root", str(self.fixture.data),
                             "--project-id", "other", "--repository-id", "other-repo"]) != 0:
@@ -754,6 +789,7 @@ class StoredConsoleCanary:
 
         self.console_git_transport = patch.object(GitProvider, "execute", observed_console_git)
         self.console_git_transport.start()
+        worker_options.setdefault("quota_mode", self.external_transport.quota_mode)
         self.listener = OwnedReadWorker(self.fixture.data,
                                         remaining=self.external_transport.remaining,
                                         authenticated=self.external_transport.authenticated, **worker_options)
@@ -763,7 +799,7 @@ class StoredConsoleCanary:
         result = self.external_transport.snapshot()
         if self.listener:
             child = self.listener.snapshot()["transport_observations"]
-            for key in ("metadata_sessions", "metadata_requests", "readiness_metadata_requests"):
+            for key in ("metadata_sessions", "metadata_requests", "readiness_metadata_requests", "github_quota_requests"):
                 result[key] += child[key]
         return result
 
@@ -902,6 +938,8 @@ elif __name__ == "__main__":
     configuration.update({name: {"finding_mode": name} for name in ("failed", "uncertain-result", "duplicate")})
     configuration["failed"]["recovery_mode"] = True
     configuration["read-revoked"] = {}
+    if scenario.startswith("quota-"):
+        configuration[scenario] = {"quota_mode": scenario.removeprefix("quota-")}
     canary = StoredConsoleCanary(**configuration[scenario])
     try:
         run_id = canary.generate()

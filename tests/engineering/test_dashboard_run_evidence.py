@@ -240,9 +240,92 @@ class DashboardExternalTransportTests(unittest.TestCase):
                 transport.close()
 
 
+class DashboardQuotaTransportTests(unittest.TestCase):
+    setUp = DashboardExternalTransportTests.setUp
+
+    def test_real_quota_parser_cold_warm_contexts_and_new_worker(self):
+        import json
+        from urllib.request import urlopen
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary, OwnedReadWorker
+        for mode in ("available", "limited", "unavailable", "invalid"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as installation, patch.dict(
+                    os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+                canary = StoredConsoleCanary(quota_mode=mode)
+                worker = None
+                try:
+                    origin = canary.start_listener()
+                    baseline = canary.effect_snapshot()
+                    expected = {"limited": True, "reset_at": 2000000000} if mode == "limited" else {"limited": False}
+                    for context in ("project", "none", None, "project"):
+                        suffix = "?project=" + context if context else ""
+                        with urlopen(origin + "/api/dashboard-snapshot" + suffix, timeout=5) as response:
+                            snapshot = json.load(response)
+                        self.assertEqual(snapshot["scope"], "PROJECT" if context else "PLATFORM")
+                        self.assertEqual(snapshot.get("project_id"), context)
+                        for _ in range(2):
+                            with urlopen(origin + "/api/github-rate-limit", timeout=5) as response:
+                                self.assertEqual(response.status, 200)
+                                self.assertEqual(json.load(response), expected)
+                    self.assertEqual(canary.transport_snapshot()["github_quota_requests"], 8)
+                    self.assertEqual(canary.effect_snapshot(), baseline)
+                    canary.listener.close()
+                    worker = OwnedReadWorker(canary.fixture.data, quota_mode=mode)
+                    with urlopen(worker.ready["url"].split("/?")[0] + "/api/github-rate-limit", timeout=5) as response:
+                        self.assertEqual(json.load(response), expected)
+                    final = worker.close()
+                    self.assertEqual(final["transport_observations"]["transport_observations"]["github_quota_requests"], 1)
+                    self.assertEqual(final["unexpected_native_attempts"], 0)
+                    self.assertTrue(final["owned_process_group_ended"])
+                finally:
+                    if worker and worker.closed is None:
+                        worker.close()
+                    canary.close()
+
+    def test_removing_only_quota_adapter_is_detected_before_native_use(self):
+        import json
+        from urllib.request import urlopen
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
+        with tempfile.TemporaryDirectory() as installation, patch.dict(
+                os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+            canary = StoredConsoleCanary()
+            try:
+                origin = canary.start_listener(omit_quota_adapter=True)
+                before = canary.effect_snapshot()
+                with urlopen(origin + "/api/github-rate-limit", timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(json.load(response), {"limited": False})
+                self.assertEqual(canary.effect_snapshot(), before)
+                with self.assertRaises(AssertionError):
+                    self.assertGreater(canary.transport_snapshot()["github_quota_requests"], 0)
+                with self.assertRaisesRegex(AssertionError, "cleanup failed"):
+                    canary.close()
+                self.assertEqual(canary.listener.closed["unexpected_native_attempts"], 1)
+                self.assertTrue(canary.listener.closed["owned_process_group_ended"])
+            finally:
+                if canary.listener is None or canary.listener.closed is None:
+                    canary.close()
+
+    def test_unknown_and_malformed_github_commands_are_not_exempt(self):
+        from engineering_platform.providers import GitHubProvider
+        from tests.engineering.dashboard_run_evidence_fixture import IsolatedProviderTransport
+        for args in (("api", "user"), ("api", "rate_limit", "--hostname", "other"), ("api",), ()):
+            with self.subTest(args=args):
+                transport = IsolatedProviderTransport().start()
+                try:
+                    with patch("engineering_platform.providers.subprocess.run") as native:
+                        with self.assertRaisesRegex(AssertionError, "Unexpected external"):
+                            GitHubProvider().github(*args)
+                        native.assert_not_called()
+                    with self.assertRaises(AssertionError):
+                        transport.snapshot()
+                finally:
+                    with self.assertRaises(AssertionError):
+                        transport.close()
+
+
 class DashboardWorkerLifetimeTests(unittest.TestCase):
     setUp = DashboardExternalTransportTests.setUp
-    def _paused_request_close(self, restore_fault=False, disconnect=False):
+    def _paused_request_close(self, restore_fault=False, disconnect=False, quota=False):
         import json, threading, time
         from urllib.request import urlopen
         from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
@@ -252,10 +335,11 @@ class DashboardWorkerLifetimeTests(unittest.TestCase):
             marker = canary.fixture.area / "external-version"
             results, errors = {}, []
             done = threading.Event()
-            origin = canary.start_listener(marker=marker, restore_fault=restore_fault)
+            origin = canary.start_listener(marker=marker, restore_fault=restore_fault,
+                                          quota_marker=marker if quota else None)
             def request():
                 try:
-                    with urlopen(origin + "/api/provider-capacity", timeout=10) as response:
+                    with urlopen(origin + ("/api/github-rate-limit" if quota else "/api/provider-capacity"), timeout=10) as response:
                         results["status"] = response.status
                         results["payload"] = json.load(response)
                 except BaseException as failure:
@@ -299,8 +383,13 @@ class DashboardWorkerLifetimeTests(unittest.TestCase):
                     self.assertNotIn("cleanup_error", results)
                     self.assertTrue(final["isolation_retained_through_worker_exit"])
                     self.assertEqual(final["unexpected_native_attempts"], 0)
-                    self.assertEqual(results["payload"]["rate_limits"]["windows"][0]["used_percent"], 0)
-                    self.assertEqual(final["transport_observations"]["transport_observations"]["metadata_requests"], 1)
+                    observed = final["transport_observations"]["transport_observations"]
+                    if quota:
+                        self.assertEqual(results["payload"], {"limited": False})
+                        self.assertEqual(observed["github_quota_requests"], 1)
+                    else:
+                        self.assertEqual(results["payload"]["rate_limits"]["windows"][0]["used_percent"], 0)
+                        self.assertEqual(observed["metadata_requests"], 1)
             finally:
                 if marker.parent.exists():
                     marker.with_suffix(".release").write_text("release on test exception")
@@ -312,6 +401,9 @@ class DashboardWorkerLifetimeTests(unittest.TestCase):
 
     def test_real_paused_handler_finishes_before_transport_and_data_teardown(self):
         self._paused_request_close()
+
+    def test_real_paused_quota_handler_finishes_before_transport_and_data_teardown(self):
+        self._paused_request_close(quota=True)
 
     def test_restored_original_teardown_fault_is_detected_without_native_escape(self):
         self._paused_request_close(restore_fault=True)

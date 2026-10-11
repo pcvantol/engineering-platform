@@ -3,11 +3,11 @@
 Assignment: `L2-EP-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Directive: `L2-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221), under the full [6058358032 mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6058358032).
-Lane **r34**, plan **3**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
+Lane **r34**, plan **4**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after complete independent Quality/Security pairs: **consumed5/max5/remaining0**. Operational budgets remain unchanged.
+Formal corrections after complete independent Quality/Security pairs: **consumed6/max6/remaining0**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -367,3 +367,35 @@ source merge, nonemptyNO_BUMPFinalization with own reviews/CI/protectedmerge,
 NEW exactfinalmain noneditable fullqualification/browser/freshreachablelinks+
 previews/readbacks/owncleanup. Reconcile documentary roadmap plan/budget P3 in
 normalFinalization; broadTDEsanitation remainsunselected.
+
+
+## Integrated correction round6 — exact GitHub quota transport
+
+[Decision6106600171](https://github.com/pcvantol/forge/issues/142#issuecomment-6106600171)
+and [BEFORE-source booking6106654980](https://github.com/pcvantol/forge/issues/142#issuecomment-6106654980)
+authorize one integrated correction, consumed6/max6/remaining0, same r34/plan4
+writer/branch/history and all operational budgets. The original2ae2310 installed
+PLATFORM HTTP/SSE failures are retained; no old screenshots are reclassified.
+Only the exact external GitHubProvider.github(api, rate_limit) response is
+adapted. The actual installed Server/parser/error interpretation stays active;
+other/malformed GitHub commands fail before native use. GitHub quota requests
+are separately counted and included through the final cleanup receipt. The
+independent direct-process/native lower rejection remains installed.
+
+### Compact reachable metadata/lifetime inventory
+
+| Public surface/context | Actual external boundary | Explicit adapter/observation |
+| --- | --- | --- |
+| PROJECT, valid project ID none, PLATFORM HTTP/SSE snapshots; init/refresh | Codex native version; login/status; shared local GitHub auth/status | Real pinned0.160.1 version only; bounded external readiness responses/readiness_metadata_requests |
+| Provider capacity/account metadata; cold worker and warm cache | Codex app-server initialize/initialized/account/rateLimits/read | Local Python JSON-RPC pipe, empty environment; metadata_sessions/metadata_requests; no native account start |
+| PLATFORM GitHub banner; direct HTTP diagnostics; init/manual refresh | GitHubProvider.github(api, rate_limit), normally direct subprocess.run | Exact local quota response/error/invalid JSON only; github_quota_requests per request, no quota cache; real parser/banner retained |
+| Same contexts in passive/new worker and existing recovery readers | Same version/readiness/account/quota transport joins | New owned process, cold caches, same adapters and separate final observations; no replay or additional publication |
+| Accepted quota/metadata request during close; SSE disconnect/partial startup | Same request through its external boundary | Existing5s bound, stop admission, drain ordinary handlers, retain both guards until complete owned process-group termination; native0 and unchanged execution effects required |
+| Adapter removal, original teardown fault, unknown/malformed command | Independent lower process/direct-command rejection | Expected qualification FAIL before live native/account/model use; never reset/ignore counters |
+
+Existing39 selected cases/42 receipts remain; six added quota-limited/unavailable/
+invalid HTTP/SSE cases make45 cases/48 required receipts and181 screenshots.
+The production parser currently reports limited=false for an unavailable or
+invalid external quota response: the tests preserve that existing diagnostic
+interpretation rather than inventing readiness success or changing product
+semantics. Full exact-head gates and final-main delivery remain pending.

@@ -485,14 +485,14 @@ for (const revoked of [false, true]) {
   });
 }
 
-for (const ingress of ["http", "sse"]) {
-  test(`actual PLATFORM no-project ${ingress} snapshot preserves strict selected scope`, async ({ page }, testInfo) => {
+for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "limited", "unavailable", "invalid"]) {
+  test(`actual PLATFORM no-project ${ingress} snapshot preserves strict selected scope${quotaMode === "available" ? "" : ` quota-${quotaMode}`}`, async ({ page }, testInfo) => {
     test.setTimeout(60_000);
     const installedPython = process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON;
     const environment = { ...process.env, EP_QUALIFICATION_DETERMINISTIC_FLOW: "1", PYTHONPATH: path.join(repository, "src") };
     if (installedPython) delete environment.PYTHONPATH;
     if (process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1") expect(installedPython).toBeTruthy();
-    const child = spawn(installedPython || process.env.EP_BROWSER_PYTHON || "python3", [fixture, "normal"], {
+    const child = spawn(installedPython || process.env.EP_BROWSER_PYTHON || "python3", [fixture, `quota-${quotaMode}`], {
       cwd: installedPython ? path.dirname(installedPython) : repository, env: environment, stdio: ["pipe", "pipe", "pipe"],
     });
     let buffer = "", stderr = "", pending; const messages = [];
@@ -524,6 +524,13 @@ for (const ingress of ["http", "sse"]) {
       await page.goto(ready.url, { waitUntil: "domcontentloaded" });
       await expect(page.locator("#dashboardSplash")).toBeHidden();
       await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      const quotaExpected = quotaMode === "limited" ? { limited: true, reset_at: 2000000000 } : { limited: false };
+      // Both first/cold and repeat reads use the actual installed handler and
+      // parser, including error/invalid transport responses. Quota has no cache.
+      for (let index = 0; index < 2; index += 1) {
+        const quota = await page.request.get(new URL("/api/github-rate-limit", ready.url).href);
+        expect(quota.status()).toBe(200); expect(await quota.json()).toEqual(quotaExpected);
+      }
       await page.locator("#dashboardProject").selectOption("none");
       await page.waitForURL((url) => url.searchParams.get("project") === "none");
       expect(await page.evaluate(() => window.ENGINEERING_PLATFORM_NO_PROJECT === true)).toBe(false);
@@ -561,11 +568,20 @@ for (const ingress of ["http", "sse"]) {
       }
       await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
       await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      if (quotaMode === "limited") {
+        await expect(page.locator("#githubRateLimitBanner")).toBeVisible();
+        const repeated = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/github-rate-limit");
+        await page.locator("#githubRateLimitRefresh").click();
+        expect(await (await repeated).json()).toEqual(quotaExpected);
+      } else {
+        await expect(page.locator("#githubRateLimitBanner")).toBeHidden();
+      }
       const foreign = await page.request.get(new URL(`/api/prompt-history/${ready.run_id}/details?project=other`, ready.url).href);
       expect(foreign.status()).toBe(404);
       child.stdin.write("snapshot\n"); const after = await next();
       expect(after.after).toEqual(ready.before);
     expect(after.transport_observations.metadata_requests).toBeGreaterThan(0);
+    expect(after.transport_observations.github_quota_requests).toBeGreaterThanOrEqual(3);
     expect(after.transport_observations.unexpected_transport_attempts).toBe(0);
     expect(after.transport_observations.native_app_server_starts).toBe(0); expect(errors).toEqual([]);
       const imagePath = testInfo.outputPath(`platform-${ingress}-fresh.png`);
