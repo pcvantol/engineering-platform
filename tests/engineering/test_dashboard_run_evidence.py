@@ -153,6 +153,22 @@ class DashboardRunEvidenceTests(unittest.TestCase):
 
 
 class DashboardExternalTransportTests(unittest.TestCase):
+    def setUp(self):
+        # Own the real pinned native context, including when an invalid prefix
+        # was inherited. No login, capacity service or authority is substituted.
+        self.native = tempfile.TemporaryDirectory(prefix="ep-metadata-native-")
+        self.addCleanup(self.native.cleanup)
+        executable = shutil.which("codex")
+        self.assertIsNotNone(executable, "Declared pinned native CLI must be on PATH")
+        self.assertEqual(subprocess.run((executable, "--version"), check=True, text=True,
+                                      capture_output=True).stdout.strip(), "codex-cli 0.160.1")
+        prefix = Path(self.native.name)
+        (prefix / "bin").mkdir()
+        (prefix / "bin/codex").symlink_to(Path(executable).resolve())
+        patcher = patch.dict(os.environ, {"EP_MANAGED_CODEX_CLI_PREFIX": str(prefix)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_real_capacity_handler_uses_local_metadata_transport_and_preserves_execution(self):
         from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
         from urllib.request import urlopen
@@ -172,7 +188,7 @@ class DashboardExternalTransportTests(unittest.TestCase):
                     readiness = json.load(response)["providers"]
                 self.assertEqual(readiness["codex"]["state"], "READY")
                 self.assertEqual(readiness["github"]["state"], "READY")
-                observed = canary.external_transport.snapshot()
+                observed = canary.transport_snapshot()
                 self.assertGreaterEqual(observed["readiness_metadata_requests"], 2)
                 self.assertEqual(observed["metadata_requests"], 1)
                 self.assertEqual(observed["metadata_sessions"], 1)
@@ -183,31 +199,26 @@ class DashboardExternalTransportTests(unittest.TestCase):
                 canary.close()
 
     def test_removed_metadata_adapter_fails_before_live_process_and_account_use(self):
-        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary, CodexCliProvider
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
         from urllib.request import urlopen
-        native_app_server = CodexCliProvider.app_server
-        escaped = []
-        def deny_start(*args, **kwargs):
-            escaped.append("native_app_server")
-            raise OSError("Independent rejecting boundary: no account/process allowed")
         with tempfile.TemporaryDirectory(prefix="ep-dashboard-removed-guard-") as installation, patch.dict(
                 os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
             canary = StoredConsoleCanary()
             try:
-                origin = canary.start_listener()
-                with patch.object(CodexCliProvider, "app_server", native_app_server), patch(
-                        "engineering_platform.providers._start_process", deny_start):
-                    with urlopen(origin + "/api/provider-capacity", timeout=10) as response:
-                        self.assertEqual(response.status, 200)
-                        response.read()
-                self.assertEqual(escaped, ["native_app_server"])
+                origin = canary.start_listener(omit_metadata_adapter=True)
+                with urlopen(origin + "/api/provider-capacity", timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    response.read()
                 self.assertEqual(canary.console_model_requests, 0)
-                # The mandatory new observation fails under this deliberate
-                # guard removal; the lower rejecting boundary prevents escape.
                 with self.assertRaises(AssertionError):
-                    self.assertGreater(canary.external_transport.snapshot()["metadata_requests"], 0)
+                    self.assertGreater(canary.transport_snapshot()["metadata_requests"], 0)
+                with self.assertRaisesRegex(AssertionError, "cleanup failed"):
+                    canary.close()
+                self.assertEqual(canary.listener.closed["unexpected_native_attempts"], 1)
+                self.assertTrue(canary.listener.closed["worker_ended"])
             finally:
-                canary.close()
+                if canary.listener is None or canary.listener.closed is None:
+                    canary.close()
 
     def test_unexpected_execution_transport_fails_closed_even_when_caller_catches_it(self):
         from tests.engineering.dashboard_run_evidence_fixture import IsolatedProviderTransport, CodexCliProvider
@@ -227,3 +238,123 @@ class DashboardExternalTransportTests(unittest.TestCase):
         finally:
             with self.assertRaises(AssertionError):
                 transport.close()
+
+
+class DashboardWorkerLifetimeTests(unittest.TestCase):
+    setUp = DashboardExternalTransportTests.setUp
+    def _paused_request_close(self, restore_fault=False, disconnect=False):
+        import json, threading, time
+        from urllib.request import urlopen
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
+        with tempfile.TemporaryDirectory(prefix="ep-worker-lifetime-install-") as installation, patch.dict(
+                os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+            canary = StoredConsoleCanary()
+            marker = canary.fixture.area / "external-version"
+            results, errors = {}, []
+            done = threading.Event()
+            origin = canary.start_listener(marker=marker, restore_fault=restore_fault)
+            def request():
+                try:
+                    with urlopen(origin + "/api/provider-capacity", timeout=10) as response:
+                        results["status"] = response.status
+                        results["payload"] = json.load(response)
+                except BaseException as failure:
+                    errors.append(failure)
+            requester = threading.Thread(target=request)
+            requester.start()
+            def wait_file(path):
+                deadline = time.monotonic() + 5
+                while not path.exists():
+                    self.assertLess(time.monotonic(), deadline, "Existing metadata deadline reached")
+                    time.sleep(.01)
+            closer = None
+            try:
+                wait_file(marker.with_suffix(".paused"))
+                def close():
+                    try:
+                        canary.close()
+                    except BaseException as failure:
+                        results["cleanup_error"] = failure
+                    finally:
+                        done.set()
+                closer = threading.Thread(target=close)
+                closer.start()
+                wait_file(marker.with_suffix(".closing"))
+                self.assertFalse(done.is_set(), "Close must not finish while the real handler is paused")
+                marker.with_suffix(".release").write_text("resume own external version boundary")
+                requester.join(timeout=5)
+                closer.join(timeout=5)
+                self.assertFalse(requester.is_alive())
+                self.assertFalse(closer.is_alive())
+                self.assertFalse(errors, errors)
+                self.assertEqual(results["status"], 200)
+                final = canary.listener.closed
+                self.assertTrue(final["worker_ended"])
+                self.assertTrue(final["ordinary_handlers_completed"])
+                if restore_fault:
+                    self.assertIsInstance(results.get("cleanup_error"), AssertionError)
+                    self.assertFalse(final["isolation_retained_through_worker_exit"])
+                    self.assertEqual(final["unexpected_native_attempts"], 1)
+                else:
+                    self.assertNotIn("cleanup_error", results)
+                    self.assertTrue(final["isolation_retained_through_worker_exit"])
+                    self.assertEqual(final["unexpected_native_attempts"], 0)
+                    self.assertEqual(results["payload"]["rate_limits"]["windows"][0]["used_percent"], 0)
+                    self.assertEqual(final["transport_observations"]["transport_observations"]["metadata_requests"], 1)
+            finally:
+                if marker.parent.exists():
+                    marker.with_suffix(".release").write_text("release on test exception")
+                if closer:
+                    closer.join(timeout=5)
+                requester.join(timeout=5)
+                if canary.listener.closed is None:
+                    canary.close()
+
+    def test_real_paused_handler_finishes_before_transport_and_data_teardown(self):
+        self._paused_request_close()
+
+    def test_restored_original_teardown_fault_is_detected_without_native_escape(self):
+        self._paused_request_close(restore_fault=True)
+
+    def test_real_sse_worker_ends_with_isolation_retained_until_process_exit(self):
+        from urllib.request import urlopen
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary
+        for disconnected in (False, True):
+            with self.subTest(client_disconnected=disconnected), tempfile.TemporaryDirectory(
+                    prefix="ep-worker-stream-install-") as installation, patch.dict(
+                    os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+                canary = StoredConsoleCanary()
+                response = None
+                try:
+                    origin = canary.start_listener()
+                    response = urlopen(origin + "/api/events?project=project", timeout=5)
+                    self.assertEqual(response.status, 200)
+                    self.assertTrue(response.readline().startswith(b"retry:"))
+                    if disconnected:
+                        response.close()
+                    canary.close()
+                    self.assertTrue(canary.cleanup_observation["worker_ended"])
+                    self.assertTrue(canary.cleanup_observation["isolation_retained_through_worker_exit"])
+                    self.assertEqual(canary.cleanup_observation["unexpected_native_attempts"], 0)
+                    self.assertFalse(canary.fixture.area.exists())
+                finally:
+                    if response:
+                        response.close()
+                    if canary.listener.closed is None:
+                        canary.close()
+
+    def test_real_partial_listener_startup_ends_own_worker_before_restoring_guards(self):
+        from tests.engineering.dashboard_run_evidence_fixture import StoredConsoleCanary, CodexCliProvider
+        original = CodexCliProvider.app_server
+        with tempfile.TemporaryDirectory(prefix="ep-worker-start-install-") as installation, patch.dict(
+                os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+            canary = StoredConsoleCanary()
+            try:
+                with self.assertRaisesRegex(AssertionError, "ended without an observation"):
+                    canary.start_listener(bind_port=-1)
+                self.assertIsNone(canary.listener)
+                self.assertIsNot(CodexCliProvider.app_server, original)
+            finally:
+                canary.close()
+            self.assertIs(CodexCliProvider.app_server, original)
+            self.assertFalse(canary.fixture.area.exists())

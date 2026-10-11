@@ -33,6 +33,33 @@ async function passiveProcess(python, environment, dataRoot) {
   return { child, next, ready: await next() };
 }
 
+async function stopIsolatedCanary(child, next, testInfo, label = "canary") {
+  if (child.exitCode !== null) throw new Error(`Isolated ${label} exited before verified cleanup: ${child.exitCode}`);
+  const stopped = new Promise((resolve) => child.once("exit", resolve));
+  child.stdin.write("stop\n");
+  const final = await next();
+  expect(final.closed).toEqual(expect.objectContaining({ worker_ended: true, owned_process_group_ended: true, request_admission_closed: true,
+    ordinary_handlers_completed: true, isolation_retained_through_worker_exit: true, unexpected_native_attempts: 0 }));
+  expect(final.closed.transport_observations.passive_effects).toEqual({ model: 0, git: 0 });
+  await stopped;
+  expect(child.exitCode).toBe(0);
+  const receipt = { contract: "ep-console-read-worker-cleanup/v1", source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null,
+    source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null, wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null,
+    label, cleanup: final.closed };
+  const output = testInfo.outputPath(`${label}-final-cleanup.json`);
+  writeFileSync(output, JSON.stringify(receipt, null, 2));
+  await testInfo.attach(`${label}-final-cleanup`, { path: output, contentType: "application/json" });
+  const manifest = testInfo.outputPath("fresh-evidence-manifest.json");
+  try {
+    const data = JSON.parse(readFileSync(manifest));
+    data.final_cleanup = final.closed;
+    writeFileSync(manifest, JSON.stringify(data, null, 2));
+    await testInfo.attach("fresh-evidence-manifest-closed", { path: manifest, contentType: "application/json" });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
 const cases = ["prepared", "uncertain", "no-consumer", "no-capacity", "irrelevant", "dispositions", "withdrawn", "provider-recovered", "provider-blocked", "missing", "privacy", "failed", "uncertain-result", "duplicate", "read-revoked"]
   .map((scenario) => ({ scenario, locale: "en", theme: "dark", width: 1280, height: 720 }));
 for (const locale of ["en", "nl", "de", "fr", "es"]) for (const theme of ["dark", "light"]) {
@@ -290,10 +317,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
         expect(observed.transport_observations.native_app_server_starts).toBe(0);
       } finally {
         await freshBrowser.close();
-        if (reader.child.exitCode === null) {
-          const stopped = new Promise((resolve) => reader.child.once("exit", resolve));
-          reader.child.stdin.write("stop\n"); await stopped;
-        }
+        await stopIsolatedCanary(reader.child, reader.next, testInfo, "passive-reader");
       }
     }
     child.stdin.write("snapshot\n");
@@ -361,10 +385,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     expect(screenshots.some((item) => item.scenario === "denied-project" && item.publication === null)).toBe(true);
     await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
   } finally {
-    if (child.exitCode === null) {
-      const stopped = new Promise((resolve) => child.once("exit", resolve));
-      child.stdin.write("stop\n"); await stopped;
-    }
+    await stopIsolatedCanary(child, next, testInfo);
   }
 });
 }
@@ -459,7 +480,7 @@ for (const revoked of [false, true]) {
       await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
     } finally {
       fetchAllowed.resolve(); responseAllowed.resolve();
-      if (child.exitCode === null) { const stopped = new Promise((resolve) => child.once("exit", resolve)); child.stdin.write("stop\n"); await stopped; }
+      await stopIsolatedCanary(child, next, testInfo);
     }
   });
 }
@@ -564,9 +585,7 @@ for (const ingress of ["http", "sse"]) {
       await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
       child.stdin.write("snapshot\n"); expect((await next()).after).toEqual(ready.before);
     } finally {
-      if (child.exitCode === null) {
-        const stopped = new Promise((resolve) => child.once("exit", resolve)); child.stdin.write("stop\n"); await stopped;
-      }
+      await stopIsolatedCanary(child, next, testInfo);
     }
   });
 }

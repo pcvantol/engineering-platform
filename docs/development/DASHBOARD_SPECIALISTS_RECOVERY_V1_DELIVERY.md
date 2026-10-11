@@ -3,11 +3,11 @@
 Assignment: `L2-EP-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Directive: `L2-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221), under the full [6058358032 mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6058358032).
-Lane **r34**, plan **2**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
+Lane **r34**, plan **3**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after complete independent Quality/Security pairs: **consumed4/max4/remaining0**. Operational budgets remain unchanged.
+Formal corrections after complete independent Quality/Security pairs: **consumed5/max5/remaining0**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -305,3 +305,65 @@ Selected CENTRAL snapshots additionally require canonical scopePROJECT as well
 as exact project identity, while the explicit no-project document requires
 PLATFORM/absentidentity. Legacy negative/positive transport fixtures now state
 their canonical PROJECT scope explicitly; assertions/guards remain unchanged.
+
+
+## Specific integrated round5 — safe request/worker lifetime and hosted context
+
+[Decision6101543057](https://github.com/pcvantol/forge/issues/142#issuecomment-6101543057)
+and [ACK/BEFORE-source booking6106098498](https://github.com/pcvantol/forge/issues/142#issuecomment-6106098498)
+select exactly one additional integrated correction: r34plan3,
+consumed5/max5/remaining0 after booking. Same writer/branch/base/history and all
+operational budgets; no sixthround implied. Closed predecessors remainclosed.
+
+The fifth complete pair on62b78c1 was QualityPASS/nonblockingroadmapP3 and
+SecurityREJECT for real HTTP handlers surviving transport teardown, plus a
+nonblocking nativeprefix test-precondition note. Its owning CI38060554014 later
+FAILED with2464tests/twoFAIL/oneexistingskip; the two metadata tests' actual
+UNAVAILABLE/empty-boundary failures are preserved. A targeted reproduction
+with an unavailable inherited prefix reproduces both failures1.451s. Historic
+capture/zero-counter limitations remain, not retroactively qualified.
+
+The two metadata tests now unconditionally own a temporary nativeprefix,
+verify the existing real PATH CLI exactly0.160.1 and link it into their own
+context. Productstatus/readiness/capacity/auth and original assertions remain
+active. No account/credentials/installation is created. Own read workers use
+the supported EP_SERVER_DATA_ROOT configuration to their existing fixturedata,
+so real native version inspection has a real workingdirectory; no defaultuser
+root is created or service result patched.
+
+The actual installed HTTP handler now runs in a separately owned process/session
+with all external guards installed. The fixture tracks acceptedrequests/routes,
+stops new admission and listening, and drains admitted ordinary requests within
+the existing5secondmetadata bound. Live streams keep their guards until their
+own worker and complete processgroup have actually ended. Existing provider
+terminate1/kill1 bounds include descendant verification; no unboundedjoin or
+restored live transport interval. Only afterwards may parent generation/recovery
+spies/leases/data be released. Partialstartup, request exceptions, disconnect,
+passive/newreader and normal/recovery close use the same owned lifecycle. If
+quiescence or groupdeath cannot be proved, qualificationFAIL preserves isolation
+and resources until own worker termination. Independent lower process/command
+boundaries prevent real native account/model activity during the deliberately
+restored-original-fault control too.
+
+Modelgeneration, accountmetadata, readiness, unexpected nativeeffects and final
+cleanup remain distinct observations. Native version inspection and actual
+handlers/storage/normalization/classification stay real. Each browser case now
+requires a postclose receipt with actual worker/group exit, admissionstop,
+ordinary-requestcompletion, retainedisolation and unexpectednative0;39 screenshot
+manifests bind that finalcleanup, with3 extra passive-reader receipts. Presnapshot
+zeros alone are not acceptance.
+
+Small integrated convergence7PASS6.215s: actualmetadata/ownedprefix/removedguard,
+real paused capacity request and normalclose, originalteardown fault safely
+redetected, SSE with live/disconnected clients and partialstartup. Complete
+module12PASS15.977s. Actual installed39-browser stored-data matrixPASS3.0m with
+39final-cleanup manifests and42totalcleanup receipts. No production-sourcebyte
+change in this round; these are convergence proofs on the existing product
+wheel and new testharness, not a new exact-head or exact-final-main grant.
+
+One new fixedcandidate/fullsource/installed/browser/strictcoverage/currentCI and
+SIXTH independent complete wholepair remain mandatory. Then normal protected
+source merge, nonemptyNO_BUMPFinalization with own reviews/CI/protectedmerge,
+NEW exactfinalmain noneditable fullqualification/browser/freshreachablelinks+
+previews/readbacks/owncleanup. Reconcile documentary roadmap plan/budget P3 in
+normalFinalization; broadTDEsanitation remainsunselected.

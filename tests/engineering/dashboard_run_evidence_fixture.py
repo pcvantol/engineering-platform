@@ -21,6 +21,9 @@ import tempfile
 import os
 import socket
 import struct
+import select
+import signal
+import time
 from unittest.mock import patch
 
 # The standalone canary imports only installed product services and declared
@@ -30,7 +33,7 @@ if __name__ == "__main__" and "ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT" not 
     _isolated_installation = tempfile.TemporaryDirectory(prefix="ep-dashboard-installation-")
     os.environ["ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT"] = _isolated_installation.name
 
-from engineering_platform import capability_review as cr, server, submission_service
+from engineering_platform import capability_review as cr, server, submission_service, providers
 from engineering_platform.execution_host import EngineeringRunner
 from engineering_platform.execution_models import AgentResult
 from engineering_platform.execution_repository import SubprocessRepositoryClient
@@ -269,6 +272,7 @@ class IsolatedProviderTransport:
 
     def start(self):
         native_command = CodexCliProvider.command
+        known_executables = {CodexCliProvider()._executable, providers.github_cli_executable()}
         adapter = self
         def command(provider, *args, **kwargs):
             if args == ("login", "status"):
@@ -318,16 +322,17 @@ for line in sys.stdin:
         # and account-launch commands at this process transport boundary too.
         for name in ("execute", "spawn", "spawn_detached"):
             original = getattr(LocalProcessProvider, name)
-            def local_process(provider, root, arguments, _original=original, _name=name, **kwargs):
+            def local_process(provider, root, arguments, *extra, _original=original, _name=name, **kwargs):
                 executable = Path(arguments[0]).name.lower() if arguments else ""
-                if executable == "gh" and tuple(arguments[1:]) == ("auth", "status", "--hostname", "github.com"):
+                if tuple(arguments[1:]) == ("auth", "status", "--hostname", "github.com") and (executable == "gh" or arguments[0] in known_executables):
                     adapter.readiness_requests += 1
                     return subprocess.CompletedProcess(arguments, 0, "Declared external GitHub readiness fixture", "")
-                if executable in {"codex", "gh", "osascript"} and tuple(arguments[1:]) != ("--version",):
+                if (executable in {"codex", "gh", "osascript"} or arguments[0] in known_executables) and tuple(arguments[1:]) != ("--version",):
                     return adapter.deny(f"local_{_name}", arguments)
-                return _original(provider, root, arguments, **kwargs)
+                return _original(provider, root, arguments, *extra, **kwargs)
             self.stack.enter_context(patch.object(LocalProcessProvider, name, local_process))
         self.stack.enter_context(patch.object(CodexCliProvider, "command", command))
+        self.guarded_app_server = app_server
         self.stack.enter_context(patch.object(CodexCliProvider, "app_server", app_server))
         for name in ("invoke", "execute", "spawn", "spawn_detached"):
             self.stack.enter_context(patch.object(CodexCliProvider, name,
@@ -355,6 +360,255 @@ for line in sys.stdin:
             self.snapshot()
         finally:
             self.stack.close()
+
+
+class OwnedRequestServer(ThreadingHTTPServer):
+    """Actual handlers, tracked admission and bounded own request teardown."""
+    def __init__(self, *args, **kwargs):
+        self.requests = {}
+        self.request_condition = threading.Condition()
+        self.admission_closed = False
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, address):
+        with self.request_condition:
+            if self.admission_closed:
+                self.shutdown_request(request)
+                return
+            self.requests[request] = None
+        try:
+            super().process_request(request, address)
+        except BaseException:
+            with self.request_condition:
+                self.requests.pop(request, None)
+                self.request_condition.notify_all()
+            raise
+
+    def process_request_thread(self, request, address):
+        try:
+            super().process_request_thread(request, address)
+        finally:
+            with self.request_condition:
+                self.requests.pop(request, None)
+                self.request_condition.notify_all()
+
+    def route(self, request, path):
+        with self.request_condition:
+            if request in self.requests:
+                self.requests[request] = path.split("?", 1)[0]
+
+    def quiesce(self):
+        # Five seconds is the existing production metadata deadline, not an
+        # enlarged test timeout. Streams are ended with their owning process.
+        deadline = time.monotonic() + 5
+        with self.request_condition:
+            self.admission_closed = True
+        self.shutdown()
+        self.server_close()
+        with self.request_condition:
+            while any(path != "/api/events" for path in self.requests.values()):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return {"ordinary_quiescent": False, "streams": len(self.requests)}
+                self.request_condition.wait(remaining)
+            return {"ordinary_quiescent": True, "streams": len(self.requests)}
+
+
+class TrackedRequestHandler(server._HealthHandler):
+    def do_GET(self):
+        self.server.route(self.connection, self.path)
+        return super().do_GET()
+
+    def do_POST(self):
+        self.server.route(self.connection, self.path)
+        return super().do_POST()
+
+
+class OwnedReadWorker:
+    """Only this fixture's worker/process group; never a source writer."""
+    def __init__(self, data_root, *, remaining=100, authenticated=True, marker=None, restore_fault=False, omit_metadata_adapter=False, bind_port=0):
+        options = {"remaining": remaining, "authenticated": authenticated,
+                   "marker": str(marker) if marker else None, "restore_fault": restore_fault,
+                   "omit_metadata_adapter": omit_metadata_adapter, "bind_port": bind_port}
+        environment = os.environ.copy()
+        environment[server.SERVER_ENVIRONMENT_DATA_ROOT] = str(data_root)
+        self.process = subprocess.Popen((sys.executable, str(Path(__file__).absolute()),
+                                         "--worker", str(data_root), json.dumps(options)),
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                                        start_new_session=True, env=environment)
+        self.closed = None
+        self.last = None
+        self.exchange_lock = threading.Lock()
+        try:
+            self.ready = self.read()
+        except BaseException:
+            self.end_process()
+            raise
+
+    def read(self):
+        if not select.select((self.process.stdout,), (), (), 5)[0]:
+            raise AssertionError("Own reader exceeded the existing metadata deadline")
+        line = self.process.stdout.readline()
+        if not line:
+            raise AssertionError("Own isolated reader ended without an observation")
+        return json.loads(line)
+
+    def exchange(self, instruction):
+        with self.exchange_lock:
+            self.process.stdin.write(instruction + "\n")
+            self.process.stdin.flush()
+            return self.read()
+
+    def snapshot(self):
+        if self.closed is not None:
+            return self.last
+        self.last = self.exchange("snapshot")
+        return self.last
+
+    def end_process(self):
+        # Same terminate/wait/kill bounds as the real provider process closer.
+        # Every child spawned by this read-only worker remains in this group.
+        cleanup_deadline = time.monotonic() + 2  # existing terminate1 + kill1 budget
+        if self.process.poll() is None:
+            os.killpg(self.process.pid, signal.SIGTERM)
+            try:
+                self.process.wait(timeout=min(1, max(0, cleanup_deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                os.killpg(self.process.pid, signal.SIGKILL)
+                self.process.wait(timeout=min(1, max(0, cleanup_deadline - time.monotonic())))
+        # A reaped parent alone is not proof that all group descendants ended.
+        # Check only the new session/group created by this own Popen; zombies
+        # have no live worker/effect boundary and are reaped by their owner.
+        def living_group():
+            rows = subprocess.check_output(("ps", "-axo", "pgid=,stat="), text=True,
+                                           timeout=max(.001, cleanup_deadline - time.monotonic()))
+            return any(parts[0] == str(self.process.pid) and not parts[1].startswith("Z")
+                       for line in rows.splitlines() if len(parts := line.split()) >= 2)
+        while living_group():
+            os.killpg(self.process.pid, signal.SIGKILL)
+            if time.monotonic() >= cleanup_deadline:
+                raise AssertionError("Own reader process group did not end within existing cleanup bound")
+            time.sleep(.01)
+        self.group_ended = True
+        for pipe in (self.process.stdin, self.process.stdout):
+            if pipe is not None:
+                pipe.close()
+
+    def close(self):
+        if self.closed is not None:
+            return self.closed
+        observation = None
+        failure = None
+        try:
+            observation = self.exchange("quiesce")
+            self.last = observation["final_observation"]
+        except BaseException as error:
+            failure = error
+        finally:
+            # Isolation in a worker with live streams is deliberately retained
+            # until this process/group has ended. Never restore it on timeout.
+            self.end_process()
+        self.closed = {"worker_ended": self.process.poll() is not None,
+                       "owned_process_group_ended": self.group_ended,
+                       "request_admission_closed": bool(observation and observation["admission_closed"]),
+                       "ordinary_handlers_completed": bool(observation and observation["ordinary_quiescent"]),
+                       "isolation_retained_through_worker_exit": bool(observation and observation["guard_retained"]),
+                       "unexpected_native_attempts": observation["native_attempts"] if observation else None,
+                       "transport_observations": self.last}
+        if (failure or not observation or not observation["ordinary_quiescent"] or not observation["guard_retained"]
+                or observation["native_attempts"] or self.last["passive_effects"] != {"model": 0, "git": 0}):
+            raise AssertionError("Isolated reader cleanup failed; own worker ended with guards retained")
+        return self.closed
+
+
+def isolated_read_worker(data_root, options):
+    """Real installed handler in an owned process whose guards outlive requests."""
+    counters = {"model": 0, "git": 0, "native_attempts": 0}
+    original_start = providers._start_process
+    original_execute = LocalProcessProvider.execute
+    original_run = subprocess.run
+    native_app_server = CodexCliProvider.app_server
+    marker = Path(options["marker"]) if options.get("marker") else None
+    stack = ExitStack()
+    known_executables = {CodexCliProvider()._executable, providers.github_cli_executable()}
+    def external_effect(arguments):
+        return (arguments and (Path(arguments[0]).name.lower() in {"codex", "gh", "osascript"}
+                               or arguments[0] in known_executables)
+                and tuple(arguments[1:]) != ("--version",))
+    def reject_native(*args, **kwargs):
+        if args and external_effect(args[0]):
+            counters["native_attempts"] += 1
+            raise OSError("Independent lower transport boundary denies native account/model use")
+        return original_start(*args, **kwargs)
+    def reject_direct(arguments, *args, **kwargs):
+        if external_effect(arguments):
+            counters["native_attempts"] += 1
+            raise OSError("Independent lower boundary denies direct external command")
+        return original_run(arguments, *args, **kwargs)
+    def version_boundary(provider, root, arguments, **kwargs):
+        result = original_execute(provider, root, arguments, **kwargs)
+        if marker and tuple(arguments[1:]) == ("--version",):
+            marker.with_suffix(".paused").write_text("actual version returned")
+            deadline = time.monotonic() + 5
+            while not marker.with_suffix(".release").exists():
+                if time.monotonic() >= deadline:
+                    raise OSError("Controlled external version pause exceeded metadata deadline")
+                time.sleep(.01)
+        return result
+    stack.enter_context(patch.object(providers, "_start_process", reject_native))
+    stack.enter_context(patch.object(subprocess, "run", reject_direct))
+    stack.enter_context(patch.object(LocalProcessProvider, "execute", version_boundary))
+    transport = IsolatedProviderTransport(remaining=options["remaining"], authenticated=options["authenticated"]).start()
+    if options.get("omit_metadata_adapter"):
+        stack.enter_context(patch.object(CodexCliProvider, "app_server", native_app_server))
+    original_git = GitProvider.execute
+    def no_model(*args, **kwargs):
+        counters["model"] += 1
+        raise OSError("No generation selected for the read-only worker")
+    def no_git(provider, root, *args):
+        if len(args) > 1 and args[0] == "git" and args[1] in {"fetch", "push", "pull", "switch", "checkout", "reset", "commit", "add", "merge", "rebase", "clean"}:
+            counters["git"] += 1
+            raise OSError("No execution Git effect allowed in read-only worker")
+        return original_git(provider, root, *args)
+    stack.enter_context(patch.object(CodexCliProvider, "invoke", no_model))
+    stack.enter_context(patch.object(GitProvider, "execute", no_git))
+    server._CODEX_RATE_LIMIT_CACHE = server._CODEX_IDENTITY_CACHE = None
+    listener = OwnedRequestServer(("127.0.0.1", options["bind_port"]), TrackedRequestHandler)
+    listener.data_root = data_root
+    listener.platform_data_transfer_lock = threading.RLock()
+    listener.platform_data_transfer_in_progress = False
+    listener.platform_data_import_restart_required = False
+    thread = threading.Thread(target=listener.serve_forever, daemon=True)
+    thread.start()
+    def observed():
+        return {"passive_effects": {"model": counters["model"], "git": counters["git"]},
+                "transport_observations": transport.snapshot()}
+    print(json.dumps({"url": f"http://127.0.0.1:{listener.server_address[1]}/?project=project", "module": server.__file__}), flush=True)
+    for command in sys.stdin:
+        if command.strip() == "snapshot":
+            print(json.dumps(observed()), flush=True)
+        elif command.strip() == "quiesce":
+            if marker:
+                marker.with_suffix(".closing").write_text("request admission stopping")
+            if options.get("restore_fault"):
+                # Deliberately restore the original rejected fault. The
+                # independent lower boundary still prevents all native starts.
+                transport.stack.close()
+            status = listener.quiesce()
+            thread.join(timeout=1)
+            final = observed()
+            print(json.dumps({**status, "admission_closed": listener.admission_closed,
+                              "guard_retained": CodexCliProvider.app_server is transport.guarded_app_server,
+                              "native_attempts": counters["native_attempts"],
+                              "final_observation": final}), flush=True)
+            # Keep all patches installed. The parent owns process termination,
+            # including stream handlers and every local metadata child.
+            for instruction in sys.stdin:
+                pass
+            break
+    # EOF/error: never restore patches while an own handler might still run.
+    # The supervisor terminates this process group, then removes fixture data.
 
 
 class StoredConsoleCanary:
@@ -478,7 +732,7 @@ class StoredConsoleCanary:
                 transport.stop()
             self.transport_patches = []
 
-    def start_listener(self):
+    def start_listener(self, **worker_options):
         server._CODEX_RATE_LIMIT_CACHE = None
         def unavailable_external_model(*args, **kwargs):
             self.console_model_requests += 1
@@ -500,14 +754,18 @@ class StoredConsoleCanary:
 
         self.console_git_transport = patch.object(GitProvider, "execute", observed_console_git)
         self.console_git_transport.start()
-        self.listener = ThreadingHTTPServer(("127.0.0.1", 0), server._HealthHandler)
-        self.listener.data_root = self.fixture.data
-        self.listener.platform_data_transfer_lock = threading.RLock()
-        self.listener.platform_data_transfer_in_progress = False
-        self.listener.platform_data_import_restart_required = False
-        self.thread = threading.Thread(target=self.listener.serve_forever, daemon=True)
-        self.thread.start()
-        return f"http://127.0.0.1:{self.listener.server_address[1]}"
+        self.listener = OwnedReadWorker(self.fixture.data,
+                                        remaining=self.external_transport.remaining,
+                                        authenticated=self.external_transport.authenticated, **worker_options)
+        return self.listener.ready["url"].split("/?")[0]
+
+    def transport_snapshot(self):
+        result = self.external_transport.snapshot()
+        if self.listener:
+            child = self.listener.snapshot()["transport_observations"]
+            for key in ("metadata_sessions", "metadata_requests", "readiness_metadata_requests"):
+                result[key] += child[key]
+        return result
 
     def effect_snapshot(self):
         with sqlite_connection(self.fixture.database) as connection:
@@ -520,11 +778,12 @@ class StoredConsoleCanary:
                       for table in tables}
             stored["schema"] = [list(row) for row in connection.execute(
                 "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")]
+        worker_effects = self.listener.snapshot()["passive_effects"] if self.listener else {"model": 0, "git": 0}
         return {"stored": stored, "model_calls": list(self.model.calls), "generation_model_requests": self.generation_model_requests,
                 "creates": getattr(getattr(self, "github", None), "creates", 0),
-                "console_model_requests": self.console_model_requests,
+                "console_model_requests": self.console_model_requests + worker_effects["model"],
                 "console_model_texts": self.console_model_texts,
-                "console_git_mutations": self.console_git_mutations,
+                "console_git_mutations": self.console_git_mutations + worker_effects["git"],
                 "git_refs": self.fixture.git("show-ref"), "git_status": self.fixture.git("status", "--porcelain")}
 
     def reconcile_publication(self):
@@ -587,10 +846,15 @@ class StoredConsoleCanary:
         return {"run_id": self.run_id, "state": state.phase, "baseline": self.effect_snapshot()}
 
     def close(self):
+        error = None
         if self.listener:
-            self.listener.shutdown()
-            self.listener.server_close()
-            self.thread.join()
+            try:
+                self.cleanup_observation = self.listener.close()
+            except BaseException as failure:
+                if self.listener.process.poll() is None or not getattr(self.listener, "group_ended", False):
+                    # No proved whole-group death: leave guards and data in place.
+                    raise
+                error = failure
         if self.runner:
             self.fixture.stop_host(self.runner)
         if self.console_transport:
@@ -599,45 +863,29 @@ class StoredConsoleCanary:
             self.console_git_transport.stop()
         for transport in reversed(self.transport_patches):
             transport.stop()
-        self.fixture.close()
         self.external_transport.close()
+        self.fixture.close()
+        if error:
+            raise error
 
 
 def passive_reader(data_root):
-    """A new installed Server process reading the existing canary store only."""
-    counts = {"model": 0, "git": 0}
-    def no_live_model(*args, **kwargs):
-        counts["model"] += 1
-        raise OSError("No Console model execution allowed in passive qualification")
-    original_git = GitProvider.execute
-    def no_execution_git(provider, root, *args):
-        if len(args) > 1 and args[0] == "git" and args[1] in {"fetch", "push", "pull", "switch", "checkout", "reset", "commit", "add", "merge", "rebase", "clean"}:
-            counts["git"] += 1
-            raise OSError("No execution Git effect allowed in passive qualification")
-        return original_git(provider, root, *args)
-    transport = IsolatedProviderTransport().start()
-    server._CODEX_RATE_LIMIT_CACHE = None
-    with patch.object(CodexCliProvider, "invoke", no_live_model), patch.object(GitProvider, "execute", no_execution_git):
-        listener = ThreadingHTTPServer(("127.0.0.1", 0), server._HealthHandler)
-        listener.data_root = data_root
-        listener.platform_data_transfer_lock = threading.RLock()
-        listener.platform_data_transfer_in_progress = False
-        listener.platform_data_import_restart_required = False
-        worker = threading.Thread(target=listener.serve_forever, daemon=True)
-        worker.start()
-        try:
-            print(json.dumps({"url": f"http://127.0.0.1:{listener.server_address[1]}/?project=project", "module": server.__file__}), flush=True)
-            for instruction in sys.stdin:
-                if instruction.strip() == "snapshot":
-                    print(json.dumps({"passive_effects": counts, "transport_observations": transport.snapshot()}), flush=True)
-                elif instruction.strip() == "stop":
-                    break
-        finally:
-            listener.shutdown(); listener.server_close(); worker.join()
-            transport.close()
+    """New installed Server process, supervised through its last request."""
+    worker = OwnedReadWorker(data_root)
+    try:
+        print(json.dumps(worker.ready), flush=True)
+        for instruction in sys.stdin:
+            if instruction.strip() == "snapshot":
+                print(json.dumps(worker.snapshot()), flush=True)
+            elif instruction.strip() == "stop":
+                break
+    finally:
+        print(json.dumps({"closed": worker.close()}), flush=True)
 
 
-if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--read":
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--worker":
+    isolated_read_worker(Path(sys.argv[2]), json.loads(sys.argv[3]))
+elif __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--read":
     passive_reader(Path(sys.argv[2]))
 elif __name__ == "__main__":
     scenario = sys.argv[1] if len(sys.argv) > 1 else "normal"
@@ -670,7 +918,7 @@ elif __name__ == "__main__":
                           "before": before}), flush=True)
         for instruction in sys.stdin:
             if instruction.strip() == "snapshot":
-                print(json.dumps({"after": canary.effect_snapshot(), "transport_observations": canary.external_transport.snapshot()}), flush=True)
+                print(json.dumps({"after": canary.effect_snapshot(), "transport_observations": canary.transport_snapshot()}), flush=True)
             elif instruction.strip() == "reconcile":
                 print(json.dumps({"reconciled_baseline": canary.reconcile_publication()}), flush=True)
             elif instruction.strip() == "dispatch-retry":
@@ -694,3 +942,4 @@ elif __name__ == "__main__":
                 break
     finally:
         canary.close()
+        print(json.dumps({"closed": canary.cleanup_observation}), flush=True)
