@@ -3,11 +3,11 @@
 Assignment: `L2-EP-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Directive: `L2-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221), under the full [6058358032 mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6058358032).
-Lane **r34**, plan **6**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
+Lane **r34**, plan **7**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after complete independent Quality/Security pairs: **consumed8/max8/remaining0**. Operational budgets remain unchanged.
+Formal corrections after complete independent Quality/Security pairs: **consumed9/max9/remaining0**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -498,3 +498,43 @@ aa0b999 wheel makes the same new index-recovery assertion fail expected3/actual0
 with verified cleanup. None of these WIP images or results grants exact-new-head
 or final-main acceptance. A new whole independent pair and every long owning
 gate must qualify the single next frozen candidate.
+
+## Native filesystem isolation correction round9
+
+The specific [round9 decision](https://github.com/pcvantol/forge/issues/142#issuecomment-6109728138)
+and [single ACK/booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6110043252)
+authorize this strictly necessary shared enforcement repair. Same writer, actual
+branch, history and version allocation; consumed9/max9/remaining0, operational
+budgets unchanged. Closed predecessors and prior scoped Console reviews remain
+closed/preserved. The alternative branch spelling and illustrative test names
+in the decision do not replace the actual branch or original failing tests.
+
+Original full source2490/installed2472 runs each remain FAIL3/skip1. The exact
+pinned native0.160.1 Seatbelt scratch lowerer adds implicit `/private/tmp` and
+`/private/var/tmp` read/write roots whenever `:minimal` is requested. The owned
+red canary proves ungranted sibling access, including `/tmp` and scratch symlink
+routes, while source-write/network denial succeeds. Removing all minimal defaults
+aborts the positive runtime; global root denial fails to close implicit scratch.
+Those diagnostic counterexamples remain evidence rather than acceptance.
+
+The minimal shared production policy explicitly excludes both implicit roots
+on macOS. Current narrower source/runtime/readable/scratch grants and minimal
+OS runtime defaults remain; no alternate backend, global temporary grant, host
+security change, broader permission or deadline adjustment. Production validators
+already select their isolated TMPDIR explicitly. A new actual-native regression
+checks both temporary roots, aliases and escaping symlinks; allowed source reads,
+source-write denial, explicit scratch read/write and temporary-file use, unchanged
+canaries and network denial all remain required. The original direct target and
+two real CLI provider/specialist denial tests are unchanged and first targeted
+source5PASS. The same added native regression fails on the original installed
+wheel, preserving the restored-fault counterexample.
+
+New output is private nonsynchronized internal Data, initially32GiB free with
+12GiB planned peak plus8GiB reserve and actual write/fsync/atomicrename/readback
+PASS. All earlier proofs/wheels/logs/PNG/reviews remain untouched. A synchronized
+primary source import stalled before test start and was stopped with its original
+traceback retained; byte-identical local read-only source readers avoid that I/O
+issue without replacing the sole writer. Full source/noneditable installed/macOS
+qualification, complete browser/coverage/owningCI, fresh whole Quality/Security
+including explicit closure of the addendum, protected merge, normal Finalization
+and NEW exact-final-main installed proof remain mandatory and unclaimed here.

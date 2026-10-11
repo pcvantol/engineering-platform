@@ -221,6 +221,11 @@ def sandbox_options(root: Path, *, scratch: Path | None = None,
                     readable: tuple[Path, ...] = (), runtime: Path | None = None) -> tuple[str, ...]:
     disposable = scratch is not None and root.resolve().is_relative_to(scratch.resolve())
     filesystem = {":minimal": "read", str(root.resolve()): "write" if disposable else "read"}
+    if platform.system() == "Darwin":
+        # Native 0.160.1's minimal process profile adds these broad scratch
+        # roots implicitly. Explicit exclusions suppress those grants while
+        # the narrower source/runtime/scratch permissions below still apply.
+        filesystem.update({"/private/tmp": "none", "/private/var/tmp": "none"})
     # The selected installed Python runtime may live outside OS runtime roots.
     for prefix in {sys.base_prefix, sys.prefix}:
         filesystem[str(Path(prefix).absolute())] = "read"
