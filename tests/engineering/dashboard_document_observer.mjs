@@ -6,10 +6,12 @@ export async function observeConsoleDocument(page) {
   const session = await page.context().newCDPSession(page), requests = new Map();
   await session.send('Network.enable'); await session.send('Page.enable');
   const summary = (payload) => ({ scope: payload.scope, project_id: payload.project_id ?? null,
-    version: payload.status?.platform_version, limited: payload.limited, reset_at: payload.reset_at });
+    version: payload.status?.platform_version, limited: payload.limited, reset_at: payload.reset_at,
+    run_id: payload.history?.run_id ?? null, run_ids: Array.isArray(payload.runs) ? payload.runs.map(run => run.run_id) : undefined });
   session.on('Network.requestWillBeSent', (event) => {
     const url = new URL(event.request.url);
-    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit'].includes(url.pathname)) return;
+    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history'].includes(url.pathname)
+        && !/^\/api\/prompt-history\/[^/]+\/details$/.test(url.pathname)) return;
     requests.set(event.requestId, { request_id: event.requestId, document_id: event.loaderId,
       path: url.pathname, project_header: event.request.headers['X-Engineering-Platform-Project'] ?? null,
       status: null, completed: false });

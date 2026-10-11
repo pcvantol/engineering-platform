@@ -6015,6 +6015,7 @@ let promptHistoryEntries = [],
   promptHistorySort = { key: "executed_at", direction: "desc" },
   promptHistoryDetailRunId = "",
   promptHistoryDetailRequestId = 0,
+  promptHistoryDetailLoadingRequestId = 0,
   promptHistoryDetailLocationSyncing = false,
   promptHistoryDetailPayload = null;
 function promptHistoryDetailFilename(extension) {
@@ -9086,6 +9087,7 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   void recordUserAction("prompt_history_detail_opened", runId);
   if (updateUrl) updatePromptHistoryDetailUrl(runId);
   promptHistoryDetailRunId = runId;
+  promptHistoryDetailLoadingRequestId = requestId;
   const modal = $("promptHistoryDetailModal"), content = $("promptHistoryDetailContent");
   const title = typeof entry.title === "string" ? entry.title.trim() : "";
   $("promptHistoryDetailTitle").textContent = title && title !== runId
@@ -9101,9 +9103,13 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
     .then((payload) => {
       if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open
           && document.body.dataset.projectId === projectId
-          && (!projectId || payload.project_id === projectId)) renderPromptHistoryDetail(payload);
+          && (!projectId || payload.project_id === projectId)) {
+        promptHistoryDetailLoadingRequestId = 0;
+        renderPromptHistoryDetail(payload);
+      }
       else if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && promptHistoryDetailRequestId === requestId && modal.open
           && document.body.dataset.projectId === projectId) {
+        promptHistoryDetailLoadingRequestId = 0;
         setPromptHistoryDetailDownloads(null);
         content.textContent = t("history.details_unavailable");
         $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");
@@ -9112,6 +9118,7 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
     .catch(() => {
       if (!dashboardReadDenied && readEpoch === dashboardReadEpoch && document.body.dataset.projectId === projectId
           && promptHistoryDetailRequestId === requestId && promptHistoryDetailRunId === runId && modal.open) {
+        promptHistoryDetailLoadingRequestId = 0;
         setPromptHistoryDetailDownloads(null);
         content.textContent = t("history.details_unavailable");
         $("promptHistoryDetailTitle").textContent = t("history.details_unavailable");
@@ -9135,7 +9142,10 @@ function reconcilePromptHistoryDetailFromUrl() {
     promptHistoryDetailLocationSyncing = false;
     return;
   }
-  if (promptHistoryDetailRunId !== runId || !$("promptHistoryDetailModal").open)
+  // A selected run can remain open after its payload/request was invalidated.
+  // Reload on a current authoritative index, but never duplicate a live read.
+  if (promptHistoryDetailRunId !== runId || !$("promptHistoryDetailModal").open
+      || (!promptHistoryDetailPayload && promptHistoryDetailLoadingRequestId !== promptHistoryDetailRequestId))
     openPromptHistoryDetail(entry, { updateUrl: false });
 }
 $("promptHistoryDetailClose").addEventListener("click", (event) => {

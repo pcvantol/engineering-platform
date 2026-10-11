@@ -3,11 +3,11 @@
 Assignment: `L2-EP-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Directive: `L2-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221), under the full [6058358032 mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6058358032).
-Lane **r34**, plan **5**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
+Lane **r34**, plan **6**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Formal corrections after complete independent Quality/Security pairs: **consumed7/max7/remaining0**. Operational budgets remain unchanged.
+Formal corrections after complete independent Quality/Security pairs: **consumed8/max8/remaining0**. Operational budgets remain unchanged.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -444,3 +444,57 @@ but its modal cannot reopen because the URL intent is gone. The error path now
 retains the URL intent while clearing data/downloads and invalidating pending
 detail responses. A genuine successful absent index still reconciles absence;
 no retry, deadline, execution grant or scope bypass is added.
+
+
+## Integrated correction round8 — already-open history detail
+
+[Decision6108200457](https://github.com/pcvantol/forge/issues/142#issuecomment-6108200457),
+[single BEFORE-edit booking6108356813](https://github.com/pcvantol/forge/issues/142#issuecomment-6108356813)
+and [retained-installed causal proof6108368085](https://github.com/pcvantol/forge/issues/142#issuecomment-6108368085)
+retain the same assignment, sourcewriter, branch/history, version allocation and
+all operational budgets. Plan6, consumed8/max8/remaining0; all earlier rounds
+remain consumed. No automatic round9 or old acceptance is transferred.
+
+The retained exact installed aa0b999 control renders three real stored cards and
+enables export. Aborting only the second actual startup index request after the
+detail is open produces a genuine successful bounded retry containing that same
+run, but leaves zero cards and disabled exports. Execution state is unchanged;
+both positive/negative worker, group, admission, drain and native0 receipts pass.
+The original HTTP/UI/effect/cleanup evidence and both rejected reviews remain.
+
+The selected run identity is now distinct from the current pending detail request.
+A successful current-scope index reloads the same open detail if its payload and
+request were invalidated; it does not duplicate a still-current pending read.
+Successful details and failures clear the pending marker. Existing document,
+scope, denial, run, request and modal-open fences remain; stale content/exports
+stay cleared. No extra retry, timer, sleep, deadline or execution authority.
+
+All51 existing selected cases/54 cleanup receipts/187 images remain. Nine genuine
+stored-run regressions add positive/repaired index, detail-error recovery,
+repeated unavailability, close during index/detail delivery, changed project,
+withdrawn access and authoritative absence:60 cases/63 receipts/196 images.
+Each added case compares current stored/exported identities and preserves final
+independent lower native and whole-worker cleanup. Failures and unavailable
+readbacks cannot activate old exports. Diagnostic startup/setup failures are
+preserved separately from established product failures.
+
+New output/control/scratch uses private nonsynchronized internal Data storage;
+preflight verified about45GiB free, a12GiB peak plus8GiB reserve and actual
+write/fsync/atomic-rename/readback. The former disk7 artifact volume remains full;
+no old evidence, runtime, primary source or grants were removed or moved.
+Independent browser waves are serial. Full exact-candidate and final-main gates,
+protected merge and normal NO_BUMP Finalization remain mandatory and pending.
+
+
+Round8 WIP convergence: the complete selected installed suite passes60 cases
+in4.5min; all60 manifests/196 current PNG hashes/63 final worker receipts are
+verified. Four strengthened late-response checks pass separately in17.5s:
+current-document close waits for actual detail completion; project/withdrawn
+navigation proves a new document and delivery acknowledgement of the unchanged
+authorized old response, then verifies no old modal/cards/exports. A missing
+run stays absent after both actual index responses. Initial diagnostic observer
+failures remain preserved and are not product acceptance. Restoring the original
+aa0b999 wheel makes the same new index-recovery assertion fail expected3/actual0,
+with verified cleanup. None of these WIP images or results grants exact-new-head
+or final-main acceptance. A new whole independent pair and every long owning
+gate must qualify the single next frozen candidate.

@@ -694,7 +694,7 @@ async function causalManifest(page, testInfo, ready, scenario, proof) {
   await page.screenshot({ path: imagePath, fullPage: true, animations: 'disabled' });
   const capture = { scenario, file: path.basename(imagePath), sha256: createHash('sha256').update(readFileSync(imagePath)).digest('hex'),
     run_scenario: testInfo.title, run_id: ready.run_id, finding_ids: [], invocation_ids: [], publication: null,
-    locale: await page.locator('#dashboardLocale').inputValue(), theme: await page.locator('html').getAttribute('data-theme'), viewport: page.viewportSize(), proof };
+    locale: await page.locator('#dashboardLocale').count() ? await page.locator('#dashboardLocale').inputValue() : null, theme: await page.locator('html').getAttribute('data-theme'), viewport: page.viewportSize(), proof };
   const manifest = testInfo.outputPath('fresh-evidence-manifest.json');
   writeFileSync(manifest, JSON.stringify({ contract: 'ep-console-run-evidence-screenshots/v1',
     qualification: process.env.EP_RUN_EVIDENCE_CONVERGENCE === '1' ? 'INSTALLED_CONVERGENCE' : 'INSTALLED',
@@ -721,3 +721,134 @@ test('current history document retains deep link after an interrupted index read
     await causalManifest(page, testInfo, canary.ready, 'causal-history-document', { applied, original_url_retained: true, direct_quota_controls: 0 });
   } finally { await stopIsolatedCanary(canary.child, canary.next, testInfo); }
 });
+
+for (const mode of ['control', 'index-recovery', 'detail-recovery', 'index-unavailable', 'close-index', 'close-detail', 'project-detail', 'revoked-detail', 'missing']) {
+  test(`opened history detail recovery preserves current intent ${mode}`, async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
+    const canary = await causalStoredCanary('provider-blocked');
+    const releases = []; let indexCount = 0, detailCount = 0, lateDetailReady = false, lateDeliveryAcknowledged = false, lateResponseProof, revokedBaseline;
+    const gate = () => { let release; const promise = new Promise(resolve => { release = resolve; }); releases.push(release); return { promise, release }; };
+    const secondIndex = gate(), retryIndex = gate(), lateDetail = gate();
+    const observer = await observeConsoleDocument(page), detailBodies = [];
+    const detailPath = `/api/prompt-history/${canary.ready.run_id}/details`;
+    page.on('response', async response => {
+      if (new URL(response.url()).pathname === detailPath && response.status() === 200) {
+        try { detailBodies.push(await response.json()); } catch { /* Aborted document never supplies a usable payload. */ }
+      }
+    });
+    try {
+      await page.route('**/api/events*', route => route.abort());
+      await page.route('**/api/prompt-history', async route => {
+        indexCount += 1;
+        if (indexCount === 2) { await secondIndex.promise; return mode === 'control' || mode === 'detail-recovery' || mode === 'missing' ? route.continue() : route.abort(); }
+        if (indexCount === 3) { await retryIndex.promise; if (mode === 'index-unavailable') return route.abort(); }
+        return route.continue();
+      });
+      await page.route('**/api/prompt-history/*/details', async route => {
+        detailCount += 1;
+        if (mode === 'detail-recovery' && detailCount === 1) return route.abort();
+        if (['close-detail', 'project-detail', 'revoked-detail'].includes(mode) && detailCount === 2) {
+          // Obtain the genuine authorized response before the user's next action,
+          // then delay only its delivery. Its bytes and status are unchanged.
+          const response = await route.fetch();
+          const body = await response.body();
+          lateResponseProof = { status: response.status(), sha256: createHash('sha256').update(body).digest('hex'), run_id: JSON.parse(body).history?.run_id };
+          lateDetailReady = true; await lateDetail.promise;
+          await route.fulfill({ response }); lateDeliveryAcknowledged = true; return;
+        }
+        return route.continue();
+      });
+      const url = new URL(canary.ready.url); url.searchParams.set('prompt', mode === 'missing' ? 'absent-stored-run' : canary.ready.run_id);
+      await page.goto(url.href, { waitUntil: 'domcontentloaded' });
+      const modal = page.locator('#promptHistoryDetailModal'), content = page.locator('#promptHistoryDetailContent');
+      const cards = content.locator('[data-run-evidence]'), downloadButton = page.locator('#promptHistoryDetailDownloadJson');
+      let document;
+      if (['detail-recovery', 'missing'].includes(mode)) {
+        await expect.poll(() => observer.records().some(record => record.path === '/api/dashboard-snapshot' && record.completed && record.response?.scope === 'PROJECT' && record.response?.project_id === 'project')).toBe(true);
+        const documentId = await observer.documentId();
+        document = observer.records().find(record => record.document_id === documentId && record.path === '/api/dashboard-snapshot' && record.completed);
+        expect(document.response.project_id).toBe('project');
+        await expect(page.locator('body')).toHaveAttribute('data-project-id', 'project');
+        await expect(page.locator('#platformVersion')).toHaveText(document.response.version);
+      } else document = await observer.scope('http', 'project');
+      if (mode === 'missing') {
+        await expect(modal).toBeHidden(); await expect(cards).toHaveCount(0); await expect(downloadButton).toBeHidden();
+        await expect.poll(() => new URL(page.url()).searchParams.get('prompt')).toBeNull();
+        secondIndex.release();
+        await expect.poll(() => observer.records().filter(record => record.path === '/api/prompt-history' && record.completed).length).toBe(2);
+        await expect(modal).toBeHidden();
+      } else {
+        if (mode === 'detail-recovery') {
+          await expect(content).toHaveText('Execution details are unavailable.');
+          await expect(cards).toHaveCount(0); await expect(downloadButton).toBeDisabled();
+        } else {
+          await expect(modal).toBeVisible(); await expect(cards).toHaveCount(3); await expect(downloadButton).toBeEnabled();
+        }
+        await expect.poll(() => indexCount).toBe(2);
+        secondIndex.release();
+        if (!['control', 'detail-recovery'].includes(mode)) {
+          await expect(content).toHaveText('Execution details are unavailable.');
+          await expect(cards).toHaveCount(0); await expect(downloadButton).toBeDisabled();
+          if (mode === 'close-index') await page.locator('#promptHistoryDetailClose').click();
+          retryIndex.release();
+        }
+        if (['close-detail', 'project-detail', 'revoked-detail'].includes(mode)) {
+          await expect.poll(() => lateDetailReady).toBe(true);
+          await expect(downloadButton).toBeDisabled();
+          if (mode === 'close-detail') await page.locator('#promptHistoryDetailClose').click();
+          else {
+            if (mode === 'revoked-detail') { canary.child.stdin.write('revoke-read\n'); revokedBaseline = (await canary.next()).revoked_baseline; }
+            const target = new URL(canary.ready.url);
+            if (mode === 'project-detail') target.search = '';
+            await page.goto(target.href, { waitUntil: 'domcontentloaded' });
+          }
+          lateDetail.release();
+          if (mode === 'close-detail') {
+            await expect.poll(() => observer.records().filter(record => record.path === detailPath && record.completed).length).toBe(2);
+          } else {
+            expect(await observer.documentId()).not.toBe(document.document_id);
+            await expect.poll(() => lateDeliveryAcknowledged).toBe(true);
+            expect(lateResponseProof).toEqual(expect.objectContaining({ status: 200, run_id: canary.ready.run_id }));
+          }
+          await expect(modal).toBeHidden(); await expect(cards).toHaveCount(0);
+          if (mode === 'close-detail') await expect(downloadButton).toBeDisabled();
+          else await expect(downloadButton).toBeHidden();
+          if (mode === 'project-detail') await observer.scope('http', null);
+          if (mode === 'revoked-detail') await expect(page.locator('[data-run-evidence]')).toHaveCount(0);
+        } else if (mode === 'close-index' || mode === 'index-unavailable') {
+          if (mode === 'close-index') {
+            await expect.poll(() => observer.records().filter(record => record.path === '/api/prompt-history' && record.completed).length).toBe(2);
+            await expect(modal).toBeHidden(); await expect.poll(() => new URL(page.url()).searchParams.get('prompt')).toBeNull();
+          } else {
+            await expect.poll(() => indexCount).toBe(3);
+            await expect(content).toHaveText('Execution details are unavailable.'); await expect(modal).toBeVisible();
+            expect(new URL(page.url()).searchParams.get('prompt')).toBe(canary.ready.run_id);
+          }
+          await expect(cards).toHaveCount(0); await expect(downloadButton).toBeDisabled();
+        } else {
+          await expect(modal).toBeVisible(); await expect(cards).toHaveCount(3); await expect(downloadButton).toBeEnabled();
+          expect(new URL(page.url()).searchParams.get('prompt')).toBe(canary.ready.run_id);
+          await expect.poll(() => detailBodies.length).toBe(mode === 'control' || mode === 'detail-recovery' ? 1 : 2);
+          const current = detailBodies.at(-1); expect(current.history.run_id).toBe(canary.ready.run_id);
+          const event = page.waitForEvent('download'); await downloadButton.click();
+          const exported = JSON.parse(readFileSync(await (await event).path(), 'utf8'));
+          expect(exported.history.run_id).toBe(canary.ready.run_id);
+          expect(exported.lifecycle.run_evidence).toEqual(current.lifecycle.run_evidence);
+        }
+      }
+      canary.child.stdin.write('snapshot\n'); const after = await canary.next();
+      // Withdrawal uses a real authority operation; compare to its returned baseline.
+      expect(after.after).toEqual(mode === 'revoked-detail' ? revokedBaseline : canary.ready.before);
+      expect(after.transport_observations.native_app_server_starts).toBe(0);
+      await causalManifest(page, testInfo, canary.ready, `opened-history-${mode}`, {
+        mode, document, index_reads: indexCount, detail_reads: detailCount,
+        run_id: canary.ready.run_id, final_url: page.url(), detail_cards: await cards.count(),
+        exports_enabled: await downloadButton.isVisible() && await downloadButton.isEnabled(),
+        late_response: lateResponseProof, late_delivery_acknowledged: lateDeliveryAcknowledged, requests: observer.records(),
+      });
+    } finally {
+      for (const release of releases) release();
+      await stopIsolatedCanary(canary.child, canary.next, testInfo);
+    }
+  });
+}
