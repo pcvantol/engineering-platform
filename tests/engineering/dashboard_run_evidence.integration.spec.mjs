@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import { chromium } from "@playwright/test";
 import { observeConsoleDocument } from "./dashboard_document_observer.mjs";
+import { retainWorkerLogs, finishWorkerLogs } from "./dashboard_worker_logs.mjs";
 import { DASHBOARD_MESSAGES } from "../../src/engineering_platform/assets/dashboard_locales.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -17,8 +18,8 @@ test.describe.configure({ mode: "parallel" });
 
 async function passiveProcess(python, environment, dataRoot) {
   const child = spawn(python, [fixture, "--read", dataRoot], { cwd: path.dirname(python), env: environment, stdio: ["pipe", "pipe", "pipe"] });
-  let buffer = "", stderr = "", pending; const queued = [];
-  child.stderr.on("data", (data) => { stderr += data; });
+  retainWorkerLogs(child, test.info(), "passive-reader");
+  let buffer = "", pending; const queued = [];
   child.stdout.on("data", (data) => {
     buffer += data;
     while (buffer.includes("\n")) {
@@ -27,26 +28,33 @@ async function passiveProcess(python, environment, dataRoot) {
     }
   });
   const next = () => queued.length ? Promise.resolve(queued.shift()) : new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Passive reader timeout: ${stderr}`)), 15_000);
+    const timer = setTimeout(() => reject(new Error(`Passive reader timeout: raw worker logs retained privately`)), 15_000);
     pending = (value) => { clearTimeout(timer); resolve(value); };
-    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Passive reader exited ${code}: ${stderr}`)); });
+    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Passive reader exited ${code}: raw worker logs retained privately`)); });
   });
   return { child, next, ready: await next() };
 }
 
 async function stopIsolatedCanary(child, next, testInfo, label = "canary") {
-  if (child.exitCode !== null) throw new Error(`Isolated ${label} exited before verified cleanup: ${child.exitCode}`);
-  const stopped = new Promise((resolve) => child.once("exit", resolve));
-  child.stdin.write("stop\n");
-  const final = await next();
-  expect(final.closed).toEqual(expect.objectContaining({ worker_ended: true, owned_process_group_ended: true, request_admission_closed: true,
-    ordinary_handlers_completed: true, isolation_retained_through_worker_exit: true, unexpected_native_attempts: 0 }));
-  expect(final.closed.transport_observations.passive_effects).toEqual({ model: 0, git: 0 });
-  await stopped;
-  expect(child.exitCode).toBe(0);
+  let final, workerLogs;
+  try {
+    if (child.exitCode !== null) throw new Error(`Isolated ${label} exited before verified cleanup: ${child.exitCode}`);
+    const stopped = new Promise((resolve) => child.once("exit", resolve));
+    child.stdin.write("stop\n");
+    final = await next();
+    expect(final.closed).toEqual(expect.objectContaining({ worker_ended: true, owned_process_group_ended: true, request_admission_closed: true,
+      ordinary_handlers_completed: true, isolation_retained_through_worker_exit: true, unexpected_native_attempts: 0 }));
+    expect(final.closed.transport_observations.passive_effects).toEqual({ model: 0, git: 0 });
+    await stopped;
+    expect(child.exitCode).toBe(0);
+  } finally {
+    // Preserve and inspect raw errors after the last pipe closes, even if a
+    // cleanup assertion failed. An earlier ordinary receipt cannot cover SSE.
+    workerLogs = await finishWorkerLogs(child, testInfo);
+  }
   const receipt = { contract: "ep-console-read-worker-cleanup/v1", source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null,
     source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null, wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null,
-    label, cleanup: final.closed };
+    label, cleanup: final.closed, worker_logs: workerLogs };
   const output = testInfo.outputPath(`${label}-final-cleanup.json`);
   writeFileSync(output, JSON.stringify(receipt, null, 2));
   await testInfo.attach(`${label}-final-cleanup`, { path: output, contentType: "application/json" });
@@ -54,6 +62,7 @@ async function stopIsolatedCanary(child, next, testInfo, label = "canary") {
   try {
     const data = JSON.parse(readFileSync(manifest));
     data.final_cleanup = final.closed;
+    data.worker_logs = workerLogs;
     writeFileSync(manifest, JSON.stringify(data, null, 2));
     await testInfo.attach("fresh-evidence-manifest-closed", { path: manifest, contentType: "application/json" });
   } catch (error) {
@@ -77,8 +86,8 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
   const child = spawn(installedPython || process.env.EP_BROWSER_PYTHON || "python3", [fixture, scenario], {
     cwd: installedPython ? path.dirname(installedPython) : repository, env: environment, stdio: ["pipe", "pipe", "pipe"],
   });
-  let buffer = "", stderr = "", pending;
-  child.stderr.on("data", (data) => { stderr += data; });
+  retainWorkerLogs(child, testInfo, "canary");
+  let buffer = "", pending;
   const messages = [];
   child.stdout.on("data", (data) => {
     buffer += data;
@@ -88,9 +97,9 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     }
   });
   const next = () => messages.length ? Promise.resolve(messages.shift()) : new Promise((resolve, reject) => {
-    const deadline = setTimeout(() => { pending = null; reject(new Error(`Canary timed out: ${stderr}`)); }, 30_000);
+    const deadline = setTimeout(() => { pending = null; reject(new Error(`Canary timed out: raw worker logs retained privately`)); }, 30_000);
     pending = (message) => { clearTimeout(deadline); resolve(message); };
-    child.once("exit", (code) => { clearTimeout(deadline); reject(new Error(`Canary exited ${code}: ${stderr}`)); });
+    child.once("exit", (code) => { clearTimeout(deadline); reject(new Error(`Canary exited ${code}: raw worker logs retained privately`)); });
   });
   try {
     const ready = await next();
@@ -400,9 +409,9 @@ for (const revoked of [false, true]) {
     const child = spawn(installedPython || process.env.EP_BROWSER_PYTHON || "python3", [fixture, "provider-blocked"], {
       cwd: installedPython ? path.dirname(installedPython) : repository, env: environment, stdio: ["pipe", "pipe", "pipe"],
     });
-    let buffer = "", stderr = "", pending; const messages = [];
-    child.stderr.on("data", (data) => { stderr += data; });
-    child.stdout.on("data", (data) => {
+    retainWorkerLogs(child, testInfo, "canary");
+    let buffer = "", pending; const messages = [];
+      child.stdout.on("data", (data) => {
       buffer += data;
       while (buffer.includes("\n")) {
         const end = buffer.indexOf("\n"), line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
@@ -410,9 +419,9 @@ for (const revoked of [false, true]) {
       }
     });
     const next = () => messages.length ? Promise.resolve(messages.shift()) : new Promise((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error(`Actual retry canary timed out: ${stderr}`)), 30_000);
+      const deadline = setTimeout(() => reject(new Error(`Actual retry canary timed out: raw worker logs retained privately`)), 30_000);
       pending = (value) => { clearTimeout(deadline); resolve(value); };
-      child.once("exit", (code) => { clearTimeout(deadline); reject(new Error(`Actual retry canary exited ${code}: ${stderr}`)); });
+      child.once("exit", (code) => { clearTimeout(deadline); reject(new Error(`Actual retry canary exited ${code}: raw worker logs retained privately`)); });
     });
     const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
     const held = deferred(), fetchAllowed = deferred(), fetched = deferred(), responseAllowed = deferred(), delivered = deferred();
@@ -496,9 +505,9 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
     const child = spawn(installedPython || process.env.EP_BROWSER_PYTHON || "python3", [fixture, `quota-${quotaMode}`], {
       cwd: installedPython ? path.dirname(installedPython) : repository, env: environment, stdio: ["pipe", "pipe", "pipe"],
     });
-    let buffer = "", stderr = "", pending; const messages = [];
-    child.stderr.on("data", (data) => { stderr += data; });
-    child.stdout.on("data", (data) => {
+    retainWorkerLogs(child, testInfo, "canary");
+    let buffer = "", pending; const messages = [];
+      child.stdout.on("data", (data) => {
       buffer += data;
       while (buffer.includes("\n")) {
         const end = buffer.indexOf("\n"), line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
@@ -506,9 +515,9 @@ for (const ingress of ["http", "sse"]) for (const quotaMode of ["available", "li
       }
     });
     const next = () => messages.length ? Promise.resolve(messages.shift()) : new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`PLATFORM canary timeout: ${stderr}`)), 30_000);
+      const timer = setTimeout(() => reject(new Error(`PLATFORM canary timeout: raw worker logs retained privately`)), 30_000);
       pending = (value) => { clearTimeout(timer); resolve(value); };
-      child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`PLATFORM canary exited ${code}: ${stderr}`)); });
+      child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`PLATFORM canary exited ${code}: raw worker logs retained privately`)); });
     });
     try {
       const ready = await next(), platformUrl = new URL(ready.url); platformUrl.search = "";
@@ -614,8 +623,8 @@ async function causalStoredCanary(scenario) {
   const env = { ...process.env, EP_QUALIFICATION_DETERMINISTIC_FLOW: '1', PYTHONPATH: path.join(repository, 'src') };
   if (process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON) delete env.PYTHONPATH;
   const child = spawn(python, [fixture, scenario], { cwd: path.dirname(python), env, stdio: ['pipe', 'pipe', 'pipe'] });
-  let buffer = '', stderr = '', pending; const queued = [];
-  child.stderr.on('data', d => { stderr += d; });
+  retainWorkerLogs(child, test.info(), 'canary');
+  let buffer = '', pending; const queued = [];
   child.stdout.on('data', d => {
     buffer += d;
     while (buffer.includes('\n')) {
@@ -624,9 +633,9 @@ async function causalStoredCanary(scenario) {
     }
   });
   const next = () => queued.length ? Promise.resolve(queued.shift()) : new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Causal canary timeout: ${stderr}`)), 30_000);
+    const timer = setTimeout(() => reject(new Error(`Causal canary timeout: raw worker logs retained privately`)), 30_000);
     pending = value => { clearTimeout(timer); resolve(value); };
-    child.once('exit', code => { clearTimeout(timer); reject(new Error(`Causal canary exited ${code}: ${stderr}`)); });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`Causal canary exited ${code}: raw worker logs retained privately`)); });
   });
   return { child, next, ready: await next() };
 }
@@ -852,3 +861,66 @@ for (const mode of ['control', 'index-recovery', 'detail-recovery', 'index-unava
     }
   });
 }
+
+// Layout uses the same genuine stored dispatcher run as the delivery probes.
+// A DOM-only visible card over an empty Server snapshot is not stable input:
+// the existing first-read recovery correctly removes that artificial card.
+test.describe("iPhone direct touch: stored active execution", () => {
+  test.use({ hasTouch: true, isMobile: true });
+  for (const interrupted of [false, true]) {
+    test(`keeps simultaneous status and options above the active execution ${interrupted ? "after first-read recovery" : "current read"}`, async ({ page }, testInfo) => {
+      const canary = await causalStoredCanary("normal");
+      const observer = await observeConsoleDocument(page);
+      let first = true;
+      try {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.route("**/api/events*", route => route.abort());
+        if (interrupted) await page.route("**/api/dashboard-snapshot*", route => {
+          if (first) { first = false; return route.abort(); }
+          return route.continue();
+        });
+        await page.goto(canary.ready.url, { waitUntil: "domcontentloaded" });
+        const document = await observer.scope("http", "project");
+        await expect(page.locator("#currentRun")).toBeVisible();
+        // Only presentation density is varied, never run/authority evidence.
+        await page.evaluate(() => {
+          const checks = document.querySelector("#dashboardHealthChecks");
+          checks.replaceChildren(...Array.from({ length: 12 }, (_, index) => {
+            const item = document.createElement("li");
+            item.dataset.health = "good";
+            item.append(
+              Object.assign(document.createElement("span"), { textContent: `Statuscontrole ${index + 1}` }),
+              Object.assign(document.createElement("span"), { textContent: "Gezond" }),
+            );
+            return item;
+          }));
+        });
+        await page.getByTestId("titlebar-options-toggle").click();
+        await expect(page.getByTestId("titlebar-options-toggle")).toHaveAttribute("aria-expanded", "true");
+        await page.getByTestId("dashboard-health-indicator").click();
+        await expect(page.getByTestId("dashboard-health-indicator")).toHaveAttribute("aria-expanded", "true");
+        await expect(page.locator("#currentRun")).toBeVisible();
+        const layout = await page.evaluate(() => {
+          const rect = selector => document.querySelector(selector).getBoundingClientRect();
+          const header = document.querySelector(".dashboard-sticky-header");
+          const status = rect("#dashboardHealthTooltip"), options = rect("#dashboardTitlebarOptionsContent");
+          return {
+            headerBottom: Math.round(header.getBoundingClientRect().bottom),
+            headerMaxHeight: getComputedStyle(header).maxHeight,
+            headerOverflowY: getComputedStyle(header).overflowY,
+            lowestPanelBottom: Math.round(Math.max(status.bottom, options.bottom)),
+            runTop: Math.round(rect("#currentRun").top),
+          };
+        });
+        expect(layout.headerMaxHeight).toBe("none");
+        expect(layout.headerOverflowY).toBe("visible");
+        expect(layout.headerBottom).toBeGreaterThanOrEqual(layout.lowestPanelBottom);
+        expect(layout.runTop).toBeGreaterThanOrEqual(layout.lowestPanelBottom);
+        if (interrupted) expect(observer.records().some(record => record.path === "/api/dashboard-snapshot" && record.failure)).toBe(true);
+        canary.child.stdin.write("snapshot\n");
+        expect((await canary.next()).after).toEqual(canary.ready.before);
+        await causalManifest(page, testInfo, canary.ready, `iphone-panels-${interrupted ? "recovered" : "current"}`, { document, layout, first_read_interrupted: interrupted });
+      } finally { await stopIsolatedCanary(canary.child, canary.next, testInfo); }
+    });
+  }
+});

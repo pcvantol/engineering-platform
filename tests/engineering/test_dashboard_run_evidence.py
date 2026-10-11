@@ -450,3 +450,68 @@ class DashboardWorkerLifetimeTests(unittest.TestCase):
                 canary.close()
             self.assertIs(CodexCliProvider.app_server, original)
             self.assertFalse(canary.fixture.area.exists())
+
+
+class DashboardHandlerFailureEvidenceTests(unittest.TestCase):
+    def test_unexpected_http_handler_failure_is_retained_after_request_quiescence(self):
+        import contextlib
+        import http.client
+        import io
+        import threading
+        from http.server import BaseHTTPRequestHandler
+        from urllib.request import urlopen
+        from tests.engineering.dashboard_run_evidence_fixture import OwnedRequestServer
+
+        class FaultHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.server.route(self.connection, self.path)
+                raise RuntimeError("controlled diagnostic handler failure")
+
+        listener = OwnedRequestServer(("127.0.0.1", 0), FaultHandler)
+        thread = threading.Thread(target=listener.serve_forever, daemon=True)
+        thread.start()
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                with self.assertRaises(http.client.RemoteDisconnected):
+                    urlopen(f"http://127.0.0.1:{listener.server_address[1]}/api/configuration", timeout=5)
+                receipt = listener.quiesce()
+            finally:
+                listener.shutdown()
+                listener.server_close()
+                thread.join(timeout=1)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(receipt["ordinary_quiescent"])
+        self.assertEqual(receipt["unexpected_handler_errors"], 1)
+        self.assertEqual(len(receipt["handler_errors"]), 1)
+        self.assertEqual(receipt["handler_errors"][0]["path"], "/api/configuration")
+        self.assertEqual(receipt["handler_errors"][0]["exception_type"], "RuntimeError")
+        self.assertGreater(receipt["handler_errors"][0]["observed_monotonic_ns"], 0)
+
+
+    def test_real_worker_rejects_hidden_handler_failure_without_native_effects(self):
+        import socket
+        from tests.engineering.dashboard_run_evidence_fixture import OwnedReadWorker
+        with tempfile.TemporaryDirectory() as installation, tempfile.TemporaryDirectory() as data, patch.dict(
+                os.environ, {"ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT": installation}):
+            worker = OwnedReadWorker(Path(data))
+            try:
+                port = int(worker.ready["url"].split(":")[2].split("/")[0])
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+                    # The real handler's urlsplit raises on this malformed target.
+                    # No successful response, account/model or store input is faked.
+                    connection.sendall(b"GET http://[ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                    self.assertEqual(connection.recv(4096), b"")
+                with self.assertRaisesRegex(AssertionError, "cleanup failed"):
+                    worker.close()
+                receipt = worker.closed
+                self.assertTrue(receipt["worker_ended"])
+                self.assertTrue(receipt["owned_process_group_ended"])
+                self.assertTrue(receipt["ordinary_handlers_completed"])
+                self.assertTrue(receipt["isolation_retained_through_worker_exit"])
+                self.assertEqual(receipt["unexpected_native_attempts"], 0)
+                self.assertEqual(receipt["unexpected_handler_errors"], 1)
+                self.assertEqual(receipt["handler_errors"][0]["exception_type"], "ValueError")
+                self.assertEqual(receipt["transport_observations"]["passive_effects"], {"model": 0, "git": 0})
+            finally:
+                if worker.closed is None:
+                    worker.close()

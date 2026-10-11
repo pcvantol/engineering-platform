@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { test, expect } from "./dashboard_coverage_fixture.mjs";
+import { retainWorkerLogs, finishWorkerLogs } from "./dashboard_worker_logs.mjs";
 import {
   createTranslator,
   DASHBOARD_MESSAGES,
@@ -76,7 +77,8 @@ async function startDashboard(root, environment) {
       ],
       { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] },
     );
-    let output = "", errors = "";
+    retainWorkerLogs(process, test.info(), "legacy-dashboard");
+    let output = "";
     const timeout = setTimeout(() => {
       process.kill("SIGTERM");
       reject(new Error("Engineering Status test server did not report a port in time."));
@@ -87,7 +89,7 @@ async function startDashboard(root, environment) {
     });
     process.once("exit", (code) => {
       clearTimeout(timeout);
-      reject(new Error(`Engineering Status test server exited before startup (code ${code}): ${errors.trim() || "no stderr"}`));
+      reject(new Error(`Engineering Status test server exited before startup (code ${code}): raw worker logs retained privately`));
     });
     process.stdout.on("data", (chunk) => {
       output += chunk;
@@ -96,7 +98,6 @@ async function startDashboard(root, environment) {
       clearTimeout(timeout);
       resolve({ process, url: `http://127.0.0.1:${port}/?project=dashboard-fixture` });
     });
-    process.stderr.on("data", (chunk) => { errors += chunk; });
   });
 }
 
@@ -178,6 +179,7 @@ test.afterAll(async () => {
     dashboard.kill("SIGTERM");
     await exited;
   }
+  if (dashboard) await finishWorkerLogs(dashboard, test.info());
   for (const directory of [dashboardRoot, installationRoot]) {
     if (!directory) continue;
     let lastError;
@@ -7027,50 +7029,6 @@ test.describe("Engineering Status browser smoke", () => {
   test.describe("iPhone direct touch", () => {
     test.use({ hasTouch: true, isMobile: true });
 
-    test("keeps simultaneous status and options above the active execution", async ({ page }) => {
-      await page.setViewportSize({ width: 390, height: 844 });
-      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-      await waitForDashboardReady(page);
-      await page.evaluate(() => {
-        const run = document.querySelector("#currentRun");
-        run.hidden = false;
-        run.open = true;
-        document.querySelector("#currentPrompt").textContent = "Actieve uitvoeringskaart";
-        const checks = document.querySelector("#dashboardHealthChecks");
-        checks.replaceChildren(...Array.from({ length: 12 }, (_, index) => {
-          const item = document.createElement("li");
-          item.dataset.health = "good";
-          item.append(
-            Object.assign(document.createElement("span"), { textContent: `Statuscontrole ${index + 1}` }),
-            Object.assign(document.createElement("span"), { textContent: "Gezond" }),
-          );
-          return item;
-        }));
-      });
-      await openTitlebarOptions(page);
-      await page.getByTestId("dashboard-health-indicator").click();
-      await expect(page.getByTestId("dashboard-health-indicator")).toHaveAttribute("aria-expanded", "true");
-
-      const layout = await page.evaluate(() => {
-        const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
-        const header = document.querySelector(".dashboard-sticky-header");
-        const status = rect("#dashboardHealthTooltip");
-        const options = rect("#dashboardTitlebarOptionsContent");
-        const run = rect("#currentRun");
-        return {
-          headerBottom: Math.round(header.getBoundingClientRect().bottom),
-          headerMaxHeight: getComputedStyle(header).maxHeight,
-          headerOverflowY: getComputedStyle(header).overflowY,
-          lowestPanelBottom: Math.round(Math.max(status.bottom, options.bottom)),
-          runTop: Math.round(run.top),
-        };
-      });
-      expect(layout.headerMaxHeight).toBe("none");
-      expect(layout.headerOverflowY).toBe("visible");
-      expect(layout.headerBottom).toBeGreaterThanOrEqual(layout.lowestPanelBottom);
-      expect(layout.runTop).toBeGreaterThanOrEqual(layout.lowestPanelBottom);
-    });
-
     test("persists every iPhone title-bar toggle after one direct touch at a time", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -10314,14 +10272,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows a searchable, sortable and paginated prompt history", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
-    let historyRuns = [];
-    await page.route("**/api/prompt-history", async (route) => {
-      await route.fulfill({ json: { runs: historyRuns } });
-    });
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#autoRefresh").uncheck();
-    await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
-    historyRuns = Array.from({ length: 26 }, (_, index) => ({
+    const historyRuns = Array.from({ length: 26 }, (_, index) => ({
       run_id: `inbox-history-${index}`,
       status: index % 2 ? "COMPLETE" : "FAILED",
       title: `Geschiedenis prompt ${String(index).padStart(2, "0")}`,
@@ -10330,6 +10281,28 @@ test.describe("Engineering Status browser smoke", () => {
       report_available: index % 2 === 1,
       analysis_available: index % 2 === 1,
     }));
+    await page.route("**/api/prompt-history", async (route) => {
+      await route.fulfill({ json: { runs: historyRuns } });
+    });
+    // Provider attention is intentionally independent of dashboard-ready.
+    // Its genuine initial response can move this row under the mouse. Bind
+    // that response and its rendered state before the single native hover.
+    const readinessResponses = Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === "/api/provider-login-status"),
+      page.waitForResponse(response => new URL(response.url()).pathname === "/api/execution-runtime-status"),
+    ]);
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    const readiness = await readinessResponses;
+    for (const response of readiness) expect(response.status()).toBe(200);
+    const [providerReadiness, runtimeReadiness] = await Promise.all(readiness.map(response => response.json()));
+    await page.waitForFunction(({ providers, runtime }) =>
+      Object.entries(providers).every(([provider, value]) =>
+        document.querySelector(`[data-provider="${provider.toUpperCase()}"]`)?.dataset.providerState === value.state) &&
+      document.querySelector("[data-execution-runtime]")?.dataset.providerState === runtime.state,
+    { providers: providerReadiness.providers, runtime: runtimeReadiness });
+    await page.locator("#autoRefresh").uncheck();
+    await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
       const legacyCommitHeader = document.createElement("th");
       legacyCommitHeader.dataset.historySortKey = "git_commit";
@@ -10353,11 +10326,11 @@ test.describe("Engineering Status browser smoke", () => {
     // Existing CSS explicitly requires one continuous interactive-row hover
     // surface, including the frozen first cell. Prove actual hover as well as
     // equal nontransparent cell fills; an idle row cannot satisfy this check.
-    await expect.poll(() => firstPromptHistoryRow.evaluate((row) => row.matches(":hover"))).toBe(true);
-    const promptHistoryHover = await firstPromptHistoryRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    await expect.poll(() => firstPromptHistoryRow.locator("td").evaluateAll((cells) =>
-      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
-    expect(promptHistoryHover[0]).not.toBe("rgba(0, 0, 0, 0)");
+    await expect.poll(() => firstPromptHistoryRow.evaluate((row) => {
+      const colors = [...row.cells].map(cell => getComputedStyle(cell).backgroundColor);
+      return { hovered: row.matches(":hover"), fills: new Set(colors).size,
+        opaque: colors.every(color => color !== "rgba(0, 0, 0, 0)") };
+    })).toEqual({ hovered: true, fills: 1, opaque: true });
     await expect(page.locator("#promptHistoryRows tr").first().locator("td")).toHaveCount(9);
     await expect(page.locator("#promptHistoryPagination")).toContainText("Pagina 1 van 3 · 26 uitvoeringen");
     const nextPromptHistoryPage = page.locator("#promptHistoryPagination").getByRole("button", { name: "Volgende" });

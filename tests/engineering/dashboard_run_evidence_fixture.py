@@ -395,7 +395,27 @@ class OwnedRequestServer(ThreadingHTTPServer):
         self.requests = {}
         self.request_condition = threading.Condition()
         self.admission_closed = False
+        self.handler_errors = []
         super().__init__(*args, **kwargs)
+
+    def handle_error(self, request, address):
+        error = sys.exception()
+        with self.request_condition:
+            self.handler_errors.append({
+                "path": self.requests.get(request) or "unknown",
+                "exception_type": type(error).__name__,
+                "observed_monotonic_ns": time.monotonic_ns(),
+                "observed_unix_ns": time.time_ns(),
+                "client_disconnect": isinstance(error, (BrokenPipeError, ConnectionResetError)),
+            })
+            event = dict(self.handler_errors[-1])
+        print(json.dumps({"event": "ep-canary-handler-error", **event}), file=sys.stderr, flush=True)
+        super().handle_error(request, address)
+
+    def error_receipt(self):
+        with self.request_condition:
+            return {"handler_errors": list(self.handler_errors),
+                    "unexpected_handler_errors": sum(not item["client_disconnect"] for item in self.handler_errors)}
 
     def process_request(self, request, address):
         with self.request_condition:
@@ -436,9 +456,9 @@ class OwnedRequestServer(ThreadingHTTPServer):
             while any(path != "/api/events" for path in self.requests.values()):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return {"ordinary_quiescent": False, "streams": len(self.requests)}
+                    return {"ordinary_quiescent": False, "streams": len(self.requests), **self.error_receipt()}
                 self.request_condition.wait(remaining)
-            return {"ordinary_quiescent": True, "streams": len(self.requests)}
+            return {"ordinary_quiescent": True, "streams": len(self.requests), **self.error_receipt()}
 
 
 class TrackedRequestHandler(server._HealthHandler):
@@ -465,7 +485,7 @@ class OwnedReadWorker:
         self.process = subprocess.Popen((sys.executable, str(Path(__file__).absolute()),
                                          "--worker", str(data_root), json.dumps(options)),
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                                        stderr=sys.stderr, text=True, bufsize=1,
                                         start_new_session=True, env=environment)
         self.closed = None
         self.last = None
@@ -545,9 +565,12 @@ class OwnedReadWorker:
                        "ordinary_handlers_completed": bool(observation and observation["ordinary_quiescent"]),
                        "isolation_retained_through_worker_exit": bool(observation and observation["guard_retained"]),
                        "unexpected_native_attempts": observation["native_attempts"] if observation else None,
+                       "handler_errors": observation["handler_errors"] if observation else None,
+                       "unexpected_handler_errors": observation["unexpected_handler_errors"] if observation else None,
                        "transport_observations": self.last}
         if (failure or not observation or not observation["ordinary_quiescent"] or not observation["guard_retained"]
-                or observation["native_attempts"] or self.last["passive_effects"] != {"model": 0, "git": 0}):
+                or observation["native_attempts"] or observation["unexpected_handler_errors"]
+                or self.last["passive_effects"] != {"model": 0, "git": 0}):
             raise AssertionError("Isolated reader cleanup failed; own worker ended with guards retained")
         return self.closed
 
