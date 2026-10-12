@@ -71,7 +71,7 @@ for (const selected of ['', 'project', 'none']) for (const auto of [true,false])
    await expect.poll(()=>page.evaluate(()=>scopeStreams[0]?.fact.frames.length||0)).toBeGreaterThan(0);
    expect(await page.locator('body').getAttribute('data-console-read-outcome')).toBeNull();
   } finally {
-   await page.close();child.stdin.write('stop\n');await closed;
+   await page.goto('about:blank');child.stdin.write('stop\n');await closed;
    expect(child.exitCode).toBe(0);
    await finishWorkerLogs(child,info);
   }
