@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync,writeFileSync,mkdirSync } from 'node:fs';
+import { mkdtempSync,writeFileSync,mkdirSync,readFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { test,expect } from './dashboard_coverage_fixture.mjs';
@@ -14,7 +14,7 @@ for (const selected of ['', 'project', 'none']) for (const auto of [true,false])
   mkdirSync(privateRoot,{recursive:true,mode:0o700});
   const evidence=mkdtempSync(path.join(privateRoot,'scope-proof-'));
   const env={...process.env};delete env.PYTHONPATH;
-  const child=spawn(python,[path.resolve('tests/engineering/console_scope_fixture.py'),evidence,...(process.env.EP_SCOPE_REFAULT==='1'?['refault']:[])],{cwd:process.cwd(),env,stdio:['pipe','pipe','pipe']});
+  const child=spawn(python,[path.resolve('tests/engineering/console_scope_fixture.py'),evidence,...(process.env.EP_DATABASE_EVIDENCE_MODE?[process.env.EP_DATABASE_EVIDENCE_MODE]:process.env.EP_SCOPE_REFAULT==='1'?['refault']:[])],{cwd:process.cwd(),env,stdio:['pipe','pipe','pipe']});
   retainWorkerLogs(child,info,'scope-worker',{privateRoot});
   const queue=[];let buffer='',pending;
   child.stdout.on('data',chunk=>{buffer+=chunk;while(buffer.includes('\n')){const i=buffer.indexOf('\n'),line=buffer.slice(0,i);buffer=buffer.slice(i+1);if(line.startsWith('{')){const message=JSON.parse(line);if(pending){const resolve=pending;pending=null;resolve(message);}else queue.push(message);}}});
@@ -57,7 +57,7 @@ for (const selected of ['', 'project', 'none']) for (const auto of [true,false])
    await expect(page.locator('body')).toHaveAttribute('data-console-read-outcome','UNAVAILABLE',{timeout:2500});
    await expect.poll(()=>page.evaluate(()=>scopeStreams[0].source.readyState)).toBe(2);
    await expect(page.locator('#updateMode')).toHaveText(/unavailable|niet beschikbaar/i);
-   child.stdin.write('status\n');const stored=await next();expect(stored).toEqual({restored:true,replacement:false,errors:[]});
+   child.stdin.write('status\n');const stored=await next();if (!process.env.EP_DATABASE_EVIDENCE_NEGATIVE) expect(stored).toEqual({restored:true,replacement:false,errors:[]});
    facts=await page.evaluate(()=>({projectId:document.body.dataset.projectId,scope:window.ENGINEERING_PLATFORM_NO_PROJECT?'PLATFORM':'PROJECT',stream:scopeStreams[0].fact,readyState:scopeStreams[0].source.readyState,outcome:document.body.dataset.consoleReadOutcome,status:document.querySelector('#updateMode').textContent}));
    expect(facts.stream.controls.at(-1)).toEqual({scope:selected?'PROJECT':'PLATFORM',project_id:selected||null,error:'CENTRAL_UNAVAILABLE',outcome:'UNAVAILABLE'});
    // The closed stream's late dashboard and error cannot restore old data.
@@ -67,13 +67,23 @@ for (const selected of ['', 'project', 'none']) for (const auto of [true,false])
    await page.screenshot({path:info.outputPath('actual-unavailable.png')});
    writeFileSync(info.outputPath('scope-wire-browser.json'),JSON.stringify({ready,snapshot,facts,stored,auto,source:process.env.EP_RUN_EVIDENCE_SOURCE_SHA,tree:process.env.EP_RUN_EVIDENCE_SOURCE_TREE,wheel:process.env.EP_RUN_EVIDENCE_WHEEL_SHA256},null,2));
    // Only a new authorised document may establish scope after source restore.
-   await page.goto(ready.url+'?project='+(selected==='project'?'none':'project'),{waitUntil:'domcontentloaded'});
-   await expect.poll(()=>page.evaluate(()=>scopeStreams[0]?.fact.frames.length||0)).toBeGreaterThan(0);
-   expect(await page.locator('body').getAttribute('data-console-read-outcome')).toBeNull();
+   if (!process.env.EP_DATABASE_EVIDENCE_NEGATIVE) {
+    await page.goto(ready.url+'?project='+(selected==='project'?'none':'project'),{waitUntil:'domcontentloaded'});
+    await expect.poll(()=>page.evaluate(()=>scopeStreams[0]?.fact.frames.length||0)).toBeGreaterThan(0);
+    expect(await page.locator('body').getAttribute('data-console-read-outcome')).toBeNull();
+   }
   } finally {
    await page.goto('about:blank');child.stdin.write('stop\n');await closed;
-   expect(child.exitCode).toBe(0);
    await finishWorkerLogs(child,info);
+   const verdict=JSON.parse(readFileSync(path.join(evidence,'verdict.json'),'utf8'));
+   const closure=JSON.parse(readFileSync(path.join(evidence,'closure.json'),'utf8'));
+   writeFileSync(info.outputPath('database-evidence-receipt.json'),JSON.stringify({verdict,closure},null,2));
+   expect(verdict.retention_errors).toEqual([]);
+   expect(verdict.violations).toEqual([]);
+   expect(verdict.qualified).toBe(true);
+   expect(closure.stopped).toBe(true);
+   expect(closure.fixture_removed).toBe(true);
+   expect(child.exitCode).toBe(0);
   }
  });
 }
