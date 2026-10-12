@@ -31,3 +31,13 @@ and compares their hashes, size and identity with the last consistent snapshot.
 A difference remains red and preserves the own-store. Only complete, matching
 evidence permits cleanup after process stop. The original worker closure and
 separate post-close receipt remain truthful about their respective boundaries.
+
+Partial worker startup retains its actual process owner before readiness.
+Startup and teardown failures remain separate; a never-ready worker is not sent
+a normal quiesce request. Native signal errors are recorded with the actual PID.
+An exited-unreaped Darwin group may return EPERM after a real live poll: this is
+classified as an exit race only after the actual child is reaped and a fresh
+whole-group census proves no live members. A live descendant, an unavailable
+census or a denied live child remains a cleanup failure. Guards and failuredata
+stay retained until group death is proved. The unchanged terminate/kill budget
+is two seconds. Old unrecorded EPERM causes are not retroactively established.

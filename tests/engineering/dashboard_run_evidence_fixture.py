@@ -474,7 +474,7 @@ class TrackedRequestHandler(server._HealthHandler):
 class OwnedReadWorker:
     """Only this fixture's worker/process group; never a source writer."""
     def __init__(self, data_root, *, remaining=100, authenticated=True, marker=None, restore_fault=False, omit_metadata_adapter=False, bind_port=0,
-                 quota_mode="available", quota_marker=None, omit_quota_adapter=False):
+                 quota_mode="available", quota_marker=None, omit_quota_adapter=False, register_owner=None):
         options = {"remaining": remaining, "authenticated": authenticated,
                    "marker": str(marker) if marker else None, "restore_fault": restore_fault,
                    "omit_metadata_adapter": omit_metadata_adapter, "bind_port": bind_port,
@@ -490,10 +490,29 @@ class OwnedReadWorker:
         self.closed = None
         self.last = None
         self.exchange_lock = threading.Lock()
+        self.group_ended = False
+        self.startup_error = self.cleanup_error = None
+        self.process_events = []
         try:
+            # Publish ownership before readiness can fail. The caller must
+            # retain guards/data if construction cannot prove group teardown.
+            if register_owner:
+                register_owner(self)
             self.ready = self.read()
-        except BaseException:
-            self.end_process()
+        except BaseException as startup_error:
+            self.startup_error = startup_error
+            print(json.dumps({"event": "own-reader-startup-failed", "pid": self.process.pid,
+                              "error": type(startup_error).__name__, "message": str(startup_error)}),
+                  file=sys.stderr, flush=True)
+            try:
+                self.end_process()
+            except BaseException as cleanup_error:
+                self.cleanup_error = cleanup_error
+                print(json.dumps({"event": "own-reader-startup-cleanup-failed", "pid": self.process.pid,
+                                  "error": type(cleanup_error).__name__, "message": str(cleanup_error)}),
+                      file=sys.stderr, flush=True)
+                raise BaseExceptionGroup("Own reader startup and cleanup failed",
+                                         [startup_error, cleanup_error])
             raise
 
     def read(self):
@@ -520,27 +539,52 @@ class OwnedReadWorker:
         # Same terminate/wait/kill bounds as the real provider process closer.
         # Every child spawned by this read-only worker remains in this group.
         cleanup_deadline = time.monotonic() + 2  # existing terminate1 + kill1 budget
-        if self.process.poll() is None:
-            os.killpg(self.process.pid, signal.SIGTERM)
-            try:
-                self.process.wait(timeout=min(1, max(0, cleanup_deadline - time.monotonic())))
-            except subprocess.TimeoutExpired:
-                os.killpg(self.process.pid, signal.SIGKILL)
-                self.process.wait(timeout=min(1, max(0, cleanup_deadline - time.monotonic())))
-        # A reaped parent alone is not proof that all group descendants ended.
-        # Check only the new session/group created by this own Popen; zombies
-        # have no live worker/effect boundary and are reaped by their owner.
         def living_group():
             rows = subprocess.check_output(("ps", "-axo", "pgid=,stat="), text=True,
                                            timeout=max(.001, cleanup_deadline - time.monotonic()))
             return any(parts[0] == str(self.process.pid) and not parts[1].startswith("Z")
                        for line in rows.splitlines() if len(parts := line.split()) >= 2)
+
+        def signal_group(signum):
+            try:
+                os.killpg(self.process.pid, signum)
+            except (ProcessLookupError, PermissionError) as error:
+                # Darwin can return EPERM for an own group containing only
+                # the just-exited, unreaped child. Never infer death from
+                # errno: reap the actual Popen child AND inspect its group.
+                event = {"pid": self.process.pid, "signal": int(signum),
+                         "error": type(error).__name__, "errno": error.errno}
+                self.process_events.append(event)
+                print(json.dumps({"event": "own-reader-signal-error", **event}), file=sys.stderr, flush=True)
+                try:
+                    self.process.wait(timeout=min(1, max(0, cleanup_deadline - time.monotonic())))
+                    ended = not living_group()
+                except BaseException as verification_error:
+                    error.add_note("Whole own-group death could not be verified: " + type(verification_error).__name__)
+                    raise error from verification_error
+                event.update(actual_child_reaped=True, whole_group_ended=ended)
+                if not ended:
+                    raise
+
+        if self.process.poll() is None:
+            signal_group(signal.SIGTERM)
+            try:
+                self.process.wait(timeout=min(1, max(0, cleanup_deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                signal_group(signal.SIGKILL)
+                self.process.wait(timeout=min(1, max(0, cleanup_deadline - time.monotonic())))
+        # A reaped parent alone is not proof that all group descendants ended.
+        # Check only the new session/group created by this own Popen; zombies
+        # have no live worker/effect boundary and are reaped by their owner.
         while living_group():
-            os.killpg(self.process.pid, signal.SIGKILL)
+            signal_group(signal.SIGKILL)
             if time.monotonic() >= cleanup_deadline:
                 raise AssertionError("Own reader process group did not end within existing cleanup bound")
             time.sleep(.01)
         self.group_ended = True
+        print(json.dumps({"event": "own-reader-group-ended", "pid": self.process.pid,
+                          "actual_wait_exit": self.process.returncode, "group_ended": True,
+                          "signal_events": self.process_events}), file=sys.stderr, flush=True)
         for pipe in (self.process.stdin, self.process.stdout):
             if pipe is not None:
                 pipe.close()
@@ -548,6 +592,15 @@ class OwnedReadWorker:
     def close(self):
         if self.closed is not None:
             return self.closed
+        if self.startup_error is not None:
+            # No ready protocol was established. Do not enqueue a quiesce
+            # request into the failed child's pipe; retain its primary error
+            # while proving actual teardown through the preserved owner.
+            self.end_process()
+            self.closed = {"worker_ended": self.process.poll() is not None,
+                           "owned_process_group_ended": self.group_ended,
+                           "startup_failed": True, "process_events": self.process_events}
+            raise self.startup_error
         observation = None
         failure = None
         try:
@@ -561,6 +614,7 @@ class OwnedReadWorker:
             self.end_process()
         self.closed = {"worker_ended": self.process.poll() is not None,
                        "owned_process_group_ended": self.group_ended,
+                       "process_events": self.process_events,
                        "request_admission_closed": bool(observation and observation["admission_closed"]),
                        "ordinary_handlers_completed": bool(observation and observation["ordinary_quiescent"]),
                        "isolation_retained_through_worker_exit": bool(observation and observation["guard_retained"]),
@@ -813,9 +867,21 @@ class StoredConsoleCanary:
         self.console_git_transport = patch.object(GitProvider, "execute", observed_console_git)
         self.console_git_transport.start()
         worker_options.setdefault("quota_mode", self.external_transport.quota_mode)
-        self.listener = OwnedReadWorker(self.fixture.data,
-                                        remaining=self.external_transport.remaining,
-                                        authenticated=self.external_transport.authenticated, **worker_options)
+        def register_owner(worker):
+            self.listener = worker
+        try:
+            self.listener = OwnedReadWorker(self.fixture.data,
+                                            remaining=self.external_transport.remaining,
+                                            authenticated=self.external_transport.authenticated,
+                                            register_owner=register_owner, **worker_options)
+        except BaseException:
+            if self.listener and self.listener.group_ended:
+                self.cleanup_observation = {"worker_ended": self.listener.process.poll() is not None,
+                                            "owned_process_group_ended": True,
+                                            "startup_error": type(self.listener.startup_error).__name__,
+                                            "process_events": self.listener.process_events}
+                self.listener = None
+            raise
         return self.listener.ready["url"].split("/?")[0]
 
     def transport_snapshot(self):
@@ -912,6 +978,7 @@ class StoredConsoleCanary:
             except BaseException as failure:
                 if self.listener.process.poll() is None or not getattr(self.listener, "group_ended", False):
                     # No proved whole-group death: leave guards and data in place.
+                    self.fixture.temp._finalizer.detach()
                     raise
                 error = failure
         if self.runner:
