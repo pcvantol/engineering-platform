@@ -1,7 +1,7 @@
 {
   "contract": "ep-dashboard-canonical-corpus/v1",
   "baseline_source_sha": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
-  "mandatory_count": 521,
+  "mandatory_count": 522,
   "baseline_not_run_count": 4,
   "tests": [
     {
@@ -3167,6 +3167,12 @@
     {
       "file": "dashboard.spec.mjs",
       "title": "binds all runtime transport locale fields before real scope reconciliation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "real health replacement exposes disconnected style observations",
       "expectedStatus": "passed",
       "annotations": []
     }

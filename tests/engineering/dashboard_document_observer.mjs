@@ -21,6 +21,16 @@ async function createObservation(page) {
   const retained = mkdtempSync(path.join(privateRoot, 'ep-document-observation-'));
   const raw = path.join(retained, 'transport.jsonl.gz');
   const pending = new Set();
+  // Public Playwright request objects bind a held read to its actual lifecycle.
+  // A completed first read cannot hide a different, still pending predecessor.
+  const pendingSnapshotReads = new Set();
+  const started = request => {
+    if (new URL(request.url()).pathname === '/api/dashboard-snapshot') pendingSnapshotReads.add(request);
+  };
+  const finished = request => pendingSnapshotReads.delete(request);
+  page.on('request', started);
+  page.on('requestfinished', finished);
+  page.on('requestfailed', finished);
   let resolveClosed, rejectClosed;
   const closedReceipt = new Promise((resolve, reject) => { resolveClosed = resolve; rejectClosed = reject; });
   // Mark the promise handled immediately; the fixture still awaits rejection.
@@ -36,7 +46,7 @@ async function createObservation(page) {
     run_id: payload.history?.run_id ?? null, run_ids: Array.isArray(payload.runs) ? payload.runs.map(run => run.run_id) : undefined });
   session.on('Network.requestWillBeSent', (event) => {
     const url = new URL(event.request.url);
-    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history', '/api/configuration'].includes(url.pathname)
+    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history', '/api/configuration', '/health'].includes(url.pathname)
         && !/^\/api\/prompt-history\/[^/]+\/details$/.test(url.pathname)) return;
     retain('request', event);
     for (const extra of extras.get(event.requestId) || []) retain('transport-extra-info', extra);
@@ -91,6 +101,9 @@ async function createObservation(page) {
     (async () => {
       session.removeAllListeners();
       page.off('pageerror', pageError);
+      page.off('request', started);
+      page.off('requestfinished', finished);
+      page.off('requestfailed', finished);
       await Promise.all([...pending]);
       retain('page-close', { actual_page_closed: true });
       const bytes = readFileSync(raw);
@@ -157,5 +170,6 @@ async function createObservation(page) {
     if (results.some(result => result.status === 'rejected'))
       throw Error('First browser failure retention incomplete; original failure remains in runner report');
   };
-  return { scope, quota, select, documentId, failure, closed: () => closedReceipt, records: () => [...requests.values()] };
+  return { scope, quota, select, documentId, failure, closed: () => closedReceipt,
+    records: () => [...requests.values()], pendingSnapshotReads: () => [...pendingSnapshotReads] };
 }

@@ -9,10 +9,10 @@ const corpus = JSON.parse(readFileSync(new URL('./dashboard_shard_inventory.json
 const tests = () => corpus.map(row => ({ ...row, location: { file: row.file }, annotations: row.annotations.map(a => ({ ...a })) }));
 const id = row => JSON.stringify([row.file, row.title]);
 
-test('all 525 cases remain disjoint and each owning file is balanced across four parts', () => {
+test('all 526 cases remain disjoint and each owning file is balanced across four parts', () => {
   const parts = partition(tests());
-  assert.equal(parts.flat().length, 525);
-  assert.equal(new Set(parts.flat().map(id)).size, 525);
+  assert.equal(parts.flat().length, 526);
+  assert.equal(new Set(parts.flat().map(id)).size, 526);
   assert.deepEqual(parts.flat().map(id).sort(), corpus.map(id).sort());
   for (const file of new Set(corpus.map(row => row.file))) {
     const counts = parts.map(rows => rows.filter(row => row.file === file).length);
@@ -41,7 +41,7 @@ test('changed expected outcomes and skip/fixme/fail annotations remain red', () 
 test('only the four unchanged baseline skip contracts remain separately NOT_RUN', () => {
   const all = tests(), baseline = all.filter(row => row.expectedStatus === 'skipped');
   assert.equal(baseline.length, 4);
-  assert.equal(all.filter(row => row.expectedStatus === 'passed').length, 521);
+  assert.equal(all.filter(row => row.expectedStatus === 'passed').length, 522);
   const stripped = tests(); stripped.find(row => row.expectedStatus === 'skipped').annotations = [];
   assert.throws(() => partition(stripped), /altered execution/);
   const changed = tests(); changed.find(row => row.expectedStatus === 'skipped').expectedStatus = 'passed';
@@ -74,13 +74,13 @@ test('supported reporter excludes only out-of-part cases and binds complete term
     reporter.preprocess({ config: { shard: { current: 2, total: 4 }, workers: 1 },
       suite: { allTests: () => all }, testRun: { skipSharding() {}, exclude(row) { excluded.push(row); } } });
     const selected = all.filter(row => !excluded.includes(row));
-    assert.equal(selected.length + excluded.length, 525);
+    assert.equal(selected.length + excluded.length, 526);
     reporter.onBegin({ projects: [{ outputDir: root }] }, { allTests: () => selected });
     selected.forEach(row => reporter.onTestEnd(row, { status: row.expectedStatus, retry: 0 }));
     assert.equal(reporter.onEnd({ status: 'passed' }), undefined);
     const receipt = JSON.parse(readFileSync(path.join(root, 'complete-shard.json')));
     assert.equal(receipt.qualified, true);
-    assert.equal(receipt.parts.flat().length, 525);
+    assert.equal(receipt.parts.flat().length, 526);
     reporter.onError(Error('outside case failure'));
     assert.deepEqual(reporter.onEnd({ status: 'passed' }), { status: 'failed' });
   } finally { rmSync(root, { recursive: true }); }

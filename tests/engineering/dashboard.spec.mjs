@@ -360,6 +360,72 @@ test("binds all runtime transport locale fields before real scope reconciliation
   }
 });
 
+test("real health replacement exposes disconnected style observations", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const observer = await observeConsoleDocument(page);
+  let release, requests = 0, oldArray;
+  const held = new Promise(resolve => { release = resolve; });
+  const handler = async route => { requests++; await held; await route.continue(); };
+  await page.route("**/health*", handler);
+  const cssLoaded = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/assets/dashboard.css" && response.status() === 200);
+  try {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const css = await cssLoaded;
+    expect(await css.body()).toEqual(readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css")));
+    expect(css.request().frame()).toBe(page.mainFrame());
+    await expect.poll(() => requests).toBeGreaterThan(0);
+    const documentId = await observer.documentId();
+    const capture = (seed = false) => page.evaluate(seed => {
+      if (seed) {
+        document.getElementById("platformHealth").open = true;
+        renderPlatformHealth({ components: {
+          dashboard: { healthy: true, detail: "HTTP-dashboard reageert", version: "2.0.0" },
+          inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen", version: "2.0.0" },
+        }});
+      }
+      return [...document.querySelectorAll("#platformHealth > summary, .platform-health__component")].map(element => {
+        const style = getComputedStyle(element);
+        return { connected: element.isConnected, backgroundColor: style.backgroundColor,
+          backgroundImage: style.backgroundImage, backdropFilter: style.backdropFilter };
+      });
+    }, seed);
+    const before = await capture(true);
+    expect(before).toHaveLength(3);
+    expect(before.every(surface => surface.connected && surface.backgroundImage === "none"
+      && surface.backdropFilter === "none" && surface.backgroundColor !== "rgba(0, 0, 0, 0)")).toBe(true);
+    // Preserve real references across the actual query/evaluate gap. No cloned
+    // styles, detached-node filter or manufactured successful HTTP response.
+    oldArray = await page.evaluateHandle(() => [...document.querySelectorAll("#platformHealth > summary, .platform-health__component")]);
+    const loaded = page.waitForResponse(response => new URL(response.url()).pathname === "/health");
+    release();
+    const response = await loaded, packet = await response.json();
+    expect([200, 503]).toContain(response.status());
+    expect(Object.keys(packet.components).length).toBeGreaterThan(2);
+    expect(response.request().frame()).toBe(page.mainFrame());
+    const hash = createHash("sha256").update(await response.body()).digest("hex");
+    await expect.poll(() => observer.records().some(request => request.path === "/health"
+      && request.document_id === documentId && request.status === response.status()
+      && request.completed && request.response_sha256 === hash)).toBe(true);
+    await expect.poll(() => page.locator(".platform-health__component").count()).toBeGreaterThan(2);
+    const stale = await oldArray.evaluate(elements => elements.map(element => {
+      const style = getComputedStyle(element);
+      return { connected: element.isConnected, backgroundImage: style.backgroundImage };
+    }));
+    expect(stale.filter(surface => !surface.connected && surface.backgroundImage === "")).toHaveLength(2);
+    expect(stale.every(surface => surface.backgroundImage === "none")).toBe(false);
+    const current = await capture();
+    expect(current.length).toBeGreaterThan(2);
+    expect(current.every(surface => surface.connected && surface.backgroundImage === "none"
+      && surface.backdropFilter === "none" && surface.backgroundColor !== "rgba(0, 0, 0, 0)")).toBe(true);
+    expect(await observer.documentId()).toBe(documentId);
+  } finally {
+    release();
+    await page.unroute("**/health*", handler);
+    if (oldArray) await oldArray.dispose();
+  }
+});
+
 async function waitForAppliedDashboardProjectSnapshot(page) {
   const observer = await observeConsoleDocument(page);
   const language = await page.locator("html").getAttribute("lang");
@@ -391,6 +457,61 @@ async function waitForAppliedDashboardProjectSnapshot(page) {
   expect(await observer.documentId()).toBe(documentId);
   return { document_id: documentId, request_id: bound.request_id, response_sha256: rawHash,
     applied_ui_mode: messages["refresh.connected"] };
+}
+
+async function ownSyntheticProjectionReadSpan(page) {
+  // This controls only a declared renderer fixture, never stored-run evidence.
+  // Settle a real initial read, then hold subsequent real transport while the
+  // original native interaction/assertions consume their synthetic projection.
+  const applied = await waitForAppliedDashboardProjectSnapshot(page);
+  const observer = await observeConsoleDocument(page);
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const owned = new Set(), continuations = new Set();
+  const pattern = "**/api/dashboard-snapshot*";
+  const handler = async route => {
+    owned.add(route.request());
+    const work = (async () => { await held; await route.continue(); })();
+    continuations.add(work);
+    work.then(() => continuations.delete(work), () => continuations.delete(work));
+    await work;
+  };
+  await page.route(pattern, handler);
+  try {
+    // Native EventSource failure supplies the next real read. No private
+    // application call, fabricated response, retry or timeout increase.
+    await expect.poll(() => owned.size).toBeGreaterThan(0);
+    await expect.poll(() => observer.pendingSnapshotReads().every(request => owned.has(request))).toBe(true);
+    expect(await observer.documentId()).toBe(applied.document_id);
+  } catch (error) {
+    release();
+    await page.unroute(pattern, handler);
+    await Promise.all([...continuations]);
+    throw error;
+  }
+  return {
+    async reconcile(selector) {
+      const loaded = page.waitForResponse(response =>
+        new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+      release();
+      const response = await loaded, packet = await response.json();
+      expect(response.request().frame()).toBe(page.mainFrame());
+      expect(packet).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+      expect(packet.status.lifecycle).toBeUndefined();
+      const hash = createHash("sha256").update(await response.body()).digest("hex");
+      await expect.poll(() => observer.records().some(request =>
+        request.path === "/api/dashboard-snapshot" && request.document_id === applied.document_id
+        && request.status === 200 && request.completed && request.response_sha256 === hash)).toBe(true);
+      await expect(page.locator(selector)).toHaveCount(0);
+      expect(await observer.documentId()).toBe(applied.document_id);
+      await expect.poll(() => observer.pendingSnapshotReads().length).toBe(0);
+    },
+    async close() {
+      release();
+      await page.unroute(pattern, handler);
+      await Promise.all([...continuations]);
+    },
+  };
 }
 
 for (const family of ["component-log-row", "prompt-history-row", "telemetry-row"]) {
@@ -4218,34 +4339,39 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("summarizes repeated lifecycle phase timing records by phase", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.evaluate(() => r({
-      watcher_state: "ENGINEERING_RUN_ACTIVE",
-      run_id: "lifecycle-phase-summary",
-      lifecycle: {
-        available: true, run_id: "lifecycle-phase-summary", terminal_state: "ACTIVE",
-        steps: [{
-          id: "initialize", presentation_key: "lifecycle.step.initialize", state: "COMPLETED",
-          timing: { started_at: "2026-08-16T14:00:00Z", finished_at: "2026-08-16T14:03:00Z", spans: [
-            { phase: "INITIALIZATION", duration_ms: 0, outcome: "COMPLETE" },
-            { phase: "INITIALIZATION", duration_ms: 1000, outcome: "COMPLETE" },
-            { phase: "INITIALIZATION", duration_ms: 2000, outcome: "COMPLETE" },
-            { phase: "PROVIDER_EXECUTION", duration_ms: 12000, outcome: "COMPLETE" },
-            { phase: "TOTAL_EXECUTION", duration_ms: 15000, outcome: "COMPLETE" },
-          ] },
-        }],
-      },
-    }, {}));
-    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
-    await page.locator(".execution-lifecycle__node").click();
+    const read = await ownSyntheticProjectionReadSpan(page);
+    try {
+      await page.evaluate(() => r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE",
+        run_id: "lifecycle-phase-summary",
+        lifecycle: {
+          available: true, run_id: "lifecycle-phase-summary", terminal_state: "ACTIVE",
+          steps: [{
+            id: "initialize", presentation_key: "lifecycle.step.initialize", state: "COMPLETED",
+            timing: { started_at: "2026-08-16T14:00:00Z", finished_at: "2026-08-16T14:03:00Z", spans: [
+              { phase: "INITIALIZATION", duration_ms: 0, outcome: "COMPLETE" },
+              { phase: "INITIALIZATION", duration_ms: 1000, outcome: "COMPLETE" },
+              { phase: "INITIALIZATION", duration_ms: 2000, outcome: "COMPLETE" },
+              { phase: "PROVIDER_EXECUTION", duration_ms: 12000, outcome: "COMPLETE" },
+              { phase: "TOTAL_EXECUTION", duration_ms: 15000, outcome: "COMPLETE" },
+            ] },
+          }],
+        },
+      }, {}));
+      await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+      await page.locator(".execution-lifecycle__node").click();
 
-    const phaseRows = page.locator("#lifecycleDetailModal .lifecycle-detail-modal__phase-list li");
-    await expect(phaseRows).toHaveCount(3);
-    await expect(phaseRows.nth(0)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.initialization"]);
-    await expect(phaseRows.nth(0)).toContainText("3 sec");
-    await expect(phaseRows.nth(1)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
-    await expect(phaseRows.nth(2)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.total_execution"]);
-    await expect(phaseRows.nth(0)).toHaveCSS("border-bottom-style", "solid");
-    await expect(phaseRows.nth(2)).toHaveCSS("border-bottom-style", "none");
+      const phaseRows = page.locator("#lifecycleDetailModal .lifecycle-detail-modal__phase-list li");
+      await expect(phaseRows).toHaveCount(3);
+      await expect(phaseRows.nth(0)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.initialization"]);
+      await expect(phaseRows.nth(0)).toContainText("3 sec");
+      await expect(phaseRows.nth(1)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
+      await expect(phaseRows.nth(2)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.total_execution"]);
+      await expect(phaseRows.nth(0)).toHaveCSS("border-bottom-style", "solid");
+      await expect(phaseRows.nth(2)).toHaveCSS("border-bottom-style", "none");
+      await page.locator("#lifecycleDetailClose").click();
+      await read.reconcile(".execution-lifecycle__node");
+    } finally { await read.close(); }
   });
 
   test("reveals an initially off-screen active lifecycle step after page load", async ({ page }) => {
@@ -7908,23 +8034,26 @@ test.describe("Engineering Status browser smoke", () => {
   test("keeps iPhone platform component cards on opaque, flat surfaces", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#platformHealth").evaluate((element) => { element.open = true; });
-    await page.evaluate(() => renderPlatformHealth({ components: {
-      dashboard: { healthy: true, detail: "HTTP-dashboard reageert", version: "2.0.0" },
-      inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen", version: "2.0.0" },
-    }}));
-
-    const surfaces = await page.locator("#platformHealth > summary, .platform-health__component").evaluateAll(
-      (elements) => elements.map((element) => {
+    const surfaces = await page.evaluate(() => {
+      document.getElementById("platformHealth").open = true;
+      renderPlatformHealth({ components: {
+        dashboard: { healthy: true, detail: "HTTP-dashboard reageert", version: "2.0.0" },
+        inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen", version: "2.0.0" },
+      }});
+      // Query and style observation belong to the same actual render turn;
+      // evaluateAll otherwise queries an array before a separate evaluation.
+      return [...document.querySelectorAll("#platformHealth > summary, .platform-health__component")].map((element) => {
         const style = getComputedStyle(element);
         return {
+          connected: element.isConnected,
           backgroundColor: style.backgroundColor,
           backgroundImage: style.backgroundImage,
           backdropFilter: style.backdropFilter,
         };
-      }),
-    );
+      });
+    });
     expect(surfaces.length).toBeGreaterThan(2);
+    expect(surfaces.every((surface) => surface.connected)).toBe(true);
     expect(surfaces.every((surface) => surface.backgroundColor !== "rgba(0, 0, 0, 0)")).toBe(true);
     expect(surfaces.every((surface) => surface.backgroundImage === "none")).toBe(true);
     expect(surfaces.every((surface) => surface.backdropFilter === "none")).toBe(true);
@@ -8286,23 +8415,27 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows live and completed reviewer status indicators", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.evaluate(() => r({
-      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "reviewer-status-run", current_phase: "CAPABILITY_REVIEW",
-      reviewer_agents: [
-        { reviewer: "validation", capability: "engineering", status: "running" },
-        { reviewer: "documentation", capability: "engineering", status: "completed" },
-      ],
-    }, {}));
+    const read = await ownSyntheticProjectionReadSpan(page);
+    try {
+      await page.evaluate(() => r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "reviewer-status-run", current_phase: "CAPABILITY_REVIEW",
+        reviewer_agents: [
+          { reviewer: "validation", capability: "engineering", status: "running" },
+          { reviewer: "documentation", capability: "engineering", status: "completed" },
+        ],
+      }, {}));
 
-    const cards = page.locator(".reviewer-agent");
-    await expect(cards).toHaveCount(2);
-    await expect(cards.nth(0).locator(".reviewer-agent__status--running")).toHaveAttribute(
-      "aria-label", /.+/,
-    );
-    await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveText("✓");
-    await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveAttribute(
-      "aria-label", /.+/,
-    );
+      const cards = page.locator(".reviewer-agent");
+      await expect(cards).toHaveCount(2);
+      await expect(cards.nth(0).locator(".reviewer-agent__status--running")).toHaveAttribute(
+        "aria-label", /.+/,
+      );
+      await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveText("✓");
+      await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveAttribute(
+        "aria-label", /.+/,
+      );
+      await read.reconcile(".reviewer-agent");
+    } finally { await read.close(); }
   });
 
   test("keeps terminal specialist reviews visible as historical run evidence", async ({ page }) => {
