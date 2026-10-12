@@ -3318,6 +3318,7 @@ document.addEventListener("click", (event) => {
 let receivedDashboardServerPush = false,
   dashboardReadEpoch = 0,
   dashboardReadDenied = false,
+  dashboardEvents = null,
   dashboardScopeProbe = null,
   initialDashboardStatusLoaded = false,
   updateModeKey = "refresh.connecting";
@@ -3348,9 +3349,11 @@ function applyDashboardSnapshot(snapshot, readEpoch = dashboardReadEpoch, projec
   checkBuild(snapshot.build_commit);
   return true;
 }
-function invalidateDashboardReadScope() {
+function invalidateDashboardReadScope(outcome = "DENIED") {
   dashboardReadEpoch += 1;
   dashboardReadDenied = true;
+  dashboardEvents?.close();
+  document.body.dataset.consoleReadOutcome = outcome;
   promptHistoryDetailRequestId += 1;
   closePromptHistoryDetail();
   promptHistoryDetailRunId = "";
@@ -3366,6 +3369,9 @@ function invalidateDashboardReadScope() {
   humanize();
 }
 async function refreshDashboardSnapshot({ allowAfterServerPush = false, scopeOnly = false, successMode, failureMode } = {}) {
+  // Access loss ends this document's scope. Only a fresh authorised document
+  // may establish it again; background probes must never silently regrant it.
+  if (dashboardReadDenied) return false;
   const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
   try {
     const response = await fetch("/api/dashboard-snapshot", {
@@ -3374,13 +3380,20 @@ async function refreshDashboardSnapshot({ allowAfterServerPush = false, scopeOnl
     if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
     if (!response.ok) {
       if ([401, 403, 404, 409].includes(response.status)) invalidateDashboardReadScope();
+      else if (response.status === 503) {
+        const failure = await response.json();
+        if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
+        if (failure.error === "CENTRAL_UNAVAILABLE") {
+          invalidateDashboardReadScope("UNAVAILABLE");
+          setUpdateMode("dashboard.status_unavailable");
+        }
+      }
       throw Error(t("dashboard.status_unavailable"));
     }
     const snapshot = await response.json();
     if (readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return false;
     if (!dashboardSnapshotMatchesScope(snapshot, projectId)) return false;
     if (receivedDashboardServerPush && !allowAfterServerPush) return false;
-    dashboardReadDenied = false;
     if (scopeOnly) {
       // A reconnect probe also repairs a failed initial read. Its actual
       // current-scope response may populate an empty/fallback view; keep an
@@ -3421,7 +3434,17 @@ function startDashboardUpdates() {
   // state have been initialized.  A fast local snapshot or SSE event must not
   // render into a partially constructed dashboard.
   void loadInitialDashboardStatus();
-  const events = new EventSource("/api/events");
+  const events = dashboardEvents = new EventSource("/api/events"),
+    readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
+  events.addEventListener("console-read-error", (event) => {
+    if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return;
+    const control = JSON.parse(event.data);
+    if (control.project_id !== projectId) return;
+    if (!((control.outcome === "DENIED" && control.error === "CONSOLE_PROJECT_UNAVAILABLE")
+        || (control.outcome === "UNAVAILABLE" && control.error === "CENTRAL_UNAVAILABLE"))) return;
+    invalidateDashboardReadScope(control.outcome);
+    setUpdateMode("dashboard.status_unavailable");
+  });
   events.addEventListener("dashboard", (x) => {
     if (!$("autoRefresh").checked || dashboardReadDenied) return;
     try {
@@ -3436,6 +3459,7 @@ function startDashboardUpdates() {
     }
   });
   events.onerror = () => {
+    if (dashboardReadDenied) { events.close(); return; }
     $("autoRefresh").checked &&
       setUpdateMode("refresh.reconnecting");
     // EventSource exposes no denial status. Revalidate through the existing
@@ -6503,6 +6527,11 @@ function renderPromptHistory() {
     body = $("promptHistoryRows"),
     navigation = $("promptHistoryPagination"),
     pageCount = Math.max(1, Math.ceil(rows.length / PROMPT_HISTORY_PAGE_SIZE));
+  const focused = document.activeElement,
+    focusedRow = body.contains(focused) ? focused.closest(".prompt-history-row") : null,
+    focusedRun = focusedRow?.dataset.runId,
+    focusedControl = focusedRow && focused !== focusedRow
+      ? `${focused.tagName}.${CSS.escape(focused.classList[0])}` : null;
   promptHistoryPage = Math.min(Math.max(1, promptHistoryPage), pageCount);
   body.replaceChildren();
   const visible = rows.slice(
@@ -6532,6 +6561,7 @@ function renderPromptHistory() {
         details = document.createElement("td"),
         timestamp = Date.parse(String(entry.executed_at || ""));
       row.className = "prompt-history-row";
+      row.dataset.runId = entry.run_id;
       row.tabIndex = 0;
       row.setAttribute("role", "button");
       row.dataset.selected = String(entry.run_id === promptHistorySelectedRunId);
@@ -6704,17 +6734,29 @@ function renderPromptHistory() {
   });
   navigation.append(summary, previous, next);
   updatePromptHistoryHeaders();
+  if (focusedRun) {
+    const row = [...body.querySelectorAll(".prompt-history-row")].find(item => item.dataset.runId === focusedRun),
+      control = focusedControl ? row?.querySelector(focusedControl) : row;
+    if (control && !control.disabled) control.focus({ preventScroll: true });
+  }
 }
 let promptHistoryRefreshRetry = null;
+let promptHistoryIndexRequestId = 0;
+let promptHistoryAppliedIndexRequestId = 0;
 function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
-  const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
+  const readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId,
+    requestId = ++promptHistoryIndexRequestId;
   return fetch("/api/prompt-history", { cache: "no-store" })
     .then((response) => (response.ok ? response.json() : Promise.reject()))
     .then((payload) => {
-      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
+      if (requestId < promptHistoryAppliedIndexRequestId || readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
       if (!Array.isArray(payload?.runs)) throw Error("invalid prompt history");
+      promptHistoryAppliedIndexRequestId = requestId;
+      const unchanged = JSON.stringify(payload.runs) === JSON.stringify(promptHistoryEntries);
       promptHistoryEntries = payload.runs;
-      renderPromptHistory();
+      // Preserve the real focused row/control across duplicate HTTP/SSE index
+      // completions: replacing identical rows loses the user's pending Enter.
+      if (!unchanged) renderPromptHistory();
       reconcilePromptHistoryDetailFromUrl();
       // The history index can be briefly unavailable while the watcher commits
       // a terminal run. Retry one empty initial projection so a transient
@@ -6727,7 +6769,8 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
       }
     })
     .catch(() => {
-      if (readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
+      if (requestId < promptHistoryAppliedIndexRequestId || readEpoch !== dashboardReadEpoch || dashboardReadDenied || projectId !== document.body.dataset.projectId) return;
+      promptHistoryAppliedIndexRequestId = requestId;
       promptHistoryEntries = [];
       renderPromptHistory();
       // An unavailable index is not an authoritative missing run. Retain the
@@ -9165,6 +9208,9 @@ $("promptHistoryDetailModal").addEventListener("click", (event) => {
   if (event.target === $("promptHistoryDetailModal")) closePromptHistoryDetail();
 });
 $("promptHistoryDetailModal").addEventListener("close", () => {
+  // A queued close event belongs to the previous opening. A newly opened
+  // selection must retain its request, URL and downloads.
+  if ($("promptHistoryDetailModal").open) return;
   promptHistoryDetailRequestId += 1;
   promptHistoryDetailRunId = "";
   setPromptHistoryDetailDownloads(null);

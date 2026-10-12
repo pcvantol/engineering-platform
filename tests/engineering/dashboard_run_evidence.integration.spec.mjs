@@ -706,10 +706,110 @@ async function causalManifest(page, testInfo, ready, scenario, proof) {
     locale: await page.locator('#dashboardLocale').count() ? await page.locator('#dashboardLocale').inputValue() : null, theme: await page.locator('html').getAttribute('data-theme'), viewport: page.viewportSize(), proof };
   const manifest = testInfo.outputPath('fresh-evidence-manifest.json');
   writeFileSync(manifest, JSON.stringify({ contract: 'ep-console-run-evidence-screenshots/v1',
-    qualification: process.env.EP_RUN_EVIDENCE_CONVERGENCE === '1' ? 'INSTALLED_CONVERGENCE' : 'INSTALLED',
+    qualification: process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON
+      ? (process.env.EP_RUN_EVIDENCE_CONVERGENCE === '1' ? 'INSTALLED_CONVERGENCE' : 'INSTALLED') : 'SOURCE',
     source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
     wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, assets: ready.assets, screenshots: [capture] }, null, 2));
   await testInfo.attach('fresh-evidence-manifest', { path: manifest, contentType: 'application/json' });
+}
+
+for (const scenario of ['provider-blocked', 'failed']) for (const action of ['Enter', 'click']) {
+  test(`first stored history opening survives a genuine duplicate index ${scenario}/${action}`, async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
+    const canary = await causalStoredCanary(scenario), observer = await observeConsoleDocument(page);
+    let count = 0, release, entered;
+    const held = new Promise(resolve => { release = resolve; }), observed = new Promise(resolve => { entered = resolve; });
+    try {
+      await page.route('**/api/prompt-history', async route => {
+        if (++count === 2) { entered(); await held; }
+        await route.continue();
+      });
+      await page.goto(canary.ready.url, { waitUntil: 'domcontentloaded' });
+      if (await page.locator('#promptHistory').getAttribute('open') === null) await page.locator('#promptHistory > summary').click();
+      const row = page.locator('#promptHistoryRows .prompt-history-row');
+      await expect(row).toHaveCount(1);
+      await observed;
+      await row.focus();
+      const response = page.waitForResponse(value => new URL(value.url()).pathname === '/api/prompt-history');
+      release();
+      await (await response).finished();
+      // Settle actual response/application tasks, without sleep/retry/opening.
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await expect(row).toBeFocused();
+      if (action === 'Enter') await page.keyboard.press('Enter');
+      else await row.click();
+      await expect(page.locator('#promptHistoryDetailModal')).toBeVisible();
+      await expect(page.locator('#promptHistoryDetailContent [data-run-evidence]')).toHaveCount(3);
+      expect(new URL(page.url()).searchParams.get('prompt')).toBe(canary.ready.run_id);
+      canary.child.stdin.write('snapshot\n');
+      expect((await canary.next()).after).toEqual(canary.ready.before);
+      await causalManifest(page, testInfo, canary.ready, `duplicate-index-${action}`, { action, index_reads: count,
+        focused_run: canary.ready.run_id, requests: observer.records(), modal_open: true });
+    } finally {
+      release();
+      await stopIsolatedCanary(canary.child, canary.next, testInfo);
+    }
+  });
+}
+
+for (const mode of ['revoked', 'unavailable-open', 'unavailable-initial']) {
+  test(`real project stream closes its document scope ${mode}`, async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
+    const canary = await causalStoredCanary('provider-blocked'), observer = await observeConsoleDocument(page);
+    let release = () => {}, entered;
+    const observed = new Promise(resolve => { entered = resolve; });
+    try {
+      await page.addInitScript(() => {
+        const Native = EventSource;
+        window.__streams = [];
+        window.EventSource = class extends Native {
+          constructor(...args) { super(...args); window.__streams.push(this); }
+        };
+      });
+      if (mode === 'unavailable-initial') {
+        const held = new Promise(resolve => { release = resolve; });
+        await page.route('**/api/events*', async route => { entered(); await held; await route.continue(); });
+      }
+      await page.goto(canary.ready.url, { waitUntil: 'domcontentloaded' });
+      if (await page.locator('#promptHistory').getAttribute('open') === null) await page.locator('#promptHistory > summary').click();
+      await expect(page.locator('#promptHistoryRows .prompt-history-row')).toHaveCount(1);
+      if (mode === 'unavailable-initial') await observed;
+      else await expect.poll(() => page.evaluate(() => window.__streams[0]?.readyState)).toBe(1);
+      canary.child.stdin.write(mode === 'revoked' ? 'revoke-read\n' : 'suspend-read-source\n');
+      const changed = await canary.next();
+      release();
+      await expect(page.locator('body')).toHaveAttribute('data-console-read-outcome', mode === 'revoked' ? 'DENIED' : 'UNAVAILABLE');
+      await expect.poll(() => page.evaluate(() => window.__streams[0]?.readyState)).toBe(2);
+      await expect(page.locator('[data-run-evidence]')).toHaveCount(0);
+      await expect(page.locator('#promptHistoryRows .prompt-history-row')).toHaveCount(0);
+      canary.child.stdin.write(mode === 'revoked' ? 'restore-read\n' : 'restore-read-source\n');
+      const restored = await canary.next();
+      if (mode !== 'revoked') {
+        // Ancillary diagnostics may be retained; replacement installation
+        // authority must never be bootstrapped by a health/read request.
+        expect(restored.retained_recreated_files.filter(item =>
+          /(?:^|\/)(?:epdata\.sqlite(?:-journal|-wal|-shm)?|runtime-identity\.json|server\.json)$/.test(item.path))).toEqual([]);
+      }
+      // A genuine successful owning response cannot implicitly regrant this
+      // ended document. A new authorised document is the recovery boundary.
+      const current = await page.request.get(new URL('/api/dashboard-snapshot?project=project', canary.ready.url).href);
+      expect(current.status()).toBe(200);
+      expect((await current.json()).project_id).toBe('project');
+      expect(await page.evaluate(() => window.__streams.map(stream => stream.readyState))).toEqual([2]);
+      await expect(page.locator('#promptHistoryRows .prompt-history-row')).toHaveCount(0);
+      await causalManifest(page, testInfo, canary.ready, `closed-scope-${mode}`, { mode,
+        changed: mode === 'revoked' ? { revoked: true } : changed, requests: observer.records(), streams: [2], protected_cards: 0 });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await expect(page.locator('#promptHistoryRows .prompt-history-row')).toHaveCount(1);
+      await page.locator('#promptHistoryRows .prompt-history-row').click();
+      await expect(page.locator('#promptHistoryDetailContent [data-run-evidence]')).toHaveCount(3);
+      canary.child.stdin.write('snapshot\n');
+      expect((await canary.next()).after).toEqual(restored.restored_baseline);
+    } finally {
+      release();
+      await stopIsolatedCanary(canary.child, canary.next, testInfo);
+    }
+  });
 }
 
 test('current history document retains deep link after an interrupted index read', async ({ page }, testInfo) => {

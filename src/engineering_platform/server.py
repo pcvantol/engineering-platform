@@ -121,7 +121,7 @@ from .telemetry_metrics import (
     aggregate_numeric_metric,
     metric_coverage,
 )
-from .parity_context import ParityProjectStore, project_context
+from .parity_context import ParityContextError, ParityProjectStore, project_context
 from .platform_version import CURRENT_PLATFORM_VERSION, EngineeringPlatformManifest
 from .providers import (
     GitHubProvider,
@@ -2982,7 +2982,9 @@ def _retired_console_action_contract(path: str) -> tuple[str, str]:
 
 
 def status(data_root: Path) -> dict[str, object]:
-    identity = initialize(data_root)
+    # Health/status is a query, including during source loss. Bootstrap and
+    # migration remain explicit installation-owner operations.
+    identity = _console_source_identity(data_root)
     config = ServerConfiguration.load(data_root)
     try:
         runtime_profile = development_profile.describe(data_root)
@@ -3107,6 +3109,105 @@ def _console_projects(data_root: Path) -> list[dict[str, str]]:
             ORDER BY p.project_id""").fetchall()
     return [{"project_id": str(project_id), "repository_id": str(repository_id)}
             for project_id, repository_id in rows]
+
+
+class _ConsoleReadError(ServerConfigurationError):
+    """Expected loss of a CENTRAL read scope, never a successful empty view."""
+    def __init__(self, outcome: str):
+        self.outcome = outcome
+        self.status = 409 if outcome == "DENIED" else 503
+        self.code = "CONSOLE_PROJECT_UNAVAILABLE" if outcome == "DENIED" else "CENTRAL_UNAVAILABLE"
+        super().__init__(self.code)
+
+
+def _console_source_unavailable(error: sqlite3.OperationalError) -> bool:
+    return (getattr(error, "sqlite_errorcode", 0) & 255) in {
+        sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_IOERR,
+    }
+
+
+def _audit_console_read_loss(error: _ConsoleReadError) -> None:
+    # The unavailable CENTRAL source cannot be its own audit sink. Emit a
+    # bounded protocol fact to the owned Server log, without project payloads,
+    # paths or exception strings, and without creating a replacement database.
+    sys.stderr.write(json.dumps({"event": "console-read-ended", "outcome": error.outcome, "code": error.code}) + "\n")
+    sys.stderr.flush()
+
+
+def _console_source_identity(data_root: Path) -> RuntimeIdentity:
+    database = (data_root / SERVER_DATABASE_FILENAME).resolve()
+    try:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            row = connection.execute("SELECT instance_id,created_at FROM ep_installations").fetchone()
+            if row is None:
+                raise _ConsoleReadError("UNAVAILABLE")
+        finally:
+            connection.close()
+    except sqlite3.OperationalError as error:
+        if _console_source_unavailable(error):
+            raise _ConsoleReadError("UNAVAILABLE") from error
+        raise
+    try:
+        raw = json.loads((data_root / SERVER_IDENTITY_FILENAME).read_text(encoding="utf-8"))
+        identity = RuntimeIdentity(str(raw["instance_id"]), str(raw["created_at"]))
+    except FileNotFoundError as error:
+        raise _ConsoleReadError("UNAVAILABLE") from error
+    except (ValueError, KeyError, TypeError) as error:
+        raise ServerConfigurationError("EP Server runtime identity is invalid.") from error
+    if not identity.instance_id or not identity.created_at or (identity.instance_id, identity.created_at) != tuple(row):
+        raise ServerConfigurationError("EP Server runtime identity does not match CENTRAL.")
+    try:
+        # Retain the previous integrity/schema/provenance checks, without the
+        # bootstrap or migration side effects of initialize().
+        validate_store(data_root, identity)
+    except ServerConfigurationError as error:
+        if isinstance(error.__cause__, sqlite3.OperationalError) and _console_source_unavailable(error.__cause__):
+            raise _ConsoleReadError("UNAVAILABLE") from error
+        raise
+    return identity
+
+
+def _console_read_authority(data_root: Path, project_id: str, repository_id: str | None = None) -> str:
+    """Fresh logical authority, independent of checkout bindings and old snapshots."""
+    database = (data_root / SERVER_DATABASE_FILENAME).resolve()
+    try:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            connection.execute("BEGIN")
+            if connection.execute("SELECT instance_id FROM ep_installations").fetchone() is None:
+                raise _ConsoleReadError("UNAVAILABLE")
+            row = connection.execute(
+                """SELECT r.repository_id,r.authority_repository_id FROM ep_project_registrations p
+                   JOIN ep_repository_registrations r ON r.project_id=p.project_id AND r.role='authority'
+                   WHERE p.project_id=? AND p.status='ACTIVE'""", (project_id,),
+            ).fetchone()
+            if row is None or row[0] != row[1] or (repository_id is not None and row[0] != repository_id):
+                raise _ConsoleReadError("DENIED")
+            return str(row[0])
+        finally:
+            connection.close()
+    except sqlite3.OperationalError as error:
+        if _console_source_unavailable(error):
+            raise _ConsoleReadError("UNAVAILABLE") from error
+        raise
+
+
+def _console_project_read(data_root: Path, project_id: str, reader, repository_id: str | None = None):
+    repository_id = _console_read_authority(data_root, project_id, repository_id)
+    try:
+        result = reader(data_root, project_id)
+    except (ParityContextError, local_repository_binding.LocalRepositoryBindingError):
+        # Reclassify only a freshly established owning access loss. A context
+        # error with still-valid authority remains an ordinary handler failure.
+        _console_read_authority(data_root, project_id, repository_id)
+        raise
+    except sqlite3.OperationalError as error:
+        if _console_source_unavailable(error):
+            raise _ConsoleReadError("UNAVAILABLE") from error
+        raise
+    _console_read_authority(data_root, project_id, repository_id)
+    return result
 
 
 def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, object]:
@@ -6219,46 +6320,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         is intentionally not read: a checkout cannot become state authority
         merely because it is attached to a selected project.
         """
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        try:
-            # Event delivery is a platform concern even when its snapshot has
-            # a selected-project projection.  It must therefore use the same
-            # CENTRAL-owned interval as the no-project Console, rather than a
-            # repository/root-local Dashboard preference.
-            stream_interval = int(
-                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
-                    "dashboard_stream_interval_seconds"
-                ]
-            )
-            self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
-            previous: bytes | None = None
-            for iteration in range(300):
-                snapshot = json.dumps(
-                    _central_console_project_snapshot(self.server.data_root, project_id),
-                    separators=(",", ":"),
-                ).encode("utf-8")  # type: ignore[attr-defined]
-                if snapshot != previous:
-                    self.wfile.write(b"event: dashboard\ndata: " + snapshot + b"\n\n")
-                    self.wfile.flush()
-                    previous = snapshot
-                elif iteration and iteration % 15 == 0:
-                    self.wfile.write(b": keepalive\n\n")
-                    self.wfile.flush()
-                interval = int(
-                    central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
-                        "dashboard_stream_interval_seconds"
-                    ]
-                )
-                if interval != stream_interval:
-                    self.wfile.write(f"retry: {interval * 1000}\n\n".encode())
-                    self.wfile.flush()
-                    stream_interval = interval
-                time.sleep(stream_interval)
-        except (BrokenPipeError, ConnectionResetError):
-            return
+        self._stream_project_console_events(project_id)
 
     def _stream_no_project_console_events(self) -> None:
         """Send a CENTRAL-only event that completes the shared Console shell."""
@@ -6292,6 +6354,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
     def _stream_project_console_events(self, project_id: str) -> None:
         """Keep the selected project's CENTRAL-only dashboard stream alive."""
+        data_root = self.server.data_root  # type: ignore[attr-defined]
+        repository_id = _console_read_authority(data_root, project_id)
+        snapshot = _console_project_read(data_root, project_id, _central_console_project_snapshot, repository_id)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -6307,9 +6372,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             previous: bytes | None = None
             for iteration in range(300):
                 payload = json.dumps(
-                    _central_console_project_snapshot(self.server.data_root, project_id),  # type: ignore[attr-defined]
+                    snapshot,
                     separators=(",", ":"),
                 ).encode("utf-8")
+                _console_read_authority(data_root, project_id, repository_id)
                 if payload != previous:
                     self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
                     self.wfile.flush()
@@ -6318,10 +6384,46 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
                 time.sleep(stream_interval)
+                snapshot = _console_project_read(data_root, project_id, _central_console_project_snapshot, repository_id)
+        except (_ConsoleReadError, sqlite3.OperationalError) as error:
+            if isinstance(error, sqlite3.OperationalError):
+                if not _console_source_unavailable(error):
+                    raise
+                error = _ConsoleReadError("UNAVAILABLE")
+            _audit_console_read_loss(error)
+            control = json.dumps({"project_id": project_id, "error": error.code, "outcome": error.outcome}, separators=(",", ":")).encode()
+            try:
+                self.wfile.write(b"event: console-read-error\ndata: " + control + b"\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         except (BrokenPipeError, ConnectionResetError):
             return
 
     def _delegate_dashboard(self, method: str) -> None:
+        self._console_read_scope = None
+        try:
+            self._delegate_dashboard_routes(method)
+        except _ConsoleReadError as error:
+            _audit_console_read_loss(error)
+            self._send(error.status, {"error": error.code})
+        except sqlite3.OperationalError as error:
+            if not _console_source_unavailable(error):
+                raise
+            _audit_console_read_loss(_ConsoleReadError("UNAVAILABLE"))
+            self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
+        finally:
+            self._console_read_scope = None
+
+    def send_response(self, code: int, message: str | None = None) -> None:
+        scope = getattr(self, "_console_read_scope", None)
+        if code == 200 and scope is not None:
+            project_id, repository_id = scope
+            _console_read_authority(self.server.data_root, project_id, repository_id)  # type: ignore[attr-defined]
+        super().send_response(code, message)
+
+    def _delegate_dashboard_routes(self, method: str) -> None:
         """Route the transitional Console after CENTRAL validates its scope."""
         request = urlsplit(self.path)
         # Resolve ownership once, before any project identity is read.  The
@@ -6575,6 +6677,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         selected = self.headers.get("X-Engineering-Platform-Project")
         if not selected:
             selected = (parse_qs(request.query).get("project") or [None])[0]
+        if method == "do_GET" and isinstance(selected, str) and selected:
+            repository_id = _console_read_authority(self.server.data_root, selected)  # type: ignore[attr-defined]
+            self._console_read_scope = (selected, repository_id)
         # Listing projects is a CENTRAL-only operation.  Do not validate or
         # inspect any checkout until a selected project needs a transitional
         # project route below.
@@ -6652,7 +6757,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self._send(200, payload)
                 return
             if request.path in {"/api/dashboard-snapshot", "/api/status"}:
-                self._send(200, _central_console_project_snapshot(self.server.data_root, selected))  # type: ignore[attr-defined]
+                self._send(200, _console_project_read(self.server.data_root, selected, _central_console_project_snapshot))  # type: ignore[attr-defined]
                 return
             if request.path == "/api/execution-diagnostic/current":
                 self._send_text(
@@ -6663,7 +6768,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 )
                 return
             if request.path == "/api/prompt-history":
-                snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
+                snapshot = _console_project_read(self.server.data_root, selected, _central_console_project_snapshot)  # type: ignore[attr-defined]
                 encoded = json.dumps({"runs": snapshot["runs"]}, separators=(",", ":")).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")

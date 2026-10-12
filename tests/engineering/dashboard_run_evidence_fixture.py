@@ -974,6 +974,7 @@ elif __name__ == "__main__":
         url = canary.start_listener()
         print(json.dumps({"url": url + "/?project=project", "run_id": run_id,
                           "module": server.__file__, "data_root": str(canary.fixture.data),
+                          "server_sha256": hashlib.sha256(Path(server.__file__).read_bytes()).hexdigest(),
                           "assets": {name: hashlib.sha256((Path(server.__file__).parent / "assets" / name).read_bytes()).hexdigest()
                                      for name in ("dashboard.js", "dashboard.css", "dashboard_locales.mjs", "dashboard_run_evidence.mjs")},
                           "before": before}), flush=True)
@@ -990,6 +991,27 @@ elif __name__ == "__main__":
                 with sqlite_connection(canary.fixture.database) as connection:
                     connection.execute("UPDATE ep_project_registrations SET status='DISABLED' WHERE project_id='project'")
                 print(json.dumps({"revoked_baseline": canary.effect_snapshot()}), flush=True)
+            elif instruction.strip() == "restore-read":
+                # Explicit fixture-owner action, never an implicit browser grant.
+                with sqlite_connection(canary.fixture.database) as connection:
+                    connection.execute("UPDATE ep_project_registrations SET status='ACTIVE' WHERE project_id='project'")
+                print(json.dumps({"restored_baseline": canary.effect_snapshot()}), flush=True)
+            elif instruction.strip() == "suspend-read-source":
+                canary.fixture.data.rename(canary.fixture.data.with_name("central-unavailable"))
+                print(json.dumps({"source_unavailable": True}), flush=True)
+            elif instruction.strip() == "restore-read-source":
+                unavailable = canary.fixture.data.with_name("central-unavailable")
+                recreated = []
+                if canary.fixture.data.exists():
+                    # Platform/audit paths can create ancillary files while
+                    # CENTRAL is absent. Retain that exact synthetic evidence;
+                    # never overwrite it or the original durable database.
+                    parked = canary.fixture.data.with_name("central-observed-while-unavailable")
+                    canary.fixture.data.rename(parked)
+                    recreated = [{"path": str(item.relative_to(parked)), "sha256": hashlib.sha256(item.read_bytes()).hexdigest()}
+                                 for item in sorted(parked.rglob("*")) if item.is_file()]
+                unavailable.rename(canary.fixture.data)
+                print(json.dumps({"restored_baseline": canary.effect_snapshot(), "retained_recreated_files": recreated}), flush=True)
             elif instruction.strip() == "advance-target":
                 # Explicit local fixture authoring, never a Console action:
                 # retain the actual stored run and its verification receipt.
@@ -1002,5 +1024,10 @@ elif __name__ == "__main__":
             elif instruction.strip() == "stop":
                 break
     finally:
+        unavailable = canary.fixture.data.with_name("central-unavailable")
+        if unavailable.exists():
+            if canary.fixture.data.exists():
+                canary.fixture.data.rename(canary.fixture.data.with_name("central-observed-at-cleanup"))
+            unavailable.rename(canary.fixture.data)
         canary.close()
         print(json.dumps({"closed": canary.cleanup_observation}), flush=True)

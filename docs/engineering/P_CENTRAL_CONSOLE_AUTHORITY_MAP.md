@@ -28,6 +28,46 @@ physical execution binding only; it is not Console authority.
 `AMBIGUOUS active routes = 0` for the Slice A boundary.  Selected-project
 routes are keyed exclusively by CENTRAL `project_id`.
 
+### Project stream access loss
+
+The selected project's `/api/events` validates current logical project and
+authority repository identity before HTTP 200 and before every protected
+publication. Checkout unbinding does not revoke CENTRAL history reads.
+Snapshot/history reads and selected GET response headers also revalidate the
+current authority; an already prepared payload cannot bypass that check.
+Platform health/status reads the existing installation identity through a
+read-only CENTRAL connection. It does not bootstrap or migrate an absent
+source. Explicit installation-owner initialization remains separate.
+
+Disabled/removed/mismatched project authority yields HTTP 409
+`CONSOLE_PROJECT_UNAVAILABLE`. An unavailable CENTRAL installation/source
+yields HTTP 503 `CENTRAL_UNAVAILABLE`; it is not a permission grant or a
+revocation claim. Expected SQLite availability codes are BUSY, LOCKED,
+CANTOPEN and IOERR. Other storage and ordinary handler errors remain errors.
+
+An already admitted SSE stream ends with `event: console-read-error` and a
+JSON control containing `project_id`, `error`, and `outcome` (`DENIED` or
+`UNAVAILABLE`). This contains no protected snapshot. The existing
+`event: dashboard` still means an authorised project snapshot. A bounded
+`console-read-ended` audit fact goes to the owned Server log; source loss
+does not create a substitute CENTRAL audit database. Delivered bytes are
+historical and cannot be recalled.
+
+The current Console document closes its EventSource, invalidates pending
+reads and clears protected cards/detail/downloads on this control or a
+confirmed HTTP denial/unavailable-source probe. Transport disconnection
+alone is not revocation. An ended document cannot silently reauthorise from
+a background response or reconnect loop. After explicit authority/source
+restoration, reload/open a new document to perform a fresh authorised read.
+Transient history-index/detail failures within a valid scope retain the
+existing bounded same-open recovery semantics.
+
+History refreshes preserve identical rows and focus on the same still-valid
+run/control. Completed newer index reads fence older completions; a pending
+newer request does not prevent the initial valid index from populating.
+Queued dialog-close events cannot clear a newly opened selection. Existing
+project/document/selection/late-response and export fences remain in force.
+
 ## Slice A no-project rule
 
 At `<geen>`, the Server accepts only explicit platform endpoints.  Unsupported
