@@ -335,7 +335,7 @@
     "branch": "codex/ep-dashboard-specialists-recovery-v1",
     "base": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
     "package_target": "2.3.115",
-    "correction_rounds_consumed": 28,
+    "correction_rounds_consumed": 29,
     "correction_rounds_maximum": "NOT_APPLICABLE_SCOPED_COMPLETION",
     "remaining": "NOT_APPLICABLE_SCOPED_COMPLETION",
     "status": "SOURCE_QUALIFIED_FINALIZATION_AND_NEW_FINAL_MAIN_INSTALLED_PENDING",
@@ -367,6 +367,8 @@
     "finalization_status": "PENDING_OWN_CHECKS_REVIEWS_AND_PROTECTED_MERGE",
     "exact_final_main_installed": "PENDING_NEW_FINALIZATION_MAIN_QUALIFICATION",
     "closure_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6133903826",
-    "hob_ep01": "WAIT_UNTIL_FULL_R34_DOD"
+    "hob_ep01": "WAIT_UNTIL_FULL_R34_DOD",
+    "historical_implementation_corrections_consumed": 28,
+    "documentary_finalization_correction": "Q-FIN-01/Q-FIN-02 historical/current labels only; old3c5 CI cancelled, new-head gates pending"
   }
 }

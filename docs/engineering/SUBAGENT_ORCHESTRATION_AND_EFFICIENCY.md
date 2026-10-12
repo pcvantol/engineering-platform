@@ -12,7 +12,7 @@ with declared external model/GitHub transport fixtures and real own storage,
 Git, lifecycle, authority, HTTP and native Chromium. These are candidate receipts,
 not a future final-main installed claim or live provider quality measurement.
 
-Current correction consumption28 and all earlier failed/unknown/missing evidence
+Current correction consumption29 (28 implementation plus one documentary correction) and all earlier failed/unknown/missing evidence
 remain recorded. Source/review/cycle count caps are not applicable to scoped r34
 completion; financial/provider/runtime/security bounds are unchanged. The original
 32-second observation delay remains UNESTABLISHED; original wrapper/raw-retention

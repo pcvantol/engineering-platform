@@ -7,7 +7,7 @@ Lane **r34**, plan **7**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **SOURCE_QUALIFIED / FINALIZATION_AND_NEW_FINAL_MAIN_INSTALLED_PENDING**. EP **2.3.115** is source-delivered by protected PR349; this documentary Finalization is **NO_BUMP**, with all 11 version components unchanged.
-Current correction consumption: **28**; administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
+Current correction consumption: **29** (28 through implementation plus one integrated documentary Finalization correction); administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -16,7 +16,7 @@ This serial Console follow-up does not reopen specialist execution or qualify th
 
 ## Actual protected implementation and ordinary Finalization — 2026-10-13
 
-Same r34 / plan7 / ARCHITECT_2 / LANE_2_WORK, consumed28 with administrative
+Same r34 / plan7 / ARCHITECT_2 / LANE_2_WORK, consumed29 with administrative
 maximum NOT_APPLICABLE_SCOPED_COMPLETION. Source branch/history remain retained.
 Actual implementation [PR349](https://github.com/pcvantol/engineering-platform/pull/349)
 merged by ordinary protected squash/head-CAS at2026-10-12T22:33:56Z into
@@ -88,6 +88,20 @@ in the owning #142 receipt after they exist. No premature r34DONE or HOB start;
 R33/r43/r44/GP remain closed, full SA-Q/ROLE/PAR/live providers/physical iPhone/
 production installation/public release/signing and adoption controls unqualified.
 
+## Documentary Finalization correction29 disposition
+
+Fresh complete Quality rejected documentary3c5bb4c solely for Q-FIN-01/02:
+the old r33 roadmap source stage and old delivery convergence/telemetry sections
+were still presented as current. One integrated documentary correction labels
+them explicitly historical, points current pickup at r34 and closed r33 at its
+immutable receipt, and distinguishes old retention claims from current physical
+availability. All original chronology/failures/unknowns remain; active accounting
+is29 without a cap or reset. Non-r34 DAG/family nodes/status/edges, product/tests/
+workflow/version2.3.115/private raw evidence/grants remain unchanged. Old3c5 CI
+38317942362 was safely cancelled and its actual partial raw retained, never PASS.
+Fresh exact-head documentary reviews and full normal CI precede protected merge;
+NEW final-main installed/browser/readback/screenshots/cleanup still follow it.
+
 ## Selected chain and limits
 
 Canonical persisted specialist journal and provider ledger → existing read-only lifecycle/CENTRAL Server → typed `ep-console-run-evidence/v1` presentation → existing Console → real browser qualification.
@@ -104,7 +118,19 @@ The synthetic canary provisions topology/declaration/binding through existing CL
 
 Prepared intent and uncertain create are produced by interrupting only their external transport boundaries. No-consumer selection is produced by a real submitted bounded question with no responsible consumer. Active operator-wait is not labeled completed history. Another real registered project exercises out-of-scope run denial and clearing after navigation.
 
-## Current evidence and remaining DoD
+## Historical source convergence and correction chronology
+
+**Historical snapshot boundary:** all sections below preserve time-of-entry
+source/candidate convergence, then-current pending gates and evidence-retention
+claims. Words such as current, remaining or retained in these snapshots describe
+that historical stage, not today's pickup, final-main acceptance or current
+physical availability of old private files. The actual protected implementation,
+current accounting and remaining r34 lifecycle are recorded above. Reboot-lost
+private originals remain missing/UNESTABLISHED; surviving archive receipts are
+separate. No old snapshot asserts a reconstructed historical PASS. R33 remains
+closed; candidate1265280 is not a future final-main artifact.
+
+### Historical initial evidence and then-remaining DoD
 
 [Pickup](https://github.com/pcvantol/forge/issues/142#issuecomment-6092699928),
 [first stored-run red/green](https://github.com/pcvantol/forge/issues/142#issuecomment-6092768772),
@@ -613,7 +639,7 @@ qualification, complete browser/coverage/owningCI, fresh whole Quality/Security
 including explicit closure of the addendum, protected merge, normal Finalization
 and NEW exact-final-main installed proof remain mandatory and unclaimed here.
 
-## Current telemetry pagination cause and integrated correction22
+## Historical telemetry pagination cause and integrated correction22
 
 The same writer/branch continues under the scoped-completion mandate. Complete
 cycle4 browser qualification on b8fe67e remains FAILED: one original telemetry

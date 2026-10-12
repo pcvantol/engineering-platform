@@ -6,7 +6,7 @@
 ARCHITECT_2 / LANE_2_WORK, r34 / plan7, is SOURCE_QUALIFIED on protected EP2.3.115
 main `624f99f4e41aee9cbba3e68065f64dbcd21861ec` after PR349's actual exact-head
 owner authorization, independent whole-PR Quality/Security and all11 owning CI
-jobs SUCCESS. Current correction consumption28 and all historical rounds remain;
+jobs SUCCESS. Current correction consumption29 (28 implementation plus one documentary correction) and all historical rounds remain;
 the [scoped-completion mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344)
 removes administrative count caps, without changing operational/security gates.
 Candidate-installed browser receipts bind1265280/tree3e9a78/local wheel8897a0,
