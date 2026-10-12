@@ -659,7 +659,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         fake_http = Mock()
         fake_worker = Mock(); fake_worker.wait_until_running.return_value = True
         fake_inbox = Mock(); fake_producer = Mock()
-        with patch("engineering_platform.server.http.server.ThreadingHTTPServer", return_value=fake_http), patch(
+        with patch("engineering_platform.server._ConsoleHTTPServer", return_value=fake_http), patch(
             "engineering_platform.lifecycle_worker.LifecycleWorker", return_value=fake_worker
         ), patch("engineering_platform.server.file_inbox.FileInboxService", return_value=fake_inbox), patch(
             "engineering_platform.server.dependabot_producer.DependabotService", return_value=fake_producer
