@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import threading
 import unittest
 from urllib.error import HTTPError
 from urllib.request import urlopen
@@ -16,6 +17,10 @@ class ConsoleHealthReadBoundaryTests(unittest.TestCase):
     def setUp(self):
         self.listener = test_console_stream_access.ConsoleStreamAccessTests()
         self.listener.setUp()
+        # ThreadingHTTPServer defaults to daemon handlers, which server_close
+        # deliberately does not join. Every owned request must finish before
+        # its provider guards or backing store can be released.
+        self.listener.httpd.daemon_threads = False
         self.transport = None
         self.addCleanup(self.close)
         self.transport = IsolatedProviderTransport()
@@ -54,6 +59,62 @@ class ConsoleHealthReadBoundaryTests(unittest.TestCase):
         self.assertEqual(self.read("/api/github-rate-limit"), (200, {"limited": False}))
         self.assertEqual(self.transport.github_quota_requests, previous_calls + 1)
         self.assert_original()
+
+    def test_close_waits_for_actual_active_handler_before_guard_and_store_release(self):
+        entered, release = threading.Event(), threading.Event()
+        handler_threads, responses, errors, transport_closes = [], [], [], []
+        original_status, original_close = server.status, self.transport.close
+        guard = providers.GitHubProvider.github
+        def held_status(root):
+            handler_threads.append(threading.current_thread())
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("held health request was not released")
+            return original_status(root)
+        def checked_transport_close():
+            self.assertTrue(handler_threads)
+            self.assertFalse(any(thread.is_alive() for thread in handler_threads))
+            self.assertFalse(self.listener.thread.is_alive())
+            self.assertTrue(self.root.exists())
+            self.assertIs(providers.GitHubProvider.github, guard)
+            transport_closes.append(True)
+            original_close()
+        def read():
+            try:
+                responses.append(self.read())
+            except Exception as error:
+                errors.append(error)
+        def close():
+            try:
+                self.close()
+            except Exception as error:
+                errors.append(error)
+        reader, closer = threading.Thread(target=read), threading.Thread(target=close)
+        with patch.object(server, "status", held_status), patch.object(self.transport, "close", checked_transport_close):
+            try:
+                reader.start()
+                self.assertTrue(entered.wait(5))
+                closer.start()
+                self.listener.thread.join(2)
+                self.assertFalse(self.listener.thread.is_alive())
+                self.assertTrue(handler_threads[0].is_alive())
+                self.assertTrue(closer.is_alive())
+                self.assertEqual(transport_closes, [])
+                self.assertTrue(self.root.exists())
+                self.assertIs(providers.GitHubProvider.github, guard)
+            finally:
+                release.set()
+                reader.join(5)
+                if closer.ident is not None:
+                    closer.join(5)
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(transport_closes, [True])
+        self.assertEqual(responses[0][0], 503)
+        self.assertIn("healthy", responses[0][1])
+        self.assertEqual(self.listener.errors, [])
+        self.assertFalse(self.root.exists())
 
     def test_loss_between_identity_and_configuration_is_typed_and_restorable(self):
         moved = self.root.with_name("health-source-displaced")
