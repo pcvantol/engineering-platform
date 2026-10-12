@@ -10,6 +10,13 @@ const disconnectTypes = new Set(['BrokenPipeError', 'ConnectionResetError']);
 function classify(stderr) {
   const unexpected = [], disconnects = [];
   for (const line of stderr.split('\n')) {
+    // Python 3.11+ groups use a different traceback header and indented
+    // terminal. A grouped failure is never an ordinary successful close,
+    // even if a nested leaf happens to be a known client disconnect.
+    if (/^\s*(?:\+\s+)?Exception Group Traceback \(most recent call last\):/.test(line)
+        || /^\s*(?:\|\s*)?(?:[A-Za-z_][\w.]*\.)?(?:BaseExceptionGroup|ExceptionGroup)(?::|$)/.test(line)) {
+      unexpected.push({ exception_type: 'Python exception group', raw_terminal: line });
+    }
     if (line.includes('ep-canary-handler-error')) {
       try {
         const event = JSON.parse(line);

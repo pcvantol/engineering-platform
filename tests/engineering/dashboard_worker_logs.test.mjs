@@ -86,6 +86,34 @@ test('unstructured Python traceback and malformed handler records cannot silentl
   await assert.rejects(finishWorkerLogs(child, info), /LookupError.*malformed/s);
 });
 
+test('actual grouped Python startup and cleanup failures remain red after child close', async t => {
+  const info = context(t);
+  const child = info.own(spawn(process.env.EP_BROWSER_PYTHON || 'python3', ['-c',
+    "raise ExceptionGroup('startup and cleanup', [ValueError('primary'), OSError('secondary')])"],
+    { stdio: ['ignore', 'pipe', 'pipe'] }));
+  const logs = retainWorkerLogs(child, info, 'python-group');
+  await assert.rejects(finishWorkerLogs(child, info), /Python exception group/);
+  const receipt = JSON.parse(readFileSync(logs.receiptPath));
+  assert.equal(receipt.closed, true);
+  assert.equal(receipt.code, 1);
+  assert.ok(receipt.unexpected_errors.length > 0);
+  const raw = readFileSync(logs.stderrPath, 'utf8');
+  assert.match(raw, /ValueError: primary/);
+  assert.match(raw, /OSError: secondary/);
+  assert.match(raw, /ExceptionGroup/);
+});
+
+test('incomplete grouped traceback cannot qualify without a terminal', async t => {
+  const info = context(t);
+  const child = info.own(spawn(process.execPath, ['-e',
+    "process.stderr.write('  + Exception Group Traceback (most recent call last):\\n  | partial retained traceback\\n')"],
+    { stdio: ['ignore', 'pipe', 'pipe'] }));
+  const logs = retainWorkerLogs(child, info, 'incomplete-group');
+  await assert.rejects(finishWorkerLogs(child, info), /Python exception group/);
+  assert.equal(JSON.parse(readFileSync(logs.receiptPath)).closed, true);
+  assert.match(readFileSync(logs.stderrPath, 'utf8'), /partial retained traceback/);
+});
+
 test('spawn failure retains evidence and rejects instead of issuing a successful close', async t => {
   const info = context(t);
   const child = spawn(path.join(info.root, 'absent-worker'), [], { stdio: ['ignore', 'pipe', 'pipe'] });

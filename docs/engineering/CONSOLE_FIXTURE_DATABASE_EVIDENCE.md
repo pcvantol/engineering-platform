@@ -41,3 +41,10 @@ whole-group census proves no live members. A live descendant, an unavailable
 census or a denied live child remains a cleanup failure. Guards and failuredata
 stay retained until group death is proved. The unchanged terminate/kill budget
 is two seconds. Old unrecorded EPERM causes are not retroactively established.
+
+Python exception groups are ordinary failure evidence, including their distinct
+traceback header, indented terminal and incomplete grouped traces. The raw log
+collector rejects these after actual child close and retains every nested cause.
+Positive in-process Console projection tests register their project through the
+supported topology service before reading; project-list doubles do not grant
+access. Withdrawal still stops projection before any private detail is returned.
