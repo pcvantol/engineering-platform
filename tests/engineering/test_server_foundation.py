@@ -35,10 +35,17 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "clean-installation"
+        self.nonrunning_invalid_store = False
 
     def tearDown(self) -> None:
         try:
-            server.stop(self.root)
+            if self.nonrunning_invalid_store:
+                # These two rejection fixtures never launch a server. Do not
+                # query a deliberately invalid store as a teardown substitute
+                # for process ownership; a runtime marker remains a failure.
+                self.assertFalse((self.root / server.SERVER_RUNTIME_FILENAME).exists())
+            else:
+                server.stop(self.root)
         except server.ServerConfigurationError:
             pass
         finally:
@@ -1353,6 +1360,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             server.initialize(self.root)
 
     def test_validate_store_rejects_a_corrupt_database_without_details(self) -> None:
+        self.nonrunning_invalid_store = True
         self.root.mkdir(parents=True)
         (self.root / server.SERVER_DATABASE_FILENAME).write_bytes(b"not a sqlite database")
         identity = server.RuntimeIdentity("instance-a", "2026-09-13T00:00:00+00:00")
@@ -1835,6 +1843,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT instance_id FROM ep_installations").fetchone()[0], identity.instance_id)
 
     def test_readiness_fails_closed_for_an_outdated_store(self) -> None:
+        self.nonrunning_invalid_store = True
         self.root.mkdir()
         with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
