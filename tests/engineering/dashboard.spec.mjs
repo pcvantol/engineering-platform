@@ -294,6 +294,72 @@ test("binds all five synthetic drift fields before real scope reconciliation", a
   }
 });
 
+async function captureRuntimeTransportProjection(page) {
+  return page.evaluate(() => {
+    r({ watcher_state: "ENGINEERING_RUN_ACTIVE" }, {
+      execution_host: { runtime: "codex_cli", runtime_prompt_transport: "icloud_inbox" },
+    });
+    const runtime = document.getElementById("executionHostRuntime");
+    const transport = document.getElementById("executionHostTransport");
+    return [runtime.textContent.trim(), transport.textContent.trim(),
+      runtime.getAttribute("title"), transport.getAttribute("title")];
+  });
+}
+
+test("binds all runtime transport locale fields before real scope reconciliation", async ({ page }) => {
+  const observer = await observeConsoleDocument(page);
+  let requests = 0, release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/dashboard-snapshot", async (route) => {
+    if (++requests === 1) return route.abort("connectionreset");
+    await held;
+    await route.continue();
+  });
+  try {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    await expect.poll(() => requests).toBeGreaterThan(1);
+    await page.locator("#autoRefresh").uncheck();
+    const documentId = await observer.documentId();
+    const projections = [];
+    for (const language of SUPPORTED_LOCALES) {
+      await selectDashboardLocale(page, language);
+      const expected = [DASHBOARD_MESSAGES[language]["technical.runtime_value.codex_cli"],
+        DASHBOARD_MESSAGES[language]["technical.runtime_transport_value.icloud_inbox"],
+        "codex_cli", "icloud_inbox"];
+      const actual = await captureRuntimeTransportProjection(page);
+      expect(actual).toEqual(expected);
+      projections.push({ language, actual, expected });
+    }
+    const loaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+    release();
+    const response = await loaded, packet = await response.json();
+    expect(packet).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+    expect(packet.execution_host).toBeUndefined();
+    expect(response.request().frame()).toBe(page.mainFrame());
+    const hash = createHash("sha256").update(await response.body()).digest("hex");
+    await expect.poll(() => observer.records().some((request) =>
+      request.path === "/api/dashboard-snapshot" && request.document_id === documentId
+      && request.status === 200 && request.completed && request.response_sha256 === hash)).toBe(true);
+    await expect(page.locator("#executionHostTransport")).toHaveText(DASHBOARD_MESSAGES.es["format.unavailable"]);
+    await expect(page.locator("#executionHostTransport")).toHaveAttribute("title", "");
+    expect(await observer.documentId()).toBe(documentId);
+    for (const projection of projections) expect(projection.actual).toEqual(projection.expected);
+    await selectDashboardLocale(page, "en");
+    expect(await captureRuntimeTransportProjection(page)).not.toEqual(projections.at(-1).expected);
+    const wrongTitle = await page.evaluate(() => {
+      r({ watcher_state: "ENGINEERING_RUN_ACTIVE" }, {
+        execution_host: { runtime: "codex_cli", runtime_prompt_transport: "wrong_transport" },
+      });
+      return document.getElementById("executionHostTransport").getAttribute("title");
+    });
+    expect(wrongTitle).not.toBe("icloud_inbox");
+  } finally {
+    release();
+  }
+});
+
 async function waitForAppliedDashboardProjectSnapshot(page) {
   const observer = await observeConsoleDocument(page);
   const language = await page.locator("html").getAttribute("lang");
@@ -8024,17 +8090,17 @@ test.describe("Engineering Status browser smoke", () => {
       await waitForDashboardReady(page);
       await selectDashboardLocale(page, language);
       await page.locator("#autoRefresh").uncheck();
-      await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE" }, {
-        execution_host: { runtime: "codex_cli", runtime_prompt_transport: "icloud_inbox" },
-      }));
-      await expect(page.locator("#executionHostRuntime")).toHaveText(
+      // All four assertions concern this synthetic render, not a later
+      // legitimate CENTRAL snapshot that can remove its execution host.
+      const projected = await captureRuntimeTransportProjection(page);
+      expect(projected[0]).toBe(
         DASHBOARD_MESSAGES[language]["technical.runtime_value.codex_cli"],
       );
-      await expect(page.locator("#executionHostTransport")).toHaveText(
+      expect(projected[1]).toBe(
         DASHBOARD_MESSAGES[language]["technical.runtime_transport_value.icloud_inbox"],
       );
-      await expect(page.locator("#executionHostRuntime")).toHaveAttribute("title", "codex_cli");
-      await expect(page.locator("#executionHostTransport")).toHaveAttribute("title", "icloud_inbox");
+      expect(projected[2]).toBe("codex_cli");
+      expect(projected[3]).toBe("icloud_inbox");
     }
   });
 
