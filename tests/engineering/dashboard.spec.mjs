@@ -206,6 +206,39 @@ async function openTitlebarOptions(page) {
   }
 }
 
+async function waitForAppliedDashboardProjectSnapshot(page) {
+  const observer = await observeConsoleDocument(page);
+  const language = await page.locator("html").getAttribute("lang");
+  const messages = DASHBOARD_MESSAGES[language];
+  const documentId = await observer.documentId();
+  const previousRequests = new Set(observer.records().map(request => request.request_id));
+  await page.locator("#autoRefresh").setChecked(false);
+  await expect(page.locator("#updateMode")).toHaveText(messages["refresh.off"]);
+  const actualResponse = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+  await page.locator("#autoRefresh").setChecked(true);
+  const response = await actualResponse;
+  const packet = await response.json();
+  expect(packet).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+  expect(response.request().frame()).toBe(page.mainFrame());
+  // Only successful applyDashboardSnapshot sets the re-enable read's success
+  // mode. Readiness alone deliberately permits a failed initial-read fallback.
+  await expect(page.locator("#updateMode")).toHaveText(messages["refresh.connected"]);
+  const rawHash = createHash("sha256").update(await response.body()).digest("hex");
+  let bound;
+  await expect.poll(() => {
+    bound = observer.records().find(request => !previousRequests.has(request.request_id)
+      && request.document_id === documentId && request.path === "/api/dashboard-snapshot"
+      && request.project_header === "dashboard-fixture" && request.status === 200
+      && request.completed && request.response_sha256 === rawHash);
+    return Boolean(bound);
+  }).toBe(true);
+  await observer.scope("http", "dashboard-fixture");
+  expect(await observer.documentId()).toBe(documentId);
+  return { document_id: documentId, request_id: bound.request_id, response_sha256: rawHash,
+    applied_ui_mode: messages["refresh.connected"] };
+}
+
 async function captureIdleLocaleProjection(page, executionLabel) {
   return page.evaluate((label) => {
     r({ watcher_state: "WATCHER_IDLE" }, {});
@@ -5409,6 +5442,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("paginates execution telemetry at seven days per page", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForAppliedDashboardProjectSnapshot(page);
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => window.executionTelemetry(Array.from({ length: 8 }, (_, index) => ({
       date: `2026-08-${String(24 - index).padStart(2, "0")}`,
@@ -5422,6 +5456,60 @@ test.describe("Engineering Status browser smoke", () => {
     await pagination.getByRole("button", { name: "Volgende" }).click();
     await expect(rows).toHaveCount(1);
     await expect(pagination).toHaveText(/Pagina 2 van 2 · 8 dagen/);
+  });
+
+  for (const scopedFirst of [false, true]) test(`binds telemetry pagination to actual initial recovery scoped-first=${scopedFirst}`, async ({ page }, info) => {
+    const observer = await observeConsoleDocument(page);
+    let requestCount = 0, release;
+    const held = new Promise(resolve => { release = resolve; });
+    await page.route("**/api/dashboard-snapshot", async route => {
+      requestCount += 1;
+      if (requestCount === 1) return route.abort("connectionreset");
+      await held;
+      await route.continue();
+    });
+    try {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      const documentId = await observer.documentId();
+      let applied;
+      if (scopedFirst) {
+        release();
+        applied = await waitForAppliedDashboardProjectSnapshot(page);
+      }
+      await page.locator("#autoRefresh").uncheck();
+      await page.evaluate(() => executionTelemetry(Array.from({ length: 8 }, (_, index) => ({
+        date: `2026-08-${String(24 - index).padStart(2, "0")}`, prompt_count: index + 1,
+      }))));
+      await page.locator("#executionTelemetry").evaluate(element => { element.open = true; });
+      const rows = page.locator("#executionTelemetryRows .telemetry-row");
+      const pagination = page.locator("#executionTelemetryPagination");
+      await expect(rows).toHaveCount(7);
+      await expect(pagination).toHaveText(/Pagina 1 van 2 · 8 dagen/);
+      const actualResponse = page.waitForResponse(response =>
+        new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+      if (!scopedFirst) release();
+      const packet = await (await actualResponse).json();
+      expect(packet).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+      if (!scopedFirst) {
+        // The intentionally bad order remains detectable: the real first
+        // authorised recovery replaces this explicitly synthetic projection.
+        await expect(rows).toHaveCount(0);
+        await expect(pagination.getByRole("button", { name: "Volgende" })).toHaveCount(0);
+        const actualRows = await rows.count();
+        expect(() => expect(actualRows).toBe(7)).toThrow();
+      } else {
+        await expect(rows).toHaveCount(7);
+        await pagination.getByRole("button", { name: "Volgende" }).click();
+        await expect(rows).toHaveCount(1);
+        await expect(pagination).toHaveText(/Pagina 2 van 2 · 8 dagen/);
+      }
+      expect(await observer.documentId()).toBe(documentId);
+      const output = info.outputPath("telemetry-initial-scope-cause.json");
+      writeFileSync(output, JSON.stringify({ scoped_first: scopedFirst, document_id: documentId,
+        actual_request_count: requestCount, applied_binding: applied ?? null,
+        original_predicate_detected: !scopedFirst, real_native_pagination: scopedFirst }));
+      await info.attach("telemetry-initial-scope-cause", { path: output, contentType: "application/json" });
+    } finally { release(); }
   });
 
   test("offers read-only download and copy actions for telemetry in CENTRAL", async ({ page }) => {
