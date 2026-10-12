@@ -36,7 +36,7 @@ async function createObservation(page) {
     run_id: payload.history?.run_id ?? null, run_ids: Array.isArray(payload.runs) ? payload.runs.map(run => run.run_id) : undefined });
   session.on('Network.requestWillBeSent', (event) => {
     const url = new URL(event.request.url);
-    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history'].includes(url.pathname)
+    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history', '/api/configuration'].includes(url.pathname)
         && !/^\/api\/prompt-history\/[^/]+\/details$/.test(url.pathname)) return;
     retain('request', event);
     for (const extra of extras.get(event.requestId) || []) retain('transport-extra-info', extra);

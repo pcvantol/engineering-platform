@@ -2985,7 +2985,16 @@ def status(data_root: Path) -> dict[str, object]:
     # Health/status is a query, including during source loss. Bootstrap and
     # migration remain explicit installation-owner operations.
     identity = _console_source_identity(data_root)
-    config = ServerConfiguration.load(data_root)
+    try:
+        config = ServerConfiguration.load(data_root)
+    except ServerConfigurationError as error:
+        # Only a disappeared file can be a source-loss race. A missing
+        # configuration in the same present installation remains an error.
+        if not isinstance(error.__cause__, FileNotFoundError):
+            raise
+        if _console_source_identity(data_root) != identity:
+            raise _ConsoleReadError("CONFLICT") from error
+        raise
     try:
         runtime_profile = development_profile.describe(data_root)
     except development_profile.DevelopmentProfileError as error:
@@ -3042,7 +3051,7 @@ def status(data_root: Path) -> dict[str, object]:
         package=Path(__file__).resolve().parent,
         product_version=platform_version,
     )
-    return {
+    report = {
         "service": "engineering-platform-server",
         "healthy": healthy,
         "health": "ok" if healthy else "degraded",
@@ -3073,6 +3082,9 @@ def status(data_root: Path) -> dict[str, object]:
             for item in PLATFORM_COMPONENTS
         ],
     }
+    if _console_source_identity(data_root) != identity:
+        raise _ConsoleReadError("CONFLICT")
+    return report
 
 
 def operations_projection(data_root: Path) -> dict[str, object]:
@@ -6086,8 +6098,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._stream_no_project_console_events()
             return True
         if request.path in {"/health", "/api/health"}:
-            report = status(self.server.data_root)  # type: ignore[attr-defined]
-            self._send(200 if report["healthy"] else 503, report, str(report["instance_id"]))
+            self._send_console_health_report()
             return True
         if request.path == "/api/configuration":
             # CENTRAL-only settings presently supported by this phase.  The
@@ -6432,6 +6443,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _delegate_dashboard(self, method: str) -> None:
         self._console_read_scope = None
         self._console_installation_scope = None
+        self._console_health_scope = None
         try:
             self._delegate_dashboard_routes(method)
         except _ConsoleReadError as error:
@@ -6445,8 +6457,25 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         finally:
             self._console_read_scope = None
             self._console_installation_scope = None
+            self._console_health_scope = None
+
+    def _send_console_health_report(self) -> None:
+        identity = _console_source_identity(self.server.data_root)  # type: ignore[attr-defined]
+        report = status(self.server.data_root)  # type: ignore[attr-defined]
+        self._console_health_scope = identity
+        try:
+            self._send(200 if report["healthy"] else 503, report, str(report["instance_id"]))
+        finally:
+            self._console_health_scope = None
 
     def send_response(self, code: int, message: str | None = None) -> None:
+        health_identity = getattr(self, "_console_health_scope", None)
+        # Consume before validation: the typed error response must not retry
+        # the failed report's fence, including when its status was 503.
+        self._console_health_scope = None
+        if health_identity is not None:
+            if _console_source_identity(self.server.data_root) != health_identity:  # type: ignore[attr-defined]
+                raise _ConsoleReadError("CONFLICT")
         identity = getattr(self, "_console_installation_scope", None)
         if code == 200 and identity is not None:
             if _console_source_identity(self.server.data_root) != identity:  # type: ignore[attr-defined]
@@ -6538,8 +6567,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # selected project preference, so the same components remain visible
         # in both Console modes.
         if method == "do_GET" and request.path in {"/health", "/api/health"}:
-            report = status(self.server.data_root)  # type: ignore[attr-defined]
-            self._send(200 if report["healthy"] else 503, report, str(report["instance_id"]))
+            self._send_console_health_report()
             return
         if method == "do_GET" and request.path == "/api/host-admin/diagnostics":
             # Host Admin has an installation-only root and is intentionally

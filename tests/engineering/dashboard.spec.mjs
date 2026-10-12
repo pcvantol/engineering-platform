@@ -206,6 +206,94 @@ async function openTitlebarOptions(page) {
   }
 }
 
+test("binds iPhone configuration failure and native recovery to actual documents", async ({ page }) => {
+  const observer = await observeConsoleDocument(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  let requests = 0;
+  await page.route("**/api/configuration", (route) =>
+    ++requests === 1 ? route.abort("connectionreset") : route.continue());
+  await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+  const language = await page.locator("html").getAttribute("lang");
+  await expect(page.locator("#configurationStatus")).toHaveText(DASHBOARD_MESSAGES[language]["configuration.load_failed"]);
+  const initialDocument = await observer.documentId();
+  await expect.poll(() => observer.records().some((request) =>
+    request.path === "/api/configuration" && request.document_id === initialDocument
+    && request.failure && !request.completed)).toBe(true);
+  expect(requests).toBe(1);
+  const configurationLoaded = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/configuration" && response.status() === 200);
+  await openTitlebarOptions(page);
+  await Promise.all([page.waitForEvent("domcontentloaded"), page.locator("#pageRefresh").click()]);
+  const response = await configurationLoaded, packet = await response.json();
+  expect(response.request().frame()).toBe(page.mainFrame());
+  await expect(page.locator("#configurationLogRetention")).toHaveAttribute("data-saved-value", String(packet.log_retention_days));
+  const restoredDocument = await observer.documentId();
+  expect(restoredDocument).not.toBe(initialDocument);
+  const hash = createHash("sha256").update(await response.body()).digest("hex");
+  await expect.poll(() => observer.records().some((request) =>
+    request.path === "/api/configuration" && request.document_id === restoredDocument
+    && request.status === 200 && request.completed && request.response_sha256 === hash)).toBe(true);
+  // Neither the previous document's failed request nor startup's settled
+  // fallback can satisfy the restored document's configuration binding.
+  expect(observer.records().some((request) => request.path === "/api/configuration"
+    && request.document_id === initialDocument && request.completed)).toBe(false);
+  await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+  const layout = await page.locator("#configurationLogRetention + .dashboard-select-picker").evaluate((element) => {
+    const label = element.parentElement.querySelector(":scope > .label").getBoundingClientRect();
+    const bounds = element.getBoundingClientRect(), style = getComputedStyle(element.querySelector("button"));
+    return { labelBottom: Math.round(label.bottom), pickerTop: Math.round(bounds.top),
+      width: Math.round(bounds.width), backgroundImage: style.backgroundImage, boxShadow: style.boxShadow };
+  });
+  expect(layout.pickerTop).toBeGreaterThanOrEqual(layout.labelBottom);
+  expect(layout.width).toBeLessThanOrEqual(224);
+  expect(layout.backgroundImage).toBe("none");
+  expect(layout.boxShadow).toBe("none");
+});
+
+test("binds all five synthetic drift fields before real scope reconciliation", async ({ page }) => {
+  const observer = await observeConsoleDocument(page);
+  let requests = 0, release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/dashboard-snapshot", async (route) => {
+    if (++requests === 1) return route.abort("connectionreset");
+    await held;
+    await route.continue();
+  });
+  try {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    await expect.poll(() => requests).toBeGreaterThan(1);
+    await page.locator("#autoRefresh").uncheck();
+    const language = await page.locator("html").getAttribute("lang");
+    const documentId = await observer.documentId();
+    const drift = { drift_id: "managed-branch-drift", severity: "BLOCKING", affected_component: "managed_expected_branch",
+      expected_value: "managed_expected_branch: PASS", observed_value: "Managed target is not on the expected branch main.",
+      resolution_recommendation: "Switch the repository to main before submitting work." };
+    const capture = () => page.evaluate((current) => {
+      r({ watcher_state: "WORKSPACE_PREFLIGHT_FAILED", current_phase: "INITIALIZE",
+        diagnostic: "Workspace preflight blocked by managed_expected_branch." }, { current_drift: current });
+      return ["driftSeverity", "driftComponent", "driftExpected", "driftObserved", "driftResolution"]
+        .map((id) => document.getElementById(id).textContent.replace(/\s+/g, " ").trim());
+    }, drift);
+    const expected = ["technical.drift.severity.blocking", "technical.drift.component.managed_expected_branch",
+      "technical.drift.expected.managed_expected_branch", "technical.drift.observed.managed_expected_branch",
+      "technical.drift.resolution.managed_expected_branch"].map((key) => DASHBOARD_MESSAGES[language][key].replace("{branch}", "main"));
+    const projection = await capture();
+    expect(projection).toEqual(expected);
+    const loaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+    release();
+    expect(await (await loaded).json()).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+    await expect(page.locator("#driftResolution")).not.toHaveText(projection[4]);
+    expect(await observer.documentId()).toBe(documentId);
+    expect(projection).toEqual(expected);
+    await selectDashboardLocale(page, language === "de" ? "en" : "de");
+    expect(await capture()).not.toEqual(expected);
+  } finally {
+    release();
+  }
+});
+
 async function waitForAppliedDashboardProjectSnapshot(page) {
   const observer = await observeConsoleDocument(page);
   const language = await page.locator("html").getAttribute("lang");
@@ -1188,10 +1276,19 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("stacks flat log settings pulldowns below their labels on iPhone", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    const configurationLoaded = page.waitForResponse("**/api/configuration");
-    const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
+    const configurationLoaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/configuration" && response.status() === 200
+      && response.request().frame() === page.mainFrame());
+    const snapshotLoaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200
+      && response.request().frame() === page.mainFrame());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await Promise.all([configurationLoaded, snapshotLoaded]);
+    const [configurationResponse] = await Promise.all([configurationLoaded, snapshotLoaded]);
+    const configuration = await configurationResponse.json();
+    // Settled startup also includes visible configuration failures. Require
+    // the successful response to have been applied by the actual parser.
+    await expect(page.locator("#configurationLogRetention")).toHaveAttribute(
+      "data-saved-value", String(configuration.log_retention_days));
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
 
     const picker = page.locator("#configurationLogRetention + .dashboard-select-picker");
@@ -7851,24 +7948,31 @@ test.describe("Engineering Status browser smoke", () => {
       await waitForDashboardReady(page);
       await selectDashboardLocale(page, language);
       await page.locator("#autoRefresh").uncheck();
-      await page.evaluate((currentDrift) => r({
-        watcher_state: "WORKSPACE_PREFLIGHT_FAILED",
-        current_phase: "INITIALIZE",
-        diagnostic: "Workspace preflight blocked by managed_expected_branch.",
-      }, { current_drift: currentDrift }), drift);
-      await expect(page.locator("#driftSeverity")).toHaveText(
+      // This case tests the synthetic projection in every locale. Capture
+      // all five real DOM fields in its render turn, before a legitimate
+      // asynchronous CENTRAL read can replace that unscoped projection.
+      const projected = await page.evaluate((currentDrift) => {
+        r({
+          watcher_state: "WORKSPACE_PREFLIGHT_FAILED",
+          current_phase: "INITIALIZE",
+          diagnostic: "Workspace preflight blocked by managed_expected_branch.",
+        }, { current_drift: currentDrift });
+        return ["driftSeverity", "driftComponent", "driftExpected", "driftObserved", "driftResolution"]
+          .map((id) => document.getElementById(id).textContent.replace(/\s+/g, " ").trim());
+      }, drift);
+      expect(projected[0]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.severity.blocking"],
       );
-      await expect(page.locator("#driftComponent")).toHaveText(
+      expect(projected[1]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.component.managed_expected_branch"],
       );
-      await expect(page.locator("#driftExpected")).toHaveText(
+      expect(projected[2]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.expected.managed_expected_branch"].replace("{branch}", "main"),
       );
-      await expect(page.locator("#driftObserved")).toHaveText(
+      expect(projected[3]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.observed.managed_expected_branch"].replace("{branch}", "main"),
       );
-      await expect(page.locator("#driftResolution")).toHaveText(
+      expect(projected[4]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.resolution.managed_expected_branch"].replace("{branch}", "main"),
       );
     }

@@ -7,7 +7,7 @@ Lane **r34**, plan **7**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Current correction consumption: **23**; administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
+Current correction consumption: **24**; administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -580,3 +580,11 @@ describe prefix. The reporter binds the exact TestCase.title, not the displayed
 full title path. Only these two new identities are corrected; all original513
 contracts, outcomes, annotations and fixed topology remain enforced. No full
 correction22 qualification wave was started and no failed list is relabelled.
+
+## Scoped-completion correction24: health and browser observation boundaries
+
+The failed complete candidate23 remains NOT_QUALIFIED; its first failures and logs are retained. Independent actual HTTP probes establish source loss between identity/configuration and stale installation identity after valid replacement. Health now distinguishes disappearance from present configuration errors, rechecks identity after helper collection, and fences both healthy and degraded report publication. Missing/corrupt configuration in the same present installation remains an ordinary error.
+
+The passive browser observer now retains actual configuration requests/responses. The iPhone layout case requires a real 200 configuration response and parser-applied saved value before the original four CSS assertions. Two mandatory causal cases exercise native fresh-document recovery and all five drift fields before legitimate real-scope reconciliation, including failed-request and wrong-locale negatives. The corpus is now 518 cases: all original contracts retained, 514 mandatory and four separately unchanged baseline NOT_RUN contracts. The original iPhone request cause was not observed and remains UNESTABLISHED; fresh controlled transport evidence does not reconstruct it. Quota transport diagnosis and independent integrated admission are still open.
+
+Current targeted source health proof: four cases PASS, including loss/restoration, valid foreign replacement, both report status publication fences and ordinary missing/corrupt configuration negatives. This is not complete installed qualification or delivery. A complete new candidate must pass independent admission and the whole official browser gate before the long source/installed suites; all existing resource, authority, deadline, coverage, CI and protected delivery gates remain mandatory.
