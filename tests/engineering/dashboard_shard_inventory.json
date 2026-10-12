@@ -1,7 +1,7 @@
 {
   "contract": "ep-dashboard-canonical-corpus/v1",
   "baseline_source_sha": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
-  "mandatory_count": 514,
+  "mandatory_count": 520,
   "baseline_not_run_count": 4,
   "tests": [
     {
@@ -3125,6 +3125,42 @@
     {
       "file": "dashboard.spec.mjs",
       "title": "binds all five synthetic drift fields before real scope reconciliation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract component-log-row reduce",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract component-log-row no-preference",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract prompt-history-row reduce",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract prompt-history-row no-preference",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract telemetry-row reduce",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract telemetry-row no-preference",
       "expectedStatus": "passed",
       "annotations": []
     }

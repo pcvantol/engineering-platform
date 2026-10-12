@@ -389,7 +389,7 @@ for line in sys.stdin:
             self.stack.close()
 
 
-class OwnedRequestServer(ThreadingHTTPServer):
+class OwnedRequestServer(server._ConsoleHTTPServer):
     """Actual handlers, tracked admission and bounded own request teardown."""
     def __init__(self, *args, **kwargs):
         self.requests = {}

@@ -1047,6 +1047,9 @@ html[data-theme="light"] .open-pr-check-repair{background:#fff8dc;border-color:#
 /* Interactive log rows keep one continuous hover surface; the generic
    first-column table anchor must not create a second shade. */
 :is(.component-log-row,.prompt-history-row,.telemetry-row):hover>td:first-child:not([colspan]){background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,var(--dashboard-surface-base))!important}
+/* The universal reduced-motion duration must not start implicit all-property
+   transitions on selection surfaces whose cells have different rest colors. */
+@media(prefers-reduced-motion:reduce){:is(.component-log-row,.prompt-history-row,.telemetry-row)>td{transition:none!important}}
 /* Rose pagination follows the same filled-hover contrast as its history
    actions, even though its base label colour has higher selector weight. */
 .prompt-history .log-pagination button:hover:not(:disabled){color:#271923!important}

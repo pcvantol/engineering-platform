@@ -74,7 +74,7 @@ async function startDashboard(root, environment) {
       "python3",
       [
         "-c",
-        "from http.server import ThreadingHTTPServer; from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'epdata.sqlite'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
+        "from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _ConsoleHTTPServer, _HealthHandler, initialize; root = Path(sys.argv[1]); server = _ConsoleHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'epdata.sqlite'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
       { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] },
@@ -325,6 +325,45 @@ async function waitForAppliedDashboardProjectSnapshot(page) {
   expect(await observer.documentId()).toBe(documentId);
   return { document_id: documentId, request_id: bound.request_id, response_sha256: rawHash,
     applied_ui_mode: messages["refresh.connected"] };
+}
+
+for (const family of ["component-log-row", "prompt-history-row", "telemetry-row"]) {
+  for (const motion of ["reduce", "no-preference"]) {
+    test(`interactive row surface motion contract ${family} ${motion}`, async ({ page }) => {
+      // A CSS projection contract complements the actual generated-row
+      // selection/copy and stored-history cases; it is not a stored-run proof.
+      await page.emulateMedia({ reducedMotion: motion });
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.evaluate((rowClass) => {
+        const table = document.createElement("table");
+        table.id = "rowSurfaceMotionContract";
+        table.className = "log-table";
+        table.style.cssText = "position:fixed;left:80px;top:240px;width:800px;z-index:10000";
+        const body = table.createTBody(), row = body.insertRow();
+        row.className = rowClass;
+        row.style.setProperty("--dashboard-selected-row-color", "#f29ab2");
+        for (const text of ["first", "second", "third"]) row.insertCell().textContent = text;
+        document.body.append(table);
+      }, family);
+      const row = page.locator("#rowSurfaceMotionContract tr");
+      await row.hover();
+      const surface = await row.evaluate((element) => ({
+        hovered: element.matches(":hover"),
+        properties: Array.from(element.cells, (cell) => getComputedStyle(cell).transitionProperty),
+        colors: Array.from(element.cells, (cell) => getComputedStyle(cell).backgroundColor),
+        backgroundAnimations: Array.from(element.cells).flatMap((cell) => cell.getAnimations())
+          .filter((animation) => animation instanceof CSSTransition && animation.transitionProperty === "background-color").length,
+      }));
+      expect(surface.hovered).toBe(true);
+      if (motion === "reduce") {
+        expect(surface.properties).toEqual(["none", "none", "none"]);
+        expect(surface.backgroundAnimations).toBe(0);
+        expect(new Set(surface.colors).size).toBe(1);
+      } else {
+        expect(surface.properties).not.toContain("none");
+      }
+    });
+  }
 }
 
 async function captureIdleLocaleProjection(page, executionLabel) {

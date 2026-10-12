@@ -5965,6 +5965,16 @@ def _admit_server_owned_file_inbox(
         raise URLError("CENTRAL_UNAVAILABLE") from error
 
 
+class _ConsoleHTTPServer(http.server.ThreadingHTTPServer):
+    """Bounded accept buffer for concurrent Console startup reads.
+
+    A browser opens several connections before the listener schedules their
+    handlers. The standard five-slot buffer drops a native cold-read burst.
+    This changes neither request authority nor handler protocol/lifecycle.
+    """
+    request_queue_size = 32
+
+
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _status(self) -> dict[str, object]:
         report = status(self.server.data_root)  # type: ignore[attr-defined]
@@ -8149,7 +8159,7 @@ def serve(
     config = ServerConfiguration.load(data_root)
     os.environ[SERVER_ENVIRONMENT_DATA_ROOT] = str(data_root.resolve())
     os.environ[MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT] = config.managed_codex_cli_prefix
-    server = http.server.ThreadingHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
+    server = _ConsoleHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
     server.central_data_transfer_lock = RLock()  # type: ignore[attr-defined]
     server.central_data_transfer_active = False  # type: ignore[attr-defined]
