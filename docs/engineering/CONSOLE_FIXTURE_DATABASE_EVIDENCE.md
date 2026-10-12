@@ -68,3 +68,26 @@ The historical SSE wrapper-source assertion is replaced with actual HTTP retry
 and PROJECT frame observations against distinct CENTRAL/project policies. A
 project-local reader trap remains armed; injecting that root policy must fail
 the same wire assertion. Accepted handlers really stop before guard restoration.
+
+Quota dispatch remains one explicit GET PLATFORM route before project selection.
+Registered, absent and unrelated project headers cannot redirect this account
+diagnostic to a project route or grant history access. External quota responses
+stay isolated in the provider adapter; legacy browser children use an empty own
+GitHub config and do not inherit account tokens. No project/document/epoch or
+native sandbox gate is broadened.
+
+The renderer-only locale case captures all three original DOM predicates in the
+same synchronous render turn. A real same-document background read proves that
+later authoritative state can overwrite its synthetic input. A wrong language
+still fails the same predicates. Original failed attempts remain failed and the
+missing original quota request cause remains UNESTABLISHED.
+
+Passive browser observation begins before navigation and retains request IDs,
+loader/frame identity, case-insensitive project headers, raw responses and body
+read failures, SSE dashboard/control frames and page errors in private compressed
+JSON-lines. First assertion failures retain the current screen and document too.
+No requests, intercepted responses or page state are added by the observer.
+Unavailable observations remain explicit failures; no response is reconstructed.
+Public manifests retain bounded summaries, while raw data stays private through
+page/worker termination. The corpus retains 513 original cases and adds one
+causal renderer regression: 510 active cases plus the same four baseline NOT_RUN.

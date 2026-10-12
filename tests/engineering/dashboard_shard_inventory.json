@@ -1,7 +1,7 @@
 {
   "contract": "ep-dashboard-canonical-corpus/v1",
   "baseline_source_sha": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
-  "mandatory_count": 509,
+  "mandatory_count": 510,
   "baseline_not_run_count": 4,
   "tests": [
     {
@@ -971,6 +971,12 @@
     {
       "file": "dashboard.spec.mjs",
       "title": "renders current execution and relay terminology in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps synthetic locale predicates in one render turn across an actual background read",
       "expectedStatus": "passed",
       "annotations": []
     },

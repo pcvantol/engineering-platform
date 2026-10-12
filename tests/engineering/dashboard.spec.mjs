@@ -1,10 +1,11 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import { retainWorkerLogs, finishWorkerLogs } from "./dashboard_worker_logs.mjs";
+import { observeConsoleDocument } from "./dashboard_document_observer.mjs";
 import {
   createTranslator,
   DASHBOARD_MESSAGES,
@@ -118,9 +119,15 @@ test.beforeAll(async () => {
   installationRoot = mkdtempSync(path.join(tmpdir(), "djconnect-dashboard-authority-"));
   const isolatedHome = path.join(installationRoot, "home");
   mkdirSync(isolatedHome, { recursive: true });
+  const quotaEnvironment = { ...process.env };
+  delete quotaEnvironment.GH_TOKEN;
+  delete quotaEnvironment.GITHUB_TOKEN;
+  delete quotaEnvironment.GH_ENTERPRISE_TOKEN;
+  delete quotaEnvironment.GITHUB_ENTERPRISE_TOKEN;
   const server = await startDashboard(dashboardRoot, {
-    ...process.env,
+    ...quotaEnvironment,
     HOME: isolatedHome,
+    GH_CONFIG_DIR: path.join(isolatedHome, "gh-qualification"),
     XDG_DATA_HOME: path.join(installationRoot, ".local", "share"),
     ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT: installationRoot,
   });
@@ -196,6 +203,19 @@ async function openTitlebarOptions(page) {
   if (await content.isHidden()) {
     await page.getByTestId("titlebar-options-toggle").click();
   }
+}
+
+async function captureIdleLocaleProjection(page, executionLabel) {
+  return page.evaluate((label) => {
+    r({ watcher_state: "WATCHER_IDLE" }, {});
+    const watcher = document.querySelector("#watcher");
+    const normalize = value => String(value).trim().replace(/\s+/g, " ");
+    return {
+      fieldCount: [...document.querySelectorAll(".field")].filter(field => field.textContent.includes(label)).length,
+      watcher: normalize(watcher.textContent),
+      label: normalize(watcher.closest("p.field").querySelector(".label").textContent),
+    };
+  }, executionLabel);
 }
 
 async function selectDashboardLocale(page, language, { waitForInitialProjection = true } = {}) {
@@ -2194,11 +2214,47 @@ test.describe("Engineering Status browser smoke", () => {
     for (const language of SUPPORTED_LOCALES) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await selectDashboardLocale(page, language);
-      await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {}));
-      await expect(page.locator(".field").filter({ hasText: DASHBOARD_MESSAGES[language]["ui.execution_status"] })).toHaveCount(1);
-      await expect(page.locator("#watcher")).toHaveText(DASHBOARD_MESSAGES[language]["state.WATCHER_IDLE"]);
-      await expect(page.locator("#watcher").locator("xpath=ancestor::p[contains(@class, 'field')][1]//span[contains(@class, 'label')]")).toHaveText(DASHBOARD_MESSAGES[language]["ui.execution_status"]);
+      // This case checks an explicitly synthetic renderer input. Capture all
+      // three original DOM predicates in its synchronous render turn; a later
+      // authoritative background read may legitimately display other state.
+      const projection = await captureIdleLocaleProjection(page, DASHBOARD_MESSAGES[language]["ui.execution_status"]);
+      expect(projection.fieldCount).toBe(1);
+      expect(projection.watcher).toBe(DASHBOARD_MESSAGES[language]["state.WATCHER_IDLE"]);
+      expect(projection.label).toBe(DASHBOARD_MESSAGES[language]["ui.execution_status"]);
     }
+  });
+
+  test("keeps synthetic locale predicates in one render turn across an actual background read", async ({ page }, testInfo) => {
+    const observer = await observeConsoleDocument(page);
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    const language = await page.locator("html").getAttribute("lang");
+    const messages = DASHBOARD_MESSAGES[language];
+    const documentId = await observer.documentId();
+    await page.locator("#autoRefresh").setChecked(false);
+    const projection = await captureIdleLocaleProjection(page, messages["ui.execution_status"]);
+    const assertProjection = value => {
+      expect(value.fieldCount).toBe(1);
+      expect(value.watcher).toBe(messages["state.WATCHER_IDLE"]);
+      expect(value.label).toBe(messages["ui.execution_status"]);
+    };
+    assertProjection(projection);
+    const actualResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+    await page.locator("#autoRefresh").setChecked(true);
+    const packet = await (await actualResponse).json();
+    await expect(page.locator("#watcher")).not.toHaveText(projection.watcher);
+    expect(await observer.documentId()).toBe(documentId);
+    assertProjection(projection);
+    // A genuine wrong presentation context must still fail the same predicate.
+    const otherLanguage = language === "de" ? "en" : "de";
+    await selectDashboardLocale(page, otherLanguage);
+    const wrongContext = await captureIdleLocaleProjection(page, messages["ui.execution_status"]);
+    expect(() => assertProjection(wrongContext)).toThrow();
+    const output = testInfo.outputPath("locale-render-turn-cause.json");
+    writeFileSync(output, JSON.stringify({ document_id: documentId, projection,
+      authoritative_packet: packet, wrong_locale: otherLanguage, wrong_context: wrongContext,
+      original_asynchronous_predicate_overwritten: true, requests: observer.records() }));
+    await testInfo.attach("locale-render-turn-cause", { path: output, contentType: "application/json" });
   });
 
   test("copies chat text synchronously for iOS Safari", async ({ page }) => {

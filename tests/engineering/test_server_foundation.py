@@ -1034,6 +1034,58 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "retry: 3000"):
             self._assert_project_stream_interval(refault=True)
 
+    def test_platform_quota_dispatch_is_independent_of_project_context_without_granting_history(self) -> None:
+        from tests.engineering.dashboard_run_evidence_fixture import (
+            RealTopologyFixture, OwnedRequestServer, TrackedRequestHandler, IsolatedProviderTransport,
+        )
+        fixture = RealTopologyFixture()
+        try:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(server.main(["bootstrap-topology", "--data-root", str(fixture.data),
+                    "--project-id", "none", "--repository-id", "repo-none"]), 0)
+            for mode in ("available", "limited", "unavailable", "invalid"):
+                transport = IsolatedProviderTransport(quota_mode=mode)
+                transport.start()
+                httpd = None
+                thread = None
+                try:
+                    httpd = OwnedRequestServer(("127.0.0.1", 0), TrackedRequestHandler)
+                    httpd.data_root = fixture.data
+                    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                    thread.start()
+                    base = f"http://127.0.0.1:{httpd.server_port}"
+                    expected = {"limited": True, "reset_at": 2000000000} if mode == "limited" else {"limited": False}
+                    for selected in (None, "project", "none", "missing"):
+                        headers = {} if selected is None else {"X-Engineering-Platform-Project": selected}
+                        with urlopen(Request(base + "/api/github-rate-limit", headers=headers), timeout=2) as response:
+                            self.assertEqual(response.status, 200)
+                            self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
+                            self.assertEqual(json.loads(response.read()), expected)
+                    before = transport.github_quota_requests
+                    with self.assertRaises(HTTPError) as blocked:
+                        urlopen(Request(base + "/api/prompt-history", headers={"X-Engineering-Platform-Project": "missing"}), timeout=2)
+                    with blocked.exception as denied:
+                        self.assertEqual(denied.code, 409)
+                        self.assertEqual(json.loads(denied.read())["error"], "CONSOLE_PROJECT_UNAVAILABLE")
+                    self.assertEqual(transport.github_quota_requests, before)
+                    self.assertGreaterEqual(before, 4)
+                finally:
+                    try:
+                        if thread is not None and thread.is_alive():
+                            observation = httpd.quiesce()
+                            thread.join(2)
+                            with httpd.request_condition:
+                                self.assertTrue(httpd.request_condition.wait_for(lambda: not httpd.requests, timeout=2))
+                            self.assertTrue(observation["ordinary_quiescent"])
+                            self.assertEqual(httpd.error_receipt()["unexpected_handler_errors"], 0)
+                            self.assertFalse(thread.is_alive())
+                        elif httpd is not None:
+                            httpd.server_close()
+                    finally:
+                        transport.close()
+        finally:
+            fixture.close()
+
     def _assert_project_stream_interval(self, *, refault=False) -> None:
         from types import SimpleNamespace
         from engineering_platform import historical_dashboard_configuration as legacy

@@ -1,9 +1,31 @@
 /* Passive Chromium observations: actual document and completed transport only. */
 import { createHash } from 'node:crypto';
 import { expect } from '@playwright/test';
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
-export async function observeConsoleDocument(page) {
+const observers = new WeakMap();
+const header = (headers, name) => Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] ?? null;
+
+export function observeConsoleDocument(page) {
+  if (!observers.has(page)) observers.set(page, createObservation(page));
+  return observers.get(page);
+}
+
+async function createObservation(page) {
   const session = await page.context().newCDPSession(page), requests = new Map();
+  const privateRoot = process.env.EP_BROWSER_PRIVATE_LOG_ROOT || tmpdir();
+  mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
+  const retained = mkdtempSync(path.join(privateRoot, 'ep-document-observation-'));
+  const raw = path.join(retained, 'transport.jsonl.gz');
+  const pending = new Set();
+  const extras = new Map();
+  const retain = (kind, fact) => appendFileSync(raw, gzipSync(Buffer.from(JSON.stringify({ at: Date.now(), kind, fact }) + '\n')),
+    { mode: 0o600 });
+  retain('binding', { pid: process.pid, source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null,
+    source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null, wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null });
   await session.send('Network.enable'); await session.send('Page.enable');
   const summary = (payload) => ({ scope: payload.scope, project_id: payload.project_id ?? null,
     version: payload.status?.platform_version, limited: payload.limited, reset_at: payload.reset_at,
@@ -12,34 +34,68 @@ export async function observeConsoleDocument(page) {
     const url = new URL(event.request.url);
     if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history'].includes(url.pathname)
         && !/^\/api\/prompt-history\/[^/]+\/details$/.test(url.pathname)) return;
+    retain('request', event);
+    for (const extra of extras.get(event.requestId) || []) retain('transport-extra-info', extra);
+    extras.delete(event.requestId);
     requests.set(event.requestId, { request_id: event.requestId, document_id: event.loaderId,
-      path: url.pathname, project_header: event.request.headers['X-Engineering-Platform-Project'] ?? null,
+      path: url.pathname, project_header: header(event.request.headers, 'X-Engineering-Platform-Project'),
       status: null, completed: false });
   });
+  for (const name of ['Network.requestWillBeSentExtraInfo', 'Network.responseReceivedExtraInfo']) {
+    session.on(name, event => {
+      if (requests.has(event.requestId)) retain(name, event);
+      else {
+        if (!extras.has(event.requestId)) extras.set(event.requestId, []);
+        extras.get(event.requestId).push({ name, event });
+      }
+    });
+  }
   session.on('Network.responseReceived', (event) => {
-    const request = requests.get(event.requestId); if (request) request.status = event.response.status;
+    const request = requests.get(event.requestId); if (request) { request.status = event.response.status; retain('response', event); }
   });
   session.on('Network.loadingFailed', (event) => {
-    const request = requests.get(event.requestId); if (request) request.failure = event.errorText;
+    const request = requests.get(event.requestId); if (request) { request.failure = event.errorText; retain('loading-failed', event); }
   });
-  session.on('Network.loadingFinished', async (event) => {
+  session.on('Network.loadingFinished', (event) => {
     const request = requests.get(event.requestId);
     if (!request || request.path === '/api/events') return;
+    const work = (async () => {
     try {
       const response = await session.send('Network.getResponseBody', { requestId: event.requestId });
       const body = response.base64Encoded ? Buffer.from(response.body, 'base64').toString('utf8') : response.body;
+      retain('body', { request_id: event.requestId, document_id: request.document_id,
+        status: request.status, body, sha256: createHash('sha256').update(body).digest('hex') });
       request.response = summary(JSON.parse(body)); request.response_sha256 = createHash('sha256').update(body).digest('hex');
       request.completed = true;
-    } catch (error) { request.failure = String(error); }
+    } catch (error) { request.failure = String(error); retain('body-failure', { request, error: String(error) }); }
+    })();
+    pending.add(work); work.finally(() => pending.delete(work));
   });
   session.on('Network.eventSourceMessageReceived', (event) => {
-    const request = requests.get(event.requestId); if (!request || event.eventName !== 'dashboard') return;
+    const request = requests.get(event.requestId);
+    if (!request || !['dashboard', 'console-read-error'].includes(event.eventName)) return;
+    retain('sse-frame', event);
+    if (event.eventName !== 'dashboard') return;
     try {
       request.response = summary(JSON.parse(event.data));
       request.response_sha256 = createHash('sha256').update(event.data).digest('hex'); request.completed = true;
     } catch (error) { request.failure = String(error); }
   });
-  const documentId = async () => (await session.send('Page.getFrameTree')).frameTree.frame.loaderId;
+  const pageError = error => retain('page-error', { message: error.message, stack: error.stack });
+  page.on('pageerror', pageError);
+  page.on('close', async () => {
+    session.removeAllListeners();
+    page.off('pageerror', pageError);
+    await Promise.allSettled([...pending]);
+    retain('page-close', { actual_page_closed: true });
+    writeFileSync(path.join(retained, 'closed.json'), JSON.stringify({ pid: process.pid, actual_page_closed: true,
+      bytes: readFileSync(raw).length, sha256: createHash('sha256').update(readFileSync(raw)).digest('hex') }), { mode: 0o600 });
+  });
+  const documentId = async () => {
+    const frame = (await session.send('Page.getFrameTree')).frameTree.frame;
+    retain('current-document', { frame_id: frame.id, document_id: frame.loaderId, url: frame.url });
+    return frame.loaderId;
+  };
   const completed = async (path) => {
     const id = await documentId(); return [...requests.values()].filter(r => r.document_id === id && r.path === path && r.completed && r.status === 200);
   };
@@ -79,5 +135,18 @@ export async function observeConsoleDocument(page) {
     const actual = new URL(page.url()).searchParams.get('project') || null; expect(actual).toBe(project);
     return scope(ingress, project);
   };
-  return { scope, quota, select, documentId, records: () => [...requests.values()] };
+  const failure = async (testInfo) => {
+    const results = await Promise.allSettled([
+      page.screenshot({ path: path.join(retained, 'first-failure.png'), fullPage: true, animations: 'disabled' }),
+      page.content(), documentId(),
+    ]);
+    const facts = results.map((result, index) => result.status === 'fulfilled'
+      ? { observation: index, status: 'retained', value: index === 0 ? createHash('sha256').update(result.value).digest('hex') : result.value }
+      : { observation: index, status: 'UNAVAILABLE', reason: String(result.reason) });
+    retain('first-failure', { title: testInfo.title, status: testInfo.status, errors: testInfo.errors,
+      observations: facts, requests: [...requests.values()] });
+    if (results.some(result => result.status === 'rejected'))
+      throw Error('First browser failure retention incomplete; original failure remains in runner report');
+  };
+  return { scope, quota, select, documentId, failure, records: () => [...requests.values()] };
 }

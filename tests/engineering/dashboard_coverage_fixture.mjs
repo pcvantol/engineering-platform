@@ -2,12 +2,15 @@
 import { writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { test as base, expect } from "@playwright/test";
+import { observeConsoleDocument } from "./dashboard_document_observer.mjs";
 
 export { expect };
 export const test = base.extend({
   dashboardCoverage: [async ({ page }, use, testInfo) => {
     await page.coverage.startJSCoverage({ resetOnNavigation: false, reportAnonymousScripts: false });
+    const observation = await observeConsoleDocument(page);
     await use();
+    if (testInfo.status !== testInfo.expectedStatus) await observation.failure(testInfo);
     const entries = await page.coverage.stopJSCoverage();
     const production = entries.filter((entry) => /\/assets\/dashboard(?:_[a-z_]+)?\.(?:js|mjs)(?:\?|$)/.test(entry.url))
       .map((entry) => ({ ...entry, sha256: createHash("sha256").update(entry.source).digest("hex") }));

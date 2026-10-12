@@ -6708,6 +6708,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 )
                 self._send(409, {"error": "CONSOLE_CONFIGURATION_INVALID"})
             return
+        # Account-wide quota is a PLATFORM route in every Console document.
+        # A selected project header must not redirect it to a project route;
+        # this explicit diagnostic grants no project or history access.
+        if method == "do_GET" and request.path == "/api/github-rate-limit":
+            self._send(200, _github_rate_limit_status())
+            return
         selected = self.headers.get("X-Engineering-Platform-Project")
         if not selected:
             selected = (parse_qs(request.query).get("project") or [None])[0]
