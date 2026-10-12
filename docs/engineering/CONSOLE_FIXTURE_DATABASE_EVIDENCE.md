@@ -58,5 +58,13 @@ Four parts, one worker per part, retries, assertions and the 300-second batch
 deadline remain unchanged. Both CI and local commands require this reporter;
 caller reporter overrides are rejected. Canonical names, expected outcomes,
 disjoint union, selected cases and actual terminal outcomes are mandatory gates.
-A narrowed corpus, skipped case, outside error, missing completion or failed
+A narrowed corpus, newly skipped case, outside error, missing completion or failed
 attempt cannot qualify. List-only plans remain explicitly unqualified.
+The four original worktree skip declarations remain bound to their original
+case identities, status and normalized annotations and are reported separately
+as baseline NOT_RUN. They are present in protected base; 509 active cases still
+require successful real completion. A general allowance for skips is forbidden.
+The historical SSE wrapper-source assertion is replaced with actual HTTP retry
+and PROJECT frame observations against distinct CENTRAL/project policies. A
+project-local reader trap remains armed; injecting that root policy must fail
+the same wire assertion. Accepted handlers really stop before guard restoration.

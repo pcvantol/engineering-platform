@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 const inventoryBytes = readFileSync(new URL('./dashboard_shard_inventory.json', import.meta.url));
 const inventory = JSON.parse(inventoryBytes);
 const key = test => JSON.stringify([path.basename(test.location?.file || test.file), test.title]);
+const annotations = test => (test.annotations || []).map(({ location, ...contract }) => contract);
 
 export function partition(tests, canonical = inventory.tests) {
   const actual = new Map();
@@ -20,7 +21,7 @@ export function partition(tests, canonical = inventory.tests) {
     const id = key(expected), test = actual.get(id);
     if (!test || test.expectedStatus !== expected.expectedStatus)
       throw Error(`Dashboard corpus/status mismatch: ${id}`);
-    if (test.annotations?.some(a => ['skip', 'fixme', 'fail', 'only'].includes(a.type)))
+    if (JSON.stringify(annotations(test)) !== JSON.stringify(expected.annotations || []))
       throw Error(`Dashboard case has an altered execution contract: ${id}`);
     if (!files.has(expected.file)) files.set(expected.file, []);
     files.get(expected.file).push(test);
@@ -37,11 +38,12 @@ export function partition(tests, canonical = inventory.tests) {
 
 export function terminalVerdict(planned, observed, status, outsideErrors) {
   const ids = new Set(planned.map(key));
+  const expected = new Map(planned.map(test => [key(test), test.expectedStatus]));
   const completed = new Set(observed.map(item => item.id));
   return status === 'passed' && outsideErrors.length === 0
     && observed.length === ids.size
     && completed.size === ids.size && [...completed].every(id => ids.has(id))
-    && observed.every(item => item.status === 'passed' && item.retry === 0);
+    && observed.every(item => item.status === expected.get(item.id) && item.retry === 0);
 }
 
 export default class DashboardShardReporter {
@@ -81,6 +83,8 @@ export default class DashboardShardReporter {
       wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null,
       canonical_sha256: createHash('sha256').update(inventoryBytes).digest('hex'),
       canonical_count: inventory.tests.length, parts: this.parts.map(tests => tests.map(key)),
+      mandatory_count: inventory.mandatory_count,
+      baseline_not_run: this.planned.filter(test => test.expectedStatus === 'skipped').map(key),
       selected: this.planned.map(key), observed: this.observed, outside_errors: this.outsideErrors,
       status: result.status, list_only: this.listOnly, qualified,
     };

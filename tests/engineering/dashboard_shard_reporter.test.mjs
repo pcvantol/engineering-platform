@@ -6,7 +6,7 @@ import path from 'node:path';
 import Reporter, { partition, terminalVerdict } from './dashboard_shard_reporter.mjs';
 
 const corpus = JSON.parse(readFileSync(new URL('./dashboard_shard_inventory.json', import.meta.url))).tests;
-const tests = () => corpus.map(row => ({ ...row, location: { file: row.file }, annotations: [] }));
+const tests = () => corpus.map(row => ({ ...row, location: { file: row.file }, annotations: row.annotations.map(a => ({ ...a })) }));
 const id = row => JSON.stringify([row.file, row.title]);
 
 test('all 513 cases remain disjoint and each owning file is balanced across four parts', () => {
@@ -38,9 +38,22 @@ test('changed expected outcomes and skip/fixme/fail annotations remain red', () 
   }
 });
 
+test('only the four unchanged baseline skip contracts remain separately NOT_RUN', () => {
+  const all = tests(), baseline = all.filter(row => row.expectedStatus === 'skipped');
+  assert.equal(baseline.length, 4);
+  assert.equal(all.filter(row => row.expectedStatus === 'passed').length, 509);
+  const stripped = tests(); stripped.find(row => row.expectedStatus === 'skipped').annotations = [];
+  assert.throws(() => partition(stripped), /altered execution/);
+  const changed = tests(); changed.find(row => row.expectedStatus === 'skipped').expectedStatus = 'passed';
+  assert.throws(() => partition(changed), /status mismatch/);
+  const observed = baseline.map(row => ({ id: id(row), status: 'skipped', retry: 0 }));
+  assert.equal(terminalVerdict(baseline, observed, 'passed', []), true);
+  assert.equal(terminalVerdict(baseline, [{ ...observed[0], status: 'passed' }, ...observed.slice(1)], 'passed', []), false);
+});
+
 test('actual missing, failed, skipped, interrupted, flaky and outside-error outcomes remain red', () => {
   const planned = partition(tests())[0];
-  const observed = planned.map(row => ({ id: id(row), status: 'passed', retry: 0 }));
+  const observed = planned.map(row => ({ id: id(row), status: row.expectedStatus, retry: 0 }));
   assert.equal(terminalVerdict(planned, observed, 'passed', []), true);
   assert.equal(terminalVerdict(planned, observed.slice(1), 'passed', []), false);
   for (const status of ['failed', 'skipped', 'interrupted', 'timedOut']) {
@@ -63,7 +76,7 @@ test('supported reporter excludes only out-of-part cases and binds complete term
     const selected = all.filter(row => !excluded.includes(row));
     assert.equal(selected.length + excluded.length, 513);
     reporter.onBegin({ projects: [{ outputDir: root }] }, { allTests: () => selected });
-    selected.forEach(row => reporter.onTestEnd(row, { status: 'passed', retry: 0 }));
+    selected.forEach(row => reporter.onTestEnd(row, { status: row.expectedStatus, retry: 0 }));
     assert.equal(reporter.onEnd({ status: 'passed' }), undefined);
     const receipt = JSON.parse(readFileSync(path.join(root, 'complete-shard.json')));
     assert.equal(receipt.qualified, true);

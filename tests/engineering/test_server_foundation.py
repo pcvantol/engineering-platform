@@ -1028,9 +1028,101 @@ class StandaloneServerFoundationTest(unittest.TestCase):
 
     def test_project_console_event_stream_uses_central_not_root_local_configuration(self) -> None:
         """A selected project cannot change the platform event-stream policy."""
-        source = inspect.getsource(server._HealthHandler._stream_console_events)
-        self.assertIn("central_database.console_interval_configuration", source)
-        self.assertNotIn("dashboard.dashboard_configuration", source)
+        self._assert_project_stream_interval()
+
+    def test_project_console_event_stream_root_policy_refault_is_detected(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "retry: 3000"):
+            self._assert_project_stream_interval(refault=True)
+
+    def _assert_project_stream_interval(self, *, refault=False) -> None:
+        from types import SimpleNamespace
+        from engineering_platform import historical_dashboard_configuration as legacy
+        from tests.engineering.dashboard_run_evidence_fixture import (
+            RealTopologyFixture, OwnedRequestServer, TrackedRequestHandler, IsolatedProviderTransport,
+        )
+        fixture = RealTopologyFixture()
+        transport = IsolatedProviderTransport()
+        closed = threading.Event()
+        original_time = server.time
+        original_configuration = server.central_database.console_interval_configuration
+        httpd = None
+        thread = None
+        retry = None
+        frame = None
+
+        def stream_disconnect(seconds):
+            if not closed.wait(2):
+                raise AssertionError("Actual stream was not read before test disconnect")
+            raise ConnectionResetError("Declared test disconnect after actual SSE observation")
+
+        class Handler(TrackedRequestHandler):
+            def do_GET(self):
+                try:
+                    return super().do_GET()
+                finally:
+                    self.close_connection = True
+
+        try:
+            server.central_database.update_console_interval_configuration(
+                fixture.data, "dashboard_stream_interval_seconds", 3,
+            )
+            legacy.update(fixture.root, "dashboard_stream_interval_seconds", 9)
+            root_policy = legacy.get(fixture.root)
+            self.assertEqual(root_policy["dashboard_stream_interval_seconds"], 9)
+            transport.start()
+            httpd = OwnedRequestServer(("127.0.0.1", 0), Handler)
+            httpd.data_root = fixture.data
+
+            def configuration(data_root, **kwargs):
+                result = original_configuration(data_root, **kwargs)
+                return {**result, "dashboard_stream_interval_seconds": root_policy["dashboard_stream_interval_seconds"]} if refault else result
+
+            clock = SimpleNamespace(**{**vars(original_time), "sleep": stream_disconnect})
+            with patch.object(server, "time", clock), patch.object(
+                server.central_database, "console_interval_configuration", side_effect=configuration,
+            ) as central_read, patch.object(
+                legacy, "get", side_effect=AssertionError("Project-local configuration was read"),
+            ) as root_read:
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    with urlopen(f"http://127.0.0.1:{httpd.server_port}/api/events?project=project", timeout=2) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
+                        retry = response.readline().decode()
+                        response.readline()
+                        self.assertEqual(response.readline().decode(), "event: dashboard\n")
+                        frame = json.loads(response.readline().decode().removeprefix("data: "))
+                        self.assertEqual(frame["scope"], "PROJECT")
+                        self.assertEqual(frame["project_id"], "project")
+                        central_read.assert_any_call(fixture.data, strict=True)
+                        root_read.assert_not_called()
+                        self.assertEqual(retry, "retry: 3000\n")
+                finally:
+                    closed.set()
+                    observation = httpd.quiesce()
+                    thread.join(2)
+                    with httpd.request_condition:
+                        self.assertTrue(httpd.request_condition.wait_for(lambda: not httpd.requests, timeout=2))
+                    self.assertTrue(observation["ordinary_quiescent"])
+                    self.assertEqual(httpd.error_receipt()["unexpected_handler_errors"], 0)
+                    self.assertFalse(thread.is_alive())
+                    self.assertIs(providers.CodexCliProvider.app_server, transport.guarded_app_server)
+                    if retry is not None and frame is not None:
+                        print(json.dumps({
+                            "contract": "ep-console-stream-policy-wire/v1", "refault": refault,
+                            "actual_retry": retry.strip(), "expected_retry": "retry: 3000",
+                            "scope": frame["scope"], "project_id": frame["project_id"],
+                            "project_reader_calls": root_read.call_count, "all_requests_stopped": True,
+                            "guards_retained": True, "installed_module": server.__file__,
+                        }))
+        finally:
+            closed.set()
+            if thread and thread.is_alive():
+                httpd.quiesce()
+                thread.join(2)
+            transport.close()
+            fixture.close()
 
     def test_server_component_projection_is_exactly_the_canonical_model(self) -> None:
         """Cards, details and logs cannot gain an independent component identity."""
