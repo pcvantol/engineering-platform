@@ -48,3 +48,15 @@ collector rejects these after actual child close and retains every nested cause.
 Positive in-process Console projection tests register their project through the
 supported topology service before reading; project-list doubles do not grant
 access. Withdrawal still stops projection before any private detail is returned.
+
+The complete browser corpus is retained in the reviewed canonical inventory.
+Playwright's contiguous count sharding placed every slow installed canary in
+the first part and then appended an indivisible smoke hook group; the actual
+300-second batch failed while the other three parts completed. The supported
+reporter preprocess API now partitions each owning declaration file round-robin.
+Four parts, one worker per part, retries, assertions and the 300-second batch
+deadline remain unchanged. Both CI and local commands require this reporter;
+caller reporter overrides are rejected. Canonical names, expected outcomes,
+disjoint union, selected cases and actual terminal outcomes are mandatory gates.
+A narrowed corpus, skipped case, outside error, missing completion or failed
+attempt cannot qualify. List-only plans remain explicitly unqualified.

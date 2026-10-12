@@ -19,6 +19,7 @@ PLAYWRIGHT_COMMAND = (
     "npx", "playwright", "test", "tests/engineering/dashboard.spec.mjs",
     "tests/engineering/dashboard_translation.integration.spec.mjs",
     "tests/engineering/dashboard_run_evidence.integration.spec.mjs",
+    "--reporter=line,tests/engineering/dashboard_shard_reporter.mjs",
 )
 LOCK_COMPONENT = "dashboard-browser-validation"
 LOCAL_BATCH_TIMEOUT_SECONDS = 300
@@ -42,6 +43,8 @@ def _common_git_directory(root: Path) -> Path:
 
 
 def _command(*arguments: str) -> tuple[str, ...]:
+    if any(argument.startswith("--reporter") for argument in arguments):
+        raise ValueError("Dashboard qualification requires its complete-corpus reporter")
     return (*PLAYWRIGHT_COMMAND, "--workers=1", *arguments)
 
 
@@ -157,7 +160,7 @@ def _run_local_shards(root: Path) -> int:
                     output = directory / f"shard-{index}.log"
                     with output.open("wb") as stream:
                         process = subprocess.Popen(
-                            _command("--reporter=line", f"--shard={shard}", f"--output=test-results/dashboard-shard-{index}"),
+                            _command(f"--shard={shard}", f"--output=test-results/dashboard-shard-{index}"),
                             cwd=root,
                             env=environment,
                             stderr=subprocess.STDOUT,

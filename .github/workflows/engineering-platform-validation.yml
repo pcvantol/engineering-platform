@@ -238,9 +238,9 @@ jobs:
         # availability must not make one dashboard shard fail before tests run.
         run: npx playwright install chromium
       - name: Browser smoke test for Engineering Status (shard ${{ matrix.shard }})
-        # Keep successful runs compact; Playwright's dot reporter still emits
-        # the full failure diagnostics, traces and artifact references.
-        run: npm run test:engineering-dashboard -- --reporter=dot --shard=${{ matrix.shard }}
+        # The owning command enforces the complete-corpus reporter alongside
+        # Playwright's failure diagnostics, traces and artifact references.
+        run: npm run test:engineering-dashboard -- --shard=${{ matrix.shard }}
       - name: Upload Engineering Status browser screenshots
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
