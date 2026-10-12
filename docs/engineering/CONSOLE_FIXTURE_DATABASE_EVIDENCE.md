@@ -22,3 +22,12 @@ failures are recorded before recovery and yield an unsuccessful worker verdict
 after the native browser control/stream result is observable. Evidence remains
 outside the own-store cleanup root. If retention fails, the own source is kept;
 the listener/process must still stop. No ordinary exception is declared benign.
+
+Shutdown closes request admission and waits for every ordinary handler under
+the existing five-second bound. Provider guards remain installed through actual
+worker exit, including sleeping SSE handlers. The browser owner observes child
+close, verifies the own-store marker, retains closed-process database files,
+and compares their hashes, size and identity with the last consistent snapshot.
+A difference remains red and preserves the own-store. Only complete, matching
+evidence permits cleanup after process stop. The original worker closure and
+separate post-close receipt remain truthful about their respective boundaries.

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync,writeFileSync,mkdirSync,readFileSync } from 'node:fs';
+import { mkdtempSync,writeFileSync,mkdirSync,readFileSync,existsSync,rmSync,statSync } from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { test,expect } from './dashboard_coverage_fixture.mjs';
 import { retainWorkerLogs,finishWorkerLogs } from './dashboard_worker_logs.mjs';
@@ -77,12 +78,54 @@ for (const selected of ['', 'project', 'none']) for (const auto of [true,false])
    await finishWorkerLogs(child,info);
    const verdict=JSON.parse(readFileSync(path.join(evidence,'verdict.json'),'utf8'));
    const closure=JSON.parse(readFileSync(path.join(evidence,'closure.json'),'utf8'));
-   writeFileSync(info.outputPath('database-evidence-receipt.json'),JSON.stringify({verdict,closure},null,2));
+   // Kernel-observed child close precedes this closed-store capture/cleanup.
+   // No server handler or SQLite connection can still write this own process.
+   expect(child.exitCode).not.toBeNull();
+   const owner=JSON.parse(readFileSync(path.join(closure.own_store,'scope-owner.json'),'utf8'));
+   expect(owner).toEqual({proof:evidence,pid:child.pid});
+   expect(path.basename(closure.own_store)).toMatch(/^ep-dashboard-stored-canary-/);
+   expect(path.resolve(closure.database)).toContain(path.resolve(closure.own_store)+path.sep);
+   if(process.env.EP_DATABASE_EVIDENCE_MODE==='closed-store-tamper') {
+    // Deterministic negative: last consistent original is already retained.
+    // A physical fault after true process stop must remain red before cleanup.
+    writeFileSync(closure.database,Buffer.concat([readFileSync(closure.database),Buffer.from('controlled post-close byte fault')]));
+   }
+   const finalFiles={};
+   for(const suffix of ['', '.unavailable','-wal','-shm','-journal']) {
+    const file=suffix==='.unavailable'?closure.database.replace(/\.[^/.]+$/,'.unavailable'):closure.database+suffix;
+    if(existsSync(file)) {
+     const bytes=readFileSync(file),identity=statSync(file);
+     writeFileSync(path.join(evidence,'after-process-stop'+suffix+'.sqlite'),bytes,{flag:'wx',mode:0o600});
+     finalFiles[suffix]={sha256:createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length,dev:identity.dev,ino:identity.ino};
+    }
+   }
+   const finalSnapshot=verdict.phases['T-final-after-handlers'];
+   const finalViolations=[];
+   if(finalSnapshot) {
+    for(const suffix of ['', '-wal','-shm','-journal']) {
+     if(['sha256','bytes','dev','ino'].some(key=>(finalFiles[suffix]?.[key]??null)!==(finalSnapshot[suffix]?.[key]??null)))
+      finalViolations.push('closed_store_changed:'+suffix);
+    }
+   } else if(verdict.qualified) finalViolations.push('final_consistent_snapshot_missing');
+   const postClose={process_stopped:true,finalFiles,violations:finalViolations,fixture_removed:false};
+   // Incomplete/failed evidence preserves the original failure own-store.
+   if(verdict.qualified && finalViolations.length===0 && closure.ordinary_handlers_completed && closure.transport.unexpected.length===0 && closure.transport.processes_stopped) {
+    rmSync(closure.own_store,{recursive:true});postClose.fixture_removed=!existsSync(closure.own_store);
+   }
+   writeFileSync(path.join(evidence,'post-close.json'),JSON.stringify(postClose),{flag:'wx',mode:0o600});
+   writeFileSync(info.outputPath('database-evidence-receipt.json'),JSON.stringify({verdict,closure,postClose},null,2));
    expect(verdict.retention_errors).toEqual([]);
    expect(verdict.violations).toEqual([]);
    expect(verdict.qualified).toBe(true);
    expect(closure.stopped).toBe(true);
-   expect(closure.fixture_removed).toBe(true);
+   expect(closure.ordinary_handlers_completed).toBe(true);
+   expect(closure.request_admission_closed).toBe(true);
+   expect(closure.guards_retained_through_exit).toBe(true);
+   expect(postClose.process_stopped).toBe(true);
+   expect(postClose.violations).toEqual([]);
+   expect(closure.transport.unexpected).toEqual([]);
+   expect(closure.transport.processes_stopped).toBe(true);
+   expect(postClose.fixture_removed).toBe(true);
    expect(child.exitCode).toBe(0);
   }
  });
