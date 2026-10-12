@@ -16,6 +16,41 @@ const fixture = path.join(repository, "tests/engineering/dashboard_run_evidence_
 // cases while keeping one worker per shard and all existing deadlines.
 test.describe.configure({ mode: "parallel" });
 
+test('actual observer drains a failure started before page-close before sealing raw bytes', async ({ browser }, testInfo) => {
+  const isolated = await browser.newPage();
+  const observation = await observeConsoleDocument(isolated);
+  try {
+    await isolated.goto('about:blank');
+    const original = new Error('Declared observer negative: real page closes during failure collection');
+    const observing = observation.failure(testInfo, original);
+    const outcome = observing.then(() => null, error => error);
+    await isolated.close();
+    const error = await outcome;
+    expect(String(error)).toContain('First browser failure retention incomplete');
+    const receipt = await observation.closed();
+    const bytes = readFileSync(observation.privateFiles().raw);
+    expect(receipt.actual_page_closed).toBe(true);
+    expect(bytes.length).toBe(receipt.bytes);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(receipt.sha256);
+    expect(JSON.parse(readFileSync(observation.privateFiles().receipt))).toEqual(receipt);
+  } finally { await isolated.close(); await observation.closed(); }
+});
+
+test('actual observer rejects post-seal failure writes without changing retained bytes', async ({ browser }, testInfo) => {
+  const isolated = await browser.newPage();
+  const observation = await observeConsoleDocument(isolated);
+  try {
+    await isolated.goto('about:blank'); await isolated.close();
+    const receipt = await observation.closed();
+    const before = readFileSync(observation.privateFiles().raw);
+    await expect(observation.failure(testInfo, new Error('Declared post-seal negative')))
+      .rejects.toThrow('Console observation started after evidence seal request');
+    expect(readFileSync(observation.privateFiles().raw).equals(before)).toBe(true);
+    expect(before.length).toBe(receipt.bytes);
+    expect(createHash('sha256').update(before).digest('hex')).toBe(receipt.sha256);
+  } finally { await isolated.close(); await observation.closed(); }
+});
+
 async function passiveProcess(python, environment, dataRoot) {
   const child = spawn(python, [fixture, "--read", dataRoot], { cwd: path.dirname(python), env: environment, stdio: ["pipe", "pipe", "pipe"] });
   retainWorkerLogs(child, test.info(), "passive-reader");
@@ -394,6 +429,14 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0) + (scenario === "read-revoked" ? 1 : 0));
     expect(screenshots.some((item) => item.scenario === "denied-project" && item.publication === null)).toBe(true);
     await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
+  } catch (error) {
+    // Capture the real assertion boundary while its canary still serves the
+    // original store. The coverage fixture's later teardown image is separate.
+    try { await (await observeConsoleDocument(page)).failure(testInfo, error); }
+    catch (captureError) {
+      throw new AggregateError([error, captureError], 'Assertion and first-failure retention failed');
+    }
+    throw error;
   } finally {
     await stopIsolatedCanary(child, next, testInfo);
   }

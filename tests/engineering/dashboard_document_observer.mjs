@@ -31,16 +31,27 @@ async function createObservation(page) {
   page.on('request', started);
   page.on('requestfinished', finished);
   page.on('requestfailed', finished);
-  let resolveClosed, rejectClosed;
-  const closedReceipt = new Promise((resolve, reject) => { resolveClosed = resolve; rejectClosed = reject; });
-  // Mark the promise handled immediately; the fixture still awaits rejection.
-  closedReceipt.catch(() => {});
+  let resolveActualClose, rejectActualClose, sealing = null, sealed = false;
+  const actualClose = new Promise((resolve, reject) => { resolveActualClose = resolve; rejectActualClose = reject; });
+  // Closing the real page stops listeners. The fixture explicitly seals the
+  // evidence only after its failure observations and other owned work end.
+  actualClose.catch(() => {});
   const extras = new Map();
-  const retain = (kind, fact) => appendFileSync(raw, gzipSync(Buffer.from(JSON.stringify({ at: Date.now(), kind, fact }) + '\n')),
-    { mode: 0o600 });
+  const retain = (kind, fact) => {
+    if (sealed) throw Error('Console observation write after evidence seal');
+    appendFileSync(raw, gzipSync(Buffer.from(JSON.stringify({ at: Date.now(), kind, fact }) + '\n')), { mode: 0o600 });
+  };
+  const own = work => {
+    if (sealing || sealed) return Promise.reject(Error('Console observation started after evidence seal request'));
+    const task = work(); pending.add(task);
+    task.then(() => pending.delete(task), () => pending.delete(task));
+    return task;
+  };
   retain('binding', { pid: process.pid, source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null,
     source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null, wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null });
   await session.send('Network.enable'); await session.send('Page.enable');
+  await session.send('Performance.enable');
+  retain('initial-performance', await session.send('Performance.getMetrics'));
   const summary = (payload) => ({ scope: payload.scope, project_id: payload.project_id ?? null,
     version: payload.status?.platform_version, limited: payload.limited, reset_at: payload.reset_at,
     run_id: payload.history?.run_id ?? null, run_ids: Array.isArray(payload.runs) ? payload.runs.map(run => run.run_id) : undefined });
@@ -83,7 +94,7 @@ async function createObservation(page) {
       request.completed = true;
     } catch (error) { request.failure = String(error); retain('body-failure', { request, error: String(error) }); }
     })();
-    pending.add(work); work.finally(() => pending.delete(work));
+    pending.add(work); work.then(() => pending.delete(work), () => pending.delete(work));
   });
   session.on('Network.eventSourceMessageReceived', (event) => {
     const request = requests.get(event.requestId);
@@ -98,26 +109,35 @@ async function createObservation(page) {
   const pageError = error => retain('page-error', { message: error.message, stack: error.stack });
   page.on('pageerror', pageError);
   page.on('close', () => {
-    (async () => {
+    try {
       session.removeAllListeners();
       page.off('pageerror', pageError);
       page.off('request', started);
       page.off('requestfinished', finished);
       page.off('requestfailed', finished);
-      await Promise.all([...pending]);
       retain('page-close', { actual_page_closed: true });
+      resolveActualClose();
+    } catch (error) { rejectActualClose(error); }
+  });
+  const closed = () => {
+    if (!sealing) sealing = (async () => {
+      await actualClose;
+      while (pending.size) await Promise.all([...pending]);
+      retain('observation-sealed', { actual_page_closed: true, owned_operations_ended: true });
+      sealed = true;
       const bytes = readFileSync(raw);
       const receipt = { pid: process.pid, actual_page_closed: true,
         bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
       writeFileSync(path.join(retained, 'closed.json'), JSON.stringify(receipt), { mode: 0o600 });
       return receipt;
-    })().then(resolveClosed, rejectClosed);
-  });
-  const documentId = async () => {
+    })();
+    return sealing;
+  };
+  const documentId = () => own(async () => {
     const frame = (await session.send('Page.getFrameTree')).frameTree.frame;
     retain('current-document', { frame_id: frame.id, document_id: frame.loaderId, url: frame.url });
     return frame.loaderId;
-  };
+  });
   const completed = async (path) => {
     const id = await documentId(); return [...requests.values()].filter(r => r.document_id === id && r.path === path && r.completed && r.status === 200);
   };
@@ -157,19 +177,26 @@ async function createObservation(page) {
     const actual = new URL(page.url()).searchParams.get('project') || null; expect(actual).toBe(project);
     return scope(ingress, project);
   };
-  const failure = async (testInfo) => {
+  const failure = (testInfo, caughtError = null) => own(async () => {
+    // This synchronous marker precedes screenshot/CDP waits and canary cleanup.
+    // A later screenshot never replaces the actual assertion timing boundary.
+    retain('assertion-caught', { title: testInfo.title, url: page.url(),
+      error: caughtError ? { message: String(caughtError), stack: caughtError.stack } : null,
+      requests: [...requests.values()] });
     const results = await Promise.allSettled([
       page.screenshot({ path: path.join(retained, 'first-failure.png'), fullPage: true, animations: 'disabled' }),
-      page.content(), documentId(),
+      page.content(), documentId(), session.send('Performance.getMetrics'),
     ]);
     const facts = results.map((result, index) => result.status === 'fulfilled'
       ? { observation: index, status: 'retained', value: index === 0 ? createHash('sha256').update(result.value).digest('hex') : result.value }
       : { observation: index, status: 'UNAVAILABLE', reason: String(result.reason) });
-    retain('first-failure', { title: testInfo.title, status: testInfo.status, errors: testInfo.errors,
+    retain('first-failure', { title: testInfo.title, status: caughtError ? 'caught_failure' : testInfo.status,
+      errors: caughtError ? [{ message: String(caughtError), stack: caughtError.stack }] : testInfo.errors,
       observations: facts, requests: [...requests.values()] });
     if (results.some(result => result.status === 'rejected'))
       throw Error('First browser failure retention incomplete; original failure remains in runner report');
-  };
-  return { scope, quota, select, documentId, failure, closed: () => closedReceipt,
+  });
+  return { scope, quota, select, documentId, failure, closed,
+    privateFiles: () => ({ raw, receipt: path.join(retained, 'closed.json') }),
     records: () => [...requests.values()], pendingSnapshotReads: () => [...pendingSnapshotReads] };
 }

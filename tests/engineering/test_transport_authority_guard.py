@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 from pathlib import Path
+import re
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -15,6 +17,44 @@ from engineering_platform.platform_components import (
 
 class TransportAuthorityGuardTest(unittest.TestCase):
     """Source-level canaries for the supported ingress authority boundary."""
+
+    def assert_browser_server_program(self, fixture: str) -> None:
+        # Parse the literal argument actually passed to python3 -c, rather
+        # than accepting an import substring elsewhere in the fixture.
+        invoked = re.findall(
+            r'\bspawn\(\s*"python3"\s*,\s*\[\s*"-c"\s*,\s*("(?:[^"\\]|\\.)*")',
+            fixture, re.DOTALL,
+        )
+        programs = [json.loads(value) for value in invoked
+                    if "from engineering_platform.server import" in value]
+        self.assertEqual(len(programs), 1, "one actual canonical Server startup is required")
+        tree = ast.parse(programs[0])
+        required = {"_ConsoleHTTPServer", "_HealthHandler", "initialize"}
+        imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                   and node.module == "engineering_platform.server"]
+        self.assertTrue(any(required <= {item.name for item in node.names
+                                         if item.asname is None} for node in imports))
+        bindings = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "server"
+                            for target in node.targets)]
+        self.assertEqual(len(bindings), 1)
+        constructor = bindings[0].value
+        self.assertIsInstance(constructor, ast.Call)
+        self.assertIsInstance(constructor.func, ast.Name)
+        self.assertEqual(constructor.func.id, "_ConsoleHTTPServer")
+        self.assertEqual(len(constructor.args), 2)
+        self.assertIsInstance(constructor.args[1], ast.Name)
+        self.assertEqual(constructor.args[1].id, "_HealthHandler")
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        self.assertTrue(any(isinstance(node.func, ast.Name) and node.func.id == "initialize"
+                            for node in calls))
+        self.assertTrue(any(isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "serve_forever"
+                            and isinstance(node.func.value, ast.Name)
+                            and node.func.value.id == "server" for node in calls))
+        self.assertFalse(any(isinstance(node, ast.Assign)
+                             and any(isinstance(target, ast.Name) and target.id in required
+                                     for target in node.targets) for node in ast.walk(tree)))
 
     def test_supported_adapters_have_no_local_operational_authority(self) -> None:
         source_root = Path(__file__).resolve().parents[2] / "src" / "engineering_platform"
@@ -172,11 +212,26 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         """Dashboard browser evidence must not revive the retired direct listener."""
         root = Path(__file__).resolve().parents[2]
         fixture = (root / "tests" / "engineering" / "dashboard.spec.mjs").read_text(encoding="utf-8")
-        self.assertIn("from engineering_platform.server import _HealthHandler, initialize", fixture)
+        self.assert_browser_server_program(fixture)
         self.assertNotIn("engineering_platform.dashboard import " + "Dashboard" + "HTTPServer, handler", fixture)
         dashboard = (root / "src" / "engineering_platform" / "assets" / "dashboard.js").read_text(encoding="utf-8")
         self.assertNotIn('fetch("/api/open-local-directory"', dashboard)
         self.assertNotIn('fetch("/api/runtime-directory/open"', dashboard)
+
+    def test_browser_server_guard_rejects_missing_handler_and_replaced_or_unused_constructor(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        fixture = (root / "tests" / "engineering" / "dashboard.spec.mjs").read_text(encoding="utf-8")
+        mutations = (
+            ("_ConsoleHTTPServer, _HealthHandler, initialize", "_ConsoleHTTPServer, initialize"),
+            ("server = _ConsoleHTTPServer((", "server = ThreadingHTTPServer(("),
+            (", _HealthHandler); initialize", ", object); initialize"),
+            ("server.serve_forever()", "unrelated_listener.serve_forever()"),
+        )
+        for before, after in mutations:
+            with self.subTest(mutation=after):
+                self.assertIn(before, fixture)
+                with self.assertRaises(AssertionError):
+                    self.assert_browser_server_program(fixture.replace(before, after))
 
     def test_direct_dashboard_runtime_is_physically_absent(self) -> None:
         """The historical wrapper and its listener cannot be revived silently."""
