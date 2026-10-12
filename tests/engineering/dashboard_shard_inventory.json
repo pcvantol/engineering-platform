@@ -3106,13 +3106,13 @@
     },
     {
       "file": "dashboard.spec.mjs",
-      "title": "Engineering Status browser smoke \u203a binds telemetry pagination to actual initial recovery scoped-first=false",
+      "title": "binds telemetry pagination to actual initial recovery scoped-first=false",
       "expectedStatus": "passed",
       "annotations": []
     },
     {
       "file": "dashboard.spec.mjs",
-      "title": "Engineering Status browser smoke \u203a binds telemetry pagination to actual initial recovery scoped-first=true",
+      "title": "binds telemetry pagination to actual initial recovery scoped-first=true",
       "expectedStatus": "passed",
       "annotations": []
     }

@@ -7,7 +7,7 @@ Lane **r34**, plan **7**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
 State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
-Current correction consumption: **22**; administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
+Current correction consumption: **23**; administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
@@ -573,3 +573,10 @@ Extra Data alias failures stay failed/interrupted; actual physical per-process
 paths and independent all-mode admission remain required. New complete frozen
 candidate qualification and all final reviews/CI/protected delivery/Finalization
 and exact-final-main installed/browser/screens/cleanup gates remain OPEN.
+
+Correction23 preserves the rejected correction22 admission: its real unfiltered
+list check refused two new canonical identities that incorrectly included the
+describe prefix. The reporter binds the exact TestCase.title, not the displayed
+full title path. Only these two new identities are corrected; all original513
+contracts, outcomes, annotations and fixed topology remain enforced. No full
+correction22 qualification wave was started and no failed list is relabelled.
