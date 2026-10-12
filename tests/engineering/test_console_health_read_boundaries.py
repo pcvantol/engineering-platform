@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 from unittest.mock import patch
 
-from engineering_platform import server
+from engineering_platform import providers, server
 from tests.engineering import test_console_stream_access
 from tests.engineering.dashboard_run_evidence_fixture import IsolatedProviderTransport, RealTopologyFixture
 
@@ -16,12 +16,20 @@ class ConsoleHealthReadBoundaryTests(unittest.TestCase):
     def setUp(self):
         self.listener = test_console_stream_access.ConsoleStreamAccessTests()
         self.listener.setUp()
-        self.addCleanup(self.listener.doCleanups)
+        self.transport = None
+        self.addCleanup(self.close)
         self.transport = IsolatedProviderTransport()
         self.transport.start()
-        self.addCleanup(self.transport.close)
         self.root = self.listener.fixture.data
         self.original_database = self.listener.fixture.database.read_bytes()
+
+    def close(self):
+        # stop waits for the actual HTTP listener and request threads. Keep
+        # provider guards installed if this cannot establish their closure.
+        self.listener.stop()
+        if self.transport is not None:
+            self.transport.close()
+        self.listener.fixture.close()
 
     def read(self, path="/health"):
         try:
@@ -34,6 +42,18 @@ class ConsoleHealthReadBoundaryTests(unittest.TestCase):
     def assert_original(self):
         self.assertEqual(self.listener.fixture.database.read_bytes(), self.original_database)
         self.assertEqual(self.listener.errors, [])
+
+    def test_unknown_listener_stop_keeps_provider_guard_on_actual_live_requests(self):
+        original_guard = providers.GitHubProvider.github
+        with patch.object(self.listener, "stop", side_effect=RuntimeError("listener stop not established")):
+            with self.assertRaisesRegex(RuntimeError, "listener stop not established"):
+                self.close()
+        self.assertTrue(self.listener.thread.is_alive())
+        self.assertIs(providers.GitHubProvider.github, original_guard)
+        previous_calls = self.transport.github_quota_requests
+        self.assertEqual(self.read("/api/github-rate-limit"), (200, {"limited": False}))
+        self.assertEqual(self.transport.github_quota_requests, previous_calls + 1)
+        self.assert_original()
 
     def test_loss_between_identity_and_configuration_is_typed_and_restorable(self):
         moved = self.root.with_name("health-source-displaced")
