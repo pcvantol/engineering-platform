@@ -11,6 +11,10 @@ from engineering_platform import dashboard_browser_validation
 
 
 class DashboardBrowserValidationTest(unittest.TestCase):
+    def test_requested_reporter_cannot_bypass_complete_corpus_gate(self) -> None:
+        with self.assertRaisesRegex(ValueError, "complete-corpus reporter"):
+            dashboard_browser_validation._command("--reporter=line", "--shard=1/4")
+
     def test_ci_delegates_a_single_requested_shard(self) -> None:
         completed = MagicMock(returncode=0)
         with patch("engineering_platform.dashboard_browser_validation.subprocess.run", return_value=completed) as run:
@@ -18,7 +22,7 @@ class DashboardBrowserValidationTest(unittest.TestCase):
 
         self.assertEqual(
             run.call_args.args[0],
-            ("npx", "playwright", "test", "tests/engineering/dashboard.spec.mjs", "tests/engineering/dashboard_translation.integration.spec.mjs", "--workers=1", "--shard=2/4"),
+            ("npx", "playwright", "test", "tests/engineering/dashboard.spec.mjs", "tests/engineering/dashboard_translation.integration.spec.mjs", "tests/engineering/dashboard_run_evidence.integration.spec.mjs", "--reporter=line,tests/engineering/dashboard_shard_reporter.mjs", "--workers=1", "--shard=2/4"),
         )
 
     def test_local_batch_starts_four_one_worker_ci_shards(self) -> None:

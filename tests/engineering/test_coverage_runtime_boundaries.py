@@ -266,6 +266,12 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "server"
         server.initialize(self.root)
 
+    def _register_positive_console_project(self) -> None:
+        """Give only explicit positive fixtures real declared authority."""
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main(["bootstrap-topology", "--data-root", str(self.root),
+                                          "--project-id", "project-a", "--repository-id", "repo-a"]), 0)
+
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
@@ -640,6 +646,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_console_streams_emit_central_snapshot_then_close_cleanly(self) -> None:
         """Broken client sockets terminate streams without changing CENTRAL state."""
+        self._register_positive_console_project()
         handler, _ = self._in_process_console_handler("/api/events")
         handler.wfile = Mock()
         handler.wfile.write.side_effect = BrokenPipeError()
@@ -652,7 +659,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         fake_http = Mock()
         fake_worker = Mock(); fake_worker.wait_until_running.return_value = True
         fake_inbox = Mock(); fake_producer = Mock()
-        with patch("engineering_platform.server.http.server.ThreadingHTTPServer", return_value=fake_http), patch(
+        with patch("engineering_platform.server._ConsoleHTTPServer", return_value=fake_http), patch(
             "engineering_platform.lifecycle_worker.LifecycleWorker", return_value=fake_worker
         ), patch("engineering_platform.server.file_inbox.FileInboxService", return_value=fake_inbox), patch(
             "engineering_platform.server.dependabot_producer.DependabotService", return_value=fake_producer
@@ -892,6 +899,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             service.start.assert_called_once()
 
     def test_console_event_streams_are_central_and_disconnect_safely(self) -> None:
+        self._register_positive_console_project()
         for name, args in (
             ("_stream_no_project_console_events", ()),
             ("_stream_project_console_events", ("project-a",)),
@@ -972,6 +980,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_selected_project_console_reads_remain_central_when_checkout_is_absent(self) -> None:
         """Every selected-project read uses CENTRAL projections, never a bound root."""
+        self._register_positive_console_project()
         projects = [{"project_id": "project-a", "repository_id": "repo-a"}]
         snapshots = {"runs": [{"run_id": "run-a"}]}
         routes = (
@@ -2059,7 +2068,9 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_central_console_history_detail_uses_the_dashboard_history_contract(self) -> None:
         """CENTRAL terminal detail keeps its persisted read-only step flow."""
-        projects = [{"project_id": "project-a"}]
+        # Project enumeration is not authority. Register this positive fixture
+        # through the supported service; keep the production authority reader.
+        self._register_positive_console_project()
         lifecycle = {
             "run_id": "run-terminal", "available": True,
             "terminal_state": "BLOCKED",
@@ -2087,9 +2098,7 @@ class InstallationBoundaryTests(unittest.TestCase):
                 "url": "https://github.com/pcvantol/forge-mission-qualification/pull/18",
             }],
         }
-        with patch("engineering_platform.server._console_projects", return_value=projects), patch(
-            "engineering_platform.server._central_console_run_detail", return_value=detail
-        ):
+        with patch("engineering_platform.server._central_console_run_detail", return_value=detail):
             handler, responses = self._in_process_console_handler(
                 "/api/prompt-history/run-terminal/details",
                 headers={"X-Engineering-Platform-Project": "project-a"},
@@ -2108,6 +2117,16 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["reviewers"], detail["reviewers"])
         self.assertEqual(payload["assurance_reviews"], detail["assurance_reviews"])
         self.assertNotIn("run", payload)
+        # The same presentation fixture cannot restore withdrawn authority.
+        with sqlite_connection(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("UPDATE ep_project_registrations SET status='DISABLED' WHERE project_id='project-a'")
+        with patch("engineering_platform.server._central_console_run_detail", return_value=detail) as projection:
+            denied, denied_responses = self._in_process_console_handler(
+                "/api/prompt-history/run-terminal/details",
+                headers={"X-Engineering-Platform-Project": "project-a"})
+            denied._delegate_dashboard("do_GET")
+            projection.assert_not_called()
+        self.assertEqual(denied_responses[-1], (409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"}))
 
     def test_central_console_detail_projects_terminal_checkpoint_diagnostic(self) -> None:
         """Terminal blocking evidence is visible without consulting a log fallback."""
@@ -2548,6 +2567,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
     def test_console_streams_emit_central_payloads_then_stop_on_disconnect(self) -> None:
         """SSE streams emit Server projections and treat a lost browser as non-mutating."""
+        self._register_positive_console_project()
         def stream(method: str, *args: object) -> bytes:
             handler = object.__new__(server._HealthHandler)
             handler.server = SimpleNamespace(data_root=self.root)

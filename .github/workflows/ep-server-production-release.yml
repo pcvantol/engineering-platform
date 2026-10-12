@@ -159,7 +159,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v22
         with: {node-version: '22'}
       - run: python3 -m pip install . && npm ci && npx playwright install --with-deps chromium
-      - run: npm run test:engineering-dashboard -- --reporter=dot
+      # Execute the same bounded four-part coordinator as local qualification;
+      # each child sets its own CI mode and keeps the existing retry contract.
+      - run: CI='' npm run test:engineering-dashboard
       - run: npm run test:ui-localization && node --test tests/engineering/ui_localization_contract.test.mjs
 
   retain-qualified-release-operation:

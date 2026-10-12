@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./dashboard_coverage_fixture.mjs";
+import { retainWorkerLogs, finishWorkerLogs } from "./dashboard_worker_logs.mjs";
+import { observeConsoleDocument } from "./dashboard_document_observer.mjs";
 import {
   createTranslator,
   DASHBOARD_MESSAGES,
@@ -71,12 +74,13 @@ async function startDashboard(root, environment) {
       "python3",
       [
         "-c",
-        "from http.server import ThreadingHTTPServer; from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'epdata.sqlite'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
+        "from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _ConsoleHTTPServer, _HealthHandler, initialize; root = Path(sys.argv[1]); server = _ConsoleHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'epdata.sqlite'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
       { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] },
     );
-    let output = "", errors = "";
+    retainWorkerLogs(process, test.info(), "legacy-dashboard");
+    let output = "";
     const timeout = setTimeout(() => {
       process.kill("SIGTERM");
       reject(new Error("Engineering Status test server did not report a port in time."));
@@ -87,7 +91,7 @@ async function startDashboard(root, environment) {
     });
     process.once("exit", (code) => {
       clearTimeout(timeout);
-      reject(new Error(`Engineering Status test server exited before startup (code ${code}): ${errors.trim() || "no stderr"}`));
+      reject(new Error(`Engineering Status test server exited before startup (code ${code}): raw worker logs retained privately`));
     });
     process.stdout.on("data", (chunk) => {
       output += chunk;
@@ -96,7 +100,6 @@ async function startDashboard(root, environment) {
       clearTimeout(timeout);
       resolve({ process, url: `http://127.0.0.1:${port}/?project=dashboard-fixture` });
     });
-    process.stderr.on("data", (chunk) => { errors += chunk; });
   });
 }
 
@@ -117,9 +120,15 @@ test.beforeAll(async () => {
   installationRoot = mkdtempSync(path.join(tmpdir(), "djconnect-dashboard-authority-"));
   const isolatedHome = path.join(installationRoot, "home");
   mkdirSync(isolatedHome, { recursive: true });
+  const quotaEnvironment = { ...process.env };
+  delete quotaEnvironment.GH_TOKEN;
+  delete quotaEnvironment.GITHUB_TOKEN;
+  delete quotaEnvironment.GH_ENTERPRISE_TOKEN;
+  delete quotaEnvironment.GITHUB_ENTERPRISE_TOKEN;
   const server = await startDashboard(dashboardRoot, {
-    ...process.env,
+    ...quotaEnvironment,
     HOME: isolatedHome,
+    GH_CONFIG_DIR: path.join(isolatedHome, "gh-qualification"),
     XDG_DATA_HOME: path.join(installationRoot, ".local", "share"),
     ENGINEERING_PLATFORM_TEST_INSTALLATION_ROOT: installationRoot,
   });
@@ -178,6 +187,7 @@ test.afterAll(async () => {
     dashboard.kill("SIGTERM");
     await exited;
   }
+  if (dashboard) await finishWorkerLogs(dashboard, test.info());
   for (const directory of [dashboardRoot, installationRoot]) {
     if (!directory) continue;
     let lastError;
@@ -194,6 +204,366 @@ async function openTitlebarOptions(page) {
   if (await content.isHidden()) {
     await page.getByTestId("titlebar-options-toggle").click();
   }
+}
+
+test("binds iPhone configuration failure and native recovery to actual documents", async ({ page }) => {
+  const observer = await observeConsoleDocument(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  let requests = 0;
+  await page.route("**/api/configuration", (route) =>
+    ++requests === 1 ? route.abort("connectionreset") : route.continue());
+  await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+  const language = await page.locator("html").getAttribute("lang");
+  await expect(page.locator("#configurationStatus")).toHaveText(DASHBOARD_MESSAGES[language]["configuration.load_failed"]);
+  const initialDocument = await observer.documentId();
+  await expect.poll(() => observer.records().some((request) =>
+    request.path === "/api/configuration" && request.document_id === initialDocument
+    && request.failure && !request.completed)).toBe(true);
+  expect(requests).toBe(1);
+  const configurationLoaded = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/configuration" && response.status() === 200);
+  await openTitlebarOptions(page);
+  await Promise.all([page.waitForEvent("domcontentloaded"), page.locator("#pageRefresh").click()]);
+  const response = await configurationLoaded, packet = await response.json();
+  expect(response.request().frame()).toBe(page.mainFrame());
+  await expect(page.locator("#configurationLogRetention")).toHaveAttribute("data-saved-value", String(packet.log_retention_days));
+  const restoredDocument = await observer.documentId();
+  expect(restoredDocument).not.toBe(initialDocument);
+  const hash = createHash("sha256").update(await response.body()).digest("hex");
+  await expect.poll(() => observer.records().some((request) =>
+    request.path === "/api/configuration" && request.document_id === restoredDocument
+    && request.status === 200 && request.completed && request.response_sha256 === hash)).toBe(true);
+  // Neither the previous document's failed request nor startup's settled
+  // fallback can satisfy the restored document's configuration binding.
+  expect(observer.records().some((request) => request.path === "/api/configuration"
+    && request.document_id === initialDocument && request.completed)).toBe(false);
+  await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+  const layout = await page.locator("#configurationLogRetention + .dashboard-select-picker").evaluate((element) => {
+    const label = element.parentElement.querySelector(":scope > .label").getBoundingClientRect();
+    const bounds = element.getBoundingClientRect(), style = getComputedStyle(element.querySelector("button"));
+    return { labelBottom: Math.round(label.bottom), pickerTop: Math.round(bounds.top),
+      width: Math.round(bounds.width), backgroundImage: style.backgroundImage, boxShadow: style.boxShadow };
+  });
+  expect(layout.pickerTop).toBeGreaterThanOrEqual(layout.labelBottom);
+  expect(layout.width).toBeLessThanOrEqual(224);
+  expect(layout.backgroundImage).toBe("none");
+  expect(layout.boxShadow).toBe("none");
+});
+
+test("binds all five synthetic drift fields before real scope reconciliation", async ({ page }) => {
+  const observer = await observeConsoleDocument(page);
+  let requests = 0, release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/dashboard-snapshot", async (route) => {
+    if (++requests === 1) return route.abort("connectionreset");
+    await held;
+    await route.continue();
+  });
+  try {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    await expect.poll(() => requests).toBeGreaterThan(1);
+    await page.locator("#autoRefresh").uncheck();
+    const language = await page.locator("html").getAttribute("lang");
+    const documentId = await observer.documentId();
+    const drift = { drift_id: "managed-branch-drift", severity: "BLOCKING", affected_component: "managed_expected_branch",
+      expected_value: "managed_expected_branch: PASS", observed_value: "Managed target is not on the expected branch main.",
+      resolution_recommendation: "Switch the repository to main before submitting work." };
+    const capture = () => page.evaluate((current) => {
+      r({ watcher_state: "WORKSPACE_PREFLIGHT_FAILED", current_phase: "INITIALIZE",
+        diagnostic: "Workspace preflight blocked by managed_expected_branch." }, { current_drift: current });
+      return ["driftSeverity", "driftComponent", "driftExpected", "driftObserved", "driftResolution"]
+        .map((id) => document.getElementById(id).textContent.replace(/\s+/g, " ").trim());
+    }, drift);
+    const expected = ["technical.drift.severity.blocking", "technical.drift.component.managed_expected_branch",
+      "technical.drift.expected.managed_expected_branch", "technical.drift.observed.managed_expected_branch",
+      "technical.drift.resolution.managed_expected_branch"].map((key) => DASHBOARD_MESSAGES[language][key].replace("{branch}", "main"));
+    const projection = await capture();
+    expect(projection).toEqual(expected);
+    const loaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+    release();
+    expect(await (await loaded).json()).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+    await expect(page.locator("#driftResolution")).not.toHaveText(projection[4]);
+    expect(await observer.documentId()).toBe(documentId);
+    expect(projection).toEqual(expected);
+    await selectDashboardLocale(page, language === "de" ? "en" : "de");
+    expect(await capture()).not.toEqual(expected);
+  } finally {
+    release();
+  }
+});
+
+async function captureRuntimeTransportProjection(page) {
+  return page.evaluate(() => {
+    r({ watcher_state: "ENGINEERING_RUN_ACTIVE" }, {
+      execution_host: { runtime: "codex_cli", runtime_prompt_transport: "icloud_inbox" },
+    });
+    const runtime = document.getElementById("executionHostRuntime");
+    const transport = document.getElementById("executionHostTransport");
+    return [runtime.textContent.trim(), transport.textContent.trim(),
+      runtime.getAttribute("title"), transport.getAttribute("title")];
+  });
+}
+
+test("binds all runtime transport locale fields before real scope reconciliation", async ({ page }) => {
+  const observer = await observeConsoleDocument(page);
+  let requests = 0, release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/dashboard-snapshot", async (route) => {
+    if (++requests === 1) return route.abort("connectionreset");
+    await held;
+    await route.continue();
+  });
+  try {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    await expect.poll(() => requests).toBeGreaterThan(1);
+    await page.locator("#autoRefresh").uncheck();
+    const documentId = await observer.documentId();
+    const projections = [];
+    for (const language of SUPPORTED_LOCALES) {
+      await selectDashboardLocale(page, language);
+      const expected = [DASHBOARD_MESSAGES[language]["technical.runtime_value.codex_cli"],
+        DASHBOARD_MESSAGES[language]["technical.runtime_transport_value.icloud_inbox"],
+        "codex_cli", "icloud_inbox"];
+      const actual = await captureRuntimeTransportProjection(page);
+      expect(actual).toEqual(expected);
+      projections.push({ language, actual, expected });
+    }
+    const loaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+    release();
+    const response = await loaded, packet = await response.json();
+    expect(packet).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+    expect(packet.execution_host).toBeUndefined();
+    expect(response.request().frame()).toBe(page.mainFrame());
+    const hash = createHash("sha256").update(await response.body()).digest("hex");
+    await expect.poll(() => observer.records().some((request) =>
+      request.path === "/api/dashboard-snapshot" && request.document_id === documentId
+      && request.status === 200 && request.completed && request.response_sha256 === hash)).toBe(true);
+    await expect(page.locator("#executionHostTransport")).toHaveText(DASHBOARD_MESSAGES.es["format.unavailable"]);
+    await expect(page.locator("#executionHostTransport")).toHaveAttribute("title", "");
+    expect(await observer.documentId()).toBe(documentId);
+    for (const projection of projections) expect(projection.actual).toEqual(projection.expected);
+    await selectDashboardLocale(page, "en");
+    expect(await captureRuntimeTransportProjection(page)).not.toEqual(projections.at(-1).expected);
+    const wrongTitle = await page.evaluate(() => {
+      r({ watcher_state: "ENGINEERING_RUN_ACTIVE" }, {
+        execution_host: { runtime: "codex_cli", runtime_prompt_transport: "wrong_transport" },
+      });
+      return document.getElementById("executionHostTransport").getAttribute("title");
+    });
+    expect(wrongTitle).not.toBe("icloud_inbox");
+  } finally {
+    release();
+  }
+});
+
+test("real health replacement exposes disconnected style observations", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const observer = await observeConsoleDocument(page);
+  let release, requests = 0, oldArray;
+  const held = new Promise(resolve => { release = resolve; });
+  const handler = async route => { requests++; await held; await route.continue(); };
+  await page.route("**/health*", handler);
+  const cssLoaded = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/assets/dashboard.css" && response.status() === 200);
+  try {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const css = await cssLoaded;
+    expect(await css.body()).toEqual(readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css")));
+    expect(css.request().frame()).toBe(page.mainFrame());
+    await expect.poll(() => requests).toBeGreaterThan(0);
+    const documentId = await observer.documentId();
+    const capture = (seed = false) => page.evaluate(seed => {
+      if (seed) {
+        document.getElementById("platformHealth").open = true;
+        renderPlatformHealth({ components: {
+          dashboard: { healthy: true, detail: "HTTP-dashboard reageert", version: "2.0.0" },
+          inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen", version: "2.0.0" },
+        }});
+      }
+      return [...document.querySelectorAll("#platformHealth > summary, .platform-health__component")].map(element => {
+        const style = getComputedStyle(element);
+        return { connected: element.isConnected, backgroundColor: style.backgroundColor,
+          backgroundImage: style.backgroundImage, backdropFilter: style.backdropFilter };
+      });
+    }, seed);
+    const before = await capture(true);
+    expect(before).toHaveLength(3);
+    expect(before.every(surface => surface.connected && surface.backgroundImage === "none"
+      && surface.backdropFilter === "none" && surface.backgroundColor !== "rgba(0, 0, 0, 0)")).toBe(true);
+    // Preserve real references across the actual query/evaluate gap. No cloned
+    // styles, detached-node filter or manufactured successful HTTP response.
+    oldArray = await page.evaluateHandle(() => [...document.querySelectorAll("#platformHealth > summary, .platform-health__component")]);
+    const loaded = page.waitForResponse(response => new URL(response.url()).pathname === "/health");
+    release();
+    const response = await loaded, packet = await response.json();
+    expect([200, 503]).toContain(response.status());
+    expect(Object.keys(packet.components).length).toBeGreaterThan(2);
+    expect(response.request().frame()).toBe(page.mainFrame());
+    const hash = createHash("sha256").update(await response.body()).digest("hex");
+    await expect.poll(() => observer.records().some(request => request.path === "/health"
+      && request.document_id === documentId && request.status === response.status()
+      && request.completed && request.response_sha256 === hash)).toBe(true);
+    await expect.poll(() => page.locator(".platform-health__component").count()).toBeGreaterThan(2);
+    const stale = await oldArray.evaluate(elements => elements.map(element => {
+      const style = getComputedStyle(element);
+      return { connected: element.isConnected, backgroundImage: style.backgroundImage };
+    }));
+    expect(stale.filter(surface => !surface.connected && surface.backgroundImage === "")).toHaveLength(2);
+    expect(stale.every(surface => surface.backgroundImage === "none")).toBe(false);
+    const current = await capture();
+    expect(current.length).toBeGreaterThan(2);
+    expect(current.every(surface => surface.connected && surface.backgroundImage === "none"
+      && surface.backdropFilter === "none" && surface.backgroundColor !== "rgba(0, 0, 0, 0)")).toBe(true);
+    expect(await observer.documentId()).toBe(documentId);
+  } finally {
+    release();
+    await page.unroute("**/health*", handler);
+    if (oldArray) await oldArray.dispose();
+  }
+});
+
+async function waitForAppliedDashboardProjectSnapshot(page) {
+  const observer = await observeConsoleDocument(page);
+  const language = await page.locator("html").getAttribute("lang");
+  const messages = DASHBOARD_MESSAGES[language];
+  const documentId = await observer.documentId();
+  const previousRequests = new Set(observer.records().map(request => request.request_id));
+  await page.locator("#autoRefresh").setChecked(false);
+  await expect(page.locator("#updateMode")).toHaveText(messages["refresh.off"]);
+  const actualResponse = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+  await page.locator("#autoRefresh").setChecked(true);
+  const response = await actualResponse;
+  const packet = await response.json();
+  expect(packet).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+  expect(response.request().frame()).toBe(page.mainFrame());
+  // Only successful applyDashboardSnapshot sets the re-enable read's success
+  // mode. Readiness alone deliberately permits a failed initial-read fallback.
+  await expect(page.locator("#updateMode")).toHaveText(messages["refresh.connected"]);
+  const rawHash = createHash("sha256").update(await response.body()).digest("hex");
+  let bound;
+  await expect.poll(() => {
+    bound = observer.records().find(request => !previousRequests.has(request.request_id)
+      && request.document_id === documentId && request.path === "/api/dashboard-snapshot"
+      && request.project_header === "dashboard-fixture" && request.status === 200
+      && request.completed && request.response_sha256 === rawHash);
+    return Boolean(bound);
+  }).toBe(true);
+  await observer.scope("http", "dashboard-fixture");
+  expect(await observer.documentId()).toBe(documentId);
+  return { document_id: documentId, request_id: bound.request_id, response_sha256: rawHash,
+    applied_ui_mode: messages["refresh.connected"] };
+}
+
+async function ownSyntheticProjectionReadSpan(page) {
+  // This controls only a declared renderer fixture, never stored-run evidence.
+  // Settle a real initial read, then hold subsequent real transport while the
+  // original native interaction/assertions consume their synthetic projection.
+  const applied = await waitForAppliedDashboardProjectSnapshot(page);
+  const observer = await observeConsoleDocument(page);
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const owned = new Set(), continuations = new Set();
+  const pattern = "**/api/dashboard-snapshot*";
+  const handler = async route => {
+    owned.add(route.request());
+    const work = (async () => { await held; await route.continue(); })();
+    continuations.add(work);
+    work.then(() => continuations.delete(work), () => continuations.delete(work));
+    await work;
+  };
+  await page.route(pattern, handler);
+  try {
+    // Native EventSource failure supplies the next real read. No private
+    // application call, fabricated response, retry or timeout increase.
+    await expect.poll(() => owned.size).toBeGreaterThan(0);
+    await expect.poll(() => observer.pendingSnapshotReads().every(request => owned.has(request))).toBe(true);
+    expect(await observer.documentId()).toBe(applied.document_id);
+  } catch (error) {
+    release();
+    await page.unroute(pattern, handler);
+    await Promise.all([...continuations]);
+    throw error;
+  }
+  return {
+    async reconcile(selector) {
+      const loaded = page.waitForResponse(response =>
+        new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+      release();
+      const response = await loaded, packet = await response.json();
+      expect(response.request().frame()).toBe(page.mainFrame());
+      expect(packet).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+      expect(packet.status.lifecycle).toBeUndefined();
+      const hash = createHash("sha256").update(await response.body()).digest("hex");
+      await expect.poll(() => observer.records().some(request =>
+        request.path === "/api/dashboard-snapshot" && request.document_id === applied.document_id
+        && request.status === 200 && request.completed && request.response_sha256 === hash)).toBe(true);
+      await expect(page.locator(selector)).toHaveCount(0);
+      expect(await observer.documentId()).toBe(applied.document_id);
+      await expect.poll(() => observer.pendingSnapshotReads().length).toBe(0);
+    },
+    async close() {
+      release();
+      await page.unroute(pattern, handler);
+      await Promise.all([...continuations]);
+    },
+  };
+}
+
+for (const family of ["component-log-row", "prompt-history-row", "telemetry-row"]) {
+  for (const motion of ["reduce", "no-preference"]) {
+    test(`interactive row surface motion contract ${family} ${motion}`, async ({ page }) => {
+      // A CSS projection contract complements the actual generated-row
+      // selection/copy and stored-history cases; it is not a stored-run proof.
+      await page.emulateMedia({ reducedMotion: motion });
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.evaluate((rowClass) => {
+        const table = document.createElement("table");
+        table.id = "rowSurfaceMotionContract";
+        table.className = "log-table";
+        table.style.cssText = "position:fixed;left:80px;top:240px;width:800px;z-index:10000";
+        const body = table.createTBody(), row = body.insertRow();
+        row.className = rowClass;
+        row.style.setProperty("--dashboard-selected-row-color", "#f29ab2");
+        for (const text of ["first", "second", "third"]) row.insertCell().textContent = text;
+        document.body.append(table);
+      }, family);
+      const row = page.locator("#rowSurfaceMotionContract tr");
+      await row.hover();
+      const surface = await row.evaluate((element) => ({
+        hovered: element.matches(":hover"),
+        properties: Array.from(element.cells, (cell) => getComputedStyle(cell).transitionProperty),
+        colors: Array.from(element.cells, (cell) => getComputedStyle(cell).backgroundColor),
+        backgroundAnimations: Array.from(element.cells).flatMap((cell) => cell.getAnimations())
+          .filter((animation) => animation instanceof CSSTransition && animation.transitionProperty === "background-color").length,
+      }));
+      expect(surface.hovered).toBe(true);
+      if (motion === "reduce") {
+        expect(surface.properties).toEqual(["none", "none", "none"]);
+        expect(surface.backgroundAnimations).toBe(0);
+        expect(new Set(surface.colors).size).toBe(1);
+      } else {
+        expect(surface.properties).not.toContain("none");
+      }
+    });
+  }
+}
+
+async function captureIdleLocaleProjection(page, executionLabel) {
+  return page.evaluate((label) => {
+    r({ watcher_state: "WATCHER_IDLE" }, {});
+    const watcher = document.querySelector("#watcher");
+    const normalize = value => String(value).trim().replace(/\s+/g, " ");
+    return {
+      fieldCount: [...document.querySelectorAll(".field")].filter(field => field.textContent.includes(label)).length,
+      watcher: normalize(watcher.textContent),
+      label: normalize(watcher.closest("p.field").querySelector(".label").textContent),
+    };
+  }, executionLabel);
 }
 
 async function selectDashboardLocale(page, language, { waitForInitialProjection = true } = {}) {
@@ -912,7 +1282,7 @@ test.describe("Engineering Status browser smoke", () => {
         { path: "/tmp/open", branch: "codex/open", decision: "keep", reason: "pull_request_open", removable: false, pull_request: { number: 967, url: "https://github.com/pcvantol/djconnect/pull/967", state: "OPEN" } },
       ],
     } }));
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", workspace_worktrees: projection } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
     await page.locator("#autoRefresh").uncheck();
@@ -938,7 +1308,7 @@ test.describe("Engineering Status browser smoke", () => {
       { path: "/workspace", branch: "main", commit: "123456789abc" },
       { path: "/tmp/merged-worktree", branch: "codex/merged-worktree", commit: "abcdef123456" },
     ] };
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: worktreeProjection } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", workspace_worktrees: worktreeProjection } }));
     await page.route("**/api/worktree-removal-analysis", (route) => route.fulfill({ json: { available: true, worktrees: [
       { path: "/workspace", branch: "main", decision: "baseline", reason: "main_baseline", removable: false },
       { path: "/tmp/merged-worktree", branch: "codex/merged-worktree", decision: "removable", reason: "safe_to_remove", removable: true, pull_request: { number: 964, url: "https://github.com/pcvantol/djconnect/pull/964", state: "MERGED" } },
@@ -998,7 +1368,7 @@ test.describe("Engineering Status browser smoke", () => {
       { path: "/workspace", branch: "main", commit: "123456789abc" },
       { path: "/tmp/selected-worktree", branch: "codex/selected-worktree", commit: "abcdef123456" },
     ] };
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", workspace_worktrees: projection } }));
     let switchPayload = null;
     await page.route("**/api/workspace-switch-to-worktree", async (route) => {
       switchPayload = JSON.parse(route.request().postData());
@@ -1132,10 +1502,19 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("stacks flat log settings pulldowns below their labels on iPhone", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    const configurationLoaded = page.waitForResponse("**/api/configuration");
-    const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
+    const configurationLoaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/configuration" && response.status() === 200
+      && response.request().frame() === page.mainFrame());
+    const snapshotLoaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200
+      && response.request().frame() === page.mainFrame());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await Promise.all([configurationLoaded, snapshotLoaded]);
+    const [configurationResponse] = await Promise.all([configurationLoaded, snapshotLoaded]);
+    const configuration = await configurationResponse.json();
+    // Settled startup also includes visible configuration failures. Require
+    // the successful response to have been applied by the actual parser.
+    await expect(page.locator("#configurationLogRetention")).toHaveAttribute(
+      "data-saved-value", String(configuration.log_retention_days));
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
 
     const picker = page.locator("#configurationLogRetention + .dashboard-select-picker");
@@ -1318,7 +1697,7 @@ test.describe("Engineering Status browser smoke", () => {
     // let the live event stream replace it with the test dashboard's own
     // (usually empty) background snapshot while the page is hydrating.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: {}, rate_limits: { provider: "Codex CLI", provider_version: "0.149.0", windows: [{ label: "5-hour window", used_percent: 20, resets_at: 1 }], reset_credits: 0 },
     } }));
     await page.route("**/api/configuration", async (route) => {
@@ -1356,7 +1735,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Keep the controlled quota fixture authoritative for this test; the
     // production SSE stream is covered independently by stream tests.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE" }, rate_limits: { windows: [{ label: "5-hour window", used_percent: 53 }] },
     } }));
     await page.route("**/api/configuration", (route) => route.fulfill({ json: {
@@ -1380,7 +1759,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("shows the capacity reserve banner and hides it immediately after lowering the reserve", async ({ page }) => {
     const writes = [];
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE" },
       rate_limits: { windows: [{ label: "5-hour window", used_percent: 80 }] },
     } }));
@@ -1824,7 +2203,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/worktree-removal-analysis", (route) => route.fulfill({ json: {
       available: true, worktrees: [],
     } }));
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       workspace_worktrees: { available: true, worktrees: [{ path: "/workspace", branch: "main", commit: "123456789abc" }] },
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -1851,7 +2230,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("translates reviewer and operational machine codes in every supported locale", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     for (const language of SUPPORTED_LOCALES) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -1983,7 +2362,7 @@ test.describe("Engineering Status browser smoke", () => {
     test.slow();
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const dashboardSource = readFileSync(
       path.join(repository, "src/engineering_platform/assets/dashboard.js"),
@@ -2192,11 +2571,48 @@ test.describe("Engineering Status browser smoke", () => {
     for (const language of SUPPORTED_LOCALES) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await selectDashboardLocale(page, language);
-      await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {}));
-      await expect(page.locator(".field").filter({ hasText: DASHBOARD_MESSAGES[language]["ui.execution_status"] })).toHaveCount(1);
-      await expect(page.locator("#watcher")).toHaveText(DASHBOARD_MESSAGES[language]["state.WATCHER_IDLE"]);
-      await expect(page.locator("#watcher").locator("xpath=ancestor::p[contains(@class, 'field')][1]//span[contains(@class, 'label')]")).toHaveText(DASHBOARD_MESSAGES[language]["ui.execution_status"]);
+      // This case checks an explicitly synthetic renderer input. Capture all
+      // three original DOM predicates in its synchronous render turn; a later
+      // authoritative background read may legitimately display other state.
+      const projection = await captureIdleLocaleProjection(page, DASHBOARD_MESSAGES[language]["ui.execution_status"]);
+      expect(projection.fieldCount).toBe(1);
+      expect(projection.watcher).toBe(DASHBOARD_MESSAGES[language]["state.WATCHER_IDLE"]);
+      expect(projection.label).toBe(DASHBOARD_MESSAGES[language]["ui.execution_status"]);
     }
+  });
+
+  test("keeps synthetic locale predicates in one render turn across an actual background read", async ({ page }, testInfo) => {
+    const observer = await observeConsoleDocument(page);
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    const language = await page.locator("html").getAttribute("lang");
+    const messages = DASHBOARD_MESSAGES[language];
+    const documentId = await observer.documentId();
+    await page.locator("#autoRefresh").setChecked(false);
+    const projection = await captureIdleLocaleProjection(page, messages["ui.execution_status"]);
+    const assertProjection = value => {
+      expect(value.fieldCount).toBe(1);
+      expect(value.watcher).toBe(messages["state.WATCHER_IDLE"]);
+      expect(value.label).toBe(messages["ui.execution_status"]);
+    };
+    assertProjection(projection);
+    const actualResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+    await page.locator("#autoRefresh").setChecked(true);
+    const packet = await (await actualResponse).json();
+    await expect(page.locator("#watcher")).not.toHaveText(projection.watcher);
+    expect(await observer.documentId()).toBe(documentId);
+    assertProjection(projection);
+    // A genuine wrong presentation context must still fail the same predicate.
+    const otherLanguage = language === "de" ? "en" : "de";
+    await selectDashboardLocale(page, otherLanguage);
+    const wrongContext = await captureIdleLocaleProjection(page, messages["ui.execution_status"]);
+    expect(() => assertProjection(wrongContext)).toThrow();
+    const output = testInfo.outputPath("locale-render-turn-cause.json");
+    writeFileSync(output, JSON.stringify({ document_id: documentId, projection,
+      authoritative_response_sha256: createHash("sha256").update(JSON.stringify(packet)).digest("hex"),
+      actual_background_response_completed: true, wrong_locale: otherLanguage, wrong_context: wrongContext,
+      original_asynchronous_predicate_overwritten: true, observed_request_count: observer.records().length }));
+    await testInfo.attach("locale-render-turn-cause", { path: output, contentType: "application/json" });
   });
 
   test("copies chat text synchronously for iOS Safari", async ({ page }) => {
@@ -2345,11 +2761,12 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("formats structured execution-context snapshots as readable fields", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
       run_id: "inbox-context", status: "COMPLETE", title: "Context prompt", executed_at: "2026-08-30T08:00:00Z",
     }] } }));
     await page.route("**/api/prompt-history/inbox-context/details", (route) => route.fulfill({ json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
       history: {
         run_id: "inbox-context", status: "COMPLETE", title: "Context prompt", executed_at: "2026-08-30T08:00:00Z",
         execution_context: {
@@ -2386,6 +2803,7 @@ test.describe("Engineering Status browser smoke", () => {
     }] } }));
     await page.route("**/api/prompt-history/inbox-modal/details", (route) => route.fulfill({
       json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
         history: {
           run_id: "inbox-modal",
           status: "BLOCKED",
@@ -2578,6 +2996,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: runId, status: "BLOCKED", title: "Status recovery", executed_at: "2026-08-17T05:42:00Z",
     }] } }));
     await page.route(`**/api/prompt-history/${runId}/details`, (route) => route.fulfill({ json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
       history: { run_id: runId, status: "BLOCKED", title: "Status recovery" },
       lifecycle: {
         run_id: runId,
@@ -2605,6 +3024,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: runId, status: "COMPLETE", title: "Deeplink prompt", executed_at: "2026-08-04T08:00:00Z",
     }] } }));
     await page.route(`**/api/prompt-history/${runId}/details`, (route) => route.fulfill({ json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
       history: { run_id: runId, status: "COMPLETE", title: "Deeplink prompt" }, execution: {}, evidence: [],
     } }));
 
@@ -2651,7 +3071,7 @@ test.describe("Engineering Status browser smoke", () => {
       runs: [{ run_id: "inbox-fixture", status: "COMPLETE", title: "Fixture" }],
     } }));
     await page.route("**/api/prompt-history/inbox-row-focus/details", (route) => route.fulfill({
-      json: { history: { run_id: "inbox-row-focus", status: "COMPLETE", title: "Focused row" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", history: { run_id: "inbox-row-focus", status: "COMPLETE", title: "Focused row" } },
     }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -2729,7 +3149,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses the active-execution card surface for lifecycle and execution context", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.setViewportSize({ width: 920, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -2797,7 +3217,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps active human producer provenance visible in the Central context", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -2823,7 +3243,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("refreshes available AI capacity with a selected project", async ({ page }) => {
     let requests = 0;
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/provider-capacity", async (route) => {
       requests += 1;
       await route.fulfill({ json: {
@@ -2841,7 +3261,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("translates a host-owned provider deadline in active and historical views", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const diagnostic = "Provider action exceeded the 15-minute host-owned deadline.";
     await page.evaluate((reason) => {
@@ -2860,7 +3280,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("translates execution phase in the active context and historical status", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -2900,7 +3320,7 @@ test.describe("Engineering Status browser smoke", () => {
       "Leg een begrensde beheerde dashboard-acceptatiekwalificatie vast.",
     ];
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/dashboard-translate", async (route) => {
       expect(route.request().method()).toBe("POST");
       expect(await route.request().postDataJSON()).toEqual({ locale: "nl", texts: [business, engineering, action] });
@@ -3008,7 +3428,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps lease-lost finalization visible for safe recovery", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_STALE",
@@ -3029,7 +3449,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("explains the managed and Genesis execution modes from the active execution", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: {
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {
         watcher_state: "ENGINEERING_RUN_ACTIVE",
         run_id: "inbox-execution-mode",
         prompt_title: "Execution mode fixture",
@@ -3074,7 +3494,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("renders execution-lifecycle nodes without button chrome", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3125,7 +3545,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses green only for the terminal complete lifecycle result", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "JOB_COMPLETED",
@@ -3149,7 +3569,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses amber only for an operator merge wait, not ordinary active work", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "WAITING_FOR_OPERATOR_MERGE",
@@ -3179,7 +3599,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses neutral connectors for lifecycle steps not yet reached", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3207,7 +3627,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses a decorative rocket only for the lifecycle start boundary", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3232,7 +3652,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows pull-request check repair and keeps Merge visibly blocked", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3265,7 +3685,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows localized local-validation iterations as lifecycle evidence", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3300,7 +3720,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("refreshes an open validation popup and separates repeated validation passes", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const activeStep = {
       id: "LOCAL_REPOSITORY_VALIDATION",
@@ -3347,7 +3767,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("projects specialist reviewers and implementation result into their step popups", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "step-evidence", github_repository: "pcvantol/forge",
@@ -3399,7 +3819,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("places a visual divider between repair rounds", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "repair-divider",
@@ -3422,7 +3842,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("places finalization pull-request repair after Finalization and before its merge", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3461,7 +3881,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("places the estimate directly below execution identity and before the lifecycle", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3493,7 +3913,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("returns active-execution blocks to two columns when their container permits it", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.setViewportSize({ width: 920, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -3598,7 +4018,7 @@ test.describe("Engineering Status browser smoke", () => {
     // update may otherwise replace the injected lifecycle while measurements
     // are pending, making this visual contract nondeterministic.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3666,7 +4086,7 @@ test.describe("Engineering Status browser smoke", () => {
     // The fixture owns this lifecycle; a delayed server-push snapshot must not
     // replace it between injection and the interaction assertion.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3710,7 +4130,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("explains translated stale timing without downgrading a completed execution result", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     for (const language of SUPPORTED_LOCALES) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -3743,7 +4163,7 @@ test.describe("Engineering Status browser smoke", () => {
     // This fixture owns the lifecycle projection; an asynchronous server
     // snapshot must not replace its node while the click is being asserted.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3818,7 +4238,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("localizes repair audit sentinel values", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -3841,7 +4261,7 @@ test.describe("Engineering Status browser smoke", () => {
     const source = "No changed behavior or executable test surface exists, so no regression test was applicable.";
     const translated = "Er is geen gewijzigd gedrag of uitvoerbaar testoppervlak, dus er was geen regressietest van toepassing.";
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/dashboard-translate", async (route) => {
       expect(route.request().method()).toBe("POST");
       expect(await route.request().postDataJSON()).toEqual({ locale: "nl", texts: [source] });
@@ -3870,7 +4290,7 @@ test.describe("Engineering Status browser smoke", () => {
     const evidence = ["Security observation in English.", "Failed validation in English.", "Repair action in English.", "Repair summary in English."];
     const translations = Object.fromEntries(evidence.map((source, index) => [source, `Nederlandse vertaling ${index + 1}`]));
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/dashboard-translate", async (route) => {
       const { texts } = await route.request().postDataJSON();
       await route.fulfill({ json: { translations: texts.map((text) => translations[text]) } });
@@ -3896,7 +4316,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("retains dynamic quality evidence when translation is unavailable", async ({ page }) => {
     const source = "No documented behavior changed; documentation remained unchanged.";
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/dashboard-translate", (route) => route.fulfill({
       status: 503, json: { error: "DASHBOARD_TRANSLATION_UNAVAILABLE" },
     }));
@@ -3919,34 +4339,39 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("summarizes repeated lifecycle phase timing records by phase", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.evaluate(() => r({
-      watcher_state: "ENGINEERING_RUN_ACTIVE",
-      run_id: "lifecycle-phase-summary",
-      lifecycle: {
-        available: true, run_id: "lifecycle-phase-summary", terminal_state: "ACTIVE",
-        steps: [{
-          id: "initialize", presentation_key: "lifecycle.step.initialize", state: "COMPLETED",
-          timing: { started_at: "2026-08-16T14:00:00Z", finished_at: "2026-08-16T14:03:00Z", spans: [
-            { phase: "INITIALIZATION", duration_ms: 0, outcome: "COMPLETE" },
-            { phase: "INITIALIZATION", duration_ms: 1000, outcome: "COMPLETE" },
-            { phase: "INITIALIZATION", duration_ms: 2000, outcome: "COMPLETE" },
-            { phase: "PROVIDER_EXECUTION", duration_ms: 12000, outcome: "COMPLETE" },
-            { phase: "TOTAL_EXECUTION", duration_ms: 15000, outcome: "COMPLETE" },
-          ] },
-        }],
-      },
-    }, {}));
-    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
-    await page.locator(".execution-lifecycle__node").click();
+    const read = await ownSyntheticProjectionReadSpan(page);
+    try {
+      await page.evaluate(() => r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE",
+        run_id: "lifecycle-phase-summary",
+        lifecycle: {
+          available: true, run_id: "lifecycle-phase-summary", terminal_state: "ACTIVE",
+          steps: [{
+            id: "initialize", presentation_key: "lifecycle.step.initialize", state: "COMPLETED",
+            timing: { started_at: "2026-08-16T14:00:00Z", finished_at: "2026-08-16T14:03:00Z", spans: [
+              { phase: "INITIALIZATION", duration_ms: 0, outcome: "COMPLETE" },
+              { phase: "INITIALIZATION", duration_ms: 1000, outcome: "COMPLETE" },
+              { phase: "INITIALIZATION", duration_ms: 2000, outcome: "COMPLETE" },
+              { phase: "PROVIDER_EXECUTION", duration_ms: 12000, outcome: "COMPLETE" },
+              { phase: "TOTAL_EXECUTION", duration_ms: 15000, outcome: "COMPLETE" },
+            ] },
+          }],
+        },
+      }, {}));
+      await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+      await page.locator(".execution-lifecycle__node").click();
 
-    const phaseRows = page.locator("#lifecycleDetailModal .lifecycle-detail-modal__phase-list li");
-    await expect(phaseRows).toHaveCount(3);
-    await expect(phaseRows.nth(0)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.initialization"]);
-    await expect(phaseRows.nth(0)).toContainText("3 sec");
-    await expect(phaseRows.nth(1)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
-    await expect(phaseRows.nth(2)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.total_execution"]);
-    await expect(phaseRows.nth(0)).toHaveCSS("border-bottom-style", "solid");
-    await expect(phaseRows.nth(2)).toHaveCSS("border-bottom-style", "none");
+      const phaseRows = page.locator("#lifecycleDetailModal .lifecycle-detail-modal__phase-list li");
+      await expect(phaseRows).toHaveCount(3);
+      await expect(phaseRows.nth(0)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.initialization"]);
+      await expect(phaseRows.nth(0)).toContainText("3 sec");
+      await expect(phaseRows.nth(1)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
+      await expect(phaseRows.nth(2)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.total_execution"]);
+      await expect(phaseRows.nth(0)).toHaveCSS("border-bottom-style", "solid");
+      await expect(phaseRows.nth(2)).toHaveCSS("border-bottom-style", "none");
+      await page.locator("#lifecycleDetailClose").click();
+      await read.reconcile(".execution-lifecycle__node");
+    } finally { await read.close(); }
   });
 
   test("reveals an initially off-screen active lifecycle step after page load", async ({ page }) => {
@@ -4010,7 +4435,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("hides checkout-bound merge hand-off controls from CENTRAL", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {
       watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
       run_id: "inbox-merge-wait", pull_request: 832, target_repository: "pcvantol/djconnect",
     } } }));
@@ -4021,7 +4446,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("does not call the checkout-bound merge-status route from CENTRAL", async ({ page }) => {
     let checkCount = 0;
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {
       watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
       run_id: "inbox-merge-check", pull_request: 832, target_repository: "pcvantol/djconnect",
     } } }));
@@ -4040,7 +4465,7 @@ test.describe("Engineering Status browser smoke", () => {
       number: 841, title: "Finalization merge", url: "https://github.com/pcvantol/djconnect/pull/841",
       branch: "codex/finalization", status: "ready_for_review",
     }] } }));
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
@@ -4067,7 +4492,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("renders automatic reconciliation without an operator handoff", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "RECONCILE_AGENT",
@@ -4109,7 +4534,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows a bound repair PR with its host-observed candidate before delivery", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "LOCAL_REPOSITORY_VALIDATION",
@@ -4139,7 +4564,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("labels a newly linked phase PR once beside earlier run PRs", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-finalization-pr",
@@ -4158,7 +4583,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("renders only the merge boundaries recorded for the lifecycle", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const render = (steps) => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", lifecycle: {
       available: true, run_id: "lifecycle-conditional-merges", terminal_state: "ACTIVE", steps,
@@ -4184,7 +4609,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses explicit localized labels for PR repair and both merge hand-offs", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", lifecycle: {
       available: true, run_id: "lifecycle-explicit-labels", terminal_state: "ACTIVE",
@@ -4223,6 +4648,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: "inbox-handoff", status: "COMPLETE", title: "Forge handoff", executed_at: "2026-08-04T08:00:00Z",
     }] } }));
     await page.route("**/api/prompt-history/inbox-handoff/details", (route) => route.fulfill({ json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
       history: { run_id: "inbox-handoff", status: "COMPLETE", title: "Forge handoff", executed_at: "2026-08-04T08:00:00Z" },
       recommendation_handoff: {
         artifact_path: "forge/recommendation.json", projection_status: "COMPLETE", missing_fields: [],
@@ -4447,7 +4873,7 @@ test.describe("Engineering Status browser smoke", () => {
     // The modal assertions own their projection; avoid a live snapshot racing
     // one of the locale-triggered page reloads under the parallel CI suite.
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     const error = "Preflight failed: Unstaged changes are present. Recovery: Commit, stash, or remove unstaged changes before execution.";
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const language of SUPPORTED_LOCALES) {
@@ -4469,7 +4895,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("localizes an unavailable operator action for every supported language", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const language of SUPPORTED_LOCALES) {
       await selectDashboardLocale(page, language);
@@ -4703,7 +5129,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("changes visible interface copy for each supported language", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     const expectations = [
       ["en", "Language", "Refresh automatically", "AI analysis", "Passed", "Execution", "Recover blocked execution", "Active execution", "Execution queue", "New assignments wait for execution in order of creation date.", "EP Operations", "Loading data…", "Diagnostics", "Engineering Platform", "version", "Automatic refresh is off"],
@@ -4766,7 +5192,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("localizes dashboard chrome and dynamic runtime copy for every supported language", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const expectations = [
       ["en", "Specialist reviewers", "Run cumulative input tokens", "Use reset"],
@@ -5073,7 +5499,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("renders host, workspace and capability preflight fields through one presentation", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
     }));
     const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -5242,7 +5668,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(downloadedJson.suggestedFilename()).toBe("telemetry-detail-dashboard-fixture-utc-day-detail-2026-08-24.json");
     const jsonContent = JSON.parse(readFileSync(await downloadedJson.path(), "utf8"));
     expect(jsonContent.export_schema_version).toBe("telemetry-export@1.1");
-    expect(jsonContent.selection).toMatchObject({ project_id: "dashboard-fixture", scope: "UTC_DAY_DETAIL", date: "2026-08-24" });
+    expect(jsonContent.selection).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture", scope: "UTC_DAY_DETAIL", date: "2026-08-24" });
     expect(jsonContent.data.day_detail.runs.map((run) => run.run_id)).toContain("inbox-day-export");
     expect(markdownContent).toContain(jsonContent.snapshot_id);
     setSyntheticTelemetryRun("inbox-day-export", "2026-08-24", false);
@@ -5280,7 +5706,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("gives every table a coloured first column and sorts telemetry columns", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/telemetry*", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: {} } }));
     await page.route("**/api/events", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => window.executionTelemetry([
@@ -5344,6 +5770,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("paginates execution telemetry at seven days per page", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForAppliedDashboardProjectSnapshot(page);
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => window.executionTelemetry(Array.from({ length: 8 }, (_, index) => ({
       date: `2026-08-${String(24 - index).padStart(2, "0")}`,
@@ -5357,6 +5784,60 @@ test.describe("Engineering Status browser smoke", () => {
     await pagination.getByRole("button", { name: "Volgende" }).click();
     await expect(rows).toHaveCount(1);
     await expect(pagination).toHaveText(/Pagina 2 van 2 · 8 dagen/);
+  });
+
+  for (const scopedFirst of [false, true]) test(`binds telemetry pagination to actual initial recovery scoped-first=${scopedFirst}`, async ({ page }, info) => {
+    const observer = await observeConsoleDocument(page);
+    let requestCount = 0, release;
+    const held = new Promise(resolve => { release = resolve; });
+    await page.route("**/api/dashboard-snapshot", async route => {
+      requestCount += 1;
+      if (requestCount === 1) return route.abort("connectionreset");
+      await held;
+      await route.continue();
+    });
+    try {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      const documentId = await observer.documentId();
+      let applied;
+      if (scopedFirst) {
+        release();
+        applied = await waitForAppliedDashboardProjectSnapshot(page);
+      }
+      await page.locator("#autoRefresh").uncheck();
+      await page.evaluate(() => executionTelemetry(Array.from({ length: 8 }, (_, index) => ({
+        date: `2026-08-${String(24 - index).padStart(2, "0")}`, prompt_count: index + 1,
+      }))));
+      await page.locator("#executionTelemetry").evaluate(element => { element.open = true; });
+      const rows = page.locator("#executionTelemetryRows .telemetry-row");
+      const pagination = page.locator("#executionTelemetryPagination");
+      await expect(rows).toHaveCount(7);
+      await expect(pagination).toHaveText(/Pagina 1 van 2 · 8 dagen/);
+      const actualResponse = page.waitForResponse(response =>
+        new URL(response.url()).pathname === "/api/dashboard-snapshot" && response.status() === 200);
+      if (!scopedFirst) release();
+      const packet = await (await actualResponse).json();
+      expect(packet).toMatchObject({ scope: "PROJECT", project_id: "dashboard-fixture" });
+      if (!scopedFirst) {
+        // The intentionally bad order remains detectable: the real first
+        // authorised recovery replaces this explicitly synthetic projection.
+        await expect(rows).toHaveCount(0);
+        await expect(pagination.getByRole("button", { name: "Volgende" })).toHaveCount(0);
+        const actualRows = await rows.count();
+        expect(() => expect(actualRows).toBe(7)).toThrow();
+      } else {
+        await expect(rows).toHaveCount(7);
+        await pagination.getByRole("button", { name: "Volgende" }).click();
+        await expect(rows).toHaveCount(1);
+        await expect(pagination).toHaveText(/Pagina 2 van 2 · 8 dagen/);
+      }
+      expect(await observer.documentId()).toBe(documentId);
+      const output = info.outputPath("telemetry-initial-scope-cause.json");
+      writeFileSync(output, JSON.stringify({ scoped_first: scopedFirst, document_id: documentId,
+        actual_request_count: requestCount, applied_binding: applied ?? null,
+        original_predicate_detected: !scopedFirst, real_native_pagination: scopedFirst }));
+      await info.attach("telemetry-initial-scope-cause", { path: output, contentType: "application/json" });
+    } finally { release(); }
   });
 
   test("offers read-only download and copy actions for telemetry in CENTRAL", async ({ page }) => {
@@ -5401,7 +5882,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("sorts telemetry detail tables with the same header treatment as logs", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
       summary: {},
@@ -5550,7 +6031,7 @@ test.describe("Engineering Status browser smoke", () => {
         external_wait_ms: 0, largest_phase: "PROVIDER_EXECUTION",
       }],
     } }));
-    await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({ json: { history: { run_id: "inbox-telemetry-row" } } }));
+    await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", history: { run_id: "inbox-telemetry-row" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => window.executionTelemetry([{
       date: "2026-08-16", prompt_count: 1, average_execution_seconds: 0,
@@ -5564,7 +6045,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(runRow.locator(".telemetry-run-link")).toHaveCSS("text-decoration-line", "none");
     await runRow.hover();
     const hoverBackgrounds = await runRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    expect(new Set(hoverBackgrounds).size).toBe(2);
+    await expect.poll(() => runRow.evaluate((row) => row.matches(":hover"))).toBe(true);
+    await expect.poll(() => runRow.locator("td").evaluateAll((cells) =>
+      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
     expect(hoverBackgrounds[0]).not.toBe("rgba(0, 0, 0, 0)");
     const runId = runRow.locator(".telemetry-run-link");
     await runId.click();
@@ -5584,7 +6067,7 @@ test.describe("Engineering Status browser smoke", () => {
     // asynchronous initial dashboard snapshot while this modal is opened.
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
       summary: { executions: 1, completed: 1, blocked: 0, failed: 0 },
@@ -6143,7 +6626,7 @@ test.describe("Engineering Status browser smoke", () => {
     test.slow();
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.route("**/api/logs/**", (route) => route.fulfill({
       contentType: "application/x-ndjson",
@@ -6310,7 +6793,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: history } }));
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, last_executed_run: "inbox-actions" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, last_executed_run: "inbox-actions" } },
     }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -6559,7 +7042,7 @@ test.describe("Engineering Status browser smoke", () => {
       },
     } }));
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: {
+      json: { scope: "PROJECT", project_id: "dashboard-fixture",
         status: {
           watcher_state: "ENGINEERING_RUN_ACTIVE",
           current_phase: "EXECUTE_AGENT",
@@ -7020,50 +7503,6 @@ test.describe("Engineering Status browser smoke", () => {
   test.describe("iPhone direct touch", () => {
     test.use({ hasTouch: true, isMobile: true });
 
-    test("keeps simultaneous status and options above the active execution", async ({ page }) => {
-      await page.setViewportSize({ width: 390, height: 844 });
-      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-      await waitForDashboardReady(page);
-      await page.evaluate(() => {
-        const run = document.querySelector("#currentRun");
-        run.hidden = false;
-        run.open = true;
-        document.querySelector("#currentPrompt").textContent = "Actieve uitvoeringskaart";
-        const checks = document.querySelector("#dashboardHealthChecks");
-        checks.replaceChildren(...Array.from({ length: 12 }, (_, index) => {
-          const item = document.createElement("li");
-          item.dataset.health = "good";
-          item.append(
-            Object.assign(document.createElement("span"), { textContent: `Statuscontrole ${index + 1}` }),
-            Object.assign(document.createElement("span"), { textContent: "Gezond" }),
-          );
-          return item;
-        }));
-      });
-      await openTitlebarOptions(page);
-      await page.getByTestId("dashboard-health-indicator").click();
-      await expect(page.getByTestId("dashboard-health-indicator")).toHaveAttribute("aria-expanded", "true");
-
-      const layout = await page.evaluate(() => {
-        const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
-        const header = document.querySelector(".dashboard-sticky-header");
-        const status = rect("#dashboardHealthTooltip");
-        const options = rect("#dashboardTitlebarOptionsContent");
-        const run = rect("#currentRun");
-        return {
-          headerBottom: Math.round(header.getBoundingClientRect().bottom),
-          headerMaxHeight: getComputedStyle(header).maxHeight,
-          headerOverflowY: getComputedStyle(header).overflowY,
-          lowestPanelBottom: Math.round(Math.max(status.bottom, options.bottom)),
-          runTop: Math.round(run.top),
-        };
-      });
-      expect(layout.headerMaxHeight).toBe("none");
-      expect(layout.headerOverflowY).toBe("visible");
-      expect(layout.headerBottom).toBeGreaterThanOrEqual(layout.lowestPanelBottom);
-      expect(layout.runTop).toBeGreaterThanOrEqual(layout.lowestPanelBottom);
-    });
-
     test("persists every iPhone title-bar toggle after one direct touch at a time", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -7414,7 +7853,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture",
         status: {
           watcher_state: "WATCHER_IDLE",
           platform_version: "2.0.0",
@@ -7595,23 +8034,26 @@ test.describe("Engineering Status browser smoke", () => {
   test("keeps iPhone platform component cards on opaque, flat surfaces", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#platformHealth").evaluate((element) => { element.open = true; });
-    await page.evaluate(() => renderPlatformHealth({ components: {
-      dashboard: { healthy: true, detail: "HTTP-dashboard reageert", version: "2.0.0" },
-      inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen", version: "2.0.0" },
-    }}));
-
-    const surfaces = await page.locator("#platformHealth > summary, .platform-health__component").evaluateAll(
-      (elements) => elements.map((element) => {
+    const surfaces = await page.evaluate(() => {
+      document.getElementById("platformHealth").open = true;
+      renderPlatformHealth({ components: {
+        dashboard: { healthy: true, detail: "HTTP-dashboard reageert", version: "2.0.0" },
+        inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen", version: "2.0.0" },
+      }});
+      // Query and style observation belong to the same actual render turn;
+      // evaluateAll otherwise queries an array before a separate evaluation.
+      return [...document.querySelectorAll("#platformHealth > summary, .platform-health__component")].map((element) => {
         const style = getComputedStyle(element);
         return {
+          connected: element.isConnected,
           backgroundColor: style.backgroundColor,
           backgroundImage: style.backgroundImage,
           backdropFilter: style.backdropFilter,
         };
-      }),
-    );
+      });
+    });
     expect(surfaces.length).toBeGreaterThan(2);
+    expect(surfaces.every((surface) => surface.connected)).toBe(true);
     expect(surfaces.every((surface) => surface.backgroundColor !== "rgba(0, 0, 0, 0)")).toBe(true);
     expect(surfaces.every((surface) => surface.backgroundImage === "none")).toBe(true);
     expect(surfaces.every((surface) => surface.backdropFilter === "none")).toBe(true);
@@ -7641,7 +8083,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -7691,7 +8133,7 @@ test.describe("Engineering Status browser smoke", () => {
       },
     };
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: {
         watcher_state: "HOST_PREFLIGHT_FAILED",
         current_phase: "INITIALIZE",
@@ -7740,24 +8182,31 @@ test.describe("Engineering Status browser smoke", () => {
       await waitForDashboardReady(page);
       await selectDashboardLocale(page, language);
       await page.locator("#autoRefresh").uncheck();
-      await page.evaluate((currentDrift) => r({
-        watcher_state: "WORKSPACE_PREFLIGHT_FAILED",
-        current_phase: "INITIALIZE",
-        diagnostic: "Workspace preflight blocked by managed_expected_branch.",
-      }, { current_drift: currentDrift }), drift);
-      await expect(page.locator("#driftSeverity")).toHaveText(
+      // This case tests the synthetic projection in every locale. Capture
+      // all five real DOM fields in its render turn, before a legitimate
+      // asynchronous CENTRAL read can replace that unscoped projection.
+      const projected = await page.evaluate((currentDrift) => {
+        r({
+          watcher_state: "WORKSPACE_PREFLIGHT_FAILED",
+          current_phase: "INITIALIZE",
+          diagnostic: "Workspace preflight blocked by managed_expected_branch.",
+        }, { current_drift: currentDrift });
+        return ["driftSeverity", "driftComponent", "driftExpected", "driftObserved", "driftResolution"]
+          .map((id) => document.getElementById(id).textContent.replace(/\s+/g, " ").trim());
+      }, drift);
+      expect(projected[0]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.severity.blocking"],
       );
-      await expect(page.locator("#driftComponent")).toHaveText(
+      expect(projected[1]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.component.managed_expected_branch"],
       );
-      await expect(page.locator("#driftExpected")).toHaveText(
+      expect(projected[2]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.expected.managed_expected_branch"].replace("{branch}", "main"),
       );
-      await expect(page.locator("#driftObserved")).toHaveText(
+      expect(projected[3]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.observed.managed_expected_branch"].replace("{branch}", "main"),
       );
-      await expect(page.locator("#driftResolution")).toHaveText(
+      expect(projected[4]).toBe(
         DASHBOARD_MESSAGES[language]["technical.drift.resolution.managed_expected_branch"].replace("{branch}", "main"),
       );
     }
@@ -7770,17 +8219,17 @@ test.describe("Engineering Status browser smoke", () => {
       await waitForDashboardReady(page);
       await selectDashboardLocale(page, language);
       await page.locator("#autoRefresh").uncheck();
-      await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE" }, {
-        execution_host: { runtime: "codex_cli", runtime_prompt_transport: "icloud_inbox" },
-      }));
-      await expect(page.locator("#executionHostRuntime")).toHaveText(
+      // All four assertions concern this synthetic render, not a later
+      // legitimate CENTRAL snapshot that can remove its execution host.
+      const projected = await captureRuntimeTransportProjection(page);
+      expect(projected[0]).toBe(
         DASHBOARD_MESSAGES[language]["technical.runtime_value.codex_cli"],
       );
-      await expect(page.locator("#executionHostTransport")).toHaveText(
+      expect(projected[1]).toBe(
         DASHBOARD_MESSAGES[language]["technical.runtime_transport_value.icloud_inbox"],
       );
-      await expect(page.locator("#executionHostRuntime")).toHaveAttribute("title", "codex_cli");
-      await expect(page.locator("#executionHostTransport")).toHaveAttribute("title", "icloud_inbox");
+      expect(projected[2]).toBe("codex_cli");
+      expect(projected[3]).toBe("icloud_inbox");
     }
   });
 
@@ -7924,7 +8373,7 @@ test.describe("Engineering Status browser smoke", () => {
     // while the three presentation states below are asserted.
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -7966,29 +8415,33 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows live and completed reviewer status indicators", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.evaluate(() => r({
-      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "reviewer-status-run", current_phase: "CAPABILITY_REVIEW",
-      reviewer_agents: [
-        { reviewer: "validation", capability: "engineering", status: "running" },
-        { reviewer: "documentation", capability: "engineering", status: "completed" },
-      ],
-    }, {}));
+    const read = await ownSyntheticProjectionReadSpan(page);
+    try {
+      await page.evaluate(() => r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "reviewer-status-run", current_phase: "CAPABILITY_REVIEW",
+        reviewer_agents: [
+          { reviewer: "validation", capability: "engineering", status: "running" },
+          { reviewer: "documentation", capability: "engineering", status: "completed" },
+        ],
+      }, {}));
 
-    const cards = page.locator(".reviewer-agent");
-    await expect(cards).toHaveCount(2);
-    await expect(cards.nth(0).locator(".reviewer-agent__status--running")).toHaveAttribute(
-      "aria-label", /.+/,
-    );
-    await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveText("✓");
-    await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveAttribute(
-      "aria-label", /.+/,
-    );
+      const cards = page.locator(".reviewer-agent");
+      await expect(cards).toHaveCount(2);
+      await expect(cards.nth(0).locator(".reviewer-agent__status--running")).toHaveAttribute(
+        "aria-label", /.+/,
+      );
+      await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveText("✓");
+      await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveAttribute(
+        "aria-label", /.+/,
+      );
+      await read.reconcile(".reviewer-agent");
+    } finally { await read.close(); }
   });
 
   test("keeps terminal specialist reviews visible as historical run evidence", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -8029,7 +8482,7 @@ test.describe("Engineering Status browser smoke", () => {
     test.setTimeout(60_000);
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const reviewerAgents = [
@@ -8076,7 +8529,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.setViewportSize({ width: 1440, height: 900 });
     const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
@@ -8158,7 +8611,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -8181,7 +8634,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses phase-aware comparable telemetry for the remaining duration", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -8205,7 +8658,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("stops reporting one minute once a phase-aware range is exhausted", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -8231,7 +8684,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("stops reporting one minute once the coarse range is exhausted", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -8252,7 +8705,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("shows the elapsed duration explanation only once without learned history", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
@@ -8268,7 +8721,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("localizes active phases without mistaking them for whole-run time remaining", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const [phase, label] of [
       ["CAPABILITY_REVIEW", "Specialistenreview"],
@@ -8286,7 +8739,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows an honest total and phase context during autonomous PR quality control", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "QUALITY_CONTROL_AGENT", run_id: "pr-quality-run",
@@ -8299,7 +8752,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("unknown active phase retains total uncertainty without inventing a phase duration", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: { watcher_state: "WATCHER_IDLE" } } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "", run_id: "transition-run" }, { duration_estimate: {} }));
     await expect(page.locator("#executionEstimate")).toHaveText("Totaal resterend: nog niet betrouwbaar te schatten");
@@ -8373,7 +8826,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("formats the CENTRAL start time and never renders a JSON diagnostic error", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } },
     }));
     await page.route("**/api/execution-diagnostic/current", (route) => route.fulfill({
       status: 404,
@@ -8400,7 +8853,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -8451,7 +8904,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#platformVersion")).toHaveText("Niet beschikbaar");
@@ -8474,7 +8927,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     const initialSnapshot = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -8521,7 +8974,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const banner = page.getByTestId("codex-usage-limit-banner");
@@ -8551,7 +9004,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -8570,7 +9023,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+      body: JSON.stringify({ scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" } }),
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -9219,15 +9672,15 @@ test.describe("Engineering Status browser smoke", () => {
     const divider = await rows.nth(0).locator("td").first().evaluate((cell) => getComputedStyle(cell).borderBottomColor);
     expect(divider).not.toBe("rgb(61, 54, 81)");
     expect(divider).not.toBe("rgb(212, 222, 235)");
-    // The fixed fixture already proves that this row exists.  For this
-    // visual :hover assertion, bypass Playwright's unrelated actionability
-    // wait so parallel dashboard shards cannot consume the test deadline
-    // while a transient layout update settles.
-    await rows.nth(1).hover({ force: true });
+    // Prove a real pointer hover; forcing a covered/offscreen coordinate can
+    // leave the row unhovered while its resting cell colours look plausible.
+    await rows.nth(1).scrollIntoViewIfNeeded();
+    await rows.nth(1).hover();
     const hoverRowSurface = await rows.nth(1).locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    // The frozen first column keeps its category tint while the remaining
-    // cells receive the common hover fill.
-    expect(new Set(hoverRowSurface).size).toBe(2);
+    // Interactive log rows share the existing continuous hover contract.
+    await expect.poll(() => rows.nth(1).evaluate((row) => row.matches(":hover"))).toBe(true);
+    await expect.poll(() => rows.nth(1).locator("td").evaluateAll((cells) =>
+      new Set(cells.map((cell) => getComputedStyle(cell).backgroundColor)).size)).toBe(1);
     expect(hoverRowSurface[0]).not.toBe("rgba(0, 0, 0, 0)");
     await rows.nth(0).click();
     await rows.nth(2).click({ modifiers: ["Meta"] });
@@ -10307,14 +10760,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows a searchable, sortable and paginated prompt history", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
-    let historyRuns = [];
-    await page.route("**/api/prompt-history", async (route) => {
-      await route.fulfill({ json: { runs: historyRuns } });
-    });
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#autoRefresh").uncheck();
-    await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
-    historyRuns = Array.from({ length: 26 }, (_, index) => ({
+    const historyRuns = Array.from({ length: 26 }, (_, index) => ({
       run_id: `inbox-history-${index}`,
       status: index % 2 ? "COMPLETE" : "FAILED",
       title: `Geschiedenis prompt ${String(index).padStart(2, "0")}`,
@@ -10323,6 +10769,28 @@ test.describe("Engineering Status browser smoke", () => {
       report_available: index % 2 === 1,
       analysis_available: index % 2 === 1,
     }));
+    await page.route("**/api/prompt-history", async (route) => {
+      await route.fulfill({ json: { runs: historyRuns } });
+    });
+    // Provider attention is intentionally independent of dashboard-ready.
+    // Its genuine initial response can move this row under the mouse. Bind
+    // that response and its rendered state before the single native hover.
+    const readinessResponses = Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === "/api/provider-login-status"),
+      page.waitForResponse(response => new URL(response.url()).pathname === "/api/execution-runtime-status"),
+    ]);
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    const readiness = await readinessResponses;
+    for (const response of readiness) expect(response.status()).toBe(200);
+    const [providerReadiness, runtimeReadiness] = await Promise.all(readiness.map(response => response.json()));
+    await page.waitForFunction(({ providers, runtime }) =>
+      Object.entries(providers).every(([provider, value]) =>
+        document.querySelector(`[data-provider="${provider.toUpperCase()}"]`)?.dataset.providerState === value.state) &&
+      document.querySelector("[data-execution-runtime]")?.dataset.providerState === runtime.state,
+    { providers: providerReadiness.providers, runtime: runtimeReadiness });
+    await page.locator("#autoRefresh").uncheck();
+    await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
       const legacyCommitHeader = document.createElement("th");
       legacyCommitHeader.dataset.historySortKey = "git_commit";
@@ -10343,11 +10811,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator('#promptHistory th[data-history-sort-key="git_commit"]')).toHaveCount(0);
     const firstPromptHistoryRow = page.locator("#promptHistoryRows .prompt-history-row").first();
     await firstPromptHistoryRow.hover();
-    const promptHistoryHover = await firstPromptHistoryRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
-    // The frozen first column retains its category tint; the data cells share
-    // the hover fill.
-    expect(new Set(promptHistoryHover).size).toBe(2);
-    expect(promptHistoryHover[0]).not.toBe("rgba(0, 0, 0, 0)");
+    // Existing CSS explicitly requires one continuous interactive-row hover
+    // surface, including the frozen first cell. Prove actual hover as well as
+    // equal nontransparent cell fills; an idle row cannot satisfy this check.
+    await expect.poll(() => firstPromptHistoryRow.evaluate((row) => {
+      const colors = [...row.cells].map(cell => getComputedStyle(cell).backgroundColor);
+      return { hovered: row.matches(":hover"), fills: new Set(colors).size,
+        opaque: colors.every(color => color !== "rgba(0, 0, 0, 0)") };
+    })).toEqual({ hovered: true, fills: 1, opaque: true });
     await expect(page.locator("#promptHistoryRows tr").first().locator("td")).toHaveCount(9);
     await expect(page.locator("#promptHistoryPagination")).toContainText("Pagina 1 van 3 · 26 uitvoeringen");
     const nextPromptHistoryPage = page.locator("#promptHistoryPagination").getByRole("button", { name: "Volgende" });
@@ -10379,6 +10850,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
     await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({
       json: {
+        scope: "PROJECT", project_id: "dashboard-fixture",
         history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", producer_id: "forge", producer_type: "FORGE", producer_version: "2.7.2", producer_submission_contract_version: "1.0", submission_id: "submission-0006", execution_context_version: "1.0", mission_id: "MISSION-0006", engineering_action_id: "action-0006", correlation_id: "correlation-0006", execution_context: { context_version: "1.0", mission_id: "MISSION-0006", producer_host_id: "forge-host-alpha", mission_revision: "5", intent_id: "intent-0006", intent_revision: "1", runtime_prompt_id: "prompt-0006", runtime_prompt_digest: "sha256:aaaaaaaa", retry_of_correlation_id: "correlation-0005" }, execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 }, execution_activity_summary: { activity: { primary_codex_commands_total: 1 }, terminal_delivery_diff: { total_unique_changed_paths: 0 } } },
         execution: { seconds: 42, total_seconds: 61 },
         runtime: { runtime_provider: "codex_cli", codex_cli_version: "0.146.0" },
@@ -10974,7 +11446,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("retains severity colours in the light component-log table", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -11115,7 +11587,7 @@ test.describe("Engineering Status browser smoke", () => {
     let resetRequests = 0;
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: {
+      json: { scope: "PROJECT", project_id: "dashboard-fixture",
         status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 },
         rate_limits: { provider: "Codex CLI", provider_version: "0.146.0", windows: [], reset_credits: 1 },
       },
@@ -11158,7 +11630,7 @@ test.describe("Engineering Status browser smoke", () => {
     // legitimately replace the component log with its empty-state projection.
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE" }, component_log_versions: {} },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE" }, component_log_versions: {} },
     }));
     await page.route("**/api/logs/**", (route) =>
       route.fulfill({ contentType: "application/x-ndjson", body: "" }),
@@ -11230,7 +11702,7 @@ test.describe("Engineering Status browser smoke", () => {
       { filename: "keep-waiting.md", title: "Blijft wachten", modified_at: "2026-08-02T10:02:00Z" },
     ];
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE", queue_depth: 2, queue_items: queued },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
@@ -11244,7 +11716,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("maps CENTRAL queue actions to their matching confirmation modal", async ({ page }) => {
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
@@ -11312,7 +11784,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("keeps legacy Inbox items display-only in CENTRAL", async ({ page }) => {
     let deferRequests = 0;
     await page.route("**/api/events", (route) => route.abort());
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: {
         watcher_state: "WATCHER_IDLE",
         queue_depth: 1,
@@ -11337,7 +11809,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("keeps the checkout-bound Codex CLI blocker out of the CENTRAL Inbox", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -11364,7 +11836,7 @@ test.describe("Engineering Status browser smoke", () => {
       await route.fulfill({ json: { previous_branch: "codex/ui-polish", branch: "main", watcher: "restarted" }, status: 202 });
     });
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WORKSPACE_PREFLIGHT_FAILED", queue_depth: 1 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WORKSPACE_PREFLIGHT_FAILED", queue_depth: 1 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -11389,7 +11861,7 @@ test.describe("Engineering Status browser smoke", () => {
       await route.fulfill({ json: { state: "free", recovered: true }, status: 202 });
     });
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
@@ -11429,7 +11901,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("does not expose retired local branch cleanup", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
-      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+      json: { scope: "PROJECT", project_id: "dashboard-fixture", status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#workspaceCard")).toHaveCount(0);
@@ -11638,7 +12110,7 @@ test.describe("Engineering Status browser smoke", () => {
       dismissed = true;
       return route.fulfill({ json: { dismissed: "inbox-dismiss" } });
     });
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE", last_executed_run: "inbox-newer-terminal", queue_depth: 0, queue_items: [] },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
@@ -11678,7 +12150,7 @@ test.describe("Engineering Status browser smoke", () => {
       cancelled = true;
       return route.fulfill({ json: { run_id: "inbox-pa-e3", state: "CANCEL_REQUESTED" } });
     });
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
       status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
@@ -11887,7 +12359,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(({ components, component_model }) => renderPlatformHealth({ components, component_model }), {
       components, component_model: canonicalPlatformComponentModel(),
     });
-    await page.locator("#platformHealth > summary").click({ force: true });
+    if (await page.locator("#platformHealth").getAttribute("open") === null) await page.locator("#platformHealth > summary").click();
     await page.locator(".platform-health__component[aria-label='Meer informatie over HTTP/API-ingang']").click();
     await expect(page.locator("#componentModalContent")).toContainText("Gezond");
     await expect(page.locator("#componentModalContent")).not.toContainText("dashboard.health");
@@ -11964,7 +12436,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => {
       snapshots += 1;
-      return route.fulfill({ json: {
+      return route.fulfill({ json: { scope: "PROJECT", project_id: "dashboard-fixture",
         status: { watcher_state: "WATCHER_IDLE" },
         component_log_versions: { operations_console: String(snapshots) },
       } });

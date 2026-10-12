@@ -1,0 +1,3192 @@
+{
+  "contract": "ep-dashboard-canonical-corpus/v1",
+  "baseline_source_sha": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
+  "mandatory_count": 524,
+  "baseline_not_run_count": 4,
+  "tests": [
+    {
+      "file": "dashboard_no_project_scope.spec.mjs",
+      "title": "actual installed terminal scope PLATFORM auto=true",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_no_project_scope.spec.mjs",
+      "title": "actual installed terminal scope PLATFORM auto=false",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_no_project_scope.spec.mjs",
+      "title": "actual installed terminal scope project auto=true",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_no_project_scope.spec.mjs",
+      "title": "actual installed terminal scope project auto=false",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_no_project_scope.spec.mjs",
+      "title": "actual installed terminal scope none auto=true",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_no_project_scope.spec.mjs",
+      "title": "actual installed terminal scope none auto=false",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual prepared en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual uncertain en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual no-consumer en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual no-capacity en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual irrelevant en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual dispositions en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual withdrawn en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual provider-recovered en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual provider-blocked en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual missing en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual privacy en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual failed en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual uncertain-result en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual duplicate en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual read-revoked en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal en/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal en/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal en/light/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal en/light/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal nl/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal nl/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal nl/light/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal nl/light/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal de/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal de/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal de/light/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal de/light/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal fr/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal fr/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal fr/light/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal fr/light/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal es/dark/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal es/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal es/light/1280 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual normal es/light/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "operator snapshot after real retry preserves permitted scope",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "operator snapshot after real retry cannot restore revoked scope",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual PLATFORM no-project http snapshot preserves strict selected scope",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual PLATFORM no-project http snapshot preserves strict selected scope quota-limited",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual PLATFORM no-project http snapshot preserves strict selected scope quota-unavailable",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual PLATFORM no-project http snapshot preserves strict selected scope quota-invalid",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual PLATFORM no-project sse snapshot preserves strict selected scope",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual PLATFORM no-project sse snapshot preserves strict selected scope quota-limited",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual PLATFORM no-project sse snapshot preserves strict selected scope quota-unavailable",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual PLATFORM no-project sse snapshot preserves strict selected scope quota-invalid",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "current HTTP scope probe repairs first interrupted snapshot project",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "current HTTP scope probe repairs first interrupted snapshot none",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "current HTTP scope probe repairs first interrupted snapshot PLATFORM",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "browser quota completion distinguishes pending transport available",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "browser quota completion distinguishes pending transport unavailable",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "first stored history opening survives a genuine duplicate index provider-blocked/Enter",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "first stored history opening survives a genuine duplicate index provider-blocked/click",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "first stored history opening survives a genuine duplicate index failed/Enter",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "first stored history opening survives a genuine duplicate index failed/click",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "real project stream closes its document scope revoked",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "real project stream closes its document scope unavailable-open",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "real project stream closes its document scope unavailable-initial",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "current history document retains deep link after an interrupted index read",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent control",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent index-recovery",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent detail-recovery",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent index-unavailable",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent close-index",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent close-detail",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent project-detail",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent revoked-detail",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "opened history detail recovery preserves current intent missing",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "keeps simultaneous status and options above the active execution current read",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "keeps simultaneous status and options above the active execution after first-read recovery",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "keeps a real historical modal open across delayed en\u2192nl\u2192de\u2192en and all supported locales",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "enforces the real subprocess deadline, exact fallback, and explicit retry",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "releases an aborted browser request while the bounded provider finishes safely",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "renders known deterministic diagnostics without any translation provider",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "preserves modal focus, scroll, project and unsent form text across live translation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "passes serialized ASCII and Unicode batches through real route and service validation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "matches Python blank-text validation without dropping BOM or blocking valid evidence",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "rejects invalid request boundaries without invoking any provider",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "accepts exact total-character and serialized-byte limits and rejects one extra byte",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "rejects invalid provider results and releases inflight without automatic retry",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "projects markup-looking untrusted source and successful provider output as literal text",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "deduplicates two views and ignores changed or detached source while requests are pending",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_translation.integration.spec.mjs",
+      "title": "bounds concurrent provider work while preserving 600 visible results",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "dismisses the no-project banner for the current browser",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows the no-project banner again after explicitly choosing no project",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps every supported UI catalog complete",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not show the fixed local audit-log setting",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not show a separate safe-local-settings label",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "groups dashboard status and component-detail refresh settings",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps File Inbox and open-PR polling in Server settings without legacy Inbox controls",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "describes each Configuration subsection beneath its heading",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "persists the bounded serverpush interval from Configuration",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps configuration controls visible while hiding an empty status message",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "places writable log settings in Logs and explains them",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "places the platform-health refresh interval below platform components",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows localized provider login states in Configuration",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses one color hierarchy throughout Configuration",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the compact destructive action contract for provider sign-out",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "sends a confirmed provider sign-out to the CENTRAL logout route",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "offers the confirmed compact install action beside an unavailable provider",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "refreshes missing Codex runtime state to ready after the Console install action",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows a sticky provider repair banner and never reports it as resolved before recheck",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not leave an empty provider action button for an indeterminate check",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "clears a transient provider check failure when the dashboard becomes visible",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "rechecks a transient provider failure after a server restart without waiting for a visibility change",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows each unavailable provider separately and permits a retry after an interactive handoff",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "formats titleless structured queue submissions from safe metadata",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not render retired project workspace controls",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "copies local filesystem paths without a Finder route",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the EP database location read-only",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "analyses every worktree before showing a safe removal action",
+      "expectedStatus": "skipped",
+      "annotations": [
+        {
+          "type": "skip"
+        }
+      ]
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "confirms a safe per-worktree removal in the shared destructive modal",
+      "expectedStatus": "skipped",
+      "annotations": [
+        {
+          "type": "skip"
+        }
+      ]
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "schedules a safe Engineering Platform switch to a registered worktree",
+      "expectedStatus": "skipped",
+      "annotations": [
+        {
+          "type": "skip"
+        }
+      ]
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not expose a retired main-switch action",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not expose a retired worktree switch",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses normal-weight labels for every dashboard button",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "gives every visible dashboard action a filled surface in both themes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the language pulldown style for every single-choice select",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "fills the component log picker from the initial platform-health model",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not move focus after a pointer chooses a log-settings pulldown value",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "stacks flat log settings pulldowns below their labels on iPhone",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the host-detail refresh picker compact and interactive on iPhone",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the multi-select event filter inside the Logs card on iPhone",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not add a second bottom gap after the configuration card",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "stacks mobile log filters and reveals only the selected date controls",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "checks provider readiness on open and exposes the bounded refresh interval",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "persists the Codex capacity reserve from Available AI capacity",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "only offers Codex reserve values that fit the observed remaining capacity",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows the capacity reserve banner and hides it immediately after lowering the reserve",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "persists a log-level pulldown choice exactly once",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "locks the visible log-level pulldown until its saved value is loaded or written",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "restores the log retention pulldown without saving when its removal warning is cancelled",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "restores telemetry retention without saving when its data-removal warning is cancelled",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "describes telemetry with the actually configured retention period",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows a GitHub rate-limit banner on page load and clears it on refresh",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows and monitors the bounded open pull-request check status",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not refresh checkout-bound pull requests from CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not expose or dispatch checkout-bound owner authorization from CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not expose checkout-bound repair for terminal failed pull-request checks in CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows persisted repair progress and a link to the active GitHub checks",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not retain checkout-bound repair controls after a historical repair",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps checkout-bound pull-request rows inert in CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows a toast when refreshing the worktree analysis",
+      "expectedStatus": "skipped",
+      "annotations": [
+        {
+          "type": "skip"
+        }
+      ]
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates every operational phase and status in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates reviewer and operational machine codes in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates the owner-authorization control in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates every verified commit-timeline code in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "lists English first in both language selectors",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows only the custom language pulldown",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders repository and workspace state codes as readable labels",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "locks the iOS viewport scale to prevent input-focus zoom",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses catalogued copy for every UI label in every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "enforces the source-to-interface localization contract in all five languages",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders current execution and relay terminology in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps synthetic locale predicates in one render turn across an actual background read",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "copies chat text synchronously for iOS Safari",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "copies the complete chat conversation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "includes run metadata above AI chat export and copied conversation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the Clipboard API before the legacy fallback in modern browsers",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "places the active prompt category first",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "formats structured execution-context snapshots as readable fields",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "opens execution details from prompt history in its dedicated modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "labels a terminal repository revision without calling it a phase commit",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "omits terminal status recovery controls from historical CENTRAL details",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "opens, closes and navigates prompt-history deeplinks without reloading",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "normalizes an unknown prompt-history deeplink without opening a modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses one uninterrupted category-colour selected-row treatment for prompt history on touch devices",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "prevents iOS long-press selection on prompt-history rows",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps sortable table headers opaque on iOS",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps execution context in one column at every viewport width",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the active-execution card surface for lifecycle and execution context",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps active human producer provenance visible in the Central context",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "refreshes available AI capacity with a selected project",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates a host-owned provider deadline in active and historical views",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates execution phase in the active context and historical status",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates dynamic Forge summaries in the active execution context",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "switches an open historical detail to the selected locale without navigation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates unknown diagnostics independently of formatting and preserves literal sources",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps lease-lost finalization visible for safe recovery",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "explains the managed and Genesis execution modes from the active execution",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders execution-lifecycle nodes without button chrome",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses green only for the terminal complete lifecycle result",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses amber only for an operator merge wait, not ordinary active work",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses neutral connectors for lifecycle steps not yet reached",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a decorative rocket only for the lifecycle start boundary",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows pull-request check repair and keeps Merge visibly blocked",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows localized local-validation iterations as lifecycle evidence",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "refreshes an open validation popup and separates repeated validation passes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "projects specialist reviewers and implementation result into their step popups",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "places a visual divider between repair rounds",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "places finalization pull-request repair after Finalization and before its merge",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "places the estimate directly below execution identity and before the lifecycle",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "returns active-execution blocks to two columns when their container permits it",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps lifecycle steps transparent on iPhone and puts repair counts in their details",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "gives the lifecycle detail modal the shared panel surface on iPhone",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps execution-lifecycle connector lengths fixed for long labels",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "opens a native lifecycle step detail with persisted phase timing",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "explains translated stale timing without downgrading a completed execution result",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows autonomous quality control as its own workflow node and detail modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes repair audit sentinel values",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates dynamic quality evidence with the bounded Codex translation route",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates dynamic assurance and repair evidence through the shared route",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "retains dynamic quality evidence when translation is unavailable",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "summarizes repeated lifecycle phase timing records by phase",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "reveals an initially off-screen active lifecycle step after page load",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "preserves the active lifecycle horizontal position across server refreshes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "hides checkout-bound merge hand-off controls from CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not call the checkout-bound merge-status route from CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not open a checkout-bound finalization hand-off from CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders automatic reconciliation without an operator handoff",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows a bound repair PR with its host-observed candidate before delivery",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "labels a newly linked phase PR once beside earlier run PRs",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders only the merge boundaries recorded for the lifecycle",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses explicit localized labels for PR repair and both merge hand-offs",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps sortable headers within one complete neutral cell edge in every table",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders a read-only Forge recommendation handoff with expandable alternatives",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the shared modal shell with contextual panels and neutral close controls",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses purpose-matched glyphs for confirmation and merge hand-off modals",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps every modal close control visible in light mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "never gives a modal close control the initial focus",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the shared glyph weights for actions, disclosures and modal closes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "never draws a selected focus border around a modal shell",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "applies the compact header and standard action scale to every modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "presents localized retry preflight failures in the dashboard modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes unstaged-change preflight failures for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes an unavailable operator action for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps managed-branch synchronization read-only in a CENTRAL preflight error",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the site-wide scrollbar and action-size tokens explicit",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps direct-touch controls free from a shared glass gradient",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps every visible iPhone button and pulldown on an opaque surface",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the execution-details modal as compact as the report modal on iPhone",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps confirmation actions above iPhone browser chrome for long copy",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the prompt-history AI chat inside the shared iPhone safe area",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "scrolls a chat bubble only after it exceeds two thirds of the available chat space",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows the refresh timestamp in the bottom status bar",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "stacks footer status facts without overlap in narrow layouts",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the selected locale service for copy and date formatting",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "changes visible interface copy for each supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes the AI chat question placeholder for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes dashboard chrome and dynamic runtime copy for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "projects cumulative provider input without relabeling it as request context",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows linked Managed implementation and finalization PR evidence in execution details",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "pairs the verified commit timeline beside provider usage without extending the lifecycle",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "formats preflight timestamps through the selected dashboard locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "formats File Inbox heartbeat detail through the selected dashboard locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "copies a local File Inbox path and confirms it in the dashboard language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "makes every local component-installation path a copy action",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "puts preflight diagnostic clauses on separate lines",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders host, workspace and capability preflight fields through one presentation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes dynamically rendered telemetry copy for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows one recovered terminal run on its original telemetry date",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes the telemetry detail title for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "provides a localized label for every canonical telemetry phase",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "exports one loaded telemetry day as Markdown and JSON",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows an export error and allows the same captured detail selection to retry",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "gives every table a coloured first column and sorts telemetry columns",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "paginates execution telemetry at seven days per page",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "offers read-only download and copy actions for telemetry in CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "sorts telemetry detail tables with the same header treatment as logs",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the telemetry detail modal within a mobile portrait viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders telemetry run IDs as text actions instead of round icon buttons",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the full rose row treatment for telemetry runs in the detail modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the rose telemetry accent throughout the telemetry detail modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "derives secondary modal tokens from the modal accent instead of a category-specific fallback",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "formats telemetry percentages with one localized decimal place",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "projects canonical bottlenecks and complete per-run telemetry detail",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "qualifies canonical telemetry coverage, timing, invocation and chain scopes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses one uninterrupted selected-row treatment for telemetry rows",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes search and level filter controls for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "filters component logs by a specific day and an exact local time range",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "filters component logs from the selected minimum severity",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the log range end at or after its selected start",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "clears an individual log date value with its date-field close glyph",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "filters component logs by the local today and yesterday presets",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "sends every component-log filter and sort to CENTRAL before server pagination",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes component log table headings for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses human-friendly localized event labels in component logs and their filter",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes prompt history column headings for every supported language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "rerenders prompt history pagination in the selected language",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the prompt title column to fill available history table space",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "sizes the visible status column before narrowing the prompt title",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps terminal history actions on one wide-screen row beside a compact title",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows only the final five Run-ID characters on an iPad-sized history table",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the server retry projection for historical parent actions and lineage",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses CENTRAL operator capabilities instead of inferring history actions from BLOCKED",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps prompt history horizontally scrollable only on an iPhone-sized viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows and pins the Run-ID while preserving history-table horizontal access on an iPhone",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the rose Run-ID surface throughout a wide light history table",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps every interactive table-row hover light in light mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps whole-table scroll regions free of focus decoration",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "matches the iPhone portrait dashboard visual reference",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes capability preflight recommendations",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders preflight enums as localized labels",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the status bar at the bottom while dashboard content scrolls",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "resizes the dashboard scroll shell with the active viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the desktop title bar flush with the scrolling region",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the wrapped desktop title bar and banner sticky in a narrow window",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not move the dashboard scroll position when live content changes above it",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps iPhone configuration tooltips within the viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the title bar and banner sticky in a very narrow desktop window",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps status, refresh, and mobile options on one title-bar row",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps expanded compact options in the titlebar flow",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses one dark-mode ink colour for title-bar option labels",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "opens title-bar pulldowns in the narrow mobile options panel",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "synchronizes the visible project picker after CENTRAL replaces its options",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "aligns the refresh action with status at compact desktop widths",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the compact options disclosure before a narrow desktop crowds the title bar",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps every compact title-bar option reachable in a short viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps title-bar options visible in a real laptop wrapper",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps each iPhone title-bar switch thumb inside its track",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "persists every iPhone title-bar toggle after one direct touch at a time",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "restores the iPhone page position after an input loses focus",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "locks the iPhone background while a modal is open",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "extends the shared component-modal header rule beneath its close control",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not reserve a duplicate safe-area gutter in iPhone landscape",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the status column readable beside a visible action on iPhone landscape",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "projects dismissed handling beside the immutable terminal outcome",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps execution detail modal borders inside iPhone landscape safe areas",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "centres the pull-request wait modal inside the iPhone portrait viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps every modal panel inside iPhone safe outer padding and focuses a safe initial action",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses documented content-width caps for modal families on desktop",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses only the chat category divider inside the prompt-history AI modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a one-line AI chat composer on iPhone landscape",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "labels the splash screen as loading data",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "finishes dashboard startup without browser errors",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the house-style orange for an active execution spinner",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "loads the initial status before serverpush connects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not expose a checkout-bound Codex CLI update from CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "exposes the structured Engineering Platform health projection",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows uptime only for locally owned processes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders every canonical component detail without an explanation fallback",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "centres component information actions and balances component-card text padding",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a green information glyph for component actions",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not imply that a component detail card opens an external link",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps iPhone platform component cards on opaque, flat surfaces",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the canonical Server title for a core platform component",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders the safe current Codex activity from the live status projection",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "places diagnosis beside the current deviation when its container has room",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes projected managed-branch drift in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes runtime and transport machine codes in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes every canonical ingress card in every supported locale",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "UI-GOLDEN-LOCALIZATION renders Console transport surfaces in strict mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows the managed Codex CLI provenance in host preflight",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "wraps a long Codex CLI installation path within host diagnostics",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows technical diagnosis only for active or attention-needing executions",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps specialist reviewer titles in the active-execution turquoise scale in light mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows live and completed reviewer status indicators",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps terminal specialist reviews visible as historical run evidence",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes specialist reviewer names and lifecycle status",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "wraps specialist reviewers into compact responsive tiles",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses related primary and secondary accents for category titles and field labels",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses neutral content below the tinted heading of an expanded main category",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps main-category descriptions visible inside collapsed headings",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "refines the active duration indication with comparable runtime history",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses phase-aware comparable telemetry for the remaining duration",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "stops reporting one minute once a phase-aware range is exhausted",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "stops reporting one minute once the coarse range is exhausted",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows the elapsed duration explanation only once without learned history",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes active phases without mistaking them for whole-run time remaining",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows an honest total and phase context during autonomous PR quality control",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "unknown active phase retains total uncertainty without inventing a phase duration",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders all execution report tables as safe table cells",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "styles fenced Engineering Evidence Summary JSON without interpreting report text as HTML",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "formats the CENTRAL start time and never renders a JSON diagnostic error",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the active prompt category visible for a blocked predecessor",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps a terminal blocked run out of Active Prompt",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows a sticky localized banner for a Codex usage-limit block",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "warns below ten percent and turns red below five percent of a Codex limit",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps a watcher-failed stale live run out of Active Prompt",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps a stale finalization lifecycle visible without claiming an active runner",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "allows the AI question field to grow only vertically",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps comfortable inner padding when the AI question field is focused",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "bounds and sanitizes free-form dashboard input client-side",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps platform health status text readable in light mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders component details in the light modal theme",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "centres the component modal panel within iPhone-width viewports",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows clickable relay access and its independent functional health",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a neutral hover fill for the component-detail close action",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a green hover fill for the component restart action",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps a touch-safe gap between component restart and dismiss actions",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not append a current version to historical component evidence",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the dismiss action in its stable grid position without restart support",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps confirmation modal actions visibly filled in dark mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders house-orange confirmation dialogs as light surfaces in light mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows the splash screen before reloading the dashboard",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "confirms a relay restart from fresh health when its own connection closes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "refreshes uptime and memory while component details remain open",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows a LaunchAgent as EP-server host detail, not as a separate component",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "distinguishes server-hosted components and storage from owned processes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the component-modal header inside its panel while details scroll",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders prompt-history report actions as light surfaces in light mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps report-modal actions and markdown code light in light mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses light glyphs for dark prompt-history report actions",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders log actions in the light category style",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps component-log download and destructive clear hover treatments distinct",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "fills the historical report action blue on hover",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "downloads the complete CENTRAL component-log projection as NDJSON",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "copies only the visible filtered component-log entries",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "selects multiple component-log rows and copies the selected rows",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the shared single-line circular border for download glyphs",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders central-data export as a filled text action with its download glyph",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps platform-data actions aligned and makes transfer controls work without a selected project",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "prepares the visible central destination and discards it on relocation cancel",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "allows a prepared platform-data relocation to another APFS volume",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "explains why a non-APFS relocation destination is unavailable",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "localizes required relocation destinations instead of showing the server code",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "gives the platform-data import filename a wide modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "clears a selected platform-data archive when its modal is closed",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "translates platform-data import errors and marks them red",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "clears an earlier platform-data import error when a new archive is selected",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses an import-specific restart message after accepting platform data",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "requires destructive confirmation before replacing platform data",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps platform-data location links free of selected borders",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses shared semantic classes for download, copy and destructive actions",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the generic orange download glyph in the prompt-scoped chat",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps AI chat actions in the modal header beside close",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "fills the prompt-scoped AI question send action with its purple category on hover",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a destructive red surface for the prompt-scoped chat clear glyph",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a destructive red surface for the component log clear glyph",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses matching orange iOS-style toggles in the title bar",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps title-bar switch housings free from shared mobile glass styling",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps iPhone title-bar option rows and locale picker free of card shadows",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the platform version labels orange in both themes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the centralized house style for toast and shared controls",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the copy toast above an open report modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "gives every dashboard toast a semantic glyph without polluting its live text",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the house-orange focus contract and a light mobile options surface",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses house-style orange for every interactive focus family",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses one selected border for a selectable host component",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses normal field ink for native log date values",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses neutral ink for ordinary Markdown emphasis",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows only the date controls required by the selected log time window on desktop",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps title-bar switch focus on the compact track",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a dark locale picker surface in dark mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps category summaries out of the selected-input focus treatment",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the sticky title bar square while padding content evenly",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "never renders a white focus ring on visible interactive elements",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the skip-link dashboard target focusable without outlining all categories",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not initially focus a report-modal shell",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not initially focus a prompt-detail shell",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not initially focus a prompt-chat shell",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the prompt-detail close action at the top right while scrolling",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps report-modal action colours semantically distinct in dark mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps a long report modal inside a short viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "marks every dashboard element with the active light or dark theme",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows the private dashboard and keeps completed work collapsed by default",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "sorts the single canonical Platform log table",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the remaining component-log table width for Details",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the canonical Platform log table horizontally scrollable on iPhone",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "paginates the two component-log tables independently",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps a requested server-backed component-log page instead of clamping it to its 50 rows",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows a searchable, sortable and paginated prompt history",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows saved conversations loading and submitted questions immediately",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "retries only a transient read failure for an immutable terminal report",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "retries one transiently empty prompt-history projection",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "scrolls only chat bubbles inside a prompt-history conversation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the chat composer and status inside the prompt-history modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the thinking status beside the model after the AI question box is resized",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "reserves space for the chat model and thinking state in a short viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses a distinct purple surface for AI answers in a prompt-history conversation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses the shared neutral surface for prompt-history detail and chat modal shells",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the empty AI conversation surface neutral in light mode",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses purpose-matched glyphs in modal titles",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "sizes prompt-history chat bubbles to their content",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "caps long user and assistant chat bubbles and scrolls their bodies",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "retains terminal status colours in the light prompt-history table",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "searches prompt history by localized terminal status",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "retains severity colours in the light component-log table",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses monospace without a filled inline-code surface in AI answers",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps fenced AI-chat code unfilled while retaining a monospace font",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps fenced AI-chat code unfilled in light mode as well",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "opens and closes all visible dashboard categories with the title-bar switch",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "switches between persisted dark and light dashboard themes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "hides the checkout-bound rate-limit reset from CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not call the checkout-bound rate-limit reset from CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "parses each newline-delimited JSON log entry separately",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "hides empty HTTP-server placeholder debug messages",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "formats displayed log timestamps as dd-MM-yyyy HH:mm:ss",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "treats an absent component log as an empty state, not malformed JSON",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the Inbox queue visible when empty and numbers the oldest prompt first",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps checkout-bound Inbox items display-only in CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "maps CENTRAL queue actions to their matching confirmation modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps legacy Inbox items display-only in CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the checkout-bound Codex CLI blocker out of the CENTRAL Inbox",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "hides checkout preflight repair for a queue blocked on a working branch in CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows a stale Git workspace lock without checkout recovery in CENTRAL",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not present a project-local engineering database",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "groups fixed platform settings in a read-only configuration subsection",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "does not expose retired local branch cleanup",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders provider limit rows on separate lines",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders an accessible rolling two-hour capacity trend",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps supported dashboard view preferences while retired technical details stay hidden",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "uses an in-app confirmation modal before clearing the selected CENTRAL component projection",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "clears only the persistent run-scoped AI conversation through the in-app modal",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "emphasizes the AI chat action for a prompt with a persistent conversation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "refreshes status and prompt history immediately after dismissing an execution",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "cancels only an eligible central Action and shows its pending state",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows the iPhone pull-to-refresh threshold",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "only starts pull-to-refresh from the scroll region's top edge",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "shows live platform readiness in the titlebar health indicator",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps platform health authoritative while an execution is active",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders canonical platform components in the platform card",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "opens canonical ingress details from the status popout",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "renders current transport detail fields without raw machine codes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the titlebar health tooltip inside a narrow viewport",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "anchors the desktop health popout below the status indicator",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the compact titlebar health tooltip above dashboard content",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps the compact titlebar health tooltip visible while reading it",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "refreshes logs immediately after automatic refresh is re-enabled",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "binds telemetry pagination to actual initial recovery scoped-first=false",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "binds telemetry pagination to actual initial recovery scoped-first=true",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "binds iPhone configuration failure and native recovery to actual documents",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "binds all five synthetic drift fields before real scope reconciliation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract component-log-row reduce",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract component-log-row no-preference",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract prompt-history-row reduce",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract prompt-history-row no-preference",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract telemetry-row reduce",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "interactive row surface motion contract telemetry-row no-preference",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "binds all runtime transport locale fields before real scope reconciliation",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "real health replacement exposes disconnected style observations",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual observer drains a failure started before page-close before sealing raw bytes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual observer rejects post-seal failure writes without changing retained bytes",
+      "expectedStatus": "passed",
+      "annotations": []
+    }
+  ]
+}

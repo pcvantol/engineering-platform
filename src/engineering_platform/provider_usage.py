@@ -6,6 +6,8 @@ never stores prompts, tool arguments, command output, paths, or model replies.
 
 from __future__ import annotations
 
+from .storage import open_sqlite_read_connection
+
 from dataclasses import dataclass
 import hashlib
 import json
@@ -729,9 +731,7 @@ def provider_usage_summary(
             connection = open_storage(root)
         else:
             database = central_database.resolve()
-            if not database.is_file():
-                raise RuntimeError("CENTRAL provider-usage database is unavailable")
-            connection = sqlite3.connect(database, isolation_level=None)
+            connection = open_sqlite_read_connection(database)
             connection.execute("PRAGMA foreign_keys=ON")
         connection.row_factory = sqlite3.Row
         try:
@@ -1142,9 +1142,7 @@ def provider_usage_summaries(
         connection = open_storage(root)
     else:
         database = central_database.resolve()
-        if not database.is_file():
-            raise RuntimeError("CENTRAL provider-usage database is unavailable")
-        connection = sqlite3.connect(database, isolation_level=None)
+        connection = open_sqlite_read_connection(database)
         connection.execute("PRAGMA foreign_keys=ON")
     connection.row_factory = sqlite3.Row
     rows: list[sqlite3.Row] = []
