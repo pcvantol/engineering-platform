@@ -21,6 +21,10 @@ async function createObservation(page) {
   const retained = mkdtempSync(path.join(privateRoot, 'ep-document-observation-'));
   const raw = path.join(retained, 'transport.jsonl.gz');
   const pending = new Set();
+  let resolveClosed, rejectClosed;
+  const closedReceipt = new Promise((resolve, reject) => { resolveClosed = resolve; rejectClosed = reject; });
+  // Mark the promise handled immediately; the fixture still awaits rejection.
+  closedReceipt.catch(() => {});
   const extras = new Map();
   const retain = (kind, fact) => appendFileSync(raw, gzipSync(Buffer.from(JSON.stringify({ at: Date.now(), kind, fact }) + '\n')),
     { mode: 0o600 });
@@ -83,13 +87,18 @@ async function createObservation(page) {
   });
   const pageError = error => retain('page-error', { message: error.message, stack: error.stack });
   page.on('pageerror', pageError);
-  page.on('close', async () => {
-    session.removeAllListeners();
-    page.off('pageerror', pageError);
-    await Promise.allSettled([...pending]);
-    retain('page-close', { actual_page_closed: true });
-    writeFileSync(path.join(retained, 'closed.json'), JSON.stringify({ pid: process.pid, actual_page_closed: true,
-      bytes: readFileSync(raw).length, sha256: createHash('sha256').update(readFileSync(raw)).digest('hex') }), { mode: 0o600 });
+  page.on('close', () => {
+    (async () => {
+      session.removeAllListeners();
+      page.off('pageerror', pageError);
+      await Promise.all([...pending]);
+      retain('page-close', { actual_page_closed: true });
+      const bytes = readFileSync(raw);
+      const receipt = { pid: process.pid, actual_page_closed: true,
+        bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+      writeFileSync(path.join(retained, 'closed.json'), JSON.stringify(receipt), { mode: 0o600 });
+      return receipt;
+    })().then(resolveClosed, rejectClosed);
   });
   const documentId = async () => {
     const frame = (await session.send('Page.getFrameTree')).frameTree.frame;
@@ -148,5 +157,5 @@ async function createObservation(page) {
     if (results.some(result => result.status === 'rejected'))
       throw Error('First browser failure retention incomplete; original failure remains in runner report');
   };
-  return { scope, quota, select, documentId, failure, records: () => [...requests.values()] };
+  return { scope, quota, select, documentId, failure, closed: () => closedReceipt, records: () => [...requests.values()] };
 }

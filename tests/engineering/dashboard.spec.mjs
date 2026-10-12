@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2252,8 +2253,9 @@ test.describe("Engineering Status browser smoke", () => {
     expect(() => assertProjection(wrongContext)).toThrow();
     const output = testInfo.outputPath("locale-render-turn-cause.json");
     writeFileSync(output, JSON.stringify({ document_id: documentId, projection,
-      authoritative_packet: packet, wrong_locale: otherLanguage, wrong_context: wrongContext,
-      original_asynchronous_predicate_overwritten: true, requests: observer.records() }));
+      authoritative_response_sha256: createHash("sha256").update(JSON.stringify(packet)).digest("hex"),
+      actual_background_response_completed: true, wrong_locale: otherLanguage, wrong_context: wrongContext,
+      original_asynchronous_predicate_overwritten: true, observed_request_count: observer.records().length }));
     await testInfo.attach("locale-render-turn-cause", { path: output, contentType: "application/json" });
   });
 
