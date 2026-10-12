@@ -6,13 +6,87 @@ Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecommen
 Lane **r34**, plan **7**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
-State: **IMPLEMENTING / NOT INSTALLED-QUALIFIED**. Normal PATCH target **2.3.115** prepared using the canonical expected-version helper; all 11 version components PASS.
+State: **SOURCE_QUALIFIED / FINALIZATION_AND_NEW_FINAL_MAIN_INSTALLED_PENDING**. EP **2.3.115** is source-delivered by protected PR349; this documentary Finalization is **NO_BUMP**, with all 11 version components unchanged.
 Current correction consumption: **28**; administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
 Historical source delivery notes, branches, reports, stashes and foreign holds are retained.
 This serial Console follow-up does not reopen specialist execution or qualify the broader SA-Q/ROLE/PAR family.
+
+## Actual protected implementation and ordinary Finalization — 2026-10-13
+
+Same r34 / plan7 / ARCHITECT_2 / LANE_2_WORK, consumed28 with administrative
+maximum NOT_APPLICABLE_SCOPED_COMPLETION. Source branch/history remain retained.
+Actual implementation [PR349](https://github.com/pcvantol/engineering-platform/pull/349)
+merged by ordinary protected squash/head-CAS at2026-10-12T22:33:56Z into
+`624f99f4e41aee9cbba3e68065f64dbcd21861ec`. Its GitHub/local tree
+`3e9a78bbe7a21fe6469da90f3e064764e4c400d0` equals the whole-reviewed candidate
+`126528079ba642bc07f4bd68eebf8ae63715d0f2`. Existing foreign malformed ref/lock
+were retained after fetch's actual failure; the received actual commit object
+was independently verified against GitHub main-ref and commit/tree, not repaired
+or replaced by a second sourcewriter. Finalization branch is
+`codex/ep-dashboard-specialists-recovery-finalization-v1`, based on that main.
+
+### Completed candidate evidence, with exact identity boundaries
+
+- Supported committed-source noneditable EP2.3.115 local wheel SHA256
+  `8897a0a3e88f3c404e417c0d3039132cfe05c8ace077bb490e05ed5d90688d4b`;
+ 193 source/wheel/installed production files independently match after processstop.
+- Actual SOURCE2519 tests/3429.604s and INSTALLED2519/3445.652s, both exit0,
+  actualwait/qualified, each one unchanged macOS managed-authenticated-CLI skip.
+  All165 Python modules meet owning combined>=80.20%; minimum80.320366%.
+  All13 changed Python modules meet strict executable-line>80.2%; minimum82.170543%.
+  Aggregate85.046764% does not substitute for either per-file threshold.
+- Complete local browser11:524 mandatory first-attempt PASS/retries0 plus4
+  unchanged baseline NOT_RUN; all4 owning1-worker/300s shards actually exited0.
+  Exactasset executable-line percentages86.940/99.747/98.333 exceed80.2.
+  Actual526 sealed pages,95 closed worker logs,69 through-stop guard/effect
+  receipts,101 bound PIDs absent and205 declared scenario screenshots audited.
+  Original outerwrapper missing-directory FAIL remains FAILED; exact original
+  closed shard bytes were separately recovered after actualstop and independently
+  admitted. No retry, lost private historical log or missing old DB bytes is PASS.
+- Fresh independent whole Quality and Security APPROVE, followed by independent
+  actual CI-closure addenda, recorded [on the PR](https://github.com/pcvantol/engineering-platform/pull/349#issuecomment-6133877549).
+  Quality addendum SHA256528fce09fe2c8c74a235718a954b1ed827df8c4f2421b64abe20c9abbfc73cae;
+  Security addendum SHA2564fce11ddd636b5bf7c90ff0debaf9875d213fc1efdae88be0950555f04a0e486.
+- [Full owning CI38302902219](https://github.com/pcvantol/engineering-platform/actions/runs/38302902219)
+  COMPLETED SUCCESS/all11 actual jobs: installed2519/Linuxbaseline2, full discovery
+  2537/3510.655s/Linuxbaseline2, native3/recovery102, all4browserparts/524mandatory,
+  exactJS coverage/localization/profile/projection, ingress/concurrency/repository
+  authority/GenesisManaged/HTTP and trusted evidence. CI syntheticmerge
+  ec105c927018b5113f63e70bbf7f0afe1dbf2d1b has the same tree but distinct wheel
+  SHA2568b3b8028293c84dc5df280e2a2e0b2d5f27b43773f2f930ffbb79f39c30920f4.
+  No CI package hash is presented as the local wheel.
+- Existing [Owner Authorization38317287272](https://github.com/pcvantol/engineering-platform/actions/runs/38317287272)
+  actual PASS binds exact candidate1265280/PR349/main/pcvantol/HIGH_RISK before
+  protected merge. Explicit delegated normal workflow action, no self-review,
+  hand-written status, force/admin bypass, branch deletion or altered protection.
+
+### Preserved failures and remaining mandatory lifecycle
+
+All14 historical rounds and subsequent consumption, old failures/interruptions,
+reboot-lost private artifacts and the original32-second browser observation
+cause UNESTABLISHED remain historical. Current test evidence supplies current
+qualification; it does not reconstruct missing bytes or assert historical PASS.
+The root summaries' Linux-skip-on-Mac and premature10-job-count assumptions failed
+as tooling assertions, explicitly retained; actual unmodified suites/job11 pass.
+CodeQL aggregate actualFAIL12pre-existingHIGH remains distinct from technicalscan
+SUCCESS, with independent exact-base source/caller causality assessment and no
+alert dismissal. TDE observe workflowSUCCESS remains actualpolicyFAIL/repository
+FAILED/coverageunavailable; no generic debt repair or policy waiver occurs.
+
+This ordinary nonempty six-file documentary Finalization changes no product,
+tests, workflow, version, active family node/edge, grant or private raw evidence.
+Its own full normal checks, fresh independent documentary Quality/Security and
+normal protected merge remain required. Afterwards build a NEW actual exact-final-
+main noneditable package and run fresh installed/browser qualification, required
+scenario screenshots and request/UI/source/artifact readbacks with safe own
+cleanup. Candidate1265280/CIec105 receipts cannot close this future final-main gate.
+Final actual SHA/artifact/results/reachable screenshots and embedded previews go
+in the owning #142 receipt after they exist. No premature r34DONE or HOB start;
+R33/r43/r44/GP remain closed, full SA-Q/ROLE/PAR/live providers/physical iPhone/
+production installation/public release/signing and adoption controls unqualified.
 
 ## Selected chain and limits
 

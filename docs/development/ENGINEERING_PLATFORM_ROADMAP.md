@@ -1,6 +1,25 @@
 # Engineering Platform Roadmap
 
+## Stored specialist evidence and recovery dashboard — L2 r34, 2026-10-13
+
+[Selected delivery](DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md), same
+ARCHITECT_2 / LANE_2_WORK, r34 / plan7, is SOURCE_QUALIFIED on protected EP2.3.115
+main `624f99f4e41aee9cbba3e68065f64dbcd21861ec` after PR349's actual exact-head
+owner authorization, independent whole-PR Quality/Security and all11 owning CI
+jobs SUCCESS. Current correction consumption28 and all historical rounds remain;
+the [scoped-completion mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344)
+removes administrative count caps, without changing operational/security gates.
+Candidate-installed browser receipts bind1265280/tree3e9a78/local wheel8897a0,
+not a future final-main artifact. Normal nonempty NO_BUMP Finalization with its
+own reviews/checks/protected merge and NEW exact-final-main noneditable installed/
+browser/screenshots/readback/cleanup remain required. R33/r43/r44/GP stay closed;
+HOB-EP01 waits. No adoption control, execution authority, broader SA-Q/ROLE/PAR,
+live provider quality or production installation is claimed.
+
 ## Specialist selection and disposition subset — L2 r33, 2026-10-07
+
+The following source-stage snapshot is historical. R33 is closed at its
+[immutable final receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007).
 
 `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007` selects SA-SEL/SA-LOOP and only necessary CTX/ISO/OBS extensions. [Delivery record](SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md), plan revision 13, EP 2.3.114: SOURCE_QUALIFIED on protected main `be60bf08dac17caf437a147fe658bca67d821dd6`. Complete exact-head Quality/Security and ordinary protected implementation merge are recorded. Same writer, consumed10/max10/remaining0 and unchanged operational budgets; r32 remains closed. NO_BUMP Finalization and fresh exact-final-main noneditable installed evidence remain required and are recorded in [#142](https://github.com/pcvantol/forge/issues/142). Broader SA-Q/ROLE/PAR and commercial efficiency claims remain unselected.
 
