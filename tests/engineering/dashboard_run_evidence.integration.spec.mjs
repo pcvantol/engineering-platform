@@ -1024,3 +1024,5 @@ test.describe("iPhone direct touch: stored active execution", () => {
     });
   }
 });
+
+import "./dashboard_no_project_scope.spec.mjs";

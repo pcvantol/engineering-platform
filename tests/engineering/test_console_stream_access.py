@@ -88,7 +88,7 @@ class ConsoleStreamAccessTests(unittest.TestCase):
         self.assertEqual(body.count("event: dashboard\n"), 1)
         self.assertIn("event: console-read-error\n", body)
         control = body.split("event: console-read-error\ndata: ")[1].split("\n")[0]
-        self.assertEqual(json.loads(control), {"project_id": "project", "error": "CONSOLE_PROJECT_UNAVAILABLE", "outcome": "DENIED"})
+        self.assertEqual(json.loads(control), {"scope": "PROJECT", "project_id": "project", "error": "CONSOLE_PROJECT_UNAVAILABLE", "outcome": "DENIED"})
         self.assertEqual(len(calls), 2)
         self.assertEqual(self.errors, [])
 

@@ -3437,9 +3437,16 @@ function startDashboardUpdates() {
   const events = dashboardEvents = new EventSource("/api/events"),
     readEpoch = dashboardReadEpoch, projectId = document.body.dataset.projectId;
   events.addEventListener("console-read-error", (event) => {
-    if (dashboardReadDenied || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return;
-    const control = JSON.parse(event.data);
-    if (control.project_id !== projectId) return;
+    if (dashboardReadDenied || events !== dashboardEvents || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return;
+    let control;
+    try { control = JSON.parse(event.data); } catch { return; }
+    if (!control || typeof control !== "object" || Array.isArray(control)) return;
+    // PLATFORM is explicit absence of project authority, never an ID alias.
+    // A selected project named "none" remains an ordinary PROJECT identity.
+    if (NO_PROJECT_SELECTED) {
+      if (control.scope !== "PLATFORM" || control.project_id !== null) return;
+    } else if (control.scope !== "PROJECT" || typeof control.project_id !== "string"
+        || !projectId || control.project_id !== projectId) return;
     if (!((control.outcome === "DENIED" && control.error === "CONSOLE_PROJECT_UNAVAILABLE")
         || (control.outcome === "UNAVAILABLE" && control.error === "CENTRAL_UNAVAILABLE")
         || (control.outcome === "CONFLICT" && control.error === "CONSOLE_SOURCE_IDENTITY_CONFLICT"))) return;
@@ -3447,7 +3454,8 @@ function startDashboardUpdates() {
     setUpdateMode("dashboard.status_unavailable");
   });
   events.addEventListener("dashboard", (x) => {
-    if (!$("autoRefresh").checked || dashboardReadDenied) return;
+    if (!$("autoRefresh").checked || dashboardReadDenied || events !== dashboardEvents
+        || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) return;
     try {
       const snapshot = JSON.parse(x.data);
       if (!applyDashboardSnapshot(snapshot)) return;
@@ -3460,6 +3468,7 @@ function startDashboardUpdates() {
     }
   });
   events.onerror = () => {
+    if (events !== dashboardEvents || readEpoch !== dashboardReadEpoch || projectId !== document.body.dataset.projectId) { events.close(); return; }
     if (dashboardReadDenied) { events.close(); return; }
     $("autoRefresh").checked &&
       setUpdateMode("refresh.reconnecting");

@@ -6369,7 +6369,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise
                 error = _ConsoleReadError("UNAVAILABLE")
             _audit_console_read_loss(error)
-            control = json.dumps({"project_id": "", "error": error.code, "outcome": error.outcome}, separators=(",", ":")).encode()
+            control = json.dumps({"scope": "PLATFORM", "project_id": None, "error": error.code, "outcome": error.outcome}, separators=(",", ":")).encode()
             try:
                 self.wfile.write(b"event: console-read-error\ndata: " + control + b"\n\n")
                 self.wfile.flush()
@@ -6419,7 +6419,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise
                 error = _ConsoleReadError("UNAVAILABLE")
             _audit_console_read_loss(error)
-            control = json.dumps({"project_id": project_id, "error": error.code, "outcome": error.outcome}, separators=(",", ":")).encode()
+            control = json.dumps({"scope": "PROJECT", "project_id": project_id, "error": error.code, "outcome": error.outcome}, separators=(",", ":")).encode()
             try:
                 self.wfile.write(b"event: console-read-error\ndata: " + control + b"\n\n")
                 self.wfile.flush()
