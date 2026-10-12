@@ -108,6 +108,32 @@ def sqlite_connection(*arguments: object, **keywords: object) -> Iterator[sqlite
         yield connection
 
 
+def open_sqlite_read_connection(database: Path) -> sqlite3.Connection:
+    """Open an existing SQLite authority, never create or migrate it.
+
+    Path.as_uri quotes URI metacharacters before SQLite interprets mode=ro.
+    Query-only also protects callers that accidentally attempt a statement.
+    The caller owns close(); setup failures close the acquired connection.
+    """
+    connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True,
+                                 timeout=10, isolation_level=None)
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=10000")
+        return connection
+    except BaseException:
+        connection.close()
+        raise
+
+
+@contextmanager
+def sqlite_read_connection(database: Path) -> Iterator[sqlite3.Connection]:
+    """Deterministically close an existing, read-only SQLite authority."""
+    with closing_sqlite_connection(open_sqlite_read_connection(database)) as connection:
+        yield connection
+
+
 def _evidence_connection(root: Path, central_database: Path | None = None) -> sqlite3.Connection:
     """Open the one evidence authority with the shared SQLite policy.
 
@@ -2701,12 +2727,15 @@ def load_run_qualification_snapshot(
     root: Path, run_id: str, *, central_database: Path | None = None,
 ) -> dict[str, object] | None:
     """Load a persisted snapshot without deriving or backfilling legacy runs."""
-    connection = _evidence_connection(root, central_database)
+    connection = (_evidence_connection(root) if central_database is None
+                  else open_sqlite_read_connection(central_database))
     try:
         row = connection.execute(
             "SELECT payload FROM execution_run_qualification_snapshots WHERE run_id=?", (run_id,)
         ).fetchone()
     except sqlite3.OperationalError:
+        if central_database is not None:
+            raise
         # A supported historical database can legitimately predate v36.
         return None
     finally:

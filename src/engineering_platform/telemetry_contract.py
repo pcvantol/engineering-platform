@@ -19,7 +19,7 @@ from .provider_usage import (
 )
 from .telemetry_metrics import aggregate_coverage, aggregate_numeric_metric, metric_coverage
 from .telemetry_metrics import VALID_SUBTOTAL
-from .storage import open_storage
+from .storage import open_storage, open_sqlite_read_connection
 
 
 MAX_CHAIN_RUNS = 250
@@ -27,7 +27,7 @@ MAX_LINEAGE_GRAPH_RUNS = 5000
 
 
 def _connection(root: Path, database: Path | None) -> sqlite3.Connection:
-    connection = open_storage(root) if database is None else sqlite3.connect(database.resolve(), isolation_level=None)
+    connection = open_storage(root) if database is None else open_sqlite_read_connection(database)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=10000")

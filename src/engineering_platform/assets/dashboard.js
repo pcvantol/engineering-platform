@@ -3441,7 +3441,8 @@ function startDashboardUpdates() {
     const control = JSON.parse(event.data);
     if (control.project_id !== projectId) return;
     if (!((control.outcome === "DENIED" && control.error === "CONSOLE_PROJECT_UNAVAILABLE")
-        || (control.outcome === "UNAVAILABLE" && control.error === "CENTRAL_UNAVAILABLE"))) return;
+        || (control.outcome === "UNAVAILABLE" && control.error === "CENTRAL_UNAVAILABLE")
+        || (control.outcome === "CONFLICT" && control.error === "CONSOLE_SOURCE_IDENTITY_CONFLICT"))) return;
     invalidateDashboardReadScope(control.outcome);
     setUpdateMode("dashboard.status_unavailable");
   });

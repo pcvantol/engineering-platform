@@ -2344,7 +2344,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
     try:
-        with storage.sqlite_connection(f"file:{path}?mode=ro", uri=True) as connection:
+        with storage.sqlite_read_connection(path) as connection:
             tables = _table_names(connection)
             try:
                 installation_pairing.validate_schema(connection)
@@ -2507,7 +2507,7 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
     execution semantics and intentionally retain no credential or raw prompt.
     """
     latest: dict[str, str] = {}
-    with storage.sqlite_connection(f"file:{data_root / SERVER_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         for transport, created_at in connection.execute(
             "SELECT transport,MAX(created_at) FROM ep_submissions GROUP BY transport"
         ):
@@ -3100,7 +3100,7 @@ def _console_projects(data_root: Path) -> list[dict[str, str]]:
     only later, when a user explicitly selects that project for a transitional
     root-bound route.
     """
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         rows = connection.execute("""SELECT p.project_id, r.repository_id
             FROM ep_project_registrations AS p
             JOIN ep_repository_registrations AS r
@@ -3115,8 +3115,9 @@ class _ConsoleReadError(ServerConfigurationError):
     """Expected loss of a CENTRAL read scope, never a successful empty view."""
     def __init__(self, outcome: str):
         self.outcome = outcome
-        self.status = 409 if outcome == "DENIED" else 503
-        self.code = "CONSOLE_PROJECT_UNAVAILABLE" if outcome == "DENIED" else "CENTRAL_UNAVAILABLE"
+        self.status = 409 if outcome in {"DENIED", "CONFLICT"} else 503
+        self.code = {"DENIED": "CONSOLE_PROJECT_UNAVAILABLE",
+                     "CONFLICT": "CONSOLE_SOURCE_IDENTITY_CONFLICT"}.get(outcome, "CENTRAL_UNAVAILABLE")
         super().__init__(self.code)
 
 
@@ -3137,7 +3138,7 @@ def _audit_console_read_loss(error: _ConsoleReadError) -> None:
 def _console_source_identity(data_root: Path) -> RuntimeIdentity:
     database = (data_root / SERVER_DATABASE_FILENAME).resolve()
     try:
-        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        connection = storage.open_sqlite_read_connection(database)
         try:
             row = connection.execute("SELECT instance_id,created_at FROM ep_installations").fetchone()
             if row is None:
@@ -3168,15 +3169,21 @@ def _console_source_identity(data_root: Path) -> RuntimeIdentity:
     return identity
 
 
-def _console_read_authority(data_root: Path, project_id: str, repository_id: str | None = None) -> str:
+def _console_read_authority(data_root: Path, project_id: str, repository_id: str | None = None,
+                            identity: RuntimeIdentity | None = None) -> str:
     """Fresh logical authority, independent of checkout bindings and old snapshots."""
+    if identity is not None and _console_source_identity(data_root) != identity:
+        raise _ConsoleReadError("CONFLICT")
     database = (data_root / SERVER_DATABASE_FILENAME).resolve()
     try:
-        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        connection = storage.open_sqlite_read_connection(database)
         try:
             connection.execute("BEGIN")
-            if connection.execute("SELECT instance_id FROM ep_installations").fetchone() is None:
+            installation = connection.execute("SELECT instance_id,created_at FROM ep_installations").fetchone()
+            if installation is None:
                 raise _ConsoleReadError("UNAVAILABLE")
+            if identity is not None and tuple(installation) != (identity.instance_id, identity.created_at):
+                raise _ConsoleReadError("CONFLICT")
             row = connection.execute(
                 """SELECT r.repository_id,r.authority_repository_id FROM ep_project_registrations p
                    JOIN ep_repository_registrations r ON r.project_id=p.project_id AND r.role='authority'
@@ -3193,20 +3200,22 @@ def _console_read_authority(data_root: Path, project_id: str, repository_id: str
         raise
 
 
-def _console_project_read(data_root: Path, project_id: str, reader, repository_id: str | None = None):
-    repository_id = _console_read_authority(data_root, project_id, repository_id)
+def _console_project_read(data_root: Path, project_id: str, reader, repository_id: str | None = None,
+                          identity: RuntimeIdentity | None = None):
+    identity = identity or _console_source_identity(data_root)
+    repository_id = _console_read_authority(data_root, project_id, repository_id, identity)
     try:
         result = reader(data_root, project_id)
     except (ParityContextError, local_repository_binding.LocalRepositoryBindingError):
         # Reclassify only a freshly established owning access loss. A context
         # error with still-valid authority remains an ordinary handler failure.
-        _console_read_authority(data_root, project_id, repository_id)
+        _console_read_authority(data_root, project_id, repository_id, identity)
         raise
     except sqlite3.OperationalError as error:
         if _console_source_unavailable(error):
             raise _ConsoleReadError("UNAVAILABLE") from error
         raise
-    _console_read_authority(data_root, project_id, repository_id)
+    _console_read_authority(data_root, project_id, repository_id, identity)
     return result
 
 
@@ -3215,7 +3224,7 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
     for project in _console_projects(data_root):
         if project["project_id"] != project_id:
             continue
-        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             context = project_context(
                 connection,
                 data_root=data_root,
@@ -3708,7 +3717,7 @@ def _central_console_run_records(
 ) -> list[dict[str, object]]:
     """Read project runs with bounded pages from one consistent source view."""
     owns_connection = _read_connection is None
-    connection = _read_connection or sqlite3.connect(data_root / SERVER_DATABASE_FILENAME)
+    connection = _read_connection or storage.open_sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME)
     try:
         connection.row_factory = sqlite3.Row
         if owns_connection and record_limit is None:
@@ -3786,7 +3795,7 @@ def _central_console_lifecycle(data_root: Path, run_id: str) -> dict[str, object
         # It neither evaluates nor grants permission to execute this run.
         evidence["current_repository_binding"] = "NOT_RECORDED"
         try:
-            connection = sqlite3.connect(f"file:{(data_root / SERVER_DATABASE_FILENAME).resolve()}?mode=ro", uri=True)
+            connection = storage.open_sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME)
             try:
                 row = connection.execute(
                     "SELECT b.state FROM ep_parity_lifecycle_dispatches d "
@@ -3798,7 +3807,7 @@ def _central_console_lifecycle(data_root: Path, run_id: str) -> dict[str, object
             if row and row[0] in {"BOUND", "UNBOUND"}:
                 evidence["current_repository_binding"] = row[0]
         except (OSError, sqlite3.DatabaseError):
-            evidence["current_repository_binding"] = "UNAVAILABLE"
+            raise
     return result
 
 
@@ -3814,7 +3823,7 @@ def _central_console_execution_projection(
             data_root, run_id, central_database=data_root / SERVER_DATABASE_FILENAME,
         )
     except (storage.EngineeringStorageError, sqlite3.DatabaseError):
-        timing = {}
+        raise
     total_ms = timing.get("total_wall_time_ms")
     provider_ms = timing.get("provider_execution_time_ms")
     if not isinstance(total_ms, int) or isinstance(total_ms, bool) or total_ms < 1:
@@ -3834,7 +3843,7 @@ def _central_console_execution_projection(
     # In particular, completed specialist reviews must not turn an unmeasured
     # primary invocation into a misleading ``0 sec`` on the detail card.
     try:
-        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             measured_primary = connection.execute(
                 """SELECT 1 FROM provider_invocations
                      WHERE run_id=? AND phase='PROVIDER_EXECUTION'
@@ -3844,7 +3853,7 @@ def _central_console_execution_projection(
                 (run_id,),
             ).fetchone() is not None
     except (sqlite3.DatabaseError, storage.EngineeringStorageError):
-        measured_primary = False
+        raise
     execution = {
         "seconds": (
             provider_ms / 1000
@@ -3854,7 +3863,7 @@ def _central_console_execution_projection(
         ),
         "total_seconds": total_ms / 1000 if isinstance(total_ms, int) and total_ms >= 0 else None,
     }
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         invocation = connection.execute(
             """SELECT provider,model FROM provider_invocations
                  WHERE run_id=? ORDER BY ordinal DESC LIMIT 1""", (run_id,),
@@ -3873,7 +3882,7 @@ def _central_console_provider_usage(data_root: Path, run_id: str) -> dict[str, o
             data_root, run_id, central_database=data_root / SERVER_DATABASE_FILENAME,
         )
     except (OSError, sqlite3.DatabaseError, storage.EngineeringStorageError):
-        return {}
+        raise
     count = summary.get("provider_invocation_count") if isinstance(summary, Mapping) else None
     return dict(summary) if isinstance(count, int) and not isinstance(count, bool) and count > 0 else {}
 
@@ -3883,7 +3892,7 @@ def _central_console_validation_evidence(
 ) -> list[dict[str, str]]:
     """Expose only redacted terminal validation results, never commands or paths."""
     try:
-        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 """SELECT a.artifact_id FROM execution_artifact_records AS a
                      JOIN ep_parity_lifecycle_dispatches AS d
@@ -3898,7 +3907,7 @@ def _central_console_validation_evidence(
                 connection, project_id=project_id, artifact_id=str(row[0]),
             ) if row else None
     except sqlite3.Error:
-        return []
+        raise
     try:
         document = json.loads(payload) if payload else None
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -3928,7 +3937,7 @@ def _central_console_checkpoint_commit_timeline(
 ) -> list[dict[str, str]]:
     """Project strict phase commits from one exactly bound terminal checkpoint."""
     try:
-        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 """SELECT t.payload,t.phase,d.state
                      FROM engineering_transactions AS t
@@ -3937,7 +3946,7 @@ def _central_console_checkpoint_commit_timeline(
                 (project_id, submission_id, run_id),
             ).fetchone()
     except sqlite3.Error:
-        return []
+        raise
     if row is None or row[1] != outcome or row[2] != outcome:
         return []
     try:
@@ -3977,7 +3986,7 @@ def _central_console_terminal_revision_timeline(
     retained as a distinct fallback rather than being called a phase commit.
     """
     try:
-        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute(
                 """SELECT a.artifact_id,a.created_at
                      FROM execution_artifact_records AS a
@@ -3996,7 +4005,7 @@ def _central_console_terminal_revision_timeline(
                 connection, project_id=project_id, artifact_id=str(row[0]),
             )
     except sqlite3.Error:
-        return []
+        raise
     if payload is None:
         return []
     try:
@@ -4044,7 +4053,7 @@ def _central_console_current_execution_diagnostic(data_root: Path, project_id: s
     intentionally scoped through the active project run and returned as plain
     text only; a stored JSON document is not a Console presentation format.
     """
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         active = connection.execute(
             """SELECT run_id FROM ep_execution_runs
                  WHERE project_id=? AND state IN ('CLAIMED','RUNNING')
@@ -4129,7 +4138,7 @@ def _central_console_invocation_reviewers(data_root: Path, run_id: str) -> list[
     claim about their recommendations.
     """
     try:
-        with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+        with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
             capability_phase = connection.execute(
                 """SELECT metadata,outcome FROM execution_phase_spans
                      WHERE run_id=? AND phase_name='CAPABILITY_REVIEW'
@@ -4144,7 +4153,7 @@ def _central_console_invocation_reviewers(data_root: Path, run_id: str) -> list[
                 (run_id,),
             ).fetchall()
     except (sqlite3.DatabaseError, storage.EngineeringStorageError):
-        return []
+        raise
     if capability_phase is not None:
         try:
             metadata = json.loads(str(capability_phase[0]))
@@ -4255,7 +4264,7 @@ def _central_console_assurance_reviews(
 
 def _central_console_pull_request_context(data_root: Path, run_id: str) -> dict[str, object]:
     """Project the PRs already recorded in this run's durable checkpoint."""
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             """SELECT checkpoint FROM execution_lifecycle_events
                  WHERE run_id=? ORDER BY id DESC LIMIT 1""",
@@ -4358,7 +4367,7 @@ def _no_project_console_snapshot(data_root: Path) -> dict[str, object]:
     # live run as queued in the platform pop-out.  A dispatch is the canonical
     # ownership fact: unclaimed submissions are queued; CLAIMED/RUNNING
     # dispatches are active; terminal dispatches are neither.
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         active_execution_count = int(connection.execute(
             "SELECT COUNT(*) FROM ep_parity_lifecycle_dispatches WHERE state IN ('CLAIMED','RUNNING')"
         ).fetchone()[0])
@@ -4428,7 +4437,7 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
 
 def _central_console_terminal_execution_diagnostic(data_root: Path, run_id: str) -> str | None:
     """Return one redacted terminal checkpoint diagnostic for a history row."""
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             """SELECT checkpoint FROM execution_lifecycle_events
                  WHERE run_id=? AND phase IN ('BLOCKED', 'FAILED')
@@ -4445,9 +4454,7 @@ def _telemetry_read_snapshot(
 ) -> Iterator[tuple[sqlite3.Connection, str, str]]:
     """Hold one short, read-only SQLite snapshot for a canonical export model."""
     database = (data_root / SERVER_DATABASE_FILENAME).resolve()
-    connection = sqlite3.connect(
-        f"file:{database}?mode=ro", uri=True, isolation_level=None, timeout=10,
-    )
+    connection = storage.open_sqlite_read_connection(database)
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA query_only=ON")
@@ -4543,7 +4550,7 @@ def _central_console_telemetry(
             _read_connection=_read_connection,
         )
     except (storage.EngineeringStorageError, sqlite3.DatabaseError):
-        timing_by_run, usage_by_run = {}, {}
+        raise
     for record in terminal_records:
         completed_at = record.get("updated_at")
         if not isinstance(completed_at, str):
@@ -4761,7 +4768,7 @@ def _central_console_telemetry_detail(
             _read_connection=_read_connection,
         )
     except (storage.EngineeringStorageError, sqlite3.DatabaseError):
-        usage_cache, timing_cache = {}, {}
+        raise
     selected: list[tuple[Mapping[str, object], dict[str, object]]] = []
     for record in selected_records:
         snapshot = run_telemetry_snapshot(
@@ -5000,7 +5007,7 @@ def _central_console_telemetry_detail(
 
 def _central_console_report_path(data_root: Path, project_id: str, run_id: str) -> Path | None:
     """Resolve one project-scoped CENTRAL report without a checkout fallback."""
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             """SELECT h.report_path FROM prompt_execution_history AS h
                  JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=h.run_id
@@ -5028,7 +5035,7 @@ def _central_console_report(data_root: Path, project_id: str, run_id: str) -> by
 
 def _central_console_analysis_path(data_root: Path, project_id: str, run_id: str) -> Path | None:
     """Resolve the latest verified advisory analysis for exactly one project run."""
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         row = connection.execute(
             """SELECT a.digest_algorithm,a.digest,a.storage_location
                  FROM execution_artifact_records AS a
@@ -5103,7 +5110,7 @@ def _retry_central_console_analysis(data_root: Path, project_id: str, run_id: st
 
 def _central_console_chat_history(data_root: Path, project_id: str, run_id: str) -> list[dict[str, object]] | None:
     """Return a project-authorized CENTRAL transcript; no root fallback exists."""
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         belongs = connection.execute(
             "SELECT 1 FROM ep_parity_lifecycle_dispatches AS dispatch "
             "JOIN ep_execution_runs AS run ON run.run_id=dispatch.run_id "
@@ -5134,7 +5141,7 @@ def _central_console_chat_context(
     data_root: Path, project_id: str, run_id: str,
 ) -> dict[str, object] | None:
     """Build one bounded CENTRAL-only context package for a terminal run."""
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         connection.row_factory = sqlite3.Row
         row = connection.execute(
             """SELECT r.run_id,r.state AS run_state,r.created_at,r.updated_at,
@@ -5354,7 +5361,7 @@ def _central_console_component_logs(
         clauses.append("json_extract(payload, '$.event') IN (" + ",".join("?" for _ in filters.events) + ")")
         parameters.extend(filters.events)
     where = " WHERE " + " AND ".join(clauses)
-    with storage.sqlite_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
+    with storage.sqlite_read_connection(data_root / SERVER_DATABASE_FILENAME) as connection:
         total = int(connection.execute("SELECT COUNT(*) FROM engineering_component_logs" + where, parameters).fetchone()[0])
         rows = connection.execute(
             "SELECT id,component,payload,created_at FROM engineering_component_logs" + where
@@ -5407,9 +5414,9 @@ def _central_console_configuration(data_root: Path) -> dict[str, object]:
     """Expose only configuration already owned by CENTRAL in this phase."""
     return {
         "scope": "PLATFORM",
-        **central_database.maintenance_configuration(data_root),
-        **central_database.capacity_configuration(data_root),
-        **central_database.console_interval_configuration(data_root),
+        **central_database.maintenance_configuration(data_root, strict=True),
+        **central_database.capacity_configuration(data_root, strict=True),
+        **central_database.console_interval_configuration(data_root, strict=True),
     }
 
 
@@ -6324,6 +6331,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
     def _stream_no_project_console_events(self) -> None:
         """Send a CENTRAL-only event that completes the shared Console shell."""
+        data_root = self.server.data_root  # type: ignore[attr-defined]
+        identity = _console_source_identity(data_root)
+        snapshot = _no_project_console_snapshot(data_root)
+        self._console_installation_scope = identity
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -6331,7 +6342,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         try:
             stream_interval = int(
-                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                central_database.console_interval_configuration(self.server.data_root, strict=True)[  # type: ignore[attr-defined]
                     "dashboard_stream_interval_seconds"
                 ]
             )
@@ -6339,8 +6350,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             previous: bytes | None = None
             for iteration in range(300):
                 payload = json.dumps(
-                    _no_project_console_snapshot(self.server.data_root), separators=(",", ":")  # type: ignore[attr-defined]
+                    snapshot, separators=(",", ":")
                 ).encode("utf-8")
+                if _console_source_identity(data_root) != identity:
+                    raise _ConsoleReadError("CONFLICT")
                 if payload != previous:
                     self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
                     self.wfile.flush()
@@ -6349,14 +6362,29 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
                 time.sleep(stream_interval)
+                snapshot = _no_project_console_snapshot(data_root)
+        except (_ConsoleReadError, sqlite3.OperationalError) as error:
+            if isinstance(error, sqlite3.OperationalError):
+                if not _console_source_unavailable(error):
+                    raise
+                error = _ConsoleReadError("UNAVAILABLE")
+            _audit_console_read_loss(error)
+            control = json.dumps({"project_id": "", "error": error.code, "outcome": error.outcome}, separators=(",", ":")).encode()
+            try:
+                self.wfile.write(b"event: console-read-error\ndata: " + control + b"\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         except (BrokenPipeError, ConnectionResetError):
             return
 
     def _stream_project_console_events(self, project_id: str) -> None:
         """Keep the selected project's CENTRAL-only dashboard stream alive."""
         data_root = self.server.data_root  # type: ignore[attr-defined]
-        repository_id = _console_read_authority(data_root, project_id)
-        snapshot = _console_project_read(data_root, project_id, _central_console_project_snapshot, repository_id)
+        identity = _console_source_identity(data_root)
+        repository_id = _console_read_authority(data_root, project_id, identity=identity)
+        snapshot = _console_project_read(data_root, project_id, _central_console_project_snapshot, repository_id, identity)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -6364,7 +6392,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         try:
             stream_interval = int(
-                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                central_database.console_interval_configuration(self.server.data_root, strict=True)[  # type: ignore[attr-defined]
                     "dashboard_stream_interval_seconds"
                 ]
             )
@@ -6375,7 +6403,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     snapshot,
                     separators=(",", ":"),
                 ).encode("utf-8")
-                _console_read_authority(data_root, project_id, repository_id)
+                _console_read_authority(data_root, project_id, repository_id, identity)
                 if payload != previous:
                     self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
                     self.wfile.flush()
@@ -6384,7 +6412,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
                 time.sleep(stream_interval)
-                snapshot = _console_project_read(data_root, project_id, _central_console_project_snapshot, repository_id)
+                snapshot = _console_project_read(data_root, project_id, _central_console_project_snapshot, repository_id, identity)
         except (_ConsoleReadError, sqlite3.OperationalError) as error:
             if isinstance(error, sqlite3.OperationalError):
                 if not _console_source_unavailable(error):
@@ -6403,6 +6431,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
     def _delegate_dashboard(self, method: str) -> None:
         self._console_read_scope = None
+        self._console_installation_scope = None
         try:
             self._delegate_dashboard_routes(method)
         except _ConsoleReadError as error:
@@ -6415,12 +6444,17 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(503, {"error": "CENTRAL_UNAVAILABLE"})
         finally:
             self._console_read_scope = None
+            self._console_installation_scope = None
 
     def send_response(self, code: int, message: str | None = None) -> None:
+        identity = getattr(self, "_console_installation_scope", None)
+        if code == 200 and identity is not None:
+            if _console_source_identity(self.server.data_root) != identity:  # type: ignore[attr-defined]
+                raise _ConsoleReadError("CONFLICT")
         scope = getattr(self, "_console_read_scope", None)
         if code == 200 and scope is not None:
-            project_id, repository_id = scope
-            _console_read_authority(self.server.data_root, project_id, repository_id)  # type: ignore[attr-defined]
+            project_id, repository_id, identity = scope
+            _console_read_authority(self.server.data_root, project_id, repository_id, identity)  # type: ignore[attr-defined]
         super().send_response(code, message)
 
     def _delegate_dashboard_routes(self, method: str) -> None:
@@ -6678,8 +6712,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if not selected:
             selected = (parse_qs(request.query).get("project") or [None])[0]
         if method == "do_GET" and isinstance(selected, str) and selected:
-            repository_id = _console_read_authority(self.server.data_root, selected)  # type: ignore[attr-defined]
-            self._console_read_scope = (selected, repository_id)
+            identity = _console_source_identity(self.server.data_root)  # type: ignore[attr-defined]
+            repository_id = _console_read_authority(self.server.data_root, selected, identity=identity)  # type: ignore[attr-defined]
+            self._console_read_scope = (selected, repository_id, identity)
         # Listing projects is a CENTRAL-only operation.  Do not validate or
         # inspect any checkout until a selected project needs a transitional
         # project route below.

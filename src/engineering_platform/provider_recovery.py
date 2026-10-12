@@ -16,7 +16,7 @@ import tempfile
 from uuid import uuid4
 
 from .provider_process_identity import ProcessIdentity, capture_process_identity, verify_process_identity
-from .storage import EngineeringStorageError, open_storage, record_artifact, verify_artifact_integrity
+from .storage import open_sqlite_read_connection, EngineeringStorageError, open_storage, record_artifact, verify_artifact_integrity
 from .execution_lease import liveness as lease_liveness
 from .agent_state import PHASES, StateError, StateStore, redact_diagnostic
 
@@ -210,7 +210,7 @@ if __name__ == "__main__":
 
 
 def load_recovery_state(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
-    connection = _connection(root, central_database)
+    connection = (_connection(root) if central_database is None else open_sqlite_read_connection(central_database))
     try:
         row = connection.execute(
             "SELECT run_id,recovery_ordinal,maximum_attempts,triggering_invocation_id,replacement_invocation_id,"

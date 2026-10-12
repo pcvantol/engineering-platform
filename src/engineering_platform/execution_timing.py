@@ -19,7 +19,7 @@ from time import monotonic
 from typing import Mapping
 import uuid
 
-from .storage import EngineeringStorageError, open_storage
+from .storage import open_sqlite_read_connection, EngineeringStorageError, open_storage
 from .telemetry_metrics import TELEMETRY_CALCULATION_VERSION
 
 
@@ -265,7 +265,7 @@ def complete_active_phase(
 
 
 def phase_spans(root: Path, run_id: str, *, central_database: Path | None = None) -> list[dict[str, object]]:
-    connection = _connection(root, central_database)
+    connection = (_connection(root) if central_database is None else open_sqlite_read_connection(central_database))
     try:
         rows = connection.execute(
             "SELECT phase_id,phase_name,phase_category,parent_phase_id,attempt,ordinal,started_at,completed_at,duration_ms,outcome,metadata FROM execution_phase_spans WHERE run_id=? ORDER BY ordinal", (run_id,)
@@ -347,7 +347,7 @@ def timing_summary(
     historical_total: int | None = None
     if not spans:
         if _historical_total is _NO_HISTORICAL_TOTAL:
-            connection = _connection(root, central_database)
+            connection = (_connection(root) if central_database is None else open_sqlite_read_connection(central_database))
             try:
                 row = connection.execute(
                     "SELECT total_execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)
@@ -715,7 +715,7 @@ def timing_summaries(
     if not identifiers:
         return {}
     owns_connection = _read_connection is None
-    connection = _read_connection if _read_connection is not None else _connection(root, central_database)
+    connection = _read_connection if _read_connection is not None else (_connection(root) if central_database is None else open_sqlite_read_connection(central_database))
     keys = (
         "phase_id", "run_id", "phase_name", "phase_category", "parent_phase_id",
         "attempt", "ordinal", "started_at", "completed_at", "duration_ms", "outcome", "metadata",

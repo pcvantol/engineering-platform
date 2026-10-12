@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 import sqlite3
 
-from .storage import EngineeringStorageError, load_run_qualification_snapshot, open_storage
+from .storage import open_sqlite_read_connection, EngineeringStorageError, load_run_qualification_snapshot, open_storage
 from .agent_state import TransactionState, redact_diagnostic
 from .provider_recovery import load_recovery_state
 from .status_reconciliation import is_stale_rolling_status_block
@@ -148,10 +148,7 @@ def projection(
         connection = (
             open_storage(root, create=False)
             if central_database is None
-            else sqlite3.connect(
-                f"file:{central_database.resolve()}?mode=ro",
-                uri=True,
-            )
+            else open_sqlite_read_connection(central_database)
         )
         try:
             row = connection.execute(
@@ -160,6 +157,8 @@ def projection(
             try:
                 invocations = canonical_provider_invocations(connection, run_id)
             except sqlite3.DatabaseError:
+                if central_database is not None:
+                    raise
                 invocations = None
             events = connection.execute(
                 "SELECT phase,checkpoint,recorded_at FROM execution_lifecycle_events WHERE run_id=? ORDER BY id",
@@ -176,6 +175,8 @@ def projection(
         finally:
             connection.close()
     except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
+        if central_database is not None:
+            raise
         return {"run_id": run_id, "available": False, "steps": []}
     if row is None:
         return {"run_id": run_id, "available": False, "steps": []}

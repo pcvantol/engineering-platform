@@ -1814,7 +1814,7 @@ def producer_evidence_artifact(
         target = (artifact_root / str(row[2])).resolve()
         target.relative_to(artifact_root)
         payload = target.read_bytes()
-    except (OSError, ValueError, sqlite3.Error):
+    except (OSError, ValueError):
         return None
     return payload if hashlib.sha256(payload).hexdigest() == row[1] else None
 

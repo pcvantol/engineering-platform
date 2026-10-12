@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-from .storage import sqlite_connection
+from .storage import sqlite_connection, sqlite_read_connection
 import tempfile
 
 
@@ -67,7 +67,7 @@ def details(data_root: Path) -> dict[str, object]:
     result: dict[str, object] = {"path": str(database), "size_bytes": 0, "schema_version": 0, "integrity": "UNAVAILABLE"}
     try:
         result["size_bytes"] = database.stat().st_size
-        with sqlite_connection(f"file:{database}?mode=ro", uri=True) as connection:
+        with sqlite_read_connection(database) as connection:
             result["schema_version"] = _schema_version(connection)
             result["integrity"] = "PASS" if [str(row[0]) for row in connection.execute("PRAGMA integrity_check")] == ["ok"] else "FAILED"
     except (OSError, sqlite3.DatabaseError):
@@ -84,7 +84,7 @@ def snapshot(data_root: Path) -> bytes | None:
     try:
         with tempfile.NamedTemporaryFile(prefix="ep-central-backup-", suffix=".db", delete=False) as temporary:
             temporary_path = Path(temporary.name)
-        with sqlite_connection(f"file:{database}?mode=ro", uri=True) as source, sqlite_connection(temporary_path) as backup:
+        with sqlite_read_connection(database) as source, sqlite_connection(temporary_path) as backup:
             source.backup(backup)
         return temporary_path.read_bytes()
     except (OSError, sqlite3.DatabaseError):
@@ -94,11 +94,13 @@ def snapshot(data_root: Path) -> bytes | None:
             temporary_path.unlink(missing_ok=True)
 
 
-def maintenance_configuration(data_root: Path) -> dict[str, int]:
+def maintenance_configuration(data_root: Path, *, strict: bool = False) -> dict[str, int]:
     try:
-        with sqlite_connection(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+        with sqlite_read_connection(path(data_root)) as connection:
             row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (MAINTENANCE_INTERVAL_KEY,)).fetchone()
     except (OSError, sqlite3.DatabaseError):
+        if strict:
+            raise
         return {"interval_seconds": DEFAULT_MAINTENANCE_INTERVAL_SECONDS}
     try:
         value = int(json.loads(row[0])) if row else DEFAULT_MAINTENANCE_INTERVAL_SECONDS
@@ -116,13 +118,15 @@ def update_maintenance_configuration(data_root: Path, interval_seconds: object) 
     return {"previous": previous, "interval_seconds": interval_seconds}
 
 
-def capacity_configuration(data_root: Path) -> dict[str, int]:
+def capacity_configuration(data_root: Path, *, strict: bool = False) -> dict[str, int]:
     """Return the one installation-wide admission reserve for Codex capacity."""
     try:
-        with sqlite_connection(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+        with sqlite_read_connection(path(data_root)) as connection:
             row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (CODEX_CAPACITY_RESERVE_KEY,)).fetchone()
         value = int(json.loads(row[0])) if row else 0
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
+        if strict:
+            raise
         value = 0
     return {"codex_capacity_reserve_percent": value if value in CODEX_CAPACITY_RESERVE_OPTIONS else 0}
 
@@ -148,15 +152,17 @@ def update_capacity_configuration(data_root: Path, reserve_percent: object) -> d
     return {"previous": previous, "codex_capacity_reserve_percent": reserve_percent}
 
 
-def console_interval_configuration(data_root: Path) -> dict[str, object]:
+def console_interval_configuration(data_root: Path, *, strict: bool = False) -> dict[str, object]:
     result = dict(CONSOLE_CONFIGURATION_DEFAULTS)
     try:
-        with sqlite_connection(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+        with sqlite_read_connection(path(data_root)) as connection:
             for key, value in connection.execute("SELECT key,value FROM engineering_metadata WHERE key LIKE 'console.%'"):
                 name = str(key).removeprefix("console.")
                 parsed = json.loads(value)
                 if name in result and parsed in CONSOLE_CONFIGURATION_OPTIONS[name]: result[name] = parsed
-    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError) as error:
+        if strict:
+            raise
         pass
     return result
 
@@ -226,7 +232,7 @@ def provider_capacity_history(
     if not provider or hours < 1:
         return []
     try:
-        with sqlite_connection(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+        with sqlite_read_connection(path(data_root)) as connection:
             row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (PROVIDER_CAPACITY_HISTORY_KEY,)).fetchone()
         payload = json.loads(row[0]) if row else {}
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
