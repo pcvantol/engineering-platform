@@ -2,11 +2,14 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { readFileSync, writeFileSync } from "node:fs";
 import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import { chromium } from "@playwright/test";
 import { observeConsoleDocument } from "./dashboard_document_observer.mjs";
 import { retainWorkerLogs, finishWorkerLogs } from "./dashboard_worker_logs.mjs";
+import { createOwnedHeldRoutes } from "./dashboard_owned_held_routes.mjs";
+import { assertRunEvidenceLayout, assertHistoryLayoutRefault, readRunEvidenceCardFromTop } from "./dashboard_run_evidence_layout.mjs";
 import { DASHBOARD_MESSAGES } from "../../src/engineering_platform/assets/dashboard_locales.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -49,6 +52,89 @@ test('actual observer rejects post-seal failure writes without changing retained
     expect(before.length).toBe(receipt.bytes);
     expect(createHash('sha256').update(before).digest('hex')).toBe(receipt.sha256);
   } finally { await isolated.close(); await observation.closed(); }
+});
+
+test('owned held route callbacks drain before scoped removal and preserve original failures', async ({ browser }, testInfo) => {
+  // Fixture-unit fault injection, not a server response or authority mutation.
+  const owner = createOwnedHeldRoutes(), order = [];
+  let releaseFirst, releaseSecond;
+  const first = new Promise(resolve => { releaseFirst = resolve; });
+  const second = new Promise(resolve => { releaseSecond = resolve; });
+  const firstTask = owner.handler({ continue: async () => { await first; order.push("first-terminal"); } });
+  const closing = owner.close(async () => { order.push("scoped-remove"); });
+  const secondTask = owner.handler({ continue: async () => { await second; order.push("second-terminal"); } });
+  releaseFirst(); await firstTask;
+  expect(order).toEqual(["first-terminal"]);
+  releaseSecond(); await secondTask;
+  const receipt = await closing;
+  expect(order).toEqual(["first-terminal", "second-terminal", "scoped-remove"]);
+  expect(receipt).toEqual({ started: 2, settled: 2, rejected: 0, actual_owner_closed: true });
+  expect(await owner.verifyClosed()).toEqual(receipt);
+  let lateContinueCalls = 0;
+  await owner.handler({ continue: async () => { lateContinueCalls++; } });
+  const lateError = await owner.verifyClosed().then(() => null, error => error);
+  expect(lateError).toBeInstanceOf(AggregateError);
+  expect(lateError.errors).toHaveLength(1);
+  expect(lateError.errors[0].message).toContain("after owner closure");
+  expect(lateContinueCalls).toBe(0);
+
+  const faultOwner = createOwnedHeldRoutes();
+  const original = new Error("Declared fixture-unit continuation fault");
+  let releaseFault, callbackTerminal = false, scopedRemoved = false;
+  const faultGate = new Promise(resolve => { releaseFault = resolve; });
+  const faultTask = faultOwner.handler({ continue: async () => {
+    await faultGate; callbackTerminal = true; throw original;
+  } });
+  const faultResult = faultOwner.close(async () => {
+    expect(callbackTerminal).toBe(true); scopedRemoved = true;
+  }).then(() => null, error => error);
+  expect(scopedRemoved).toBe(false);
+  releaseFault(); await faultTask;
+  const faultError = await faultResult;
+  expect(faultError).toBeInstanceOf(AggregateError);
+  expect(faultError.errors).toEqual([original]);
+  expect(faultError.errors[0]).toBe(original);
+  expect(scopedRemoved).toBe(true);
+  expect(faultError.receipt).toEqual({ started: 1, settled: 1, rejected: 1, actual_owner_closed: true });
+  const body = new Error("Declared fixture-unit body fault", { cause: new Error("Declared nested body cause") });
+  original.cause = "Declared primitive callback cause";
+  const cyclic = new Error("Declared cyclic fixture cause"); cyclic.cause = cyclic;
+  const combined = new AggregateError([body, faultError, cyclic, null, 42, false], "Declared body plus cleanup reason preservation");
+  const isolated = await browser.newPage();
+  const observation = await observeConsoleDocument(isolated);
+  let capturedReceipt;
+  try { await observation.failure(testInfo, combined); }
+  finally { await isolated.close(); capturedReceipt = await observation.closed(); }
+  const captured = readFileSync(observation.privateFiles().raw);
+  expect(captured.length).toBe(capturedReceipt.bytes);
+  expect(createHash("sha256").update(captured).digest("hex")).toBe(capturedReceipt.sha256);
+  const facts = gunzipSync(captured).toString("utf8").trim().split("\n").map(line => JSON.parse(line));
+  const boundaries = facts.filter(record => ["assertion-caught", "first-failure"].includes(record.kind));
+  expect(boundaries).toHaveLength(2);
+  for (const record of boundaries) {
+    const error = record.kind === "assertion-caught" ? record.fact.error : record.fact.errors[0];
+    expect(error.errors[0].message).toContain(body.message);
+    expect(error.errors[0].cause.message).toContain("Declared nested body cause");
+    expect(error.errors[1].errors[0].message).toContain(original.message);
+    expect(error.errors[1].errors[0].stack).toContain(original.message);
+    expect(error.errors[1].errors[0].cause).toEqual({ type: "string", message: "Declared primitive callback cause" });
+    expect(error.errors[2].cause.reference_id).toBe(error.errors[2].error_id);
+    expect(error.errors[3]).toEqual({ type: "object", message: "null" });
+    expect(error.errors[4]).toEqual({ type: "number", message: "42" });
+    expect(error.errors[5]).toEqual({ type: "boolean", message: "false" });
+  }
+  // Durable/public-safe counters and booleans only. Generic error trees, stacks
+  // and private file paths remain in the private raw stream, never attachments.
+  const controls = { scope: "FIXTURE_UNIT_ONLY", dynamic_success_receipt: receipt,
+    late_owner_receipt: lateError.receipt, original_fault_receipt: faultError.receipt,
+    original_error_object_retained: faultError.errors[0] === original,
+    both_recursive_capture_boundaries_verified: true,
+    private_capture_closed: capturedReceipt.actual_page_closed,
+    private_capture_bytes: capturedReceipt.bytes, private_capture_sha256: capturedReceipt.sha256 };
+  const controlsPath = testInfo.outputPath("owned-route-fixture-unit-controls.json");
+  writeFileSync(controlsPath, JSON.stringify(controls, null, 2), { mode: 0o600, flag: "wx" });
+  expect(JSON.parse(readFileSync(controlsPath))).toEqual(controls);
+  await testInfo.attach("owned-route-fixture-unit-controls", { path: controlsPath, contentType: "application/json" });
 });
 
 async function passiveProcess(python, environment, dataRoot) {
@@ -107,6 +193,9 @@ async function stopIsolatedCanary(child, next, testInfo, label = "canary") {
 
 const cases = ["prepared", "uncertain", "no-consumer", "no-capacity", "irrelevant", "dispositions", "withdrawn", "provider-recovered", "provider-blocked", "missing", "privacy", "failed", "uncertain-result", "duplicate", "read-revoked"]
   .map((scenario) => ({ scenario, locale: "en", theme: "dark", width: 1280, height: 720 }));
+for (const scenario of ["missing", "failed", "uncertain-result"]) {
+  cases.push({ scenario, locale: "en", theme: "dark", width: 390, height: 844 });
+}
 for (const locale of ["en", "nl", "de", "fr", "es"]) for (const theme of ["dark", "light"]) {
   for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
     cases.push({ scenario: "normal", locale, theme, ...viewport });
@@ -136,6 +225,14 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     pending = (message) => { clearTimeout(deadline); resolve(message); };
     child.once("exit", (code) => { clearTimeout(deadline); reject(new Error(`Canary exited ${code}: raw worker logs retained privately`)); });
   });
+  const normalHistoryLayout = scenario === "normal" && locale === "en" && theme === "dark";
+  const headers = [];
+  const captureHeader = response => {
+    if (response.request().method() === "GET"
+        && ["/api/prompt-history", "/api/dashboard-snapshot"].includes(new URL(response.url()).pathname))
+      headers.push(response);
+  };
+  if (normalHistoryLayout) page.on("response", captureHeader);
   try {
     const ready = await next();
     if (installedPython) expect(ready.module).toContain("site-packages/engineering_platform/");
@@ -271,7 +368,18 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     if (scenario !== "duplicate") await expect(findings.locator('details[data-disposition="DEFERRED"]').first()).toBeVisible();
     }
     const screenshots = [];
+    await assertRunEvidenceLayout(page);
+    await assertHistoryLayoutRefault(page);
     const capture = async (view, suffix, target = page.locator(`[data-run-evidence="${view}"]`), evidence = runEvidence) => {
+      if (["denied-project", "read-revoked"].includes(view)) {
+        await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      } else {
+        await assertRunEvidenceLayout(page);
+      }
+      if (suffix === "desktop" && (["missing", "failed", "uncertain-result"].includes(scenario)
+          || (scenario === "normal" && locale === "en" && theme === "dark"))) {
+        await readRunEvidenceCardFromTop(page, target);
+      }
       const imagePath = testInfo.outputPath(`${view}-${suffix}-fresh.png`);
       await target.screenshot({ path: imagePath, animations: "disabled" });
       screenshots.push({ scenario: view, file: path.basename(imagePath),
@@ -295,6 +403,242 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await controls.scrollIntoViewIfNeeded();
       await expect(controls).toBeVisible();
       await capture("verification-controls", "native", findings);
+    }
+    let normalActiveHistoryProof = null;
+    if (normalHistoryLayout) {
+      // Active operator-wait is absent from the genuine terminal history index.
+      // Bind the completed current-document read before testing native dismissal.
+      const observer = await observeConsoleDocument(page);
+      const detailUrl = new URL(ready.url);
+      detailUrl.searchParams.set("prompt", ready.run_id);
+      // Hold only the initial genuine SSE request until HTTP has painted. This
+      // makes the former equal-value/key-order node-replacement regression causal.
+      const session = await page.context().newCDPSession(page);
+      await session.send("Network.enable");
+      const frames = [];
+      session.on("Network.eventSourceMessageReceived", frame => {
+        if (frame.eventName === "dashboard") frames.push(frame);
+      });
+      const routeOwner = createOwnedHeldRoutes();
+      const releaseSSE = routeOwner.release;
+      const eventsRoute = url => url.pathname === "/api/events";
+      const holdEvents = routeOwner.handler;
+      let primaryFailure = null;
+      // Capture headers synchronously; deferred predicates cannot own an
+      // old-document response across navigation and then read its lost body.
+      await page.route(eventsRoute, holdEvents);
+      try {
+      const previousDocument = await observer.documentId();
+      await page.goto(detailUrl.href, { waitUntil: "domcontentloaded" });
+      const currentFrame = (await session.send("Page.getFrameTree")).frameTree.frame;
+      const documentId = currentFrame.loaderId;
+      expect(documentId).not.toBe(previousDocument);
+      expect(await observer.documentId()).toBe(documentId);
+      const relativeKeys = ["domainLookupStart", "domainLookupEnd", "connectStart",
+        "secureConnectionStart", "connectEnd", "requestStart", "responseStart"];
+      const headerMetadata = response => {
+        const request = response.request();
+        expect(request.frame()).toBe(page.mainFrame());
+        return { url: response.url(), method: request.method(), status: response.status(),
+          frame_id: currentFrame.id, timing: { ...request.timing() } };
+      };
+      const uniqueHeaderRecord = (metadata, records) => {
+        expect(Number.isFinite(metadata.timing.startTime) && metadata.timing.startTime > 0).toBe(true);
+        expect(relativeKeys.every(key => Number.isFinite(metadata.timing[key]))).toBe(true);
+        const matches = records.filter(record => record.url === metadata.url
+          && record.method === metadata.method && record.status === metadata.status
+          && record.frame_id === metadata.frame_id && record.cached_request === false
+          && record.native_relative_timing !== null && relativeKeys.every(key =>
+            Number.isFinite(record.native_relative_timing?.[key])
+            && record.native_relative_timing[key] === metadata.timing[key]));
+        expect(matches.length).toBeLessThanOrEqual(1);
+        return matches[0] || null;
+      };
+      const headerRecord = response => uniqueHeaderRecord(headerMetadata(response), observer.records());
+      // Actual previous-document headers share URL, method and status with
+      // the new read. Reject them before touching a navigated-away body.
+      let previousHeader;
+      await expect.poll(() => {
+        previousHeader = headers.find(response => new URL(response.url()).pathname === "/api/prompt-history"
+          && headerRecord(response)?.document_id === previousDocument);
+        return Boolean(previousHeader);
+      }).toBe(true);
+      const previousRecord = headerRecord(previousHeader);
+      expect(previousRecord.frame_id).toBe(currentFrame.id);
+      expect(previousRecord.document_id === documentId).toBe(false);
+      const currentRead = async pathname => {
+        let selected;
+        await expect.poll(() => {
+          for (const response of headers.filter(value => new URL(value.url()).pathname === pathname)) {
+            // A lagging independent CDP session may not have the header yet.
+            // Zero remains pending, ambiguity remains red; no later response
+            // can replace this unknown predecessor to make the proof pass.
+            const record = headerRecord(response);
+            if (record === null) return false;
+            if (record.document_id !== documentId) continue;
+            expect(record.frame_id).toBe(currentFrame.id);
+            expect(record.project_header).toBe("project");
+            expect(record.cached_request).toBe(false);
+            selected = { response, record };
+            return true;
+          }
+          return false;
+        }).toBe(true);
+        return selected;
+      };
+      const indexRead = await currentRead("/api/prompt-history");
+      const response = indexRead.response;
+      // Modeled selector negatives use copies of genuine header metadata;
+      // they do not alter the server/request/response or fabricate authority.
+      const metadata = headerMetadata(response), record = indexRead.record;
+      expect(() => uniqueHeaderRecord(metadata, [record, { ...record }])).toThrow();
+      expect(() => uniqueHeaderRecord({ ...metadata, timing: { ...metadata.timing,
+        domainLookupStart: undefined } }, [record])).toThrow();
+      expect(() => uniqueHeaderRecord({ ...metadata, timing: { ...metadata.timing,
+        requestStart: String(metadata.timing.requestStart) } }, [record])).toThrow();
+      expect(uniqueHeaderRecord(metadata, [{ ...record, cached_request: true }])).toBe(null);
+      expect(uniqueHeaderRecord(metadata, [{ ...record, native_relative_timing: null }])).toBe(null);
+      expect(response.status()).toBe(200);
+      const bytes = await response.body();
+      const index = JSON.parse(bytes.toString("utf8"));
+      expect(index.runs).toEqual([]);
+      expect(index.runs.some(run => run.run_id === ready.run_id)).toBe(false);
+      const responseHash = createHash("sha256").update(bytes).digest("hex");
+      let boundRead;
+      await expect.poll(() => {
+        boundRead = observer.records().find(record => record.request_id === indexRead.record.request_id
+          && record.document_id === documentId
+          && record.path === "/api/prompt-history" && record.completed
+          && record.status === 200 && record.response_sha256 === responseHash);
+        return Boolean(boundRead);
+      }).toBe(true);
+      const snapshotRead = await currentRead("/api/dashboard-snapshot");
+      const httpResponse = snapshotRead.response;
+      expect(httpResponse.status()).toBe(200);
+      const httpBytes = await httpResponse.body();
+      const http = JSON.parse(httpBytes.toString("utf8"));
+      const httpBinding = await observer.scope("http", "project", snapshotRead.record.request_id);
+      expect(httpBinding.document_id).toBe(documentId);
+      expect(httpBinding.request_id).toBe(snapshotRead.record.request_id);
+      expect(httpBinding.response_sha256).toBe(createHash("sha256").update(httpBytes).digest("hex"));
+      const nativeCards = await page.locator("[data-run-evidence]").elementHandles();
+      expect(nativeCards).toHaveLength(3);
+      releaseSSE();
+      let frame;
+      await expect.poll(() => {
+        frame = frames.find(candidate => observer.records().some(record =>
+          record.document_id === documentId && record.path === "/api/events"
+          && record.request_id === candidate.requestId));
+        return Boolean(frame);
+      }).toBe(true);
+      const sse = JSON.parse(frame.data);
+      const sseBinding = await observer.scope("sse", "project");
+      expect(sseBinding.document_id).toBe(documentId);
+      expect(sseBinding.request_id).toBe(frame.requestId);
+      expect(sseBinding.response_sha256).toBe(createHash("sha256").update(frame.data).digest("hex"));
+      expect(sse.scope).toBe("PROJECT"); expect(sse.project_id).toBe("project");
+      await expect(page.locator("#updateMode")).toHaveText(DASHBOARD_MESSAGES[locale]["refresh.connected"]);
+      const canonical = value => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+      const inputs = snapshot => [snapshot.status.lifecycle.run_evidence, snapshot.status.lifecycle.recovery];
+      expect(canonical(inputs(http))).toEqual(canonical(inputs(sse)));
+      for (const nativeCard of nativeCards) {
+        expect(await nativeCard.evaluate(node => node.isConnected
+          && node === document.querySelector(`[data-run-evidence="${node.dataset.runEvidence}"]`))).toBe(true);
+      }
+      await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+      await expect(page).not.toHaveURL(/(?:\?|&)prompt=/);
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      await expect(page.locator('[data-run-evidence="selection"] h3'))
+        .toHaveText(DASHBOARD_MESSAGES[locale]["run_evidence.specialists"]);
+      await assertRunEvidenceLayout(page);
+      const activeSelection = page.locator('[data-run-evidence="selection"]');
+      await readRunEvidenceCardFromTop(page, activeSelection);
+      // Narrow renderer-unit negatives use a detached native DOM and copies of
+      // the real stored input. They do not mutate the server or active Console.
+      const rendererMutationControls = await page.evaluate(async ({ evidence, recovery }) => {
+        const { syncStoredRunEvidence } = await import("/assets/dashboard_run_evidence.mjs");
+        const container = document.createElement("div");
+        const options = { document, scope: "project", locale: "en", t: key => key,
+          reviewerLabel: role => String(role), card: (title, fields) => {
+            const card = document.createElement("section"), heading = document.createElement("h3");
+            heading.textContent = title; card.append(heading, ...fields); return card;
+          } };
+        const copy = () => JSON.parse(JSON.stringify(evidence));
+        const changed = (name, mutate, optionChanges = {}, changedRecovery = recovery) => {
+          syncStoredRunEvidence(container, evidence, recovery, options);
+          const original = container.querySelector('[data-run-evidence="selection"]');
+          const next = copy(); mutate(next);
+          syncStoredRunEvidence(container, next, changedRecovery, { ...options, ...optionChanges });
+          return { name, replaced: original !== container.querySelector('[data-run-evidence="selection"]'),
+            cards: container.querySelectorAll("[data-run-evidence]").length };
+        };
+        if (evidence.specialists.findings.length < 2) throw Error("Actual array-order negative needs two stored findings");
+        const controls = [
+          changed("scope", () => {}, { scope: "other" }),
+          changed("locale", () => {}, { locale: "nl" }),
+          changed("run-id", next => { next.run_id += "-changed"; }),
+          changed("current-binding", next => { next.current_repository_binding = "UNBOUND"; }),
+          changed("execution-authority", next => { next.execution_authority = !next.execution_authority; }),
+          changed("value-type", next => { next.specialists.actual_model_invocation_count = String(next.specialists.actual_model_invocation_count); }),
+          changed("array-order", next => { next.specialists.findings.reverse(); }),
+          changed("recovery", () => {}, {}, { state: "UNAVAILABLE" }),
+          changed("own-prototype-named-key", next => {
+            Object.defineProperty(next, "__proto__", { value: { stored_only: true }, enumerable: true });
+          }),
+        ];
+        syncStoredRunEvidence(container, null, null, options);
+        return { label: "Detached native-DOM renderer-unit negatives, not server authority mutation",
+          controls, null_input_cleared_cards: container.querySelectorAll("[data-run-evidence]").length === 0,
+          object_prototype_unchanged: Object.prototype.stored_only === undefined };
+      }, { evidence: http.status.lifecycle.run_evidence, recovery: http.status.lifecycle.recovery });
+      expect(rendererMutationControls.controls).toHaveLength(9);
+      for (const control of rendererMutationControls.controls) {
+        expect(control.replaced, control.name).toBe(true); expect(control.cards, control.name).toBe(3);
+      }
+      expect(rendererMutationControls.null_input_cleared_cards).toBe(true);
+      expect(rendererMutationControls.object_prototype_unchanged).toBe(true);
+      normalActiveHistoryProof = { requested_run_id: ready.run_id,
+        request: boundRead, document_id: documentId, response_sha256: responseHash,
+        current_document_header_controls: {
+          previous_document_id: previousRecord.document_id,
+          previous_same_endpoint_request_id: previousRecord.request_id,
+          previous_document_header_rejected_before_body_read: true,
+          selected_index_request_id: indexRead.record.request_id,
+          selected_snapshot_request_id: snapshotRead.record.request_id,
+          exact_seven_header_ready_relative_timing_join: true,
+          absolute_start_time_is_diagnostic_only: true,
+          selected_index_relative_timing: indexRead.record.native_relative_timing,
+          selected_snapshot_relative_timing: snapshotRead.record.native_relative_timing,
+          modeled_selector_negatives: { collision_rejected: true, missing_field_rejected: true,
+            wrong_type_rejected: true, cached_record_unmatched: true, missing_record_vector_unmatched: true },
+        },
+        http_snapshot: httpBinding, sse_snapshot: sseBinding,
+        actual_sse_frame_sha256: createHash("sha256").update(frame.data).digest("hex"), selected_sse_request_id: frame.requestId,
+        equal_http_sse_native_card_identity_preserved: true, renderer_mutation_controls: rendererMutationControls,
+        actual_history_run_ids: [], native_modal_hidden: true, deeplink_removed: true,
+        active_card_count: 3, geometry: await assertRunEvidenceLayout(page) };
+      await capture("normal-active-not-history", "native", activeSelection);
+      } catch (error) {
+        primaryFailure = error; throw error;
+      } finally {
+        const cleanupErrors = [];
+        try {
+          const receipt = await routeOwner.close(() => page.unroute(eventsRoute, holdEvents));
+          expect(receipt.started).toBeGreaterThanOrEqual(1);
+          expect(receipt.settled).toBe(receipt.started); expect(receipt.rejected).toBe(0);
+          const receiptPath = testInfo.outputPath("actual-held-sse-handler-close.json");
+          writeFileSync(receiptPath, JSON.stringify(receipt, null, 2), { mode: 0o600, flag: "wx" });
+          expect(JSON.parse(readFileSync(receiptPath))).toEqual(receipt);
+          await testInfo.attach("actual-held-sse-handler-close", { path: receiptPath, contentType: "application/json" });
+        } catch (error) { cleanupErrors.push(error); }
+        try { await session.detach(); } catch (error) { cleanupErrors.push(error); }
+        try { await routeOwner.verifyClosed(); } catch (error) { cleanupErrors.push(error); }
+        if (cleanupErrors.length) throw new AggregateError(
+          [...(primaryFailure ? [primaryFailure] : []), ...cleanupErrors],
+          "Initial SSE body and owned handler cleanup failures retained",
+        );
+      }
     }
     const rootUrl = ready.url.split("/?")[0];
     const foreign = await page.request.get(`${rootUrl}/api/prompt-history/${ready.run_id}/details?project=other`);
@@ -423,10 +767,10 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       contract: "ep-console-run-evidence-screenshots/v1", qualification: process.env.EP_RUN_EVIDENCE_CONVERGENCE === "1" ? "INSTALLED_CONVERGENCE" : installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
       source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
       wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, screenshots,
-      assets: ready.assets, external_transport_observations: after.transport_observations,
+      assets: ready.assets, normal_active_history_proof: normalActiveHistoryProof, external_transport_observations: after.transport_observations,
     }, null, 2));
     expect(screenshots.slice(0, 3).map((item) => item.scenario)).toEqual(["selection", "findings", "publication"]);
-    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0) + (scenario === "read-revoked" ? 1 : 0));
+    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0) + (scenario === "read-revoked" ? 1 : 0) + (normalHistoryLayout ? 1 : 0));
     expect(screenshots.some((item) => item.scenario === "denied-project" && item.publication === null)).toBe(true);
     await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
   } catch (error) {
@@ -438,7 +782,8 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     }
     throw error;
   } finally {
-    await stopIsolatedCanary(child, next, testInfo);
+    try { await stopIsolatedCanary(child, next, testInfo); }
+    finally { if (normalHistoryLayout) page.off("response", captureHeader); }
   }
 });
 }
@@ -1069,3 +1414,124 @@ test.describe("iPhone direct touch: stored active execution", () => {
 });
 
 import "./dashboard_no_project_scope.spec.mjs";
+
+test('actual installed five-locale log reads preserve healthy rows, source loss and restored projection', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  const canary = await causalStoredCanary('normal');
+  let observer;
+  const errors = [], rows = [], captures = [];
+  let bodyError;
+  const pageError = error => errors.push(error);
+  page.on('pageerror', pageError);
+  const isLogs = response => new URL(response.url()).pathname === '/api/logs/all';
+  const bind = async (response, expectedStatus) => {
+    expect(response.status()).toBe(expectedStatus);
+    const bytes = await response.body(), body = JSON.parse(bytes.toString('utf8'));
+    const documentId = await observer.documentId(), hash = createHash('sha256').update(bytes).digest('hex');
+    let binding;
+    await expect.poll(() => {
+      binding = observer.records().find(record => record.document_id === documentId
+        && record.url === response.url() && record.completed && record.status === expectedStatus
+        && record.response_sha256 === hash);
+      return Boolean(binding);
+    }).toBe(true);
+    expect(await page.evaluate(() => window.ENGINEERING_PLATFORM_NO_PROJECT)).toBe(true);
+    await expect(page.locator('body')).toHaveAttribute('data-project-id', 'none');
+    return { body, binding, documentId, hash };
+  };
+  const screenshot = async (locale, phase, proof) => {
+    const file = `log-${locale}-${phase}-native-fresh.png`, output = testInfo.outputPath(file);
+    await page.locator('#componentLogs').screenshot({ path: output, animations: 'disabled' });
+    captures.push({ scenario: `log-${phase}`, file, sha256: createHash('sha256').update(readFileSync(output)).digest('hex'),
+      run_scenario: testInfo.title, run_id: canary.ready.run_id, finding_ids: [], invocation_ids: [], publication: null,
+      locale, theme: await page.locator('html').getAttribute('data-theme'), viewport: page.viewportSize(), proof });
+    await testInfo.attach(`log-${locale}-${phase}`, { path: output, contentType: 'image/png' });
+  };
+  try {
+    observer = await observeConsoleDocument(page);
+    for (const locale of ['en', 'nl', 'de', 'fr', 'es']) {
+      const url = new URL(canary.ready.url); url.search = '?localizationStrict=1';
+      const initial = page.waitForResponse(response => isLogs(response) && response.status() === 200);
+      await page.goto(url.href, { waitUntil: 'domcontentloaded' });
+      await initial;
+      if (await page.locator('#dashboardLocale').inputValue() !== locale) {
+        if (!await page.locator('#dashboardLocaleButton').isVisible()) await page.locator('#dashboardTitlebarOptionsToggle').click();
+        await page.locator('#dashboardLocaleButton').click(); await page.locator(`[data-dashboard-locale="${locale}"]`).click();
+        // Locale changes re-render the existing projection. Unchanged log
+        // versions need no HTTP read; the explicit INFO query below binds
+        // the required fresh response to this document and visible locale.
+      }
+      await expect(page.locator('html')).toHaveAttribute('lang', locale);
+      if (await page.locator('#componentLogs').getAttribute('open') === null) await page.locator('#componentLogs > summary').click();
+      await expect.poll(() => page.evaluate(() => componentLogServerPaged)).toBe(true);
+      const current = observer.records().filter(record => record.path === '/api/logs/all' && record.completed && record.status === 200).at(-1);
+      expect(current).toBeTruthy();
+      // A native current-query change identifies a completed read, rather than
+      // an unrelated preceding request with an identical body.
+      const healthyResponse = page.waitForResponse(response => isLogs(response) && response.status() === 200
+        && new URL(response.url()).searchParams.get('level') === 'INFO');
+      await page.locator('#logLevelFilter').selectOption('INFO');
+      const healthy = await bind(await healthyResponse, 200);
+      expect(healthy.body.scope).toBe('PLATFORM'); expect(healthy.body.entries.length).toBeGreaterThan(0);
+      for (const event of healthy.body.events) {
+        await expect(page.locator('#logEventFilter')).toContainText(DASHBOARD_MESSAGES[locale][`log_event.${event}`]);
+      }
+      await screenshot(locale, 'healthy', { document_id: healthy.documentId, request_id: healthy.binding.request_id, response_sha256: healthy.hash, status: 200 });
+      canary.child.stdin.write('suspend-read-source\n'); expect(await canary.next()).toEqual({ source_unavailable: true });
+      const lostResponse = page.waitForResponse(response => isLogs(response) && response.status() === 503
+        && new URL(response.url()).searchParams.get('level') === 'ERROR');
+      await page.locator('#logLevelFilter').selectOption('ERROR');
+      const lost = await bind(await lostResponse, 503); expect(lost.body).toEqual({ error: 'CENTRAL_UNAVAILABLE' });
+      expect(lost.documentId).toBe(healthy.documentId);
+      await expect(page.locator('#platformComponentLog')).toContainText(DASHBOARD_MESSAGES[locale]['log_event.platform_log_unavailable']);
+      await expect(page.locator('#logEventFilter')).toContainText(DASHBOARD_MESSAGES[locale]['log_event.platform_log_unavailable']);
+      await screenshot(locale, 'unavailable', { document_id: lost.documentId, request_id: lost.binding.request_id, response_sha256: lost.hash, status: 503 });
+      canary.child.stdin.write('restore-read-source\n'); const restored = await canary.next();
+      expect(restored.restored_baseline).toEqual(canary.ready.before);
+      expect(restored.retained_recreated_files.filter(item =>
+        /(?:^|\/)(?:epdata\.sqlite(?:-journal|-wal|-shm)?|runtime-identity\.json|server\.json)$/.test(item.path))).toEqual([]);
+      const recoveryNavigation = page.waitForResponse(response => isLogs(response) && response.status() === 200);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await bind(await recoveryNavigation, 200);
+      await expect.poll(() => page.evaluate(() => componentLogServerPaged)).toBe(true);
+      const recoveryResponse = page.waitForResponse(response => isLogs(response) && response.status() === 200
+        && new URL(response.url()).searchParams.get('level') === 'INFO');
+      await page.locator('#logLevelFilter').selectOption('INFO');
+      const recovered = await bind(await recoveryResponse, 200);
+      expect(recovered.documentId).not.toBe(lost.documentId);
+      await expect(page.locator('html')).toHaveAttribute('lang', locale);
+      await expect.poll(() => page.evaluate(() => componentLogServerPaged)).toBe(true);
+      expect(recovered.body.scope).toBe('PLATFORM'); expect(recovered.body.entries.length).toBeGreaterThan(0);
+      if (await page.locator('#componentLogs').getAttribute('open') === null) await page.locator('#componentLogs > summary').click();
+      await expect(page.locator('#platformComponentLog')).not.toContainText(DASHBOARD_MESSAGES[locale]['log_event.platform_log_unavailable']);
+      await screenshot(locale, 'restored', { document_id: recovered.documentId, request_id: recovered.binding.request_id, response_sha256: recovered.hash, status: 200 });
+      rows.push({ locale, healthy_request: healthy.binding.request_id, unavailable_request: lost.binding.request_id,
+        restored_request: recovered.binding.request_id, original_document: healthy.documentId, restored_document: recovered.documentId,
+        retained_recreated_files: restored.retained_recreated_files });
+      expect(errors, 'No ordinary localization/render page errors in the genuine log chain').toEqual([]);
+    }
+    const output = testInfo.outputPath('fresh-evidence-manifest.json');
+    writeFileSync(output, JSON.stringify({ contract: 'ep-console-run-evidence-screenshots/v1', qualification: process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON ? 'INSTALLED' : 'SOURCE',
+      source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
+      wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, assets: canary.ready.assets, screenshots: captures, actual_log_read_chain: rows }, null, 2));
+    await testInfo.attach('actual-five-locale-log-chain', { path: output, contentType: 'application/json' });
+  } catch (error) {
+    bodyError = error;
+    try { if (observer) await observer.failure(testInfo, error); }
+    catch (captureError) {
+      bodyError = new AggregateError([error, captureError], 'Original log-chain failure and first-failure retention failure');
+    }
+    throw bodyError;
+  } finally {
+    let cleanupError;
+    try {
+      await stopIsolatedCanary(canary.child, canary.next, testInfo);
+      expect(errors, 'No ordinary page errors through actual worker stop').toEqual([]);
+    } catch (error) { cleanupError = error; }
+    finally { page.off('pageerror', pageError); }
+    if (cleanupError) {
+      if (bodyError) throw new AggregateError([bodyError, cleanupError], 'Original log-chain failure and cleanup failure');
+      throw cleanupError;
+    }
+  }
+});

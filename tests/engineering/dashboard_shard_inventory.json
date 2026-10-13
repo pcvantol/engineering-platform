@@ -1,7 +1,7 @@
 {
   "contract": "ep-dashboard-canonical-corpus/v1",
   "baseline_source_sha": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
-  "mandatory_count": 524,
+  "mandatory_count": 529,
   "baseline_not_run_count": 4,
   "tests": [
     {
@@ -456,7 +456,7 @@
     },
     {
       "file": "dashboard_translation.integration.spec.mjs",
-      "title": "keeps a real historical modal open across delayed en\u2192nl\u2192de\u2192en and all supported locales",
+      "title": "keeps a real historical modal open across delayed en→nl→de→en and all supported locales",
       "expectedStatus": "passed",
       "annotations": []
     },
@@ -3185,6 +3185,36 @@
     {
       "file": "dashboard_run_evidence.integration.spec.mjs",
       "title": "actual observer rejects post-seal failure writes without changing retained bytes",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual missing en/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual failed en/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "reads actual uncertain-result en/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "owned held route callbacks drain before scoped removal and preserve original failures",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "actual installed five-locale log reads preserve healthy rows, source loss and restored projection",
       "expectedStatus": "passed",
       "annotations": []
     }

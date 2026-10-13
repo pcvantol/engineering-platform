@@ -1,9 +1,19 @@
 /* Stored, scoped evidence only. This renderer has no network or storage effects. */
 const activeViews = new WeakMap();
 
+// HTTP and SSE can encode the same stored object with different key order.
+// Preserve every value and array position; only object-key order is incidental.
+function semanticEvidenceIdentity(value) {
+  if (Array.isArray(value)) return value.map(semanticEvidenceIdentity);
+  if (value && typeof value === "object") return Object.fromEntries(
+    Object.keys(value).sort().map(key => [key, semanticEvidenceIdentity(value[key])]),
+  );
+  return value;
+}
+
 export function syncStoredRunEvidence(container, evidence, recovery, options) {
   const previous = activeViews.get(container);
-  const signature = evidence ? JSON.stringify([options.scope, options.locale, evidence, recovery]) : null;
+  const signature = evidence ? JSON.stringify(semanticEvidenceIdentity([options.scope, options.locale, evidence, recovery])) : null;
   if (previous?.signature === signature) return;
   for (const node of container.querySelectorAll("[data-run-evidence]")) node.remove();
   activeViews.delete(container);

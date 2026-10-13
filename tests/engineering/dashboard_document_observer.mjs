@@ -6,6 +6,22 @@ import { gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+// Generic error trees stay exclusively in the private raw observation stream.
+// Standard recursive reasons preserve original detail without enumerating arbitrary
+// provider/error properties; reference IDs prevent cause/Aggregate cycles.
+function observedFailure(error, references = new Map()) {
+  if (error === null || (typeof error !== "object" && typeof error !== "function"))
+    return { type: typeof error, message: String(error) };
+  if (references.has(error)) return { type: typeof error,
+    reference_id: references.get(error), message: String(error) };
+  const errorId = references.size; references.set(error, errorId);
+  const fact = { error_id: errorId, type: typeof error, name: error.name,
+    message: String(error), stack: error.stack };
+  if (Array.isArray(error.errors)) fact.errors = error.errors.map(reason => observedFailure(reason, references));
+  if ("cause" in error) fact.cause = observedFailure(error.cause, references);
+  return fact;
+}
+
 const observers = new WeakMap();
 const header = (headers, name) => Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] ?? null;
 
@@ -57,13 +73,16 @@ async function createObservation(page) {
     run_id: payload.history?.run_id ?? null, run_ids: Array.isArray(payload.runs) ? payload.runs.map(run => run.run_id) : undefined });
   session.on('Network.requestWillBeSent', (event) => {
     const url = new URL(event.request.url);
-    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history', '/api/configuration', '/health'].includes(url.pathname)
+    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history', '/api/configuration', '/api/logs/all', '/api/logs/platform', '/api/audit/user-action', '/health'].includes(url.pathname)
         && !/^\/api\/prompt-history\/[^/]+\/details$/.test(url.pathname)) return;
     retain('request', event);
     for (const extra of extras.get(event.requestId) || []) retain('transport-extra-info', extra);
     extras.delete(event.requestId);
     requests.set(event.requestId, { request_id: event.requestId, document_id: event.loaderId,
-      path: url.pathname, project_header: header(event.request.headers, 'X-Engineering-Platform-Project'),
+      frame_id: event.frameId, method: event.request.method,
+      request_timestamp: event.timestamp, request_wall_time: event.wallTime,
+      native_request_start_time_ms: null, native_relative_timing: null, cached_request: false,
+      path: url.pathname, url: url.href, project_header: header(event.request.headers, 'X-Engineering-Platform-Project'),
       status: null, completed: false });
   });
   for (const name of ['Network.requestWillBeSentExtraInfo', 'Network.responseReceivedExtraInfo']) {
@@ -75,8 +94,41 @@ async function createObservation(page) {
       }
     });
   }
+  session.on('Network.requestServedFromCache', (event) => {
+    const request = requests.get(event.requestId);
+    if (request) {
+      request.cached_request = true; request.native_request_start_time_ms = null;
+      request.native_relative_timing = null;
+      retain('cached-request', event);
+    }
+  });
   session.on('Network.responseReceived', (event) => {
-    const request = requests.get(event.requestId); if (request) { request.status = event.response.status; retain('response', event); }
+    const request = requests.get(event.requestId);
+    if (request) {
+      request.status = event.response.status;
+      // The pinned Chromium Playwright1.63 request clock is adjusted by
+      // response.timing.requestTime, not just request.wallTime. These known
+      // API reads require fresh, ordinary HTTP timing; unsupported/cache
+      // metadata never receives a guessed clock or a body fallback.
+      const time = event.response.timing?.requestTime;
+      if (!request.cached_request && !event.response.fromDiskCache
+          && !event.response.fromPrefetchCache && !event.response.fromServiceWorker
+          && [time, request.request_timestamp, request.request_wall_time].every(Number.isFinite)
+          && time >= 0 && request.request_timestamp >= 0 && request.request_wall_time > 0) {
+        request.native_request_start_time_ms =
+          (time - request.request_timestamp + request.request_wall_time) * 1000;
+        const timing = event.response.timing;
+        const relative = { domainLookupStart: timing.dnsStart, domainLookupEnd: timing.dnsEnd,
+          connectStart: timing.connectStart, secureConnectionStart: timing.sslStart,
+          connectEnd: timing.connectEnd, requestStart: timing.sendStart,
+          responseStart: timing.receiveHeadersEnd };
+        // The actual independent-session diagnostic found unequal absolute clocks.
+        // These seven header-ready phases come from the same response timing
+        // payload Playwright exposes. No body-completion phase or tolerance.
+        if (Object.values(relative).every(Number.isFinite)) request.native_relative_timing = relative;
+      }
+      retain('response', event);
+    }
   });
   session.on('Network.loadingFailed', (event) => {
     const request = requests.get(event.requestId); if (request) { request.failure = event.errorText; retain('loading-failed', event); }
@@ -144,11 +196,12 @@ async function createObservation(page) {
   const scopeMatches = (response, project) => project === null
     ? response.scope === 'PLATFORM' && response.project_id === null
     : response.scope === 'PROJECT' && response.project_id === project;
-  const scope = async (ingress, project) => {
+  const scope = async (ingress, project, requestId = null) => {
     let applied;
     await expect.poll(async () => {
       const values = await completed(ingress === 'sse' ? '/api/events' : '/api/dashboard-snapshot');
-      applied = values.find(r => scopeMatches(r.response, project)); return Boolean(applied);
+      applied = values.find(r => (requestId === null || r.request_id === requestId)
+        && scopeMatches(r.response, project)); return Boolean(applied);
     }).toBe(true);
     expect(await page.evaluate(() => window.ENGINEERING_PLATFORM_NO_PROJECT === true)).toBe(project === null);
     await expect(page.locator('body')).toHaveAttribute('data-project-id', project ?? 'none');
@@ -181,7 +234,7 @@ async function createObservation(page) {
     // This synchronous marker precedes screenshot/CDP waits and canary cleanup.
     // A later screenshot never replaces the actual assertion timing boundary.
     retain('assertion-caught', { title: testInfo.title, url: page.url(),
-      error: caughtError ? { message: String(caughtError), stack: caughtError.stack } : null,
+      error: caughtError ? observedFailure(caughtError) : null,
       requests: [...requests.values()] });
     const results = await Promise.allSettled([
       page.screenshot({ path: path.join(retained, 'first-failure.png'), fullPage: true, animations: 'disabled' }),
@@ -191,7 +244,7 @@ async function createObservation(page) {
       ? { observation: index, status: 'retained', value: index === 0 ? createHash('sha256').update(result.value).digest('hex') : result.value }
       : { observation: index, status: 'UNAVAILABLE', reason: String(result.reason) });
     retain('first-failure', { title: testInfo.title, status: caughtError ? 'caught_failure' : testInfo.status,
-      errors: caughtError ? [{ message: String(caughtError), stack: caughtError.stack }] : testInfo.errors,
+      errors: caughtError ? [observedFailure(caughtError)] : testInfo.errors,
       observations: facts, requests: [...requests.values()] });
     if (results.some(result => result.status === 'rejected'))
       throw Error('First browser failure retention incomplete; original failure remains in runner report');

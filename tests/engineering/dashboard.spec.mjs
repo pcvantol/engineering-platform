@@ -5569,7 +5569,37 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(row).toContainText("1");
   });
 
-  test("localizes the telemetry detail title for every supported language", async ({ page }) => {
+  test("localizes the telemetry detail title for every supported language", async ({ page }, testInfo) => {
+    const observer = await observeConsoleDocument(page), errors = [], auditProofs = [];
+    const pageError = error => errors.push(error);
+    page.on("pageerror", pageError);
+    const phaseKeys = ["domainLookupStart", "domainLookupEnd", "connectStart",
+      "secureConnectionStart", "connectEnd", "requestStart", "responseStart"];
+    const bindActualResponse = async (response, expectedStatus) => {
+      expect(response.status()).toBe(expectedStatus);
+      expect(response.request().frame()).toBe(page.mainFrame());
+      const documentId = await observer.documentId(), timing = response.request().timing();
+      expect(Number.isFinite(timing.startTime) && timing.startTime > 0).toBe(true);
+      expect(phaseKeys.every(key => Number.isFinite(timing[key]))).toBe(true);
+      let record;
+      await expect.poll(() => {
+        const matches = observer.records().filter(item => item.document_id === documentId
+          && item.url === response.url() && item.method === response.request().method()
+          && item.status === expectedStatus && item.cached_request === false
+          && phaseKeys.every(key => Number.isFinite(item.native_relative_timing?.[key])
+            && item.native_relative_timing[key] === timing[key]));
+        expect(matches.length).toBeLessThanOrEqual(1);
+        record = matches[0]; return Boolean(record);
+      }).toBe(true);
+      const frameIds = new Set(observer.records().filter(item => item.document_id === documentId).map(item => item.frame_id));
+      expect(frameIds.size).toBe(1); expect(frameIds.has(record.frame_id)).toBe(true);
+      const bytes = await response.body(), responseHash = createHash("sha256").update(bytes).digest("hex");
+      await expect.poll(() => observer.records().some(item => item.request_id === record.request_id
+        && item.document_id === documentId && item.completed && item.response_sha256 === responseHash)).toBe(true);
+      expect(await observer.documentId()).toBe(documentId);
+      return { body: JSON.parse(bytes.toString("utf8")), proof: { request_id: record.request_id,
+        document_id: documentId, status: expectedStatus, response_sha256: responseHash } };
+    };
     const expectations = [
       ["en", "Execution Telemetry — 24-08-2026"],
       ["nl", "Uitvoeringstelemetrie — 24-08-2026"],
@@ -5580,7 +5610,25 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/telemetry/**", (route) => route.fulfill({ json: {
       summary: {}, phases: [], bottlenecks: { top_time_consumers: [] }, runs: [],
     } }));
-    for (const [language, title] of expectations) {
+    // Deliberately retain a wider neighboring row from the installed producer.
+    // This is a modeled saved-log prelude, not a real configuration change.
+    const installedPrelude = process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1";
+    const preludePython = installedPrelude ? process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON : "python3";
+    const preludeEnvironment = { ...process.env };
+    if (installedPrelude) {
+      expect(preludePython).toBeTruthy();
+      delete preludeEnvironment.PYTHONPATH;
+    }
+    const preludeRuntime = JSON.parse(execFileSync(preludePython, ["-c",
+      "import sys,json,os;from pathlib import Path;from importlib.metadata import version;import engineering_platform.server as server;root=Path(sys.argv[1]);installed=os.environ.get('EP_RUN_EVIDENCE_REQUIRE_INSTALLED')=='1';assert not installed or (sys.prefix==str(Path(os.environ['EP_RUN_EVIDENCE_INSTALLED_PYTHON']).parent.parent) and '/site-packages/engineering_platform/' in server.__file__);assert (root/server.SERVER_DATABASE_FILENAME).is_file();server._audit_configuration_change(root,scope='MODELED_LOG_COLUMN_PRELUDE',key='capture_geometry_fixture',previous='modeled_before',value='modeled_after');print(json.dumps({'prefix':sys.prefix,'package':server.__file__,'version':version('engineering-platform')}))", dashboardRoot],
+      { cwd: repository, env: preludeEnvironment, encoding: "utf8" }));
+    if (process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1") {
+      expect(preludeRuntime.prefix).toBe(path.dirname(path.dirname(process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON)));
+      expect(preludeRuntime.package).toContain("/site-packages/engineering_platform/");
+    }
+    const modeledPrelude = { scope: "MODELED_PERSISTED_LOG_NOT_ACTUAL_CONFIGURATION_CHANGE",
+      event: "configuration_changed", producer_version: preludeRuntime.version, settings_setter_called: false };
+    try { for (const [language, title] of expectations) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await selectDashboardLocale(page, language);
       await expect(page.locator("html")).toHaveAttribute("lang", language);
@@ -5594,10 +5642,197 @@ test.describe("Engineering Status browser smoke", () => {
       await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
       const telemetryRow = page.locator("#executionTelemetryRows .telemetry-row");
       await expect(telemetryRow).toHaveCount(1);
-      await telemetryRow.evaluate((row) => row.click());
+      // Telemetry presentation remains the declared renderer fixture above;
+      // this native action uses the actual Server audit producer and store.
+      const audited = page.waitForResponse(response => response.request().method() === "POST"
+        && new URL(response.url()).pathname === "/api/audit/user-action"
+        && response.request().postDataJSON()?.action === "telemetry_detail_opened");
+      await expect(telemetryRow).toBeVisible();
+      await telemetryRow.press("Enter");
+      const completed = await bindActualResponse(await audited, 200);
+      expect(completed.body).toEqual({ logged: true });
       await expect(page.locator("#telemetryDetailTitle")).toHaveText(title);
       await page.locator("#telemetryDetailClose").click();
+      const configuration = await page.evaluate(async () => {
+        const response = await fetch("/api/configuration", { cache: "no-store" });
+        if (!response.ok) throw Error("Actual fixture configuration read failed");
+        return response.json();
+      });
+      // Explicit HTTP negative: empty input is rejected before settings writes.
+      // This is a real failed audit outcome, not a manufactured log payload.
+      const rejectedResponse = page.waitForResponse(response => response.request().method() === "POST"
+        && new URL(response.url()).pathname === "/api/configuration");
+      expect(await page.evaluate(async () => (await fetch("/api/configuration", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      })).status)).toBe(409);
+      const failed = await bindActualResponse(await rejectedResponse, 409);
+      expect(failed.body).toEqual({ error: "CONSOLE_CONFIGURATION_INVALID" });
+      expect(await page.evaluate(async () => {
+        const response = await fetch("/api/configuration", { cache: "no-store" });
+        if (!response.ok) throw Error("Actual fixture configuration reread failed");
+        return response.json();
+      })).toEqual(configuration);
+      if (await page.locator("#componentLogs").getAttribute("open") === null)
+        await page.locator("#componentLogs > summary").click();
+      const logResponse = page.waitForResponse(response => response.request().method() === "GET"
+        && new URL(response.url()).pathname === "/api/logs/all"
+        && new URL(response.url()).searchParams.get("level") === "INFO");
+      await page.locator("#logLevelFilter").selectOption("INFO");
+      const logs = await bindActualResponse(await logResponse, 200);
+      expect(logs.body.entries.some(row => row.event === modeledPrelude.event
+        && row.configuration_scope === "MODELED_LOG_COLUMN_PRELUDE"
+        && row.configuration_key === "capture_geometry_fixture")).toBe(true);
+      for (const [event, outcome, action] of [["dashboard_action_completed", "COMPLETED", "telemetry_detail_opened"],
+        ["dashboard_action_failed", "FAILED", "console_configuration_changed"]]) {
+        expect(logs.body.entries.some(row => row.event === event && row.audit_outcome === outcome
+          && row.audit_action === action && row.audit_actor === "DASHBOARD_USER")).toBe(true);
+        await expect(page.locator(`#logEventFilter option[value="${event}"]`))
+          .toHaveText(DASHBOARD_MESSAGES[language][`log_event.${event}`]);
+        await expect(page.locator("#platformComponentLog"))
+          .toContainText(DASHBOARD_MESSAGES[language][`log_event.${event}`]);
+      }
+      const optionsToggle = page.locator("#dashboardTitlebarOptionsToggle");
+      if (await optionsToggle.getAttribute("aria-expanded") === "true") await optionsToggle.click();
+      await expect(optionsToggle).toHaveAttribute("aria-expanded", "false");
+      const eventCaptures = [];
+      for (const event of ["dashboard_action_completed", "dashboard_action_failed"]) {
+        const label = DASHBOARD_MESSAGES[language][`log_event.${event}`];
+        // The event cell itself owns the text; retain the existing table and
+        // use its native scroll containers rather than cropping an oversized panel.
+        const target = page.locator("#platformComponentLog tr > td:nth-child(4)")
+          .filter({ hasText: label }).first();
+        await expect(target).toHaveText(label);
+        await target.scrollIntoViewIfNeeded();
+        const readGeometry = () => target.evaluate(node => {
+          const owner = node.closest(".log-table-wrap"), wrap = owner.getBoundingClientRect();
+          const inner = { left: wrap.x + owner.clientLeft, top: wrap.y + owner.clientTop,
+            width: owner.clientWidth, height: owner.clientHeight };
+          inner.right = inner.left + inner.width; inner.bottom = inner.top + inner.height;
+          const measure = rect => {
+            const paintedPoints = [[rect.x + 1, rect.y + 1], [rect.right - 1, rect.y + 1],
+              [rect.x + 1, rect.bottom - 1], [rect.right - 1, rect.bottom - 1],
+              [rect.x + rect.width / 2, rect.y + rect.height / 2]].map(([x, y]) => {
+              const painted = document.elementFromPoint(x, y);
+              return painted === node || node.contains(painted);
+            });
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+              within_viewport: rect.x >= 0 && rect.y >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+              within_scroll_wrap: rect.x >= inner.left && rect.right <= inner.right && rect.y >= inner.top && rect.bottom <= inner.bottom,
+              painted_points: paintedPoints, unobscured: paintedPoints.every(Boolean) };
+          };
+          const range = document.createRange(); range.selectNodeContents(node);
+          const rects = [...range.getClientRects()];
+          return { ...measure(range.getBoundingClientRect()), text_rect_count: rects.length,
+            cell_geometry: measure(node.getBoundingClientRect()),
+            inner_scroll_window: inner, scroll_left: owner.scrollLeft,
+            maximum_scroll_left: owner.scrollWidth - owner.clientWidth,
+            text_fits: node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight };
+        });
+        const readable = value => value.cell_geometry.width > 0 && value.cell_geometry.height > 0
+          && value.text_rect_count === 1 && value.width > 2 && value.height > 2 && value.within_viewport
+          && value.within_scroll_wrap && value.text_fits && value.unobscured;
+        const beforeGeometry = await readGeometry(), nativeReading = { before: beforeGeometry, moves: [] };
+        const retainGeometry = (phase, value) => writeFileSync(
+          testInfo.outputPath(`console-audit-${language}-${event}-geometry-${phase}.json`),
+          JSON.stringify({ scope: "CURRENT_NATIVE_GEOMETRY_NOT_PASS", geometry: value,
+            native_reading: nativeReading, locale: language, event,
+            bound_log_document_id: logs.proof.document_id, current_log_response: logs.proof }, null, 2));
+        retainGeometry("before-native", beforeGeometry);
+        const wrap = page.locator("#componentLogs .log-table-wrap");
+        const moveNative = async destination => {
+          await wrap.hover();
+          const current = await readGeometry();
+          const wanted = Math.max(0, Math.min(current.maximum_scroll_left, destination(current)));
+          const delta = wanted - current.scroll_left;
+          retainGeometry(`before-move-${nativeReading.moves.length}`, current);
+          expect(Number.isFinite(delta) && delta !== 0, "A real bounded native horizontal move is required").toBe(true);
+          const observed = await wrap.evaluateHandle(node => {
+            let listener;
+            const completion = new Promise(resolve => {
+              listener = event => {
+                if (event.target !== node) return;
+                node.removeEventListener("scrollend", listener);
+                resolve({ left: node.scrollLeft, owned_target: true, trusted: event.isTrusted });
+              };
+              node.addEventListener("scrollend", listener, { passive: true });
+            });
+            return { completion, cancel: () => node.removeEventListener("scrollend", listener) };
+          });
+          const failures = []; let ended;
+          try {
+            await page.mouse.wheel(delta, 0);
+            ended = await observed.evaluate(record => record.completion);
+          } catch (error) { failures.push(error); }
+          finally {
+            try { await observed.evaluate(record => record.cancel()); } catch (error) { failures.push(error); }
+            try { await observed.dispose(); } catch (error) { failures.push(error); }
+          }
+          if (failures.length) throw new AggregateError(failures, "Owned native audit reading failed");
+          const after = await readGeometry();
+          nativeReading.moves.push({ before: current, requested_delta_x: delta,
+            actual_scrollend: ended, after });
+          retainGeometry(`after-move-${nativeReading.moves.length}`, after);
+          expect(Number.isFinite(ended.left) && ended.left !== current.scroll_left
+            && ended.owned_target && ended.trusted).toBe(true);
+          return after;
+        };
+        let geometry = beforeGeometry;
+        if (geometry.text_rect_count === 1 && geometry.width <= geometry.inner_scroll_window.width
+          && !geometry.within_scroll_wrap) {
+          geometry = await moveNative(current => current.scroll_left + current.x + current.width / 2
+            - (current.inner_scroll_window.left + current.inner_scroll_window.width / 2));
+        }
+        if (language === "en" && event === "dashboard_action_completed") {
+          retainGeometry("positive-before-refault", geometry);
+          expect(readable(geometry)).toBe(true);
+          const alignedLeft = geometry.scroll_left;
+          // Mandatory actual negative, also when the original text already fits:
+          // move its center to the inner left edge, then restore the real offset.
+          const refault = await moveNative(current => current.scroll_left + current.x + current.width / 2
+            - current.inner_scroll_window.left);
+          nativeReading.refault = { scope: "ACTUAL_NATIVE_CLIPPING_NEGATIVE", geometry: refault,
+            clipping_detected: !readable(refault) };
+          retainGeometry("refault", refault);
+          expect(nativeReading.refault.clipping_detected).toBe(true);
+          geometry = await moveNative(() => alignedLeft);
+          nativeReading.refault.restored_readable = readable(geometry);
+          retainGeometry("restored", geometry);
+          expect(nativeReading.refault.restored_readable).toBe(true);
+        }
+        // Retain the actual condition before a red assertion, including failures.
+        writeFileSync(testInfo.outputPath(`console-audit-${language}-${event}-geometry.json`),
+          JSON.stringify({ scope: "CURRENT_NATIVE_GEOMETRY_NOT_PASS", geometry, native_reading: nativeReading,
+            locale: language, event, document_id: await observer.documentId(), current_log_response: logs.proof }, null, 2));
+        expect(readable(geometry),
+        "The entire actual audit label must be readable; cell padding visibility is recorded separately").toBe(true);
+        const file = `console-audit-${language}-${event}-native-fresh.png`, output = testInfo.outputPath(file);
+        // Pinned Playwright's non-full-page clip uses actual viewport coordinates.
+        // Preserve partial cell-border geometry rather than claiming the whole cell is visible.
+        await page.screenshot({ path: output, animations: "disabled", fullPage: false,
+          clip: { x: geometry.x, y: geometry.y, width: geometry.width, height: geometry.height } });
+        expect(await observer.documentId()).toBe(logs.proof.document_id);
+        eventCaptures.push({ event, label, geometry, native_reading: nativeReading, file,
+          sha256: createHash("sha256").update(readFileSync(output)).digest("hex") });
+        await testInfo.attach(`console-audit-${language}-${event}`, { path: output, contentType: "image/png" });
+      }
+      auditProofs.push({ locale: language, completed: completed.proof, rejected: failed.proof,
+        stored_read: logs.proof, settings_unchanged_after_rejection: true,
+        observed_locale: await page.locator("html").getAttribute("lang"),
+        theme: await page.locator("html").getAttribute("data-theme"), viewport: page.viewportSize(),
+        event_captures: eventCaptures });
+      expect(errors, "Known Console audit events must render without ordinary page errors").toEqual([]);
     }
+    const output = testInfo.outputPath("console-audit-log-qualification.json");
+    writeFileSync(output, JSON.stringify({ scope: "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      qualification: process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1" ? "INSTALLED" : "SOURCE",
+      source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null,
+      source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
+      wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null,
+      modeled_persistent_log_prelude: modeledPrelude,
+      action_completion_is_not_run_completion: true, audit_class: ["dashboard_action_completed", "dashboard_action_failed"],
+      actual_five_locale_proofs: auditProofs }, null, 2));
+    await testInfo.attach("actual-console-audit-log-qualification", { path: output, contentType: "application/json" });
+    } finally { page.off("pageerror", pageError); }
   });
 
   test("provides a localized label for every canonical telemetry phase", () => {
@@ -8335,21 +8570,37 @@ test.describe("Engineering Status browser smoke", () => {
   test("wraps a long Codex CLI installation path within host diagnostics", async ({ page }) => {
     await page.setViewportSize({ width: 920, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.evaluate(() => r({
+    const attention = {
       watcher_state: "ENGINEERING_RUN_ACTIVE",
       current_phase: "EXECUTE_AGENT",
       run_id: "long-runtime-path",
-    }, {
+    };
+    const snapshot = {
       host_preflight: {
         outcome: "FAILED",
         runtime_path: "/private/var/folders/2d/lvn8wp7x5rgcvz5by5g4sr3c0000gn/T/tmp.XrTdgyzLui/home/.local/share/engineering-platform/codex-cli/bin/codex",
       },
-    }));
-    await expect(page.locator("#technicalDiagnosisDetails")).toBeVisible();
+    };
+    // Fixture-unit refault: an ordinary idle render can legitimately hide
+    // the injected attention state between asynchronous assertions.
+    const idleHeight = await page.evaluate(() => {
+      r({ watcher_state: "WATCHER_IDLE", queue_depth: 0 }, {});
+      return document.getElementById("executionHostRuntimePath").getBoundingClientRect().height;
+    });
+    expect(() => expect(idleHeight).toBeGreaterThan(0)).toThrow();
 
-    const metrics = await page.locator("#executionHostRuntimePath").evaluate((path) => {
+    // This is a synthetic renderer/layout contract. Bind the exact input,
+    // actual visibility and every geometry measurement to one render turn.
+    const metrics = await page.evaluate(({ attention, snapshot }) => {
+      r(attention, snapshot);
+      const path = document.getElementById("executionHostRuntimePath");
+      const diagnosis = document.getElementById("technicalDiagnosisDetails");
       const card = path.closest(".card");
       return {
+        diagnosisVisible: diagnosis.getBoundingClientRect().height > 0
+          && diagnosis.getBoundingClientRect().width > 0
+          && getComputedStyle(diagnosis).visibility === "visible",
+        pathText: path.textContent,
         cardClientWidth: card.clientWidth,
         cardScrollWidth: card.scrollWidth,
         pageClientWidth: document.documentElement.clientWidth,
@@ -8357,8 +8608,10 @@ test.describe("Engineering Status browser smoke", () => {
         pathHeight: path.getBoundingClientRect().height,
         pathWrap: getComputedStyle(path).overflowWrap,
       };
-    });
+    }, { attention, snapshot });
 
+    expect(metrics.diagnosisVisible).toBe(true);
+    expect(metrics.pathText).toBe(snapshot.host_preflight.runtime_path);
     expect(metrics.pathWrap).toBe("anywhere");
     expect(metrics.cardScrollWidth).toBeLessThanOrEqual(metrics.cardClientWidth + 1);
     expect(metrics.pageScrollWidth).toBeLessThanOrEqual(metrics.pageClientWidth + 1);
