@@ -319,6 +319,23 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       const observer = await observeConsoleDocument(page);
       const detailUrl = new URL(ready.url);
       detailUrl.searchParams.set("prompt", ready.run_id);
+      // Hold only the initial genuine SSE request until HTTP has painted. This
+      // makes the former equal-value/key-order node-replacement regression causal.
+      const session = await page.context().newCDPSession(page);
+      await session.send("Network.enable");
+      const frames = [];
+      session.on("Network.eventSourceMessageReceived", frame => {
+        if (frame.eventName === "dashboard") frames.push(frame);
+      });
+      let releaseSSE;
+      const released = new Promise(resolve => { releaseSSE = resolve; });
+      const eventsRoute = url => url.pathname === "/api/events";
+      const holdEvents = async route => { await released; await route.continue(); };
+      await page.route(eventsRoute, holdEvents);
+      try {
+      const snapshotRead = page.waitForResponse(response =>
+        new URL(response.url()).pathname === "/api/dashboard-snapshot"
+        && response.request().method() === "GET");
       const indexRead = page.waitForResponse(response =>
         new URL(response.url()).pathname === "/api/prompt-history"
         && response.request().method() === "GET");
@@ -338,6 +355,36 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
           && record.status === 200 && record.response_sha256 === responseHash);
         return Boolean(boundRead);
       }).toBe(true);
+      const httpResponse = await snapshotRead;
+      expect(httpResponse.status()).toBe(200);
+      const httpBytes = await httpResponse.body();
+      const http = JSON.parse(httpBytes.toString("utf8"));
+      const httpBinding = await observer.scope("http", "project");
+      expect(httpBinding.document_id).toBe(documentId);
+      expect(httpBinding.response_sha256).toBe(createHash("sha256").update(httpBytes).digest("hex"));
+      const nativeCards = await page.locator("[data-run-evidence]").elementHandles();
+      expect(nativeCards).toHaveLength(3);
+      releaseSSE();
+      let frame;
+      await expect.poll(() => {
+        frame = frames.find(candidate => observer.records().some(record =>
+          record.document_id === documentId && record.path === "/api/events"
+          && record.request_id === candidate.requestId));
+        return Boolean(frame);
+      }).toBe(true);
+      const sse = JSON.parse(frame.data);
+      const sseBinding = await observer.scope("sse", "project");
+      expect(sseBinding.document_id).toBe(documentId);
+      expect(sse.scope).toBe("PROJECT"); expect(sse.project_id).toBe("project");
+      await expect(page.locator("#updateMode")).toHaveText(DASHBOARD_MESSAGES[locale]["refresh.connected"]);
+      const canonical = value => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+      const inputs = snapshot => [snapshot.status.lifecycle.run_evidence, snapshot.status.lifecycle.recovery];
+      expect(canonical(inputs(http))).toEqual(canonical(inputs(sse)));
+      for (const nativeCard of nativeCards) {
+        expect(await nativeCard.evaluate(node => node.isConnected
+          && node === document.querySelector(`[data-run-evidence="${node.dataset.runEvidence}"]`))).toBe(true);
+      }
       await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
       await expect(page).not.toHaveURL(/(?:\?|&)prompt=/);
       await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
@@ -346,11 +393,62 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await assertRunEvidenceLayout(page);
       const activeSelection = page.locator('[data-run-evidence="selection"]');
       await readRunEvidenceCardFromTop(page, activeSelection);
+      // Narrow renderer-unit negatives use a detached native DOM and copies of
+      // the real stored input. They do not mutate the server or active Console.
+      const rendererMutationControls = await page.evaluate(async ({ evidence, recovery }) => {
+        const { syncStoredRunEvidence } = await import("/assets/dashboard_run_evidence.mjs");
+        const container = document.createElement("div");
+        const options = { document, scope: "project", locale: "en", t: key => key,
+          reviewerLabel: role => String(role), card: (title, fields) => {
+            const card = document.createElement("section"), heading = document.createElement("h3");
+            heading.textContent = title; card.append(heading, ...fields); return card;
+          } };
+        const copy = () => JSON.parse(JSON.stringify(evidence));
+        const changed = (name, mutate, optionChanges = {}, changedRecovery = recovery) => {
+          syncStoredRunEvidence(container, evidence, recovery, options);
+          const original = container.querySelector('[data-run-evidence="selection"]');
+          const next = copy(); mutate(next);
+          syncStoredRunEvidence(container, next, changedRecovery, { ...options, ...optionChanges });
+          return { name, replaced: original !== container.querySelector('[data-run-evidence="selection"]'),
+            cards: container.querySelectorAll("[data-run-evidence]").length };
+        };
+        if (evidence.specialists.findings.length < 2) throw Error("Actual array-order negative needs two stored findings");
+        const controls = [
+          changed("scope", () => {}, { scope: "other" }),
+          changed("locale", () => {}, { locale: "nl" }),
+          changed("run-id", next => { next.run_id += "-changed"; }),
+          changed("current-binding", next => { next.current_repository_binding = "UNBOUND"; }),
+          changed("execution-authority", next => { next.execution_authority = !next.execution_authority; }),
+          changed("value-type", next => { next.specialists.actual_model_invocation_count = String(next.specialists.actual_model_invocation_count); }),
+          changed("array-order", next => { next.specialists.findings.reverse(); }),
+          changed("recovery", () => {}, {}, { state: "UNAVAILABLE" }),
+          changed("own-prototype-named-key", next => {
+            Object.defineProperty(next, "__proto__", { value: { stored_only: true }, enumerable: true });
+          }),
+        ];
+        syncStoredRunEvidence(container, null, null, options);
+        return { label: "Detached native-DOM renderer-unit negatives, not server authority mutation",
+          controls, null_input_cleared_cards: container.querySelectorAll("[data-run-evidence]").length === 0,
+          object_prototype_unchanged: Object.prototype.stored_only === undefined };
+      }, { evidence: http.status.lifecycle.run_evidence, recovery: http.status.lifecycle.recovery });
+      expect(rendererMutationControls.controls).toHaveLength(9);
+      for (const control of rendererMutationControls.controls) {
+        expect(control.replaced, control.name).toBe(true); expect(control.cards, control.name).toBe(3);
+      }
+      expect(rendererMutationControls.null_input_cleared_cards).toBe(true);
+      expect(rendererMutationControls.object_prototype_unchanged).toBe(true);
       normalActiveHistoryProof = { requested_run_id: ready.run_id,
         request: boundRead, document_id: documentId, response_sha256: responseHash,
+        http_snapshot: httpBinding, sse_snapshot: sseBinding,
+        actual_sse_frame_sha256: createHash("sha256").update(frame.data).digest("hex"),
+        equal_http_sse_native_card_identity_preserved: true, renderer_mutation_controls: rendererMutationControls,
         actual_history_run_ids: [], native_modal_hidden: true, deeplink_removed: true,
         active_card_count: 3, geometry: await assertRunEvidenceLayout(page) };
       await capture("normal-active-not-history", "native", activeSelection);
+      } finally {
+        releaseSSE(); await page.unroute(eventsRoute, holdEvents);
+        await session.detach();
+      }
     }
     const rootUrl = ready.url.split("/?")[0];
     const foreign = await page.request.get(`${rootUrl}/api/prompt-history/${ready.run_id}/details?project=other`);

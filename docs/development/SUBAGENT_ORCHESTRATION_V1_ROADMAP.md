@@ -1,6 +1,35 @@
 # EP subagent orchestration and efficiency roadmap
 
-## Current r34 fixture correction31 — 2026-10-13
+## Current r34 product correction32 — 2026-10-13
+
+[ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6137058543):
+consumed32, same writer/branch/history and unchanged operational budgets; no
+administrative count stop. Correction31 c859e75/treea6fb2cd/wheel18e935ed actually
+ended seven PASS and one FAIL/exit1, NOT_ADMITTED, preserved. Q-C31-DETACH-01 is
+an actual presentation identity defect: identical real HTTP/SSE stored values have
+different object-key order, so the old JSON.stringify signature removes native
+cards. Controlled installed original proof retains actual node connected before
+HTTP→SSE and disconnected after, a real MutationObserver removal, identical
+semantic values and three cards before/after. No lost-focus/scroll claim is made
+(scrollTop0); the old failure callback timing is not reconstructed. Independent
+Quality/Security admit only canonical object-key comparison with every value,
+type, array position, scope, locale, evidence and recovery preserved.
+
+Correction32 applies that pure ephemeral signature repair and the supported
+canonical product bump to EP2.3.117. The owning browser regression binds real
+current-document HTTP/body/SSE frame and native card identity across actual
+initial SSE transport release; normal active/history-absence, all six stored
+history/refault cases and native geometry remain. Detached native-DOM renderer
+unit negatives separately test real value/type/array/scope/locale/recovery/null
+changes and safe own prototype-named keys; these are not server authority tests.
+Real authority/epoch/revocation controls and all sandbox/log fixes remain intact.
+One new exact artifact and focused evidence must be admitted before freezing a
+complete candidate for full unchanged qualification/protected follow-up,
+ordinary Finalization and NEW exact-definitive-main installed/browser/screenshots
+and cleanup. All earlier failures, proofs and closed349/350/forebears remain.
+
+
+## Preserved correction31 fixture snapshot — 2026-10-13
 
 [ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6136905944):
 consumed31 without an administrative stop cap; same writer, branch and history.
