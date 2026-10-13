@@ -5,16 +5,58 @@ Directive: `L2-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221), under the full [6058358032 mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6058358032).
 Lane **r34**, plan **7**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
-Actual base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**.
-State: **SOURCE_QUALIFIED / FINALIZATION_AND_NEW_FINAL_MAIN_INSTALLED_PENDING**. EP **2.3.115** is source-delivered by protected PR349; this documentary Finalization is **NO_BUMP**, with all 11 version components unchanged.
-Current correction consumption: **29** (28 through implementation plus one integrated documentary Finalization correction); administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
+Original source base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**, retained. Current protected repair base: `890915ad77cec21b39f4d3c60cdc3e263c2c8de7`, EP **2.3.115**.
+State: **CORRECTION30_IMPLEMENTED_QUALIFICATION_PENDING / EP2.3.116_PRODUCT_TARGET**. Protected EP2.3.115 source PR349 and Finalization350 are closed; exact890915ad visual acceptance was rejected and does not close r34.
+Current correction consumption: **30** (28 through implementation, one documentary correction29 and one integrated visual correction30); administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
 Historical source delivery notes, branches, reports, stashes and foreign holds are retained.
 This serial Console follow-up does not reopen specialist execution or qualify the broader SA-Q/ROLE/PAR family.
 
-## Actual protected implementation and ordinary Finalization — 2026-10-13
+## Current r34 integrated visual correction30 — 2026-10-13
+
+Same assignment, r34/plan7, ARCHITECT_2 / LANE_2_WORK, original source branch and
+history. [Correction30 admission and booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6136286217)
+records consumed30 exactly once; the original14 and every later round remain
+consumed, with no administrative count stop under decision6123356344 and unchanged
+operational/security budgets. PR349 and ordinary Finalization350 remain closed.
+Their protected EP2.3.115 main is `890915ad77cec21b39f4d3c60cdc3e263c2c8de7`;
+the source-continuity merge `022eba78f95c8e8ad5b60cf2e9f979276c018477` retains
+both1265280 and890915ad parents, with exact protected tree5bdad176. Three documentary
+merge conflicts and both original sides were retained; no source history reset.
+
+New exact890915ad browser12 executed524 mandatory first-attempt PASS plus4 unchanged
+baseline NOT_RUN, with205 fresh PNGs and closed worker/page/guard evidence. That
+execution result does **not** close visual acceptance: independent Quality found
+**Q-FINAL-VIS-01 / REJECT**, unreadable overlapping stored-history panels in genuine
+uncertain-result, missing and failed cases. These original screenshots remain
+unchanged; they have not been published as a defect-free delivery. The actual
+original32-second delay and unavailable historical evidence remain separate.
+
+Actual installed causal diagnosis proves original implicit grid rows38px despite
+417.59/218/417.59px cards, producing negative361.59/162px spacing. A temporary,
+page-only intrinsic-row intervention gives18px spacing; removal reproduces the
+original overlap. Normal active cards remain10px apart. Independent causal Q/S
+admit only the narrow history-content grid repair. All four actual diagnostic
+workers stopped with guards and passive model/Git effects zero. The first hidden
+select diagnostic setup failure is retained, not qualified or reconstructed.
+
+Current **PRODUCT correction30 / EP2.3.116 candidate, qualification pending** adds intrinsic rows to the
+owning history grid, actual pre-capture geometry and original/refault detection,
+native scroll/heading checks and three mandatory iPhone history cases. Six
+original installed desktop/iPhone cases first failed the real overlap assertion
+before the product repair. All528 former canonical contracts and their4 baseline
+skips remain exact; discovery-only now lists531 cases/527 mandatory, not a test
+PASS. Source canonical version11components is checked; the new committed package,
+focused positive regressions, complete independent reviews, unchanged full CI,
+protected follow-up delivery, ordinary Finalization and NEW truly definitive
+main installed/browser/screenshots/readback/cleanup remain pending. R33/r43/r44/GP
+remain closed; HOB-EP01 waits. No execution, live-provider, adoption or signing
+authority is added. Prior delivery paragraphs below are historical identities,
+not approval or installed PASS for the new candidate.
+
+## Historical protected implementation and Finalization through correction29 — 2026-10-13
 
 Same r34 / plan7 / ARCHITECT_2 / LANE_2_WORK, consumed29 with administrative
 maximum NOT_APPLICABLE_SCOPED_COMPLETION. Source branch/history remain retained.
@@ -88,7 +130,7 @@ in the owning #142 receipt after they exist. No premature r34DONE or HOB start;
 R33/r43/r44/GP remain closed, full SA-Q/ROLE/PAR/live providers/physical iPhone/
 production installation/public release/signing and adoption controls unqualified.
 
-## Documentary Finalization correction29 disposition
+## Historical documentary Finalization correction29 disposition
 
 Fresh complete Quality rejected documentary3c5bb4c solely for Q-FIN-01/02:
 the old r33 roadmap source stage and old delivery convergence/telemetry sections

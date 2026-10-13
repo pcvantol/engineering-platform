@@ -12,7 +12,7 @@ No existing executable DAG, Mission, run or policy activation is changed.
 
 ## Status and pickup priority
 
-Current selected work is r34's [stored specialist evidence/recovery Console slice](DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md), already source-delivered by protected PR349. Its ordinary Finalization and new exact-final-main installed acceptance remain open. R33 remains closed at its [immutable final receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007); its historical source-stage paragraph below is not a current pickup or an outstanding r33 gate. Existing family-node statuses/edges and unselected families remain unchanged.
+Current selected work is the same r34 stored-evidence/recovery Console slice, integrated correction30 for Q-FINAL-VIS-01, consumed30 without a count stop under6123356344 and unchanged operational budgets. Protected PR349/Finalization350 EP2.3.115 receipts remain closed;890915ad visual acceptance is REJECT. Current product target2.3.116 is not yet qualified. New source/Finalization/exact-definitive-main installed delivery remains pending. R33 stays closed at its immutable6091674007 receipt; all family-node statuses/edges and unselected families remain unchanged. See [current delivery](DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md) and [round30 register](https://github.com/pcvantol/forge/issues/142#issuecomment-6136286217).
 
 ### Historical r33 source-stage snapshot
 
@@ -154,7 +154,9 @@ source, test, workflow, package, active policy, grant or executable programme ch
 Historical Python files under the evidence directory are standalone diagnostics,
 not runtime implementation or CI qualification. The version classification is NO_BUMP.
 
-## Serial Console follow-up — r34, 2026-10-10
+## Historical serial Console follow-up through correction29 — r34, 2026-10-10
+
+The source-stage currentness below is the preserved prior correction29 snapshot; current correction30 is specified above.
 
 The paragraph below preserves the earlier correction3 snapshot. Current r34 is
 SOURCE_QUALIFIED at protected EP2.3.115 main624f99f4 after independently approved

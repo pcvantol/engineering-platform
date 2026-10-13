@@ -7,6 +7,7 @@ import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import { chromium } from "@playwright/test";
 import { observeConsoleDocument } from "./dashboard_document_observer.mjs";
 import { retainWorkerLogs, finishWorkerLogs } from "./dashboard_worker_logs.mjs";
+import { assertRunEvidenceLayout, assertHistoryLayoutRefault, readRunEvidenceCardFromTop } from "./dashboard_run_evidence_layout.mjs";
 import { DASHBOARD_MESSAGES } from "../../src/engineering_platform/assets/dashboard_locales.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -107,6 +108,9 @@ async function stopIsolatedCanary(child, next, testInfo, label = "canary") {
 
 const cases = ["prepared", "uncertain", "no-consumer", "no-capacity", "irrelevant", "dispositions", "withdrawn", "provider-recovered", "provider-blocked", "missing", "privacy", "failed", "uncertain-result", "duplicate", "read-revoked"]
   .map((scenario) => ({ scenario, locale: "en", theme: "dark", width: 1280, height: 720 }));
+for (const scenario of ["missing", "failed", "uncertain-result"]) {
+  cases.push({ scenario, locale: "en", theme: "dark", width: 390, height: 844 });
+}
 for (const locale of ["en", "nl", "de", "fr", "es"]) for (const theme of ["dark", "light"]) {
   for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
     cases.push({ scenario: "normal", locale, theme, ...viewport });
@@ -271,7 +275,18 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     if (scenario !== "duplicate") await expect(findings.locator('details[data-disposition="DEFERRED"]').first()).toBeVisible();
     }
     const screenshots = [];
+    await assertRunEvidenceLayout(page);
+    await assertHistoryLayoutRefault(page);
     const capture = async (view, suffix, target = page.locator(`[data-run-evidence="${view}"]`), evidence = runEvidence) => {
+      if (["denied-project", "read-revoked"].includes(view)) {
+        await expect(page.locator("[data-run-evidence]")).toHaveCount(0);
+      } else {
+        await assertRunEvidenceLayout(page);
+      }
+      if (suffix === "desktop" && (["missing", "failed", "uncertain-result"].includes(scenario)
+          || (scenario === "normal" && locale === "en" && theme === "dark"))) {
+        await readRunEvidenceCardFromTop(page, target);
+      }
       const imagePath = testInfo.outputPath(`${view}-${suffix}-fresh.png`);
       await target.screenshot({ path: imagePath, animations: "disabled" });
       screenshots.push({ scenario: view, file: path.basename(imagePath),
@@ -295,6 +310,24 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await controls.scrollIntoViewIfNeeded();
       await expect(controls).toBeVisible();
       await capture("verification-controls", "native", findings);
+    }
+    const normalHistoryLayout = scenario === "normal" && locale === "en" && theme === "dark";
+    if (normalHistoryLayout) {
+      // Read the genuine stored normal run through the existing public detail
+      // deep link. Its operator-wait state remains active; no terminal record
+      // or execution/control authority is manufactured for the layout check.
+      const detailUrl = new URL(ready.url);
+      detailUrl.searchParams.set("prompt", ready.run_id);
+      await page.goto(detailUrl.href, { waitUntil: "domcontentloaded" });
+      await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
+      await assertRunEvidenceLayout(page);
+      await assertHistoryLayoutRefault(page);
+      const historySelection = page.locator('#promptHistoryDetailModal [data-run-evidence="selection"]');
+      await readRunEvidenceCardFromTop(page, historySelection);
+      await capture("normal-history-layout", "native", historySelection);
+      await page.goto(ready.url, { waitUntil: "domcontentloaded" });
+      await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      await assertRunEvidenceLayout(page);
     }
     const rootUrl = ready.url.split("/?")[0];
     const foreign = await page.request.get(`${rootUrl}/api/prompt-history/${ready.run_id}/details?project=other`);
@@ -426,7 +459,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       assets: ready.assets, external_transport_observations: after.transport_observations,
     }, null, 2));
     expect(screenshots.slice(0, 3).map((item) => item.scenario)).toEqual(["selection", "findings", "publication"]);
-    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0) + (scenario === "read-revoked" ? 1 : 0));
+    expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0) + (scenario === "read-revoked" ? 1 : 0) + (normalHistoryLayout ? 1 : 0));
     expect(screenshots.some((item) => item.scenario === "denied-project" && item.publication === null)).toBe(true);
     await testInfo.attach("fresh-evidence-manifest", { path: manifestPath, contentType: "application/json" });
   } catch (error) {

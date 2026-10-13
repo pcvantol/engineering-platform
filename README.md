@@ -1,11 +1,24 @@
 # Engineering Platform
 
 The [specialist evidence and recovery dashboard slice](docs/development/DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md)
+remains under the same r34 assignment and writer. Protected EP2.3.115 source
+PR349 and Finalization350 are closed at main890915ad. New browser execution
+passed, but visual acceptance found overlapping history panels: Q-FINAL-VIS-01.
+Integrated correction30 is in progress with EP2.3.116 as the canonical product
+target. New source delivery and exact definitive-main installed/browser acceptance
+remain required in the [current register](https://github.com/pcvantol/forge/issues/142#issuecomment-6136286217).
+Viewing stored evidence grants no execution or recovery authority.
+
+### Historical r34 source-stage receipt through correction29
+
+The [specialist evidence and recovery dashboard slice](docs/development/DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md)
 is source-qualified on protected EP **2.3.115** main `624f99f4` after independent
 whole-candidate Quality/Security and full owning CI. Ordinary NO_BUMP Finalization
 and **new exact-final-main** noneditable installed/browser acceptance remain open
 in the [r34 register](https://github.com/pcvantol/forge/issues/142#issuecomment-6133903826).
 Viewing canonical stored evidence grants no execution or recovery authority.
+
+### Closed predecessor receipts
 
 The [bounded specialist selection and disposition subset](docs/development/SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md)
 remains closed at its immutable [r33 final receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007).
