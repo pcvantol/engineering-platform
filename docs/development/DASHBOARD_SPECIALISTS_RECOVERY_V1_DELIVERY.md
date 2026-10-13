@@ -1,6 +1,37 @@
 # Dashboard specialists and recovery V1 delivery
 
-## Current r34 fixture correction33 — 2026-10-13
+## Current r34 private-evidence correction34 — 2026-10-13
+
+[ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6137510899):
+consumed34, same writer/branch/history and unchanged operational budgets; no
+administrative stop cap. Correction33 fd5af08b/treefb0fcc31/wheel435d3984 actually
+passed focused9/preflight5/version15 but integrated admission exposed S-C33-LOG-01.
+A real fixture/helper/browser capture proves both original callback/body errors
+remain in memory while the closed2278byte gzip (SHAa6f649555eb9111d3d5826a23cd40e30082d6b3e51b359dec28a6a25546f7149)
+contains only the outer Aggregate message/stack. Inline body attachments are not
+durable receipt files. These original missing reason bytes are not reconstructed;
+all previous PASS/FAIL/stop evidence remains in its original scope.
+
+Independent Quality/Security admit only private recursive standard errors/cause
+capture with type/primitive/reference-cycle preservation, plus actual disk receipts.
+Both assertion timing and completed first-failure boundaries now retain nested
+original messages/stacks exclusively in the existing private0600 raw stream.
+There is no arbitrary Errorproperty enumeration or public generic error-tree.
+Public-safe pathattachments contain only counters/status/hash/declarative unit
+booleans. Ordinary serialization/write failures remain fatal. The existing fixture
+unit additionally uses a real isolated page, actual closure/gziphash, both original
+reasons, nested cause, cycle/reference and primitive controls before durable
+safe receipt write/readback. All532 corpuscontracts/528mandatory/fourbaseline cases
+stay exact; no new skip/test outcome, deadline, product117, authority/epoch/native
+or coverage change. Source33 dynamic own-route drain and semantic native-card
+identity remain. One new exact artifact/focused9/whole independent admission must
+precede full unchanged qualification/protected follow-up, ordinary Finalization
+and NEW exact-definitive-main installed/browser/screenshots/cleanup.
+The old890 FULL hosted38330837922 naturally completed SUCCESS; its visual REJECT
+remains, and no old result is transferred to the new candidate.
+
+
+## Preserved correction33 fixture snapshot — 2026-10-13
 
 [ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6137269382):
 consumed33, same writer/branch/history; no administrative stop cap, all operational
@@ -92,8 +123,8 @@ Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecommen
 Lane **r34**, plan **7**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Original source base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**, retained. Current protected repair base: `890915ad77cec21b39f4d3c60cdc3e263c2c8de7`, EP **2.3.115**.
-State: **CORRECTION33_FIXTURE_IMPLEMENTED_QUALIFICATION_PENDING / EP2.3.117_PRODUCT_TARGET**. Protected EP2.3.115 source PR349 and Finalization350 are closed; exact890915ad visual acceptance was rejected and does not close r34.
-Current correction consumption: **33** (28 through implementation, one documentary correction29 and one integrated visual correction30 and one test-only fixture correction31 and one native-identity product correction32 and one fixture-lifetime correction33); administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
+State: **CORRECTION34_PRIVATE_EVIDENCE_IMPLEMENTED_QUALIFICATION_PENDING / EP2.3.117_PRODUCT_TARGET**. Protected EP2.3.115 source PR349 and Finalization350 are closed; exact890915ad visual acceptance was rejected and does not close r34.
+Current correction consumption: **34** (28 through implementation, one documentary correction29 and one integrated visual correction30 and one test-only fixture correction31 and one native-identity product correction32 and one fixture-lifetime correction33 and one private-evidence correction34); administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.

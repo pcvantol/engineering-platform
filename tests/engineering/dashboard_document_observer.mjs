@@ -6,6 +6,22 @@ import { gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+// Generic error trees stay exclusively in the private raw observation stream.
+// Standard recursive reasons preserve original detail without enumerating arbitrary
+// provider/error properties; reference IDs prevent cause/Aggregate cycles.
+function observedFailure(error, references = new Map()) {
+  if (error === null || (typeof error !== "object" && typeof error !== "function"))
+    return { type: typeof error, message: String(error) };
+  if (references.has(error)) return { type: typeof error,
+    reference_id: references.get(error), message: String(error) };
+  const errorId = references.size; references.set(error, errorId);
+  const fact = { error_id: errorId, type: typeof error, name: error.name,
+    message: String(error), stack: error.stack };
+  if (Array.isArray(error.errors)) fact.errors = error.errors.map(reason => observedFailure(reason, references));
+  if ("cause" in error) fact.cause = observedFailure(error.cause, references);
+  return fact;
+}
+
 const observers = new WeakMap();
 const header = (headers, name) => Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] ?? null;
 
@@ -181,7 +197,7 @@ async function createObservation(page) {
     // This synchronous marker precedes screenshot/CDP waits and canary cleanup.
     // A later screenshot never replaces the actual assertion timing boundary.
     retain('assertion-caught', { title: testInfo.title, url: page.url(),
-      error: caughtError ? { message: String(caughtError), stack: caughtError.stack } : null,
+      error: caughtError ? observedFailure(caughtError) : null,
       requests: [...requests.values()] });
     const results = await Promise.allSettled([
       page.screenshot({ path: path.join(retained, 'first-failure.png'), fullPage: true, animations: 'disabled' }),
@@ -191,7 +207,7 @@ async function createObservation(page) {
       ? { observation: index, status: 'retained', value: index === 0 ? createHash('sha256').update(result.value).digest('hex') : result.value }
       : { observation: index, status: 'UNAVAILABLE', reason: String(result.reason) });
     retain('first-failure', { title: testInfo.title, status: caughtError ? 'caught_failure' : testInfo.status,
-      errors: caughtError ? [{ message: String(caughtError), stack: caughtError.stack }] : testInfo.errors,
+      errors: caughtError ? [observedFailure(caughtError)] : testInfo.errors,
       observations: facts, requests: [...requests.values()] });
     if (results.some(result => result.status === 'rejected'))
       throw Error('First browser failure retention incomplete; original failure remains in runner report');

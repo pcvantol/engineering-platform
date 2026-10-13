@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { readFileSync, writeFileSync } from "node:fs";
 import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import { chromium } from "@playwright/test";
@@ -53,7 +54,7 @@ test('actual observer rejects post-seal failure writes without changing retained
   } finally { await isolated.close(); await observation.closed(); }
 });
 
-test('owned held route callbacks drain before scoped removal and preserve original failures', async ({}, testInfo) => {
+test('owned held route callbacks drain before scoped removal and preserve original failures', async ({ browser }, testInfo) => {
   // Fixture-unit fault injection, not a server response or authority mutation.
   const owner = createOwnedHeldRoutes(), order = [];
   let releaseFirst, releaseSecond;
@@ -95,11 +96,45 @@ test('owned held route callbacks drain before scoped removal and preserve origin
   expect(faultError.errors[0]).toBe(original);
   expect(scopedRemoved).toBe(true);
   expect(faultError.receipt).toEqual({ started: 1, settled: 1, rejected: 1, actual_owner_closed: true });
-  await testInfo.attach("owned-route-fixture-unit-controls", { body: JSON.stringify({
-    scope: "FIXTURE_UNIT_ONLY", dynamic_success_receipt: receipt,
+  const body = new Error("Declared fixture-unit body fault", { cause: new Error("Declared nested body cause") });
+  original.cause = "Declared primitive callback cause";
+  const cyclic = new Error("Declared cyclic fixture cause"); cyclic.cause = cyclic;
+  const combined = new AggregateError([body, faultError, cyclic, null, 42, false], "Declared body plus cleanup reason preservation");
+  const isolated = await browser.newPage();
+  const observation = await observeConsoleDocument(isolated);
+  let capturedReceipt;
+  try { await observation.failure(testInfo, combined); }
+  finally { await isolated.close(); capturedReceipt = await observation.closed(); }
+  const captured = readFileSync(observation.privateFiles().raw);
+  expect(captured.length).toBe(capturedReceipt.bytes);
+  expect(createHash("sha256").update(captured).digest("hex")).toBe(capturedReceipt.sha256);
+  const facts = gunzipSync(captured).toString("utf8").trim().split("\n").map(line => JSON.parse(line));
+  const boundaries = facts.filter(record => ["assertion-caught", "first-failure"].includes(record.kind));
+  expect(boundaries).toHaveLength(2);
+  for (const record of boundaries) {
+    const error = record.kind === "assertion-caught" ? record.fact.error : record.fact.errors[0];
+    expect(error.errors[0].message).toContain(body.message);
+    expect(error.errors[0].cause.message).toContain("Declared nested body cause");
+    expect(error.errors[1].errors[0].message).toContain(original.message);
+    expect(error.errors[1].errors[0].stack).toContain(original.message);
+    expect(error.errors[1].errors[0].cause).toEqual({ type: "string", message: "Declared primitive callback cause" });
+    expect(error.errors[2].cause.reference_id).toBe(error.errors[2].error_id);
+    expect(error.errors[3]).toEqual({ type: "object", message: "null" });
+    expect(error.errors[4]).toEqual({ type: "number", message: "42" });
+    expect(error.errors[5]).toEqual({ type: "boolean", message: "false" });
+  }
+  // Durable/public-safe counters and booleans only. Generic error trees, stacks
+  // and private file paths remain in the private raw stream, never attachments.
+  const controls = { scope: "FIXTURE_UNIT_ONLY", dynamic_success_receipt: receipt,
     late_owner_receipt: lateError.receipt, original_fault_receipt: faultError.receipt,
     original_error_object_retained: faultError.errors[0] === original,
-  }), contentType: "application/json" });
+    both_recursive_capture_boundaries_verified: true,
+    private_capture_closed: capturedReceipt.actual_page_closed,
+    private_capture_bytes: capturedReceipt.bytes, private_capture_sha256: capturedReceipt.sha256 };
+  const controlsPath = testInfo.outputPath("owned-route-fixture-unit-controls.json");
+  writeFileSync(controlsPath, JSON.stringify(controls, null, 2), { mode: 0o600, flag: "wx" });
+  expect(JSON.parse(readFileSync(controlsPath))).toEqual(controls);
+  await testInfo.attach("owned-route-fixture-unit-controls", { path: controlsPath, contentType: "application/json" });
 });
 
 async function passiveProcess(python, environment, dataRoot) {
@@ -506,7 +541,10 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
           const receipt = await routeOwner.close(() => page.unroute(eventsRoute, holdEvents));
           expect(receipt.started).toBeGreaterThanOrEqual(1);
           expect(receipt.settled).toBe(receipt.started); expect(receipt.rejected).toBe(0);
-          await testInfo.attach("actual-held-sse-handler-close", { body: JSON.stringify(receipt), contentType: "application/json" });
+          const receiptPath = testInfo.outputPath("actual-held-sse-handler-close.json");
+          writeFileSync(receiptPath, JSON.stringify(receipt, null, 2), { mode: 0o600, flag: "wx" });
+          expect(JSON.parse(readFileSync(receiptPath))).toEqual(receipt);
+          await testInfo.attach("actual-held-sse-handler-close", { path: receiptPath, contentType: "application/json" });
         } catch (error) { cleanupErrors.push(error); }
         try { await session.detach(); } catch (error) { cleanupErrors.push(error); }
         try { await routeOwner.verifyClosed(); } catch (error) { cleanupErrors.push(error); }
