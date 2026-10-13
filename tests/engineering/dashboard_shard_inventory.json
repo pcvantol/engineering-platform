@@ -1,7 +1,7 @@
 {
   "contract": "ep-dashboard-canonical-corpus/v1",
   "baseline_source_sha": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
-  "mandatory_count": 527,
+  "mandatory_count": 528,
   "baseline_not_run_count": 4,
   "tests": [
     {
@@ -3203,6 +3203,12 @@
     {
       "file": "dashboard_run_evidence.integration.spec.mjs",
       "title": "reads actual uncertain-result en/dark/390 dispatcher evidence without execution effects",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard_run_evidence.integration.spec.mjs",
+      "title": "owned held route callbacks drain before scoped removal and preserve original failures",
       "expectedStatus": "passed",
       "annotations": []
     }

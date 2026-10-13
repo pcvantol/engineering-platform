@@ -7,6 +7,7 @@ import { test, expect } from "./dashboard_coverage_fixture.mjs";
 import { chromium } from "@playwright/test";
 import { observeConsoleDocument } from "./dashboard_document_observer.mjs";
 import { retainWorkerLogs, finishWorkerLogs } from "./dashboard_worker_logs.mjs";
+import { createOwnedHeldRoutes } from "./dashboard_owned_held_routes.mjs";
 import { assertRunEvidenceLayout, assertHistoryLayoutRefault, readRunEvidenceCardFromTop } from "./dashboard_run_evidence_layout.mjs";
 import { DASHBOARD_MESSAGES } from "../../src/engineering_platform/assets/dashboard_locales.mjs";
 
@@ -50,6 +51,55 @@ test('actual observer rejects post-seal failure writes without changing retained
     expect(before.length).toBe(receipt.bytes);
     expect(createHash('sha256').update(before).digest('hex')).toBe(receipt.sha256);
   } finally { await isolated.close(); await observation.closed(); }
+});
+
+test('owned held route callbacks drain before scoped removal and preserve original failures', async ({}, testInfo) => {
+  // Fixture-unit fault injection, not a server response or authority mutation.
+  const owner = createOwnedHeldRoutes(), order = [];
+  let releaseFirst, releaseSecond;
+  const first = new Promise(resolve => { releaseFirst = resolve; });
+  const second = new Promise(resolve => { releaseSecond = resolve; });
+  const firstTask = owner.handler({ continue: async () => { await first; order.push("first-terminal"); } });
+  const closing = owner.close(async () => { order.push("scoped-remove"); });
+  const secondTask = owner.handler({ continue: async () => { await second; order.push("second-terminal"); } });
+  releaseFirst(); await firstTask;
+  expect(order).toEqual(["first-terminal"]);
+  releaseSecond(); await secondTask;
+  const receipt = await closing;
+  expect(order).toEqual(["first-terminal", "second-terminal", "scoped-remove"]);
+  expect(receipt).toEqual({ started: 2, settled: 2, rejected: 0, actual_owner_closed: true });
+  expect(await owner.verifyClosed()).toEqual(receipt);
+  let lateContinueCalls = 0;
+  await owner.handler({ continue: async () => { lateContinueCalls++; } });
+  const lateError = await owner.verifyClosed().then(() => null, error => error);
+  expect(lateError).toBeInstanceOf(AggregateError);
+  expect(lateError.errors).toHaveLength(1);
+  expect(lateError.errors[0].message).toContain("after owner closure");
+  expect(lateContinueCalls).toBe(0);
+
+  const faultOwner = createOwnedHeldRoutes();
+  const original = new Error("Declared fixture-unit continuation fault");
+  let releaseFault, callbackTerminal = false, scopedRemoved = false;
+  const faultGate = new Promise(resolve => { releaseFault = resolve; });
+  const faultTask = faultOwner.handler({ continue: async () => {
+    await faultGate; callbackTerminal = true; throw original;
+  } });
+  const faultResult = faultOwner.close(async () => {
+    expect(callbackTerminal).toBe(true); scopedRemoved = true;
+  }).then(() => null, error => error);
+  expect(scopedRemoved).toBe(false);
+  releaseFault(); await faultTask;
+  const faultError = await faultResult;
+  expect(faultError).toBeInstanceOf(AggregateError);
+  expect(faultError.errors).toEqual([original]);
+  expect(faultError.errors[0]).toBe(original);
+  expect(scopedRemoved).toBe(true);
+  expect(faultError.receipt).toEqual({ started: 1, settled: 1, rejected: 1, actual_owner_closed: true });
+  await testInfo.attach("owned-route-fixture-unit-controls", { body: JSON.stringify({
+    scope: "FIXTURE_UNIT_ONLY", dynamic_success_receipt: receipt,
+    late_owner_receipt: lateError.receipt, original_fault_receipt: faultError.receipt,
+    original_error_object_retained: faultError.errors[0] === original,
+  }), contentType: "application/json" });
 });
 
 async function passiveProcess(python, environment, dataRoot) {
@@ -327,10 +377,11 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       session.on("Network.eventSourceMessageReceived", frame => {
         if (frame.eventName === "dashboard") frames.push(frame);
       });
-      let releaseSSE;
-      const released = new Promise(resolve => { releaseSSE = resolve; });
+      const routeOwner = createOwnedHeldRoutes();
+      const releaseSSE = routeOwner.release;
       const eventsRoute = url => url.pathname === "/api/events";
-      const holdEvents = async route => { await released; await route.continue(); };
+      const holdEvents = routeOwner.handler;
+      let primaryFailure = null;
       await page.route(eventsRoute, holdEvents);
       try {
       const snapshotRead = page.waitForResponse(response =>
@@ -375,6 +426,8 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       const sse = JSON.parse(frame.data);
       const sseBinding = await observer.scope("sse", "project");
       expect(sseBinding.document_id).toBe(documentId);
+      expect(sseBinding.request_id).toBe(frame.requestId);
+      expect(sseBinding.response_sha256).toBe(createHash("sha256").update(frame.data).digest("hex"));
       expect(sse.scope).toBe("PROJECT"); expect(sse.project_id).toBe("project");
       await expect(page.locator("#updateMode")).toHaveText(DASHBOARD_MESSAGES[locale]["refresh.connected"]);
       const canonical = value => Array.isArray(value) ? value.map(canonical)
@@ -440,14 +493,27 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       normalActiveHistoryProof = { requested_run_id: ready.run_id,
         request: boundRead, document_id: documentId, response_sha256: responseHash,
         http_snapshot: httpBinding, sse_snapshot: sseBinding,
-        actual_sse_frame_sha256: createHash("sha256").update(frame.data).digest("hex"),
+        actual_sse_frame_sha256: createHash("sha256").update(frame.data).digest("hex"), selected_sse_request_id: frame.requestId,
         equal_http_sse_native_card_identity_preserved: true, renderer_mutation_controls: rendererMutationControls,
         actual_history_run_ids: [], native_modal_hidden: true, deeplink_removed: true,
         active_card_count: 3, geometry: await assertRunEvidenceLayout(page) };
       await capture("normal-active-not-history", "native", activeSelection);
+      } catch (error) {
+        primaryFailure = error; throw error;
       } finally {
-        releaseSSE(); await page.unroute(eventsRoute, holdEvents);
-        await session.detach();
+        const cleanupErrors = [];
+        try {
+          const receipt = await routeOwner.close(() => page.unroute(eventsRoute, holdEvents));
+          expect(receipt.started).toBeGreaterThanOrEqual(1);
+          expect(receipt.settled).toBe(receipt.started); expect(receipt.rejected).toBe(0);
+          await testInfo.attach("actual-held-sse-handler-close", { body: JSON.stringify(receipt), contentType: "application/json" });
+        } catch (error) { cleanupErrors.push(error); }
+        try { await session.detach(); } catch (error) { cleanupErrors.push(error); }
+        try { await routeOwner.verifyClosed(); } catch (error) { cleanupErrors.push(error); }
+        if (cleanupErrors.length) throw new AggregateError(
+          [...(primaryFailure ? [primaryFailure] : []), ...cleanupErrors],
+          "Initial SSE body and owned handler cleanup failures retained",
+        );
       }
     }
     const rootUrl = ready.url.split("/?")[0];
