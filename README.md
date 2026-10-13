@@ -1,10 +1,15 @@
 # Engineering Platform
 
+The [specialist evidence and recovery dashboard slice](docs/development/DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md)
+is source-qualified on protected EP **2.3.115** main `624f99f4` after independent
+whole-candidate Quality/Security and full owning CI. Ordinary NO_BUMP Finalization
+and **new exact-final-main** noneditable installed/browser acceptance remain open
+in the [r34 register](https://github.com/pcvantol/forge/issues/142#issuecomment-6133903826).
+Viewing canonical stored evidence grants no execution or recovery authority.
+
 The [bounded specialist selection and disposition subset](docs/development/SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md)
-is source-qualified on protected EP 2.3.114 main after complete independent Quality/Security.
-Ordinary NO_BUMP Finalization and fresh exact-final-main noneditable installed acceptance
-are tracked in the owning [r33 register](https://github.com/pcvantol/forge/issues/142);
-source merge alone does not close that installed gate.
+remains closed at its immutable [r33 final receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007).
+R34 neither reopens that predecessor nor qualifies the broader specialist family.
 
 The [deterministic validation/publication subset](docs/development/DETERMINISTIC_VALIDATION_PUBLICATION_V1_DELIVERY.md)
 is qualified on protected 2.3.112 main with noneditable installed evidence.

@@ -1,5 +1,33 @@
 # EP subagent orchestration and efficiency
 
+## R34 scoped source delivery and remaining acceptance — 2026-10-13
+
+The [stored specialist evidence/recovery Console slice](../development/DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md)
+is source-qualified on protected EP2.3.115 main624f99f4. Exact implementation
+candidate1265280 has whole independent Quality/Security APPROVE and actual full
+owning CI38302902219 SUCCESS; real owner workflow38317287272 preceded normal
+protected PR349 squash merge. Its noneditable installed524 first-attempt browser
+PASS plus4 unchanged baseline NOT_RUN demonstrate the selected read presentation,
+with declared external model/GitHub transport fixtures and real own storage,
+Git, lifecycle, authority, HTTP and native Chromium. These are candidate receipts,
+not a future final-main installed claim or live provider quality measurement.
+
+Current correction consumption29 (28 implementation plus one documentary correction) and all earlier failed/unknown/missing evidence
+remain recorded. Source/review/cycle count caps are not applicable to scoped r34
+completion; financial/provider/runtime/security bounds are unchanged. The original
+32-second observation delay remains UNESTABLISHED; original wrapper/raw-retention
+failures remain failed, with separately admitted actual closed-byte recovery.
+CodeQL's12 pre-existing HIGH aggregate FAIL and TDE's actual policyFAIL/repository
+FAILED remain distinct from successful technical scans/observe workflows. No
+dismissal, weakened control, synthetic historical PASS or general debt fix occurs.
+
+This nonempty documentary Finalization is NO_BUMP with its own reviews/checks/
+protected merge. NEW exact-final-main noneditable installed/browser screenshots,
+request/readback binding and safe own cleanup remain required afterwards. R33,
+r43/r44/GP stay closed; HOB-EP01 waits. Broader SA-Q/ROLE/PAR, comparison/savings,
+adoption/recovery authority, physical iPhone/live EP/signing/production installation
+remain outside this delivery. No family node or edge is activated by a read UI.
+
 ## Scope and authority
 
 Increment: `EP_SUBAGENT_ORCHESTRATION_AND_EFFICIENCY_V1`.

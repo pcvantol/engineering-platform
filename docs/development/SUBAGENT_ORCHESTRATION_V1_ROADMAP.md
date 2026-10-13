@@ -12,6 +12,10 @@ No existing executable DAG, Mission, run or policy activation is changed.
 
 ## Status and pickup priority
 
+Current selected work is r34's [stored specialist evidence/recovery Console slice](DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md), already source-delivered by protected PR349. Its ordinary Finalization and new exact-final-main installed acceptance remain open. R33 remains closed at its [immutable final receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007); its historical source-stage paragraph below is not a current pickup or an outstanding r33 gate. Existing family-node statuses/edges and unselected families remain unchanged.
+
+### Historical r33 source-stage snapshot
+
 L2 r33 selects **SA-SEL + SA-LOOP** under `L2-EP-SPECIALIST-SELECTION-DISPOSITION-V1-20261007`, plan revision 13. The [selected delivery](SPECIALIST_SELECTION_DISPOSITION_V1_DELIVERY.md) records the sole writer, exact base/branch, typed optional question and real primary consumer boundary. Both nodes are SOURCE_QUALIFIED on protected EP 2.3.114 main `be60bf08dac17caf437a147fe658bca67d821dd6` after complete independent implementationreviews. Ordinary NO_BUMP Finalization and exact-final-main installed closure remain required and are tracked in [#142](https://github.com/pcvantol/forge/issues/142); current source status does not imply final installed completion. Necessary CTX/ISO/OBS extensions are qualified with this same slice; prior r32 receipts remain historical qualified evidence and its assignment remains closed. No full SA-Q/ROLE/PAR, model routing, utility or commercial saving claim.
 
 ### Closed predecessor r32
@@ -151,5 +155,19 @@ Historical Python files under the evidence directory are standalone diagnostics,
 not runtime implementation or CI qualification. The version classification is NO_BUMP.
 
 ## Serial Console follow-up — r34, 2026-10-10
+
+The paragraph below preserves the earlier correction3 snapshot. Current r34 is
+SOURCE_QUALIFIED at protected EP2.3.115 main624f99f4 after independently approved
+candidate1265280 and full owning CI38302902219 (all11 actual jobs SUCCESS).
+Same writer/session, plan7; consumed29 (28 through implementation plus one documentary correction) with administrative maximum
+NOT_APPLICABLE_SCOPED_COMPLETION under decision6123356344. Native/provider
+authority, per-run deadlines and strict coverage thresholds are unchanged.
+The ordinary NO_BUMP Finalization and NEW exact-final-main installed/browser
+receipt remain pending; candidate evidence is not transferred to a future SHA.
+See [delivery/current remaining DoD](DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md)
+and [actual protected delivery](https://github.com/pcvantol/forge/issues/142#issuecomment-6133903826).
+Only the stored read-only Console slice is source-delivered. Family nodes/edges,
+closed predecessors, historical consumption and the waiting HOB companion stay
+unchanged; no specialist/adoption/repair execution is activated.
 
 The selected [dashboard specialists/recovery delivery](DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md) follows closed r33 ([final receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007)). Same ARCHITECT_2 / LANE_2_WORK, source base `05e530d` and branch `codex/ep-dashboard-specialists-recovery-v1`; r34 / plan1, formal corrections consumed3 / max3 / remaining0 after three complete independent Q/S pairs; three integrated rounds address read-withdrawal and shared late-operator callbacks, failed/uncertain outcomes, host duplicates and angle/label hostpath presentation and canonical PLATFORM/no-project compatibility findings; exact-head independent closure remains required. Normal PATCH target 2.3.115 is prepared. This is a read-only storage→Server→existing Console slice with real installed/browser/coverage/screenshot qualification; no execution or activation authority. The broader family node statuses and edges remain unchanged. r34 is not yet installed-qualified or delivered.
