@@ -225,6 +225,14 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     pending = (message) => { clearTimeout(deadline); resolve(message); };
     child.once("exit", (code) => { clearTimeout(deadline); reject(new Error(`Canary exited ${code}: raw worker logs retained privately`)); });
   });
+  const normalHistoryLayout = scenario === "normal" && locale === "en" && theme === "dark";
+  const headers = [];
+  const captureHeader = response => {
+    if (response.request().method() === "GET"
+        && ["/api/prompt-history", "/api/dashboard-snapshot"].includes(new URL(response.url()).pathname))
+      headers.push(response);
+  };
+  if (normalHistoryLayout) page.on("response", captureHeader);
   try {
     const ready = await next();
     if (installedPython) expect(ready.module).toContain("site-packages/engineering_platform/");
@@ -396,7 +404,6 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await expect(controls).toBeVisible();
       await capture("verification-controls", "native", findings);
     }
-    const normalHistoryLayout = scenario === "normal" && locale === "en" && theme === "dark";
     let normalActiveHistoryProof = null;
     if (normalHistoryLayout) {
       // Active operator-wait is absent from the genuine terminal history index.
@@ -417,36 +424,82 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       const eventsRoute = url => url.pathname === "/api/events";
       const holdEvents = routeOwner.handler;
       let primaryFailure = null;
+      // Capture headers synchronously; deferred predicates cannot own an
+      // old-document response across navigation and then read its lost body.
       await page.route(eventsRoute, holdEvents);
       try {
-      const snapshotRead = page.waitForResponse(response =>
-        new URL(response.url()).pathname === "/api/dashboard-snapshot"
-        && response.request().method() === "GET");
-      const indexRead = page.waitForResponse(response =>
-        new URL(response.url()).pathname === "/api/prompt-history"
-        && response.request().method() === "GET");
+      const previousDocument = await observer.documentId();
       await page.goto(detailUrl.href, { waitUntil: "domcontentloaded" });
-      const response = await indexRead;
+      const currentFrame = (await session.send("Page.getFrameTree")).frameTree.frame;
+      const documentId = currentFrame.loaderId;
+      expect(documentId).not.toBe(previousDocument);
+      expect(await observer.documentId()).toBe(documentId);
+      const headerRecord = response => {
+        const request = response.request();
+        expect(request.frame()).toBe(page.mainFrame());
+        const time = request.timing().startTime;
+        expect(Number.isFinite(time) && time > 0).toBe(true);
+        const matches = observer.records().filter(record => record.url === response.url()
+          && record.method === request.method() && record.status === response.status()
+          && record.native_request_start_time_ms === time);
+        expect(matches.length).toBeLessThanOrEqual(1);
+        return matches[0] || null;
+      };
+      // Actual previous-document headers share URL, method and status with
+      // the new read. Reject them before touching a navigated-away body.
+      let previousHeader;
+      await expect.poll(() => {
+        previousHeader = headers.find(response => new URL(response.url()).pathname === "/api/prompt-history"
+          && headerRecord(response)?.document_id === previousDocument);
+        return Boolean(previousHeader);
+      }).toBe(true);
+      const previousRecord = headerRecord(previousHeader);
+      expect(previousRecord.frame_id).toBe(currentFrame.id);
+      expect(previousRecord.document_id === documentId).toBe(false);
+      const currentRead = async pathname => {
+        let selected;
+        await expect.poll(() => {
+          for (const response of headers.filter(value => new URL(value.url()).pathname === pathname)) {
+            // A lagging independent CDP session may not have the header yet.
+            // Zero remains pending, ambiguity remains red; no later response
+            // can replace this unknown predecessor to make the proof pass.
+            const record = headerRecord(response);
+            if (record === null) return false;
+            if (record.document_id !== documentId) continue;
+            expect(record.frame_id).toBe(currentFrame.id);
+            expect(record.project_header).toBe("project");
+            expect(record.cached_request).toBe(false);
+            selected = { response, record };
+            return true;
+          }
+          return false;
+        }).toBe(true);
+        return selected;
+      };
+      const indexRead = await currentRead("/api/prompt-history");
+      const response = indexRead.response;
       expect(response.status()).toBe(200);
       const bytes = await response.body();
       const index = JSON.parse(bytes.toString("utf8"));
       expect(index.runs).toEqual([]);
       expect(index.runs.some(run => run.run_id === ready.run_id)).toBe(false);
-      const documentId = await observer.documentId();
       const responseHash = createHash("sha256").update(bytes).digest("hex");
       let boundRead;
       await expect.poll(() => {
-        boundRead = observer.records().find(record => record.document_id === documentId
+        boundRead = observer.records().find(record => record.request_id === indexRead.record.request_id
+          && record.document_id === documentId
           && record.path === "/api/prompt-history" && record.completed
           && record.status === 200 && record.response_sha256 === responseHash);
         return Boolean(boundRead);
       }).toBe(true);
-      const httpResponse = await snapshotRead;
+      const snapshotRead = await currentRead("/api/dashboard-snapshot");
+      const httpResponse = snapshotRead.response;
       expect(httpResponse.status()).toBe(200);
       const httpBytes = await httpResponse.body();
       const http = JSON.parse(httpBytes.toString("utf8"));
-      const httpBinding = await observer.scope("http", "project");
+      const httpBinding = await observer.scope("http", "project", snapshotRead.record.request_id);
       expect(httpBinding.document_id).toBe(documentId);
+      expect(httpBinding.request_id).toBe(snapshotRead.record.request_id);
       expect(httpBinding.response_sha256).toBe(createHash("sha256").update(httpBytes).digest("hex"));
       const nativeCards = await page.locator("[data-run-evidence]").elementHandles();
       expect(nativeCards).toHaveLength(3);
@@ -527,6 +580,14 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       expect(rendererMutationControls.object_prototype_unchanged).toBe(true);
       normalActiveHistoryProof = { requested_run_id: ready.run_id,
         request: boundRead, document_id: documentId, response_sha256: responseHash,
+        current_document_header_controls: {
+          previous_document_id: previousRecord.document_id,
+          previous_same_endpoint_request_id: previousRecord.request_id,
+          previous_document_header_rejected_before_body_read: true,
+          selected_index_request_id: indexRead.record.request_id,
+          selected_snapshot_request_id: snapshotRead.record.request_id,
+          exact_pinned_request_clock_join: true,
+        },
         http_snapshot: httpBinding, sse_snapshot: sseBinding,
         actual_sse_frame_sha256: createHash("sha256").update(frame.data).digest("hex"), selected_sse_request_id: frame.requestId,
         equal_http_sse_native_card_identity_preserved: true, renderer_mutation_controls: rendererMutationControls,
@@ -696,7 +757,8 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
     }
     throw error;
   } finally {
-    await stopIsolatedCanary(child, next, testInfo);
+    try { await stopIsolatedCanary(child, next, testInfo); }
+    finally { if (normalHistoryLayout) page.off("response", captureHeader); }
   }
 });
 }

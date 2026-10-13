@@ -1,5 +1,30 @@
 # EP subagent orchestration and efficiency roadmap
 
+## Current r34 document-bound response fixture correction38 — 2026-10-13
+
+[Single booking and actual cause](https://github.com/pcvantol/forge/issues/142#issuecomment-6144629429):
+same writer/session/branch/history; consumed38, no administrative cap and all
+other operational budgets unchanged. Product118 and all193 product bytes remain.
+
+Current full local cycle16 naturally completed but is FAILED:528 mandatory
+first-attempt passes, one flaky normal mobile history case and four baseline
+exceptions. A retry does not close that failure. Original raw request evidence
+proves the selected index response belongs to the old loader before navigation;
+the new loader response arrives after the body error. OwningCI37 browser parts
+are green and stay separately labeled. Installed17 was not booked or started.
+
+The fixture binds both held history-index and snapshot responses to unique full
+URL/method/request-clock/frame/new-loader/project identity before actual body
+reading. The clock uses the exact pinned Playwright1.63 CDP timing correction;
+missing/ambiguous/unsupported-cache metadata stays red without tolerance, body
+fallback or response substitution. A genuine previous-document header is rejected
+before body reading. Exact request IDs bind subsequent body hashes and HTTP/SSE
+proofs; all native card, history, project/epoch, callback and cleanup controls remain.
+This is a finite correction to existing observation/read boundaries, not a new
+capture framework or product behavior. The533/529+four inventory and deadlines
+remain. Independent implementation, targeted/current full qualification and the
+complete protected-delivery/Finalization/exact-final-main installedGUI DoD are PENDING.
+
 ## Current r34 fixture correction37 — 2026-10-13
 
 [ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6143860024):

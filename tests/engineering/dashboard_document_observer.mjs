@@ -79,6 +79,9 @@ async function createObservation(page) {
     for (const extra of extras.get(event.requestId) || []) retain('transport-extra-info', extra);
     extras.delete(event.requestId);
     requests.set(event.requestId, { request_id: event.requestId, document_id: event.loaderId,
+      frame_id: event.frameId, method: event.request.method,
+      request_timestamp: event.timestamp, request_wall_time: event.wallTime,
+      native_request_start_time_ms: null, cached_request: false,
       path: url.pathname, url: url.href, project_header: header(event.request.headers, 'X-Engineering-Platform-Project'),
       status: null, completed: false });
   });
@@ -91,8 +94,31 @@ async function createObservation(page) {
       }
     });
   }
+  session.on('Network.requestServedFromCache', (event) => {
+    const request = requests.get(event.requestId);
+    if (request) {
+      request.cached_request = true; request.native_request_start_time_ms = null;
+      retain('cached-request', event);
+    }
+  });
   session.on('Network.responseReceived', (event) => {
-    const request = requests.get(event.requestId); if (request) { request.status = event.response.status; retain('response', event); }
+    const request = requests.get(event.requestId);
+    if (request) {
+      request.status = event.response.status;
+      // The pinned Chromium Playwright1.63 request clock is adjusted by
+      // response.timing.requestTime, not just request.wallTime. These known
+      // API reads require fresh, ordinary HTTP timing; unsupported/cache
+      // metadata never receives a guessed clock or a body fallback.
+      const time = event.response.timing?.requestTime;
+      if (!request.cached_request && !event.response.fromDiskCache
+          && !event.response.fromPrefetchCache && !event.response.fromServiceWorker
+          && [time, request.request_timestamp, request.request_wall_time].every(Number.isFinite)
+          && time >= 0 && request.request_timestamp >= 0 && request.request_wall_time > 0) {
+        request.native_request_start_time_ms =
+          (time - request.request_timestamp + request.request_wall_time) * 1000;
+      }
+      retain('response', event);
+    }
   });
   session.on('Network.loadingFailed', (event) => {
     const request = requests.get(event.requestId); if (request) { request.failure = event.errorText; retain('loading-failed', event); }
@@ -160,11 +186,12 @@ async function createObservation(page) {
   const scopeMatches = (response, project) => project === null
     ? response.scope === 'PLATFORM' && response.project_id === null
     : response.scope === 'PROJECT' && response.project_id === project;
-  const scope = async (ingress, project) => {
+  const scope = async (ingress, project, requestId = null) => {
     let applied;
     await expect.poll(async () => {
       const values = await completed(ingress === 'sse' ? '/api/events' : '/api/dashboard-snapshot');
-      applied = values.find(r => scopeMatches(r.response, project)); return Boolean(applied);
+      applied = values.find(r => (requestId === null || r.request_id === requestId)
+        && scopeMatches(r.response, project)); return Boolean(applied);
     }).toBe(true);
     expect(await page.evaluate(() => window.ENGINEERING_PLATFORM_NO_PROJECT === true)).toBe(project === null);
     await expect(page.locator('body')).toHaveAttribute('data-project-id', project ?? 'none');
