@@ -1,0 +1,2008 @@
+{
+  "contract": "lane2-r34-final-main-audit-label-public-evidence/v1",
+  "scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+  "qualification": "ACTUAL_INSTALLED_HTTP_AND_NATIVE_CAPTURE_ON_CONTROLLED_FIXTURES_NOT_LIVE_PROVIDER_OR_PHYSICAL_IPHONE",
+  "source_sha": "b2befba67174deb9061134e668549c75c57a14b7",
+  "source_tree": "14500f164cd870818a641a84d3c7b5ea10c67427",
+  "wheel_sha256": "84ee25c0e37780de647610a3c7fa7a1e12fbdb89648f12a6ee0e1fcf436bea8d",
+  "version": "2.3.119",
+  "source_private_audit_receipt_sha256": "9e9620471396b1d21d4dd32efbaf1be11cc9f0f44dbac86d92f52a6f5be869b0",
+  "modeled_persistent_log_prelude": {
+    "scope": "MODELED_PERSISTED_LOG_NOT_ACTUAL_CONFIGURATION_CHANGE",
+    "event": "configuration_changed",
+    "producer_version": "2.3.119",
+    "settings_setter_called": false
+  },
+  "action_completion_is_not_run_completion": true,
+  "images": [
+    {
+      "file": "235-audit-en-dashboard-action-completed.png",
+      "sha256": "5988534510ee1aaa7ab1b038dd7098b8e003b44fd2bed3347a9fa7427431901d",
+      "bytes": 2473,
+      "event": "dashboard_action_completed",
+      "label": "Console action completed",
+      "locale": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.28",
+          "document_id": "FA85BB1E04716DD3447AA33771C9B7BC",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.31",
+          "document_id": "FA85BB1E04716DD3447AA33771C9B7BC",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.33",
+          "document_id": "FA85BB1E04716DD3447AA33771C9B7BC",
+          "status": 200,
+          "response_sha256": "1d8a4ef628b79ff2276c68ecee04e2391faaacf6ab62c2e9e43053e29e817e64"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 108.28125,
+        "y": 413.9375,
+        "width": 172.828125,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 100.28125,
+          "y": 406.4375,
+          "width": 268.046875,
+          "height": 29,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 348.9375,
+          "width": 242,
+          "height": 173,
+          "right": 316,
+          "bottom": 521.9375
+        },
+        "scroll_left": 236,
+        "maximum_scroll_left": 2637,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 69.28125,
+          "y": 413.9375,
+          "width": 172.828125,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            false,
+            true,
+            false,
+            true,
+            true
+          ],
+          "unobscured": false,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 61.28125,
+            "y": 406.4375,
+            "width": 268.046875,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 348.9375,
+            "width": 242,
+            "height": 173,
+            "right": 316,
+            "bottom": 521.9375
+          },
+          "scroll_left": 275,
+          "maximum_scroll_left": 2637,
+          "text_fits": true
+        },
+        "moves": [
+          {
+            "before": {
+              "x": 69.28125,
+              "y": 413.9375,
+              "width": 172.828125,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": false,
+              "painted_points": [
+                false,
+                true,
+                false,
+                true,
+                true
+              ],
+              "unobscured": false,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 61.28125,
+                "y": 406.4375,
+                "width": 268.046875,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  false,
+                  false,
+                  false,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 348.9375,
+                "width": 242,
+                "height": 173,
+                "right": 316,
+                "bottom": 521.9375
+              },
+              "scroll_left": 275,
+              "maximum_scroll_left": 2637,
+              "text_fits": true
+            },
+            "requested_delta_x": -39.3046875,
+            "actual_scrollend": {
+              "left": 236,
+              "owned_target": true,
+              "trusted": true
+            },
+            "after": {
+              "x": 108.28125,
+              "y": 413.9375,
+              "width": 172.828125,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": true,
+              "painted_points": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "unobscured": true,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 100.28125,
+                "y": 406.4375,
+                "width": 268.046875,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  true,
+                  false,
+                  true,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 348.9375,
+                "width": 242,
+                "height": 173,
+                "right": 316,
+                "bottom": 521.9375
+              },
+              "scroll_left": 236,
+              "maximum_scroll_left": 2637,
+              "text_fits": true
+            }
+          },
+          {
+            "before": {
+              "x": 108.28125,
+              "y": 413.9375,
+              "width": 172.828125,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": true,
+              "painted_points": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "unobscured": true,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 100.28125,
+                "y": 406.4375,
+                "width": 268.046875,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  true,
+                  false,
+                  true,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 348.9375,
+                "width": 242,
+                "height": 173,
+                "right": 316,
+                "bottom": 521.9375
+              },
+              "scroll_left": 236,
+              "maximum_scroll_left": 2637,
+              "text_fits": true
+            },
+            "requested_delta_x": 120.6953125,
+            "actual_scrollend": {
+              "left": 356,
+              "owned_target": true,
+              "trusted": true
+            },
+            "after": {
+              "x": -11.71875,
+              "y": 413.9375,
+              "width": 172.828125,
+              "height": 14,
+              "within_viewport": false,
+              "within_scroll_wrap": false,
+              "painted_points": [
+                false,
+                true,
+                false,
+                true,
+                true
+              ],
+              "unobscured": false,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": -19.71875,
+                "y": 406.4375,
+                "width": 268.046875,
+                "height": 29,
+                "within_viewport": false,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  false,
+                  true,
+                  false,
+                  true,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 348.9375,
+                "width": 242,
+                "height": 173,
+                "right": 316,
+                "bottom": 521.9375
+              },
+              "scroll_left": 356,
+              "maximum_scroll_left": 2637,
+              "text_fits": true
+            }
+          },
+          {
+            "before": {
+              "x": -11.71875,
+              "y": 413.9375,
+              "width": 172.828125,
+              "height": 14,
+              "within_viewport": false,
+              "within_scroll_wrap": false,
+              "painted_points": [
+                false,
+                true,
+                false,
+                true,
+                true
+              ],
+              "unobscured": false,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": -19.71875,
+                "y": 406.4375,
+                "width": 268.046875,
+                "height": 29,
+                "within_viewport": false,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  false,
+                  true,
+                  false,
+                  true,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 348.9375,
+                "width": 242,
+                "height": 173,
+                "right": 316,
+                "bottom": 521.9375
+              },
+              "scroll_left": 356,
+              "maximum_scroll_left": 2637,
+              "text_fits": true
+            },
+            "requested_delta_x": -120,
+            "actual_scrollend": {
+              "left": 236,
+              "owned_target": true,
+              "trusted": true
+            },
+            "after": {
+              "x": 108.28125,
+              "y": 413.9375,
+              "width": 172.828125,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": true,
+              "painted_points": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "unobscured": true,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 100.28125,
+                "y": 406.4375,
+                "width": 268.046875,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  true,
+                  false,
+                  true,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 348.9375,
+                "width": 242,
+                "height": 173,
+                "right": 316,
+                "bottom": 521.9375
+              },
+              "scroll_left": 236,
+              "maximum_scroll_left": 2637,
+              "text_fits": true
+            }
+          }
+        ],
+        "refault": {
+          "scope": "ACTUAL_NATIVE_CLIPPING_NEGATIVE",
+          "geometry": {
+            "x": -11.71875,
+            "y": 413.9375,
+            "width": 172.828125,
+            "height": 14,
+            "within_viewport": false,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              false,
+              true,
+              false,
+              true,
+              true
+            ],
+            "unobscured": false,
+            "text_rect_count": 1,
+            "cell_geometry": {
+              "x": -19.71875,
+              "y": 406.4375,
+              "width": 268.046875,
+              "height": 29,
+              "within_viewport": false,
+              "within_scroll_wrap": false,
+              "painted_points": [
+                false,
+                true,
+                false,
+                true,
+                true
+              ],
+              "unobscured": false
+            },
+            "inner_scroll_window": {
+              "left": 74,
+              "top": 348.9375,
+              "width": 242,
+              "height": 173,
+              "right": 316,
+              "bottom": 521.9375
+            },
+            "scroll_left": 356,
+            "maximum_scroll_left": 2637,
+            "text_fits": true
+          },
+          "clipping_detected": true,
+          "restored_readable": true
+        }
+      }
+    },
+    {
+      "file": "236-audit-en-dashboard-action-failed.png",
+      "sha256": "7052743fde0a4c0cf567f9c97df63ac269775c3e447587701a6259dd94340f26",
+      "bytes": 2186,
+      "event": "dashboard_action_failed",
+      "label": "Console action failed",
+      "locale": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.28",
+          "document_id": "FA85BB1E04716DD3447AA33771C9B7BC",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.31",
+          "document_id": "FA85BB1E04716DD3447AA33771C9B7BC",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.33",
+          "document_id": "FA85BB1E04716DD3447AA33771C9B7BC",
+          "status": 200,
+          "response_sha256": "1d8a4ef628b79ff2276c68ecee04e2391faaacf6ab62c2e9e43053e29e817e64"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 82.28125,
+        "y": 384.9375,
+        "width": 151.234375,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 74.28125,
+          "y": 377.4375,
+          "width": 268.046875,
+          "height": 29,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 348.9375,
+          "width": 242,
+          "height": 173,
+          "right": 316,
+          "bottom": 521.9375
+        },
+        "scroll_left": 262,
+        "maximum_scroll_left": 2637,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 82.28125,
+          "y": 384.9375,
+          "width": 151.234375,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": true,
+          "painted_points": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "unobscured": true,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 74.28125,
+            "y": 377.4375,
+            "width": 268.046875,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              true,
+              false,
+              true,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 348.9375,
+            "width": 242,
+            "height": 173,
+            "right": 316,
+            "bottom": 521.9375
+          },
+          "scroll_left": 262,
+          "maximum_scroll_left": 2637,
+          "text_fits": true
+        },
+        "moves": []
+      }
+    },
+    {
+      "file": "237-audit-nl-dashboard-action-completed.png",
+      "sha256": "d4c8e57fcbe9fdb16556aa7aa138e42436b206ced94f2c0a8de1cdce3d717418",
+      "bytes": 2255,
+      "event": "dashboard_action_completed",
+      "label": "Consoleactie uitgevoerd",
+      "locale": "nl",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.62",
+          "document_id": "69A2E257017039C1CC0FBFA717FFA6D8",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.65",
+          "document_id": "69A2E257017039C1CC0FBFA717FFA6D8",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.67",
+          "document_id": "69A2E257017039C1CC0FBFA717FFA6D8",
+          "status": 200,
+          "response_sha256": "bf21e956825efcaed762a1745f22394c250301620bf17bb5cf3d390f110c9fce"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 111.703125,
+        "y": 413.625,
+        "width": 165.640625,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 103.703125,
+          "y": 406.125,
+          "width": 311.25,
+          "height": 29,
+          "within_viewport": false,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 348.625,
+          "width": 242,
+          "height": 231,
+          "right": 316,
+          "bottom": 579.625
+        },
+        "scroll_left": 238,
+        "maximum_scroll_left": 2686,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 47.703125,
+          "y": 413.625,
+          "width": 165.640625,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            false,
+            true,
+            false,
+            true,
+            true
+          ],
+          "unobscured": false,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 39.703125,
+            "y": 406.125,
+            "width": 311.25,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 348.625,
+            "width": 242,
+            "height": 231,
+            "right": 316,
+            "bottom": 579.625
+          },
+          "scroll_left": 302,
+          "maximum_scroll_left": 2686,
+          "text_fits": true
+        },
+        "moves": [
+          {
+            "before": {
+              "x": 47.703125,
+              "y": 413.625,
+              "width": 165.640625,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": false,
+              "painted_points": [
+                false,
+                true,
+                false,
+                true,
+                true
+              ],
+              "unobscured": false,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 39.703125,
+                "y": 406.125,
+                "width": 311.25,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  false,
+                  false,
+                  false,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 348.625,
+                "width": 242,
+                "height": 231,
+                "right": 316,
+                "bottom": 579.625
+              },
+              "scroll_left": 302,
+              "maximum_scroll_left": 2686,
+              "text_fits": true
+            },
+            "requested_delta_x": -64.4765625,
+            "actual_scrollend": {
+              "left": 238,
+              "owned_target": true,
+              "trusted": true
+            },
+            "after": {
+              "x": 111.703125,
+              "y": 413.625,
+              "width": 165.640625,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": true,
+              "painted_points": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "unobscured": true,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 103.703125,
+                "y": 406.125,
+                "width": 311.25,
+                "height": 29,
+                "within_viewport": false,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  true,
+                  false,
+                  true,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 348.625,
+                "width": 242,
+                "height": 231,
+                "right": 316,
+                "bottom": 579.625
+              },
+              "scroll_left": 238,
+              "maximum_scroll_left": 2686,
+              "text_fits": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "file": "238-audit-nl-dashboard-action-failed.png",
+      "sha256": "e574167d5269b8037dfaa897ee526d1a287f6778c8c1a57983b896112ca80408",
+      "bytes": 1991,
+      "event": "dashboard_action_failed",
+      "label": "Consoleactie mislukt",
+      "locale": "nl",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.62",
+          "document_id": "69A2E257017039C1CC0FBFA717FFA6D8",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.65",
+          "document_id": "69A2E257017039C1CC0FBFA717FFA6D8",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.67",
+          "document_id": "69A2E257017039C1CC0FBFA717FFA6D8",
+          "status": 200,
+          "response_sha256": "bf21e956825efcaed762a1745f22394c250301620bf17bb5cf3d390f110c9fce"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 81.703125,
+        "y": 384.625,
+        "width": 144.03125,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 73.703125,
+          "y": 377.125,
+          "width": 311.25,
+          "height": 29,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 348.625,
+          "width": 242,
+          "height": 231,
+          "right": 316,
+          "bottom": 579.625
+        },
+        "scroll_left": 268,
+        "maximum_scroll_left": 2686,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 81.703125,
+          "y": 384.625,
+          "width": 144.03125,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": true,
+          "painted_points": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "unobscured": true,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 73.703125,
+            "y": 377.125,
+            "width": 311.25,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              true,
+              false,
+              true,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 348.625,
+            "width": 242,
+            "height": 231,
+            "right": 316,
+            "bottom": 579.625
+          },
+          "scroll_left": 268,
+          "maximum_scroll_left": 2686,
+          "text_fits": true
+        },
+        "moves": []
+      }
+    },
+    {
+      "file": "239-audit-de-dashboard-action-completed.png",
+      "sha256": "ea10f97bbc1642983c287ef5b932b42fa5ad4e9a538648d87462bfe37bf531d1",
+      "bytes": 2562,
+      "event": "dashboard_action_completed",
+      "label": "Konsolenaktion abgeschlossen",
+      "locale": "de",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.95",
+          "document_id": "B3A4923140E6DC4669D252B975E24806",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.98",
+          "document_id": "B3A4923140E6DC4669D252B975E24806",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.100",
+          "document_id": "B3A4923140E6DC4669D252B975E24806",
+          "status": 200,
+          "response_sha256": "278b499fc5435871858f17c302f71eeae3515613325a0bd01ae8ed797b4fa0db"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 94.28125,
+        "y": 388.3125,
+        "width": 201.640625,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 86.28125,
+          "y": 380.8125,
+          "width": 282.453125,
+          "height": 29,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 323.3125,
+          "width": 242,
+          "height": 289,
+          "right": 316,
+          "bottom": 612.3125
+        },
+        "scroll_left": 250,
+        "maximum_scroll_left": 2652,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 61.28125,
+          "y": 414.3125,
+          "width": 201.640625,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            false,
+            true,
+            false,
+            true,
+            true
+          ],
+          "unobscured": false,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 53.28125,
+            "y": 406.8125,
+            "width": 282.453125,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 349.3125,
+            "width": 242,
+            "height": 289,
+            "right": 316,
+            "bottom": 638.3125
+          },
+          "scroll_left": 283,
+          "maximum_scroll_left": 2652,
+          "text_fits": true
+        },
+        "moves": [
+          {
+            "before": {
+              "x": 61.28125,
+              "y": 388.3125,
+              "width": 201.640625,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": false,
+              "painted_points": [
+                false,
+                true,
+                false,
+                true,
+                true
+              ],
+              "unobscured": false,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 53.28125,
+                "y": 380.8125,
+                "width": 282.453125,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  false,
+                  false,
+                  false,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 323.3125,
+                "width": 242,
+                "height": 289,
+                "right": 316,
+                "bottom": 612.3125
+              },
+              "scroll_left": 283,
+              "maximum_scroll_left": 2652,
+              "text_fits": true
+            },
+            "requested_delta_x": -32.8984375,
+            "actual_scrollend": {
+              "left": 250,
+              "owned_target": true,
+              "trusted": true
+            },
+            "after": {
+              "x": 94.28125,
+              "y": 388.3125,
+              "width": 201.640625,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": true,
+              "painted_points": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "unobscured": true,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 86.28125,
+                "y": 380.8125,
+                "width": 282.453125,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  true,
+                  false,
+                  true,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 323.3125,
+                "width": 242,
+                "height": 289,
+                "right": 316,
+                "bottom": 612.3125
+              },
+              "scroll_left": 250,
+              "maximum_scroll_left": 2652,
+              "text_fits": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "file": "240-audit-de-dashboard-action-failed.png",
+      "sha256": "8691c781bedfe4de54987a6a6a1d774d3e1f60af17fe68ad29b23174a621b5c9",
+      "bytes": 2852,
+      "event": "dashboard_action_failed",
+      "label": "Konsolenaktion fehlgeschlagen",
+      "locale": "de",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.95",
+          "document_id": "B3A4923140E6DC4669D252B975E24806",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.98",
+          "document_id": "B3A4923140E6DC4669D252B975E24806",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.100",
+          "document_id": "B3A4923140E6DC4669D252B975E24806",
+          "status": 200,
+          "response_sha256": "278b499fc5435871858f17c302f71eeae3515613325a0bd01ae8ed797b4fa0db"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 82.28125,
+        "y": 359.3125,
+        "width": 208.84375,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 74.28125,
+          "y": 351.8125,
+          "width": 282.453125,
+          "height": 29,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 323.3125,
+          "width": 242,
+          "height": 289,
+          "right": 316,
+          "bottom": 612.3125
+        },
+        "scroll_left": 262,
+        "maximum_scroll_left": 2652,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 82.28125,
+          "y": 359.3125,
+          "width": 208.84375,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": true,
+          "painted_points": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "unobscured": true,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 74.28125,
+            "y": 351.8125,
+            "width": 282.453125,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              true,
+              false,
+              true,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 323.3125,
+            "width": 242,
+            "height": 289,
+            "right": 316,
+            "bottom": 612.3125
+          },
+          "scroll_left": 262,
+          "maximum_scroll_left": 2652,
+          "text_fits": true
+        },
+        "moves": []
+      }
+    },
+    {
+      "file": "241-audit-fr-dashboard-action-completed.png",
+      "sha256": "8ddc5d4fe48d0146a97069075fa2ec0c38a845995aaa24bbd07c9b323a692258",
+      "bytes": 2343,
+      "event": "dashboard_action_completed",
+      "label": "Action de la console terminée",
+      "locale": "fr",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.129",
+          "document_id": "BD8DD8C1393563B5CD070B4C5A63D65F",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.132",
+          "document_id": "BD8DD8C1393563B5CD070B4C5A63D65F",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.134",
+          "document_id": "BD8DD8C1393563B5CD070B4C5A63D65F",
+          "status": 200,
+          "response_sha256": "8c734ecd2327c492105020281fdc63f4ac4bf92a8d07276531211926795c15bb"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 90.5,
+        "y": 323.8125,
+        "width": 208.84375,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 82.5,
+          "y": 316.3125,
+          "width": 311.25,
+          "height": 29,
+          "within_viewport": false,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 258.8125,
+          "width": 242,
+          "height": 347,
+          "right": 316,
+          "bottom": 605.8125
+        },
+        "scroll_left": 252,
+        "maximum_scroll_left": 2736,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 47.5,
+          "y": 416.8125,
+          "width": 208.84375,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            false,
+            true,
+            false,
+            true,
+            true
+          ],
+          "unobscured": false,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 39.5,
+            "y": 409.3125,
+            "width": 311.25,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 351.8125,
+            "width": 242,
+            "height": 347,
+            "right": 316,
+            "bottom": 698.8125
+          },
+          "scroll_left": 295,
+          "maximum_scroll_left": 2736,
+          "text_fits": true
+        },
+        "moves": [
+          {
+            "before": {
+              "x": 47.5,
+              "y": 323.8125,
+              "width": 208.84375,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": false,
+              "painted_points": [
+                false,
+                true,
+                false,
+                true,
+                true
+              ],
+              "unobscured": false,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 39.5,
+                "y": 316.3125,
+                "width": 311.25,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  false,
+                  false,
+                  false,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 258.8125,
+                "width": 242,
+                "height": 347,
+                "right": 316,
+                "bottom": 605.8125
+              },
+              "scroll_left": 295,
+              "maximum_scroll_left": 2736,
+              "text_fits": true
+            },
+            "requested_delta_x": -43.078125,
+            "actual_scrollend": {
+              "left": 252,
+              "owned_target": true,
+              "trusted": true
+            },
+            "after": {
+              "x": 90.5,
+              "y": 323.8125,
+              "width": 208.84375,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": true,
+              "painted_points": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "unobscured": true,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 82.5,
+                "y": 316.3125,
+                "width": 311.25,
+                "height": 29,
+                "within_viewport": false,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  true,
+                  false,
+                  true,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 258.8125,
+                "width": 242,
+                "height": 347,
+                "right": 316,
+                "bottom": 605.8125
+              },
+              "scroll_left": 252,
+              "maximum_scroll_left": 2736,
+              "text_fits": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "file": "242-audit-fr-dashboard-action-failed.png",
+      "sha256": "30d1e7ab45fb85d66513e846b84b1ee15d8ff3d050fd72cc25c587749c837271",
+      "bytes": 2494,
+      "event": "dashboard_action_failed",
+      "label": "Échec de l’action de la console",
+      "locale": "fr",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.129",
+          "document_id": "BD8DD8C1393563B5CD070B4C5A63D65F",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.132",
+          "document_id": "BD8DD8C1393563B5CD070B4C5A63D65F",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.134",
+          "document_id": "BD8DD8C1393563B5CD070B4C5A63D65F",
+          "status": 200,
+          "response_sha256": "8c734ecd2327c492105020281fdc63f4ac4bf92a8d07276531211926795c15bb"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 81.5,
+        "y": 294.8125,
+        "width": 223.25,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 73.5,
+          "y": 287.3125,
+          "width": 311.25,
+          "height": 29,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 258.8125,
+          "width": 242,
+          "height": 347,
+          "right": 316,
+          "bottom": 605.8125
+        },
+        "scroll_left": 261,
+        "maximum_scroll_left": 2736,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 81.5,
+          "y": 294.8125,
+          "width": 223.25,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": true,
+          "painted_points": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "unobscured": true,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 73.5,
+            "y": 287.3125,
+            "width": 311.25,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              true,
+              false,
+              true,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 258.8125,
+            "width": 242,
+            "height": 347,
+            "right": 316,
+            "bottom": 605.8125
+          },
+          "scroll_left": 261,
+          "maximum_scroll_left": 2736,
+          "text_fits": true
+        },
+        "moves": []
+      }
+    },
+    {
+      "file": "243-audit-es-dashboard-action-completed.png",
+      "sha256": "2bc8b95dff9e0c6f48e57a3bd95516ce10c9439c2ec530466ecc7eb6b4490b49",
+      "bytes": 2625,
+      "event": "dashboard_action_completed",
+      "label": "Acción de la consola completada",
+      "locale": "es",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.162",
+          "document_id": "93DB0C374AE88FC90ABF65A8282AAB18",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.165",
+          "document_id": "93DB0C374AE88FC90ABF65A8282AAB18",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.167",
+          "document_id": "93DB0C374AE88FC90ABF65A8282AAB18",
+          "status": 200,
+          "response_sha256": "a42908d72a68618d80c089f20bba4970dfdd51599bdfeddfb843722478addf97"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 83.28125,
+        "y": 306.25,
+        "width": 223.25,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 75.28125,
+          "y": 298.75,
+          "width": 311.25,
+          "height": 29,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 241.25,
+          "width": 242,
+          "height": 405,
+          "right": 316,
+          "bottom": 646.25
+        },
+        "scroll_left": 261,
+        "maximum_scroll_left": 2745,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 47.28125,
+          "y": 416.25,
+          "width": 223.25,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            false,
+            true,
+            false,
+            true,
+            true
+          ],
+          "unobscured": false,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 39.28125,
+            "y": 408.75,
+            "width": 311.25,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 351.25,
+            "width": 242,
+            "height": 405,
+            "right": 316,
+            "bottom": 756.25
+          },
+          "scroll_left": 297,
+          "maximum_scroll_left": 2745,
+          "text_fits": true
+        },
+        "moves": [
+          {
+            "before": {
+              "x": 47.28125,
+              "y": 306.25,
+              "width": 223.25,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": false,
+              "painted_points": [
+                false,
+                true,
+                false,
+                true,
+                true
+              ],
+              "unobscured": false,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 39.28125,
+                "y": 298.75,
+                "width": 311.25,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  false,
+                  false,
+                  false,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 241.25,
+                "width": 242,
+                "height": 405,
+                "right": 316,
+                "bottom": 646.25
+              },
+              "scroll_left": 297,
+              "maximum_scroll_left": 2745,
+              "text_fits": true
+            },
+            "requested_delta_x": -36.09375,
+            "actual_scrollend": {
+              "left": 261,
+              "owned_target": true,
+              "trusted": true
+            },
+            "after": {
+              "x": 83.28125,
+              "y": 306.25,
+              "width": 223.25,
+              "height": 14,
+              "within_viewport": true,
+              "within_scroll_wrap": true,
+              "painted_points": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "unobscured": true,
+              "text_rect_count": 1,
+              "cell_geometry": {
+                "x": 75.28125,
+                "y": 298.75,
+                "width": 311.25,
+                "height": 29,
+                "within_viewport": true,
+                "within_scroll_wrap": false,
+                "painted_points": [
+                  true,
+                  false,
+                  true,
+                  false,
+                  true
+                ],
+                "unobscured": false
+              },
+              "inner_scroll_window": {
+                "left": 74,
+                "top": 241.25,
+                "width": 242,
+                "height": 405,
+                "right": 316,
+                "bottom": 646.25
+              },
+              "scroll_left": 261,
+              "maximum_scroll_left": 2745,
+              "text_fits": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "file": "244-audit-es-dashboard-action-failed.png",
+      "sha256": "557f5a989e6a76bc4451c85510265242f132fc7a9a99afcdb00ad49de68ad67e",
+      "bytes": 2428,
+      "event": "dashboard_action_failed",
+      "label": "Error en la acción de la consola",
+      "locale": "es",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "qualification_scope": "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      "genuine_audit_request_response_binding": {
+        "completed": {
+          "request_id": "50487.162",
+          "document_id": "93DB0C374AE88FC90ABF65A8282AAB18",
+          "status": 200,
+          "response_sha256": "4fd395c60d59111ddd2c71a4d6e667998711b433bab57f37940225148d0fa861"
+        },
+        "rejected": {
+          "request_id": "50487.165",
+          "document_id": "93DB0C374AE88FC90ABF65A8282AAB18",
+          "status": 409,
+          "response_sha256": "358192790ca7e497df6d76768b77f5a02caa63ae0beff32c57f745edacca9251"
+        },
+        "stored_read": {
+          "request_id": "50487.167",
+          "document_id": "93DB0C374AE88FC90ABF65A8282AAB18",
+          "status": 200,
+          "response_sha256": "a42908d72a68618d80c089f20bba4970dfdd51599bdfeddfb843722478addf97"
+        }
+      },
+      "settings_unchanged_after_rejection": true,
+      "text_range_geometry": {
+        "x": 82.28125,
+        "y": 277.25,
+        "width": 230.4375,
+        "height": 14,
+        "within_viewport": true,
+        "within_scroll_wrap": true,
+        "painted_points": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "unobscured": true,
+        "text_rect_count": 1,
+        "cell_geometry": {
+          "x": 74.28125,
+          "y": 269.75,
+          "width": 311.25,
+          "height": 29,
+          "within_viewport": true,
+          "within_scroll_wrap": false,
+          "painted_points": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "unobscured": false
+        },
+        "inner_scroll_window": {
+          "left": 74,
+          "top": 241.25,
+          "width": 242,
+          "height": 405,
+          "right": 316,
+          "bottom": 646.25
+        },
+        "scroll_left": 262,
+        "maximum_scroll_left": 2745,
+        "text_fits": true
+      },
+      "actual_native_reading": {
+        "before": {
+          "x": 82.28125,
+          "y": 277.25,
+          "width": 230.4375,
+          "height": 14,
+          "within_viewport": true,
+          "within_scroll_wrap": true,
+          "painted_points": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "unobscured": true,
+          "text_rect_count": 1,
+          "cell_geometry": {
+            "x": 74.28125,
+            "y": 269.75,
+            "width": 311.25,
+            "height": 29,
+            "within_viewport": true,
+            "within_scroll_wrap": false,
+            "painted_points": [
+              true,
+              false,
+              true,
+              false,
+              true
+            ],
+            "unobscured": false
+          },
+          "inner_scroll_window": {
+            "left": 74,
+            "top": 241.25,
+            "width": 242,
+            "height": 405,
+            "right": 316,
+            "bottom": 646.25
+          },
+          "scroll_left": 262,
+          "maximum_scroll_left": 2745,
+          "text_fits": true
+        },
+        "moves": []
+      }
+    }
+  ],
+  "coverage_scope": "TEN_EXISTING_FULL24_CAPTURE_BYTES_NO_NEW_RUN_OR_PRODUCT_CHANGE",
+  "existing_235_browser_payload_immutable": true,
+  "whole_installed20_DoD": "NOT_CLAIMED"
+}
