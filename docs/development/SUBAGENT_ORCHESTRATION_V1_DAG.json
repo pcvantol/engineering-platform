@@ -335,10 +335,10 @@
     "branch": "codex/ep-dashboard-specialists-recovery-v1",
     "base": "890915ad77cec21b39f4d3c60cdc3e263c2c8de7",
     "package_target": "2.3.118",
-    "correction_rounds_consumed": 38,
+    "correction_rounds_consumed": 39,
     "correction_rounds_maximum": "NOT_APPLICABLE_SCOPED_COMPLETION",
     "remaining": "NOT_APPLICABLE_SCOPED_COMPLETION",
-    "status": "CORRECTION38_DOCUMENT_RESPONSE_FIXTURE_IMPLEMENTED_TARGETED_PENDING",
+    "status": "CORRECTION39_RELATIVE_HEADER_FIXTURE_IMPLEMENTED_TARGETED_PENDING",
     "predecessor_closed_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007",
     "admission": "https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221",
     "delivery": "DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md",
@@ -1879,7 +1879,7 @@
       "mandatory": 529,
       "unchanged_baseline": 4
     },
-    "current_log_regression": "Source37 targeted11/currentlogic/locales PASS; complete localcycle16FAILED oneflakyold-documentbodyrace, currentCI37browser4SUCCESS separate; source38 targeted/full PENDING",
+    "current_log_regression": "Source38 target11FAILED9PASS2FAIL; actualdiagnostic3 uniquely7relativefields/noepsilon/actualstop0; source39 artifact/targeted/full PENDING",
     "historical_correction36_current_state": {
       "correction_rounds_consumed": 36,
       "status": "CORRECTION36_LOG_READ_LABEL_IMPLEMENTED_QUALIFICATION_PENDING",
@@ -1893,6 +1893,14 @@
       "current_log_regression": "Source36 targeted10 actualPASS includingfive-locale15screens; currentCI two browser failures retained, correction37 targeted/full pending"
     },
     "correction38_scope": "Fixture-only exact pinned request clock and uniqueURL/method/frame/newloader/project join BEFORE realindex/snapshotbody; actualold-header rejection; allrealUI/SSE/guard/cleanup predicates retained; no product/cachefallback/timeout change",
-    "correction38_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6144629429"
+    "correction38_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6144629429",
+    "historical_correction38_current_state": {
+      "correction_rounds_consumed": 38,
+      "status": "CORRECTION38_DOCUMENT_RESPONSE_FIXTURE_IMPLEMENTED_TARGETED_PENDING",
+      "current_log_regression": "Source37 targeted11/currentlogic/locales PASS; complete localcycle16FAILED oneflakyold-documentbodyrace, currentCI37browser4SUCCESS separate; source38 targeted/full PENDING",
+      "actual_targeted": "FAILED actual1/ninePASS/two normal previousheader exactabsoluteclock join failures; raw retained"
+    },
+    "correction39_scope": "Fixture-only exact seven header-ready relative fields plus fullURL/method/status/frame uniqueness then actualcurrentloader/project BEFOREbody; modeledcollision/missing/type/cache negatives and actualoldheader denial; no product/fallback/tolerance/corpus/deadlinechange",
+    "correction39_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6145247732"
   }
 }

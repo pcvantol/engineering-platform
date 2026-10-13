@@ -434,17 +434,27 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       const documentId = currentFrame.loaderId;
       expect(documentId).not.toBe(previousDocument);
       expect(await observer.documentId()).toBe(documentId);
-      const headerRecord = response => {
+      const relativeKeys = ["domainLookupStart", "domainLookupEnd", "connectStart",
+        "secureConnectionStart", "connectEnd", "requestStart", "responseStart"];
+      const headerMetadata = response => {
         const request = response.request();
         expect(request.frame()).toBe(page.mainFrame());
-        const time = request.timing().startTime;
-        expect(Number.isFinite(time) && time > 0).toBe(true);
-        const matches = observer.records().filter(record => record.url === response.url()
-          && record.method === request.method() && record.status === response.status()
-          && record.native_request_start_time_ms === time);
+        return { url: response.url(), method: request.method(), status: response.status(),
+          frame_id: currentFrame.id, timing: { ...request.timing() } };
+      };
+      const uniqueHeaderRecord = (metadata, records) => {
+        expect(Number.isFinite(metadata.timing.startTime) && metadata.timing.startTime > 0).toBe(true);
+        expect(relativeKeys.every(key => Number.isFinite(metadata.timing[key]))).toBe(true);
+        const matches = records.filter(record => record.url === metadata.url
+          && record.method === metadata.method && record.status === metadata.status
+          && record.frame_id === metadata.frame_id && record.cached_request === false
+          && record.native_relative_timing !== null && relativeKeys.every(key =>
+            Number.isFinite(record.native_relative_timing?.[key])
+            && record.native_relative_timing[key] === metadata.timing[key]));
         expect(matches.length).toBeLessThanOrEqual(1);
         return matches[0] || null;
       };
+      const headerRecord = response => uniqueHeaderRecord(headerMetadata(response), observer.records());
       // Actual previous-document headers share URL, method and status with
       // the new read. Reject them before touching a navigated-away body.
       let previousHeader;
@@ -478,6 +488,16 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       };
       const indexRead = await currentRead("/api/prompt-history");
       const response = indexRead.response;
+      // Modeled selector negatives use copies of genuine header metadata;
+      // they do not alter the server/request/response or fabricate authority.
+      const metadata = headerMetadata(response), record = indexRead.record;
+      expect(() => uniqueHeaderRecord(metadata, [record, { ...record }])).toThrow();
+      expect(() => uniqueHeaderRecord({ ...metadata, timing: { ...metadata.timing,
+        domainLookupStart: undefined } }, [record])).toThrow();
+      expect(() => uniqueHeaderRecord({ ...metadata, timing: { ...metadata.timing,
+        requestStart: String(metadata.timing.requestStart) } }, [record])).toThrow();
+      expect(uniqueHeaderRecord(metadata, [{ ...record, cached_request: true }])).toBe(null);
+      expect(uniqueHeaderRecord(metadata, [{ ...record, native_relative_timing: null }])).toBe(null);
       expect(response.status()).toBe(200);
       const bytes = await response.body();
       const index = JSON.parse(bytes.toString("utf8"));
@@ -586,7 +606,12 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
           previous_document_header_rejected_before_body_read: true,
           selected_index_request_id: indexRead.record.request_id,
           selected_snapshot_request_id: snapshotRead.record.request_id,
-          exact_pinned_request_clock_join: true,
+          exact_seven_header_ready_relative_timing_join: true,
+          absolute_start_time_is_diagnostic_only: true,
+          selected_index_relative_timing: indexRead.record.native_relative_timing,
+          selected_snapshot_relative_timing: snapshotRead.record.native_relative_timing,
+          modeled_selector_negatives: { collision_rejected: true, missing_field_rejected: true,
+            wrong_type_rejected: true, cached_record_unmatched: true, missing_record_vector_unmatched: true },
         },
         http_snapshot: httpBinding, sse_snapshot: sseBinding,
         actual_sse_frame_sha256: createHash("sha256").update(frame.data).digest("hex"), selected_sse_request_id: frame.requestId,

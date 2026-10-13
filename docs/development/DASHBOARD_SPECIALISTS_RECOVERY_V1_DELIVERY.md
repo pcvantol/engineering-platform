@@ -1,5 +1,35 @@
 # Dashboard specialists and recovery V1 delivery
 
+## Current r34 exact relative-header fixture correction39 — 2026-10-13
+
+[ACK, admission and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6145247732):
+same writer/session/branch/history; consumed39, no administrative cap, other
+operational budgets unchanged. EP2.3.118 and all193 production bytes remain.
+
+Source38 compact targeted11 naturally FAILED1: nine passes and two normal
+desktop/mobile failures at the previous-header absolute-clock join. Preflight5,
+logic56, five-locale contract, reporter7 and exact owning533 discovery passed
+on that head only. Original failures/raw/screens remain; no PASS transfer.
+The bounded real installed diagnosis naturally ended0 with actual worker stop:
+five public absolute request clocks differ from the independent CDP-derived
+clocks, while seven header-ready relative phase fields uniquely/exactly agree.
+The hidden clock mapping remains inferred; original missing public-clock
+values are not reconstructed. Two private diagnostic setup failures stay failed.
+
+Both existing independent reviewers admit the finite repair design. The fixture
+uses unique exact fullURL/method/status/frame/seven-relative-phase identity,
+then requires currentloader/project before each actual index/snapshot bodyread.
+Absolute start is finite diagnostic context only, without tolerance or fallback.
+Zero remains pending, ambiguity red, and an unknown predecessor cannot be
+replaced by a later good response. In-case modeled collision/missing/type/cache
+controls are distinctly helper negatives; the real previous-header rejection,
+actual body/request-ID hashes, native cards, HTTP/SSE, epoch/authority/lifetime
+and error/cleanup assertions remain. No product/framework/corpus/deadline change.
+Implementation, exact artifact/targeted/full qualification, protected PR351,
+ordinary Finalization and new exact-final-main installed/browser/screenshots
+and own cleanup remain PENDING. Full16 remains FAILED; installed17 not booked
+or started. Closed predecessors and HOB queue remain unchanged.
+
 ## Current r34 document-bound response fixture correction38 — 2026-10-13
 
 [Single booking and actual cause](https://github.com/pcvantol/forge/issues/142#issuecomment-6144629429):

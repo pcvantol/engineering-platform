@@ -81,7 +81,7 @@ async function createObservation(page) {
     requests.set(event.requestId, { request_id: event.requestId, document_id: event.loaderId,
       frame_id: event.frameId, method: event.request.method,
       request_timestamp: event.timestamp, request_wall_time: event.wallTime,
-      native_request_start_time_ms: null, cached_request: false,
+      native_request_start_time_ms: null, native_relative_timing: null, cached_request: false,
       path: url.pathname, url: url.href, project_header: header(event.request.headers, 'X-Engineering-Platform-Project'),
       status: null, completed: false });
   });
@@ -98,6 +98,7 @@ async function createObservation(page) {
     const request = requests.get(event.requestId);
     if (request) {
       request.cached_request = true; request.native_request_start_time_ms = null;
+      request.native_relative_timing = null;
       retain('cached-request', event);
     }
   });
@@ -116,6 +117,15 @@ async function createObservation(page) {
           && time >= 0 && request.request_timestamp >= 0 && request.request_wall_time > 0) {
         request.native_request_start_time_ms =
           (time - request.request_timestamp + request.request_wall_time) * 1000;
+        const timing = event.response.timing;
+        const relative = { domainLookupStart: timing.dnsStart, domainLookupEnd: timing.dnsEnd,
+          connectStart: timing.connectStart, secureConnectionStart: timing.sslStart,
+          connectEnd: timing.connectEnd, requestStart: timing.sendStart,
+          responseStart: timing.receiveHeadersEnd };
+        // The actual independent-session diagnostic found unequal absolute clocks.
+        // These seven header-ready phases come from the same response timing
+        // payload Playwright exposes. No body-completion phase or tolerance.
+        if (Object.values(relative).every(Number.isFinite)) request.native_relative_timing = relative;
       }
       retain('response', event);
     }
