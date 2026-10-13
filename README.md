@@ -1,6 +1,64 @@
 # Engineering Platform
 
-## Current r34 Console audit localization correction40 — 2026-10-13
+## Current r34 protected source delivery and NO_BUMP Finalization — 2026-10-13
+
+[ACK and one-time documentary correction47 booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6154663253):
+the same r34 / plan7 assignment, writer and session continue. The original source
+branch and history remain preserved. Correction47 reconciles these existing own
+delivery surfaces only; EP **2.3.119** and all193 production bytes remain unchanged.
+Counters are47 corrections /23 full cycles /19 installed attempts, with no
+administrative maximum or reset; other operational budgets remain unchanged.
+
+[PR351](https://github.com/pcvantol/engineering-platform/pull/351) was normally
+protected squash merged at2026-10-13T20:22:51Z to
+`60f3a19852c55554215d0eefb13a9014f1db89ea`. Its tree
+`f1ff877546abfef519321de76bce76729965940b` exactly equals the reviewed source46
+`77d59a8a352ecd08c37c5762eff1eb07ed213d5a`. The committed local canonical wheel
+SHA256 is `c69f2739b4f9ac0b2fecbe26a7420c57e6e850e5a8743679f45b4cd7c2d5af50`.
+
+| Current source-candidate gate | Actual result |
+|---|---|
+| Full23 browser | Four natural exits0;533 exact cases,529 mandatory first-attemptPASS and4 unchanged baseline exceptions |
+| Exact executable JavaScript coverage | Dashboard87.001318%, locales99.653274%, run evidence98.4%; each strictly above80.2% |
+| Installed19 | Natural exit0;2519 tests in3525.209s,one unchanged macOS platformskip; original logs retained through actual stop |
+| Original Python coverage | All165 shipped modules combined minimum80.320366%;13 original changed modules executable-line minimum82.170543%;aggregate85.031918%; unchanged strict thresholds |
+| [Owning CI38443974852](https://github.com/pcvantol/engineering-platform/actions/runs/38443974852) | All11 expected jobs completedSUCCESS, including final downstream Trusted Delivery evidence |
+| Independent Quality / Security | Both APPROVE the complete exact source46 candidate for normal protected PR351 delivery |
+
+Quality final closure SHA256:
+`291a927efde1305545018b9da995cebbfc7dce5f7d2694a60365d68a88eeb5c3`.
+Security final closure SHA256:
+`a92dc2ab9baebf119b46c8efd4c3e3cbd1b8104848d70793f28bb2361d1c0e1d`.
+The real hosted merge checkout `77a226be2febcf24c5c89598a3db5c7b8f64eb70` has
+the same reviewed tree but a distinct hosted wheel
+`57ff9352cd4e39f405e37cda57fc01351b5cab1fd43ffbcd241f920500baf222`.
+Its complete behavior suite2537/3417.149s/two existing Ubuntu skips is distinct
+from the local installed2519/one macOS skip. Exact-head Owner Authorization was
+SUCCESS/NOT_REQUIRED for LOW/NORMAL; ordinary protection remained enforced.
+
+Historical1–46 corrections, original failures and missing causes remain
+preserved. The source43 hosted import-shadow failure and complete browser
+cycles20/21/22 deadline failures retain their original failed identities.
+Source45/46 moved exactly three fixed case owners; all533 contracts, the other
+530 owners, four baseline exceptions and strict300-second deadlines remain.
+No missing historical log, database bytes or CPU/resource cause is reconstructed.
+Native sandbox, current authority/document/epoch, noncreating reads, history,
+lifetime, error detection and privacy checks stay enforced. Genuine stored HTTP
+audit outcomes remain distinct from MODELED renderer/negative fixtures;390px
+iPhone browser emulation is not physical-device acceptance.
+
+**Full r34 DoD remains OPEN.** This ordinary nonempty NO_BUMP Finalization uses
+`codex/ep-dashboard-specialists-recovery-finalization-r34-v2` with actual base
+`60f3a19852c55554215d0eefb13a9014f1db89ea`. Its own exact-candidate reviews, CI
+and protected merge are PENDING. Afterward, NEW exact-definitive-main noneditable
+installed/browser/strict-coverage evidence, fresh screenshots, reviewed reachable
+proof/readbacks/previews and safe own cleanup remain required. These are future
+gates, not transferred PASS from source46 or old890915ad. The owning
+[register](https://github.com/pcvantol/forge/issues/142) records their actual
+closure. Closed predecessors and peer DAG nodes/edges remain unchanged; HOB
+continues waiting until the complete original DoD.
+
+## Historical r34 Console audit localization correction40 — 2026-10-13
 
 [ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6145876955):
 same writer/session/branch/history; consumed40, no administrative cap, all other
@@ -35,7 +93,7 @@ independent acceptance remain PENDING. Then normal protected PR351, ordinary
 Finalization, NEW exact-final-main installed/browser/screenshots and own cleanup.
 Closed predecessors remain closed; HOB waits until the complete original DoD.
 
-## Current r34 exact relative-header fixture correction39 — 2026-10-13
+## Historical r34 exact relative-header fixture correction39 — 2026-10-13
 
 [ACK, admission and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6145247732):
 same writer/session/branch/history; consumed39, no administrative cap, other
@@ -65,7 +123,7 @@ ordinary Finalization and new exact-final-main installed/browser/screenshots
 and own cleanup remain PENDING. Full16 remains FAILED; installed17 not booked
 or started. Closed predecessors and HOB queue remain unchanged.
 
-## Current r34 document-bound response fixture correction38 — 2026-10-13
+## Historical r34 document-bound response fixture correction38 — 2026-10-13
 
 [Single booking and actual cause](https://github.com/pcvantol/forge/issues/142#issuecomment-6144629429):
 same writer/session/branch/history; consumed38, no administrative cap and all
@@ -90,7 +148,7 @@ capture framework or product behavior. The533/529+four inventory and deadlines
 remain. Independent implementation, targeted/current full qualification and the
 complete protected-delivery/Finalization/exact-final-main installedGUI DoD are PENDING.
 
-## Current r34 fixture correction37 — 2026-10-13
+## Historical r34 fixture correction37 — 2026-10-13
 
 [ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6143860024):
 same writer, branch and history; consumed37, no administrative cap, other
@@ -117,7 +175,7 @@ strict coverage, independent reviews, protected PR351, ordinary Finalization,
 new exact-final-main installed/browser/screenshots and cleanup remain required.
 No prior PASS is transferred, deadline increased or product error suppressed.
 
-## Current r34 integrated log-read correction36 — 2026-10-13
+## Historical r34 integrated log-read correction36 — 2026-10-13
 
 [Single booking and causal admission](https://github.com/pcvantol/forge/issues/142#issuecomment-6138579650)
 and [convergence directive](https://github.com/pcvantol/forge/issues/142#issuecomment-6138571335):
