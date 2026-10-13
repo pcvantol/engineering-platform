@@ -7,6 +7,14 @@ const inventoryBytes = readFileSync(new URL('./dashboard_shard_inventory.json', 
 const inventory = JSON.parse(inventoryBytes);
 const key = test => JSON.stringify([path.basename(test.location?.file || test.file), test.title]);
 const annotations = test => (test.annotations || []).map(({ location, ...contract }) => contract);
+// These independent stored-data cases each own their worker, database and guards.
+// Place their measured work in the two spare parts; every case still executes.
+const storedCaseParts = new Map([
+  [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
+    'reads actual normal en/dark/390 dispatcher evidence without execution effects']), 2],
+  [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
+    'reads actual normal nl/dark/390 dispatcher evidence without execution effects']), 1],
+]);
 
 export function partition(tests, canonical = inventory.tests) {
   const actual = new Map();
@@ -27,9 +35,20 @@ export function partition(tests, canonical = inventory.tests) {
     files.get(expected.file).push(test);
   }
   if (new Set(canonical.map(key)).size !== canonical.length) throw Error('Duplicate canonical dashboard test');
+  const placedStoredCases = new Set();
   for (const testsInFile of files.values()) {
-    testsInFile.forEach((test, index) => parts[index % 4].push(test));
+    testsInFile.forEach((test, index) => {
+      const id = key(test), originalPart = index % 4;
+      if (storedCaseParts.has(id)) {
+        if (originalPart !== 0 || placedStoredCases.has(id))
+          throw Error(`Stored dashboard case has an altered original placement: ${id}`);
+        placedStoredCases.add(id);
+      }
+      parts[storedCaseParts.get(id) ?? originalPart].push(test);
+    });
   }
+  if (placedStoredCases.size !== storedCaseParts.size)
+    throw Error('Stored dashboard case placement is missing its exact canonical case');
   const union = parts.flat().map(key);
   if (union.length !== canonical.length || new Set(union).size !== canonical.length)
     throw Error('Dashboard parts are not a complete disjoint corpus');
