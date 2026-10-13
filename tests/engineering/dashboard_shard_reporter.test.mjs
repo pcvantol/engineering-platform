@@ -9,17 +9,19 @@ const corpus = JSON.parse(readFileSync(new URL('./dashboard_shard_inventory.json
 const tests = () => corpus.map(row => ({ ...row, location: { file: row.file }, annotations: row.annotations.map(a => ({ ...a })) }));
 const id = row => JSON.stringify([row.file, row.title]);
 
-test('all 533 contracts retain their exact ownership except two independent stored-case moves', () => {
+test('all 533 contracts retain their exact ownership except three independent stored-case moves', () => {
   const parts = partition(tests());
   assert.equal(parts.flat().length, 533);
   assert.equal(new Set(parts.flat().map(id)).size, 533);
   assert.deepEqual(parts.flat().map(id).sort(), corpus.map(id).sort());
-  assert.deepEqual(parts.map(rows => rows.length), [133, 135, 133, 132]);
+  assert.deepEqual(parts.map(rows => rows.length), [133, 135, 134, 131]);
   const moved = new Map([
     [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
-      'reads actual normal en/dark/390 dispatcher evidence without execution effects']), 2],
+      'reads actual normal en/dark/390 dispatcher evidence without execution effects']), { originalPart: 0, targetPart: 2 }],
     [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
-      'reads actual normal nl/dark/390 dispatcher evidence without execution effects']), 1],
+      'reads actual normal nl/dark/390 dispatcher evidence without execution effects']), { originalPart: 0, targetPart: 1 }],
+    [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
+      'reads actual normal nl/dark/1280 dispatcher evidence without execution effects']), { originalPart: 3, targetPart: 2 }],
   ]);
   const original = new Map(), fileOrdinals = new Map();
   for (const row of corpus) {
@@ -30,9 +32,9 @@ test('all 533 contracts retain their exact ownership except two independent stor
   const changes = [], restored = [[], [], [], []];
   parts.forEach((rows, actualPart) => rows.forEach(row => {
     const identity = id(row), originalPart = original.get(identity);
-    assert.equal(actualPart, moved.get(identity) ?? originalPart, identity);
+    assert.equal(actualPart, moved.get(identity)?.targetPart ?? originalPart, identity);
     if (actualPart !== originalPart) {
-      assert.equal(originalPart, 0);
+      assert.equal(originalPart, moved.get(identity).originalPart);
       changes.push(identity);
     }
     if (row.expectedStatus === 'skipped') assert.equal(actualPart, originalPart);
@@ -47,13 +49,19 @@ test('all 533 contracts retain their exact ownership except two independent stor
   const groupedCanonical = [...new Set(corpus.map(row => row.file))]
     .flatMap(file => corpus.filter(row => row.file === file));
   parts.forEach((rows, actualPart) => assert.deepEqual(rows.map(id),
-    groupedCanonical.filter(row => (moved.get(id(row)) ?? original.get(id(row))) === actualPart).map(id)));
+    groupedCanonical.filter(row => (moved.get(id(row))?.targetPart ?? original.get(id(row))) === actualPart).map(id)));
   const absent = corpus.filter(row => !moved.has(id(row)));
   assert.throws(() => partition(tests().filter(row => !moved.has(id(row))), absent), /placement is missing/);
-  const changedOrigin = [...corpus];
-  const first = changedOrigin.findIndex(row => moved.has(id(row)));
-  [changedOrigin[first], changedOrigin[first + 1]] = [changedOrigin[first + 1], changedOrigin[first]];
-  assert.throws(() => partition(tests(), changedOrigin), /altered original placement/);
+  for (const identity of moved.keys()) {
+    const changedOrigin = [...corpus];
+    const first = changedOrigin.findIndex(row => id(row) === identity);
+    const next = changedOrigin.findIndex((row, index) => index > first
+      && row.file === changedOrigin[first].file && !moved.has(id(row)));
+    assert.ok(next > first);
+    [changedOrigin[first], changedOrigin[next]] = [changedOrigin[next], changedOrigin[first]];
+    assert.throws(() => partition(tests(), changedOrigin), error =>
+      error.message === `Stored dashboard case has an altered original placement: ${identity}`);
+  }
 });
 
 test('narrowed, renamed, repeated and expanded corpora remain red', () => {

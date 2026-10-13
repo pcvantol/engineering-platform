@@ -11,9 +11,11 @@ const annotations = test => (test.annotations || []).map(({ location, ...contrac
 // Place their measured work in the two spare parts; every case still executes.
 const storedCaseParts = new Map([
   [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
-    'reads actual normal en/dark/390 dispatcher evidence without execution effects']), 2],
+    'reads actual normal en/dark/390 dispatcher evidence without execution effects']), { originalPart: 0, targetPart: 2 }],
   [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
-    'reads actual normal nl/dark/390 dispatcher evidence without execution effects']), 1],
+    'reads actual normal nl/dark/390 dispatcher evidence without execution effects']), { originalPart: 0, targetPart: 1 }],
+  [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
+    'reads actual normal nl/dark/1280 dispatcher evidence without execution effects']), { originalPart: 3, targetPart: 2 }],
 ]);
 
 export function partition(tests, canonical = inventory.tests) {
@@ -39,12 +41,13 @@ export function partition(tests, canonical = inventory.tests) {
   for (const testsInFile of files.values()) {
     testsInFile.forEach((test, index) => {
       const id = key(test), originalPart = index % 4;
-      if (storedCaseParts.has(id)) {
-        if (originalPart !== 0 || placedStoredCases.has(id))
+      const placement = storedCaseParts.get(id);
+      if (placement) {
+        if (originalPart !== placement.originalPart || placedStoredCases.has(id))
           throw Error(`Stored dashboard case has an altered original placement: ${id}`);
         placedStoredCases.add(id);
       }
-      parts[storedCaseParts.get(id) ?? originalPart].push(test);
+      parts[placement?.targetPart ?? originalPart].push(test);
     });
   }
   if (placedStoredCases.size !== storedCaseParts.size)
