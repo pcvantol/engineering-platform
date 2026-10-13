@@ -1,5 +1,24 @@
 # EP subagent orchestration and efficiency roadmap
 
+## Current r34 fixture correction31 — 2026-10-13
+
+[ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6136905944):
+consumed31 without an administrative stop cap; same writer, branch and history.
+Correction30 provisional d58ef1a/tree5f97578/wheel7427b059 (EP2.3.116)
+actually produced six history PASS and two normal FAIL, actual exit1, NOT_ADMITTED.
+Independent Quality/Security admitted the current causal evidence: normal runs
+remain active WAIT_FOR_OPERATOR_MERGE, with an actual empty terminal-history index.
+Correction31 changes only the test expectation and current documentation: bind
+completed HTTP200/current-document/response bytes, assert absent run, native modal
+closed and deeplink removed, retain three active cards and native heading/geometry,
+and capture normal-active-not-history. All six real history/refault tests remain.
+Product CSS, package version2.3.116 and every authority/epoch/native/coverage guard
+stay unchanged. Earlier red/failure/log/stop evidence is retained. New exact
+artifact, focused qualification, whole independent reviews, full owning CI,
+protected follow-up/Finalization and NEW definitive-main installed/browser proof
+remain pending. No result is transferred from the old protected890 visual REJECT.
+
+
 Scoped lane under [Engineering Platform Roadmap](ENGINEERING_PLATFORM_ROADMAP.md).
 Owning audit/target: [Subagent orchestration and efficiency](../engineering/SUBAGENT_ORCHESTRATION_AND_EFFICIENCY.md).
 Increment: `EP_SUBAGENT_ORCHESTRATION_AND_EFFICIENCY_V1`.

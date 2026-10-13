@@ -1,20 +1,39 @@
 # Dashboard specialists and recovery V1 delivery
 
+## Current r34 fixture correction31 — 2026-10-13
+
+[ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6136905944):
+consumed31 without an administrative stop cap; same writer, branch and history.
+Correction30 provisional d58ef1a/tree5f97578/wheel7427b059 (EP2.3.116)
+actually produced six history PASS and two normal FAIL, actual exit1, NOT_ADMITTED.
+Independent Quality/Security admitted the current causal evidence: normal runs
+remain active WAIT_FOR_OPERATOR_MERGE, with an actual empty terminal-history index.
+Correction31 changes only the test expectation and current documentation: bind
+completed HTTP200/current-document/response bytes, assert absent run, native modal
+closed and deeplink removed, retain three active cards and native heading/geometry,
+and capture normal-active-not-history. All six real history/refault tests remain.
+Product CSS, package version2.3.116 and every authority/epoch/native/coverage guard
+stay unchanged. Earlier red/failure/log/stop evidence is retained. New exact
+artifact, focused qualification, whole independent reviews, full owning CI,
+protected follow-up/Finalization and NEW definitive-main installed/browser proof
+remain pending. No result is transferred from the old protected890 visual REJECT.
+
+
 Assignment: `L2-EP-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Directive: `L2-DASHBOARD-SPECIALISTS-RECOVERY-V1-20261008`.
 Admission: [6092567221](https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221), under the full [6058358032 mandate](https://github.com/pcvantol/forge/issues/142#issuecomment-6058358032).
 Lane **r34**, plan **7**, same **ARCHITECT_2 / LANE_2_WORK** and Work session.
 Sole source branch: `codex/ep-dashboard-specialists-recovery-v1`.
 Original source base: `05e530d6339cb1c16b1e8f4814347578c5fd761c`, EP **2.3.114**, retained. Current protected repair base: `890915ad77cec21b39f4d3c60cdc3e263c2c8de7`, EP **2.3.115**.
-State: **CORRECTION30_IMPLEMENTED_QUALIFICATION_PENDING / EP2.3.116_PRODUCT_TARGET**. Protected EP2.3.115 source PR349 and Finalization350 are closed; exact890915ad visual acceptance was rejected and does not close r34.
-Current correction consumption: **30** (28 through implementation, one documentary correction29 and one integrated visual correction30); administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
+State: **CORRECTION31_FIXTURE_IMPLEMENTED_QUALIFICATION_PENDING / EP2.3.116_PRODUCT_TARGET**. Protected EP2.3.115 source PR349 and Finalization350 are closed; exact890915ad visual acceptance was rejected and does not close r34.
+Current correction consumption: **31** (28 through implementation, one documentary correction29 and one integrated visual correction30 and one test-only fixture correction31); administrative round maximum **NOT_APPLICABLE_SCOPED_COMPLETION** under [6123356344](https://github.com/pcvantol/forge/issues/142#issuecomment-6123356344). All historical14 rounds and later consumption remain recorded; operational deadlines, authority, coverage and protected delivery gates remain unchanged. The former consumed9/max9/remaining0 snapshot belongs to the historical pre-completion phase.
 
 R33, r43, r44 and GP stay closed. R33 completion is the immutable
 [6091674007 receipt](https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007), implementation PR346 and NO_BUMP Finalization PR348.
 Historical source delivery notes, branches, reports, stashes and foreign holds are retained.
 This serial Console follow-up does not reopen specialist execution or qualify the broader SA-Q/ROLE/PAR family.
 
-## Current r34 integrated visual correction30 — 2026-10-13
+## Preserved correction30 implementation snapshot — 2026-10-13
 
 Same assignment, r34/plan7, ARCHITECT_2 / LANE_2_WORK, original source branch and
 history. [Correction30 admission and booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6136286217)

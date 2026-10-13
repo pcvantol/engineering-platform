@@ -312,22 +312,45 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       await capture("verification-controls", "native", findings);
     }
     const normalHistoryLayout = scenario === "normal" && locale === "en" && theme === "dark";
+    let normalActiveHistoryProof = null;
     if (normalHistoryLayout) {
-      // Read the genuine stored normal run through the existing public detail
-      // deep link. Its operator-wait state remains active; no terminal record
-      // or execution/control authority is manufactured for the layout check.
+      // Active operator-wait is absent from the genuine terminal history index.
+      // Bind the completed current-document read before testing native dismissal.
+      const observer = await observeConsoleDocument(page);
       const detailUrl = new URL(ready.url);
       detailUrl.searchParams.set("prompt", ready.run_id);
+      const indexRead = page.waitForResponse(response =>
+        new URL(response.url()).pathname === "/api/prompt-history"
+        && response.request().method() === "GET");
       await page.goto(detailUrl.href, { waitUntil: "domcontentloaded" });
-      await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
-      await assertRunEvidenceLayout(page);
-      await assertHistoryLayoutRefault(page);
-      const historySelection = page.locator('#promptHistoryDetailModal [data-run-evidence="selection"]');
-      await readRunEvidenceCardFromTop(page, historySelection);
-      await capture("normal-history-layout", "native", historySelection);
-      await page.goto(ready.url, { waitUntil: "domcontentloaded" });
+      const response = await indexRead;
+      expect(response.status()).toBe(200);
+      const bytes = await response.body();
+      const index = JSON.parse(bytes.toString("utf8"));
+      expect(index.runs).toEqual([]);
+      expect(index.runs.some(run => run.run_id === ready.run_id)).toBe(false);
+      const documentId = await observer.documentId();
+      const responseHash = createHash("sha256").update(bytes).digest("hex");
+      let boundRead;
+      await expect.poll(() => {
+        boundRead = observer.records().find(record => record.document_id === documentId
+          && record.path === "/api/prompt-history" && record.completed
+          && record.status === 200 && record.response_sha256 === responseHash);
+        return Boolean(boundRead);
+      }).toBe(true);
+      await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+      await expect(page).not.toHaveURL(/(?:\?|&)prompt=/);
       await expect(page.locator("[data-run-evidence]")).toHaveCount(3);
+      await expect(page.locator('[data-run-evidence="selection"] h3'))
+        .toHaveText(DASHBOARD_MESSAGES[locale]["run_evidence.specialists"]);
       await assertRunEvidenceLayout(page);
+      const activeSelection = page.locator('[data-run-evidence="selection"]');
+      await readRunEvidenceCardFromTop(page, activeSelection);
+      normalActiveHistoryProof = { requested_run_id: ready.run_id,
+        request: boundRead, document_id: documentId, response_sha256: responseHash,
+        actual_history_run_ids: [], native_modal_hidden: true, deeplink_removed: true,
+        active_card_count: 3, geometry: await assertRunEvidenceLayout(page) };
+      await capture("normal-active-not-history", "native", activeSelection);
     }
     const rootUrl = ready.url.split("/?")[0];
     const foreign = await page.request.get(`${rootUrl}/api/prompt-history/${ready.run_id}/details?project=other`);
@@ -456,7 +479,7 @@ test(`reads actual ${scenario} ${locale}/${theme}/${width} dispatcher evidence w
       contract: "ep-console-run-evidence-screenshots/v1", qualification: process.env.EP_RUN_EVIDENCE_CONVERGENCE === "1" ? "INSTALLED_CONVERGENCE" : installedPython ? "INSTALLED" : "SOURCE_CONVERGENCE",
       source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
       wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, screenshots,
-      assets: ready.assets, external_transport_observations: after.transport_observations,
+      assets: ready.assets, normal_active_history_proof: normalActiveHistoryProof, external_transport_observations: after.transport_observations,
     }, null, 2));
     expect(screenshots.slice(0, 3).map((item) => item.scenario)).toEqual(["selection", "findings", "publication"]);
     expect(screenshots).toHaveLength((verifiedFinding ? 4 : 3) + 1 + (scenario === "uncertain" ? 1 : 0) + (historicalTarget ? 1 : 0) + (scenario === "read-revoked" ? 1 : 0) + (normalHistoryLayout ? 1 : 0));
