@@ -52,12 +52,36 @@ export async function assertHistoryLayoutRefault(page) {
 export async function readRunEvidenceCardFromTop(page, target) {
   await target.scrollIntoViewIfNeeded();
   await target.hover();
-  const needsScroll = await target.evaluate(node => node.scrollHeight > node.clientHeight);
-  if (needsScroll) {
-    await page.mouse.wheel(0, 10000);
-    await expect.poll(() => target.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+  const maximum = await target.evaluate(node => node.scrollHeight - node.clientHeight);
+  const wheelTo = async destination => {
+    const current = await target.evaluate(node => node.scrollTop);
+    if (current === destination) return;
+    const observed = await target.evaluateHandle(node => {
+      let listener;
+      const completion = new Promise(resolve => {
+        listener = () => resolve({ top: node.scrollTop });
+        node.addEventListener('scrollend', listener, { once: true, passive: true });
+      });
+      return { completion, cancel: () => node.removeEventListener('scrollend', listener) };
+    });
+    const errors = [];
+    try {
+      await page.mouse.wheel(0, destination - current);
+      const ended = await observed.evaluate(record => record.completion);
+      expect(ended.top, 'Actual owned native scroll completes at the intended bound').toBe(destination);
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      try { await observed.evaluate(record => record.cancel()); } catch (error) { errors.push(error); }
+      try { await observed.dispose(); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Owned native card scroll failed');
+  };
+  if (maximum > 0) {
+    await wheelTo(0);
+    await wheelTo(maximum);
+    await wheelTo(0);
   }
-  await page.mouse.wheel(0, -10000);
   await expect.poll(() => target.evaluate(node => node.scrollTop)).toBe(0);
   const readable = await target.evaluate(node => {
     const card = node.getBoundingClientRect(), heading = node.querySelector('h3').getBoundingClientRect();
