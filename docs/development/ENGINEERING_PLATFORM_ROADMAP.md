@@ -1,6 +1,37 @@
 # Engineering Platform Roadmap
 
-## Current r34 private-evidence correction34 — 2026-10-13
+## Current r34 native-capture correction35 — 2026-10-13
+
+[ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6137995314):
+consumed35, same writer/session/branch/history; no administrative stop cap and all
+operational budgets retained. This documentary reconciliation belongs to the same
+integrated correction35 before its first full freeze; it is not another booking.
+Correction34's focused9 passed but whole Quality identified displaced/clipped
+mobile captures. Current original → bounded native input → fresh original refault
+reproduces and removes that capture class against unchanged installed product.
+DOM heading offsets remain unchanged; an exact GPU/ancestor cause is not claimed.
+Original failures and all unedited images remain evidence, without reconstruction.
+
+Independent Quality/Security admit the test-only helper: no wheel input on a card
+without its own overflow; actual own max/current/top bounded wheel and real owned
+scrollend before capture. Bottom/top and readable-heading assertions remain;
+listener cancellation and handle disposal are both attempted, preserving every
+original body/cleanup error. No sleep, timeout relaxation, response substitution,
+product/security/native/epoch change or corpus reduction. EP2.3.117 and all532
+contracts/528mandatory/four unchanged baseline cases remain.
+
+[Actual focused progress](https://github.com/pcvantol/forge/issues/142#issuecomment-6138031628)
+is specifically source82313352fac8d3f58da3a9dea5032857851db9c6/tree582a22c4:
+focused9 PASS, preflight5 PASS, version15 PASS and fresh readable mobile evidence.
+This is provisional pre-full evidence only. The documentary successor needs its
+own exact artifact/freeze and complete independent admission; no prior result is
+relabeled as a successor/full PASS. Full unchanged qualification, owning CI,
+protected follow-up delivery, ordinary Finalization and NEW exact-definitive-main
+installed/browser/screenshots/cleanup remain OPEN. Closed349/350 and predecessors
+stay closed; HOB continues to wait. No new live EP environment or signing.
+
+
+## Preserved correction34 private-evidence snapshot — 2026-10-13
 
 [ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6137510899):
 consumed34, same writer/branch/history and unchanged operational budgets; no

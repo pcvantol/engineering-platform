@@ -335,10 +335,10 @@
     "branch": "codex/ep-dashboard-specialists-recovery-v1",
     "base": "890915ad77cec21b39f4d3c60cdc3e263c2c8de7",
     "package_target": "2.3.117",
-    "correction_rounds_consumed": 34,
+    "correction_rounds_consumed": 35,
     "correction_rounds_maximum": "NOT_APPLICABLE_SCOPED_COMPLETION",
     "remaining": "NOT_APPLICABLE_SCOPED_COMPLETION",
-    "status": "CORRECTION34_PRIVATE_EVIDENCE_IMPLEMENTED_QUALIFICATION_PENDING",
+    "status": "CORRECTION35_NATIVE_CAPTURE_AND_DOCUMENTARY_CURRENTNESS_IMPLEMENTED_FULL_PENDING",
     "predecessor_closed_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007",
     "admission": "https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221",
     "delivery": "DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md",
@@ -357,8 +357,8 @@
     "qualified_candidate": "126528079ba642bc07f4bd68eebf8ae63715d0f2",
     "qualified_candidate_tree": "3e9a78bbe7a21fe6469da90f3e064764e4c400d0",
     "candidate_local_wheel_sha256": "8897a0a3e88f3c404e417c0d3039132cfe05c8ace077bb490e05ed5d90688d4b",
-    "whole_quality": "PENDING_CORRECTION34_EXACT_CANDIDATE",
-    "whole_security": "PENDING_CORRECTION34_EXACT_CANDIDATE",
+    "whole_quality": "PENDING_CORRECTION35_DOCUMENTARY_SUCCESSOR_EXACT_CANDIDATE",
+    "whole_security": "PENDING_CORRECTION35_DOCUMENTARY_SUCCESSOR_EXACT_CANDIDATE",
     "owning_ci": "https://github.com/pcvantol/engineering-platform/actions/runs/38302902219",
     "owning_ci_result": "ALL_11_JOBS_COMPLETED_SUCCESS",
     "owner_authorization": "https://github.com/pcvantol/engineering-platform/actions/runs/38317287272",
@@ -1860,6 +1860,16 @@
     },
     "correction34_scope": "Only standard recursiveerrors/cause/types/primitive/referencecycle inPRIVATEerrorcapture, actualdurable publicsafe counters/booleans/hashpathreceipts, existingunitactualisolatedpage/closedgzip/nestedtokens/cause/cycle; all532contracts/product117 unchanged",
     "correction34_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6137510899",
-    "correction33_focused_actual": "9PASS actualexit0 but integratedoriginal-reason-retention admissionOPEN, retained"
+    "correction33_focused_actual": "9PASS actualexit0 but integratedoriginal-reason-retention admissionOPEN, retained",
+    "historical_correction34_current_state": {
+      "correction_rounds_consumed": 34,
+      "status": "CORRECTION34_PRIVATE_EVIDENCE_IMPLEMENTED_QUALIFICATION_PENDING",
+      "whole_quality": "PENDING_CORRECTION34_EXACT_CANDIDATE",
+      "whole_security": "PENDING_CORRECTION34_EXACT_CANDIDATE"
+    },
+    "correction35_scope": "Test-only bounded own max/top native wheel with actual owned scrollend; no input for nooverflow; independent cancel/dispose preserve original errors; same-round documentary reconciliation before first fullfreeze; product117/corpus532 unchanged",
+    "correction35_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6137995314",
+    "correction35_focused_actual": "82313352/tree582a22c4 provisional focused9/preflight5/version15 PASS only; successor full qualification PENDING, no transfer",
+    "correction34_focused_actual": "d9e9a3f3 focused9PASS; mobilecapturelimit identified independently, preserved; not completevisualDoD"
   }
 }
