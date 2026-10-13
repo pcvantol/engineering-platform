@@ -1369,9 +1369,10 @@ test('actual installed five-locale log reads preserve healthy rows, source loss 
       await initial;
       if (await page.locator('#dashboardLocale').inputValue() !== locale) {
         if (!await page.locator('#dashboardLocaleButton').isVisible()) await page.locator('#dashboardTitlebarOptionsToggle').click();
-        const localized = page.waitForResponse(response => isLogs(response) && response.status() === 200);
         await page.locator('#dashboardLocaleButton').click(); await page.locator(`[data-dashboard-locale="${locale}"]`).click();
-        await localized;
+        // Locale changes re-render the existing projection. Unchanged log
+        // versions need no HTTP read; the explicit INFO query below binds
+        // the required fresh response to this document and visible locale.
       }
       await expect(page.locator('html')).toHaveAttribute('lang', locale);
       if (await page.locator('#componentLogs').getAttribute('open') === null) await page.locator('#componentLogs > summary').click();

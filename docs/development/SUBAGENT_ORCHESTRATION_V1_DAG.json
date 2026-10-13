@@ -335,10 +335,10 @@
     "branch": "codex/ep-dashboard-specialists-recovery-v1",
     "base": "890915ad77cec21b39f4d3c60cdc3e263c2c8de7",
     "package_target": "2.3.118",
-    "correction_rounds_consumed": 36,
+    "correction_rounds_consumed": 37,
     "correction_rounds_maximum": "NOT_APPLICABLE_SCOPED_COMPLETION",
     "remaining": "NOT_APPLICABLE_SCOPED_COMPLETION",
-    "status": "CORRECTION36_LOG_READ_LABEL_IMPLEMENTED_QUALIFICATION_PENDING",
+    "status": "CORRECTION37_FIXTURE_IMPLEMENTED_TARGETED_QUALIFICATION_PENDING",
     "predecessor_closed_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6091674007",
     "admission": "https://github.com/pcvantol/forge/issues/142#issuecomment-6092567221",
     "delivery": "DASHBOARD_SPECIALISTS_RECOVERY_V1_DELIVERY.md",
@@ -1879,6 +1879,13 @@
       "mandatory": 529,
       "unchanged_baseline": 4
     },
-    "current_log_regression": "PENDING actual repaired installed/native five-locale proof; causal diagnosis accepted only"
+    "current_log_regression": "Source36 targeted10 actualPASS includingfive-locale15screens; currentCI two browser failures retained, correction37 targeted/full pending",
+    "historical_correction36_current_state": {
+      "correction_rounds_consumed": 36,
+      "status": "CORRECTION36_LOG_READ_LABEL_IMPLEMENTED_QUALIFICATION_PENDING",
+      "current_log_regression": "PENDING actual repaired installed/native five-locale proof; causal diagnosis accepted only"
+    },
+    "correction37_scope": "Fixture-only unsupported locale HTTP prerequisite removed; actual five-locale native wire/body/document/hash/UI retained; atomic synthetic longpath attention text/visibility/allgeometry and caught IDLE refault; no product/timeout/authority change",
+    "correction37_register": "https://github.com/pcvantol/forge/issues/142#issuecomment-6143860024"
   }
 }

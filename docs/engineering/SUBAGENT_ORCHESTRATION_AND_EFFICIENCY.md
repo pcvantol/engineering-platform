@@ -1,5 +1,32 @@
 # EP subagent orchestration and efficiency
 
+## Current r34 fixture correction37 — 2026-10-13
+
+[ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6143860024):
+same writer, branch and history; consumed37, no administrative cap, other
+operational budgets unchanged. This correction changes tests only; EP2.3.118
+and every product byte, native/project/document/epoch guard and deadline remain.
+
+Current CI exposed an unsupported fresh-log-HTTP prerequisite after an in-place
+locale change and a separate asynchronous synthetic-render geometry boundary.
+The locale test retains native language selection and all actual INFO200,
+ERROR503 and restored-document200 response/body/hash/screen bindings in five
+languages. The long-path renderer test binds its exact attention input, computed
+visibility, text and all original overflow/height predicates to one browser turn;
+an explicit ordinary IDLE refault must make the original nonzero predicate red.
+The precise original CI await/overwrite chronology remains UNKNOWN; current
+controls do not reconstruct it. All old failures and logs remain retained.
+
+The actual41 DATA_ROOT_UNSAFE errors and one related CLI failure in installed16
+are independently explained by the missing temporary map and unsafe /tmp alias;
+all42 original affected tests pass with a physical canonical map. Browser cycle15
+and two current CI browser parts remain FAILED. Fresh serial contexts bind the
+actual child interpreter/import/native/TMP; full qualification is pending until
+joint targeted acceptance. The533 inventory/529 mandatory/four baseline cases,
+strict coverage, independent reviews, protected PR351, ordinary Finalization,
+new exact-final-main installed/browser/screenshots and cleanup remain required.
+No prior PASS is transferred, deadline increased or product error suppressed.
+
 ## Current r34 integrated log-read correction36 — 2026-10-13
 
 [Single booking and causal admission](https://github.com/pcvantol/forge/issues/142#issuecomment-6138579650)

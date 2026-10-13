@@ -8335,21 +8335,37 @@ test.describe("Engineering Status browser smoke", () => {
   test("wraps a long Codex CLI installation path within host diagnostics", async ({ page }) => {
     await page.setViewportSize({ width: 920, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.evaluate(() => r({
+    const attention = {
       watcher_state: "ENGINEERING_RUN_ACTIVE",
       current_phase: "EXECUTE_AGENT",
       run_id: "long-runtime-path",
-    }, {
+    };
+    const snapshot = {
       host_preflight: {
         outcome: "FAILED",
         runtime_path: "/private/var/folders/2d/lvn8wp7x5rgcvz5by5g4sr3c0000gn/T/tmp.XrTdgyzLui/home/.local/share/engineering-platform/codex-cli/bin/codex",
       },
-    }));
-    await expect(page.locator("#technicalDiagnosisDetails")).toBeVisible();
+    };
+    // Fixture-unit refault: an ordinary idle render can legitimately hide
+    // the injected attention state between asynchronous assertions.
+    const idleHeight = await page.evaluate(() => {
+      r({ watcher_state: "WATCHER_IDLE", queue_depth: 0 }, {});
+      return document.getElementById("executionHostRuntimePath").getBoundingClientRect().height;
+    });
+    expect(() => expect(idleHeight).toBeGreaterThan(0)).toThrow();
 
-    const metrics = await page.locator("#executionHostRuntimePath").evaluate((path) => {
+    // This is a synthetic renderer/layout contract. Bind the exact input,
+    // actual visibility and every geometry measurement to one render turn.
+    const metrics = await page.evaluate(({ attention, snapshot }) => {
+      r(attention, snapshot);
+      const path = document.getElementById("executionHostRuntimePath");
+      const diagnosis = document.getElementById("technicalDiagnosisDetails");
       const card = path.closest(".card");
       return {
+        diagnosisVisible: diagnosis.getBoundingClientRect().height > 0
+          && diagnosis.getBoundingClientRect().width > 0
+          && getComputedStyle(diagnosis).visibility === "visible",
+        pathText: path.textContent,
         cardClientWidth: card.clientWidth,
         cardScrollWidth: card.scrollWidth,
         pageClientWidth: document.documentElement.clientWidth,
@@ -8357,8 +8373,10 @@ test.describe("Engineering Status browser smoke", () => {
         pathHeight: path.getBoundingClientRect().height,
         pathWrap: getComputedStyle(path).overflowWrap,
       };
-    });
+    }, { attention, snapshot });
 
+    expect(metrics.diagnosisVisible).toBe(true);
+    expect(metrics.pathText).toBe(snapshot.host_preflight.runtime_path);
     expect(metrics.pathWrap).toBe("anywhere");
     expect(metrics.cardScrollWidth).toBeLessThanOrEqual(metrics.cardClientWidth + 1);
     expect(metrics.pageScrollWidth).toBeLessThanOrEqual(metrics.pageClientWidth + 1);
