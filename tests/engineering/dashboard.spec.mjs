@@ -5612,9 +5612,16 @@ test.describe("Engineering Status browser smoke", () => {
     } }));
     // Deliberately retain a wider neighboring row from the installed producer.
     // This is a modeled saved-log prelude, not a real configuration change.
-    const preludeRuntime = JSON.parse(execFileSync("python3", ["-c",
+    const installedPrelude = process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1";
+    const preludePython = installedPrelude ? process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON : "python3";
+    const preludeEnvironment = { ...process.env };
+    if (installedPrelude) {
+      expect(preludePython).toBeTruthy();
+      delete preludeEnvironment.PYTHONPATH;
+    }
+    const preludeRuntime = JSON.parse(execFileSync(preludePython, ["-c",
       "import sys,json,os;from pathlib import Path;from importlib.metadata import version;import engineering_platform.server as server;root=Path(sys.argv[1]);installed=os.environ.get('EP_RUN_EVIDENCE_REQUIRE_INSTALLED')=='1';assert not installed or (sys.prefix==str(Path(os.environ['EP_RUN_EVIDENCE_INSTALLED_PYTHON']).parent.parent) and '/site-packages/engineering_platform/' in server.__file__);assert (root/server.SERVER_DATABASE_FILENAME).is_file();server._audit_configuration_change(root,scope='MODELED_LOG_COLUMN_PRELUDE',key='capture_geometry_fixture',previous='modeled_before',value='modeled_after');print(json.dumps({'prefix':sys.prefix,'package':server.__file__,'version':version('engineering-platform')}))", dashboardRoot],
-      { cwd: repository, env: process.env, encoding: "utf8" }));
+      { cwd: repository, env: preludeEnvironment, encoding: "utf8" }));
     if (process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1") {
       expect(preludeRuntime.prefix).toBe(path.dirname(path.dirname(process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON)));
       expect(preludeRuntime.package).toContain("/site-packages/engineering_platform/");
