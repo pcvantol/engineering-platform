@@ -1,6 +1,38 @@
 # EP subagent orchestration and efficiency roadmap
 
-## Current r34 native-capture correction35 — 2026-10-13
+## Current r34 integrated log-read correction36 — 2026-10-13
+
+[Single booking and causal admission](https://github.com/pcvantol/forge/issues/142#issuecomment-6138579650)
+and [convergence directive](https://github.com/pcvantol/forge/issues/142#issuecomment-6138571335):
+same writer/session/branch/history; consumed36, no administrative round cap,
+all other operational budgets unchanged. EP2.3.118 is the supported product target.
+
+Actual installed five-locale diagnosis preserved real healthy200, source-loss503,
+and restored200. The healthy response contains known producer events whose missing
+strict labels caused a render exception incorrectly caught as read unavailability.
+The historical failed request reason remains UNKNOWN, without reconstruction.
+The integrated repair adds only the28 owning producer labels and one read-failure
+label to all five catalogs and separates read/decode failures from normalization
+and rendering. Unknown labels and ordinary rendering failures remain fatal;
+stale request, project/document/epoch and native authority controls are unchanged.
+
+The current collective acceptance covers native five-locale request/response/UI
+binding and restoration, strict unknown/render/stale negatives, normal active
+state, and stored desktop/mobile history cases. One new mandatory browser case
+extends the original532 inventory to533:529 mandatory plus the same four baseline
+cases. Existing capture, callback and original-log repairs stay closed and retained.
+Current implementation and targeted/full qualification are PENDING; no old PASS
+is transferred. Candidate35's actual528 browser PASS and completed owning CI are
+preserved but its localization defect prevents product acceptance. Existing valid
+local jobs finish naturally. Current owning CI supplies its actual installed-full
+and coverage evidence; no redundant manual full repeat is added above mandatory
+Mac native/browser and strict changed-file coverage gates.
+
+Protected follow-up PR351, ordinary Finalization, new exact-definitive-main
+installed/browser screenshots and cleanup remain OPEN. Closed349/350 and all
+predecessors stay closed; HOB waits. No live EP environment or signing is added.
+
+## Preserved r34 native-capture correction35 — 2026-10-13
 
 [ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6137995314):
 consumed35, same writer/session/branch/history; no administrative stop cap and all

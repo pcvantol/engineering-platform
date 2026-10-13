@@ -1327,3 +1327,123 @@ test.describe("iPhone direct touch: stored active execution", () => {
 });
 
 import "./dashboard_no_project_scope.spec.mjs";
+
+test('actual installed five-locale log reads preserve healthy rows, source loss and restored projection', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  const canary = await causalStoredCanary('normal');
+  let observer;
+  const errors = [], rows = [], captures = [];
+  let bodyError;
+  const pageError = error => errors.push(error);
+  page.on('pageerror', pageError);
+  const isLogs = response => new URL(response.url()).pathname === '/api/logs/all';
+  const bind = async (response, expectedStatus) => {
+    expect(response.status()).toBe(expectedStatus);
+    const bytes = await response.body(), body = JSON.parse(bytes.toString('utf8'));
+    const documentId = await observer.documentId(), hash = createHash('sha256').update(bytes).digest('hex');
+    let binding;
+    await expect.poll(() => {
+      binding = observer.records().find(record => record.document_id === documentId
+        && record.url === response.url() && record.completed && record.status === expectedStatus
+        && record.response_sha256 === hash);
+      return Boolean(binding);
+    }).toBe(true);
+    expect(await page.evaluate(() => window.ENGINEERING_PLATFORM_NO_PROJECT)).toBe(true);
+    await expect(page.locator('body')).toHaveAttribute('data-project-id', 'none');
+    return { body, binding, documentId, hash };
+  };
+  const screenshot = async (locale, phase, proof) => {
+    const file = `log-${locale}-${phase}-native-fresh.png`, output = testInfo.outputPath(file);
+    await page.locator('#componentLogs').screenshot({ path: output, animations: 'disabled' });
+    captures.push({ scenario: `log-${phase}`, file, sha256: createHash('sha256').update(readFileSync(output)).digest('hex'),
+      run_scenario: testInfo.title, run_id: canary.ready.run_id, finding_ids: [], invocation_ids: [], publication: null,
+      locale, theme: await page.locator('html').getAttribute('data-theme'), viewport: page.viewportSize(), proof });
+    await testInfo.attach(`log-${locale}-${phase}`, { path: output, contentType: 'image/png' });
+  };
+  try {
+    observer = await observeConsoleDocument(page);
+    for (const locale of ['en', 'nl', 'de', 'fr', 'es']) {
+      const url = new URL(canary.ready.url); url.search = '?localizationStrict=1';
+      const initial = page.waitForResponse(response => isLogs(response) && response.status() === 200);
+      await page.goto(url.href, { waitUntil: 'domcontentloaded' });
+      await initial;
+      if (await page.locator('#dashboardLocale').inputValue() !== locale) {
+        if (!await page.locator('#dashboardLocaleButton').isVisible()) await page.locator('#dashboardTitlebarOptionsToggle').click();
+        const localized = page.waitForResponse(response => isLogs(response) && response.status() === 200);
+        await page.locator('#dashboardLocaleButton').click(); await page.locator(`[data-dashboard-locale="${locale}"]`).click();
+        await localized;
+      }
+      await expect(page.locator('html')).toHaveAttribute('lang', locale);
+      if (await page.locator('#componentLogs').getAttribute('open') === null) await page.locator('#componentLogs > summary').click();
+      await expect.poll(() => page.evaluate(() => componentLogServerPaged)).toBe(true);
+      const current = observer.records().filter(record => record.path === '/api/logs/all' && record.completed && record.status === 200).at(-1);
+      expect(current).toBeTruthy();
+      // A native current-query change identifies a completed read, rather than
+      // an unrelated preceding request with an identical body.
+      const healthyResponse = page.waitForResponse(response => isLogs(response) && response.status() === 200
+        && new URL(response.url()).searchParams.get('level') === 'INFO');
+      await page.locator('#logLevelFilter').selectOption('INFO');
+      const healthy = await bind(await healthyResponse, 200);
+      expect(healthy.body.scope).toBe('PLATFORM'); expect(healthy.body.entries.length).toBeGreaterThan(0);
+      for (const event of healthy.body.events) {
+        await expect(page.locator('#logEventFilter')).toContainText(DASHBOARD_MESSAGES[locale][`log_event.${event}`]);
+      }
+      await screenshot(locale, 'healthy', { document_id: healthy.documentId, request_id: healthy.binding.request_id, response_sha256: healthy.hash, status: 200 });
+      canary.child.stdin.write('suspend-read-source\n'); expect(await canary.next()).toEqual({ source_unavailable: true });
+      const lostResponse = page.waitForResponse(response => isLogs(response) && response.status() === 503
+        && new URL(response.url()).searchParams.get('level') === 'ERROR');
+      await page.locator('#logLevelFilter').selectOption('ERROR');
+      const lost = await bind(await lostResponse, 503); expect(lost.body).toEqual({ error: 'CENTRAL_UNAVAILABLE' });
+      expect(lost.documentId).toBe(healthy.documentId);
+      await expect(page.locator('#platformComponentLog')).toContainText(DASHBOARD_MESSAGES[locale]['log_event.platform_log_unavailable']);
+      await expect(page.locator('#logEventFilter')).toContainText(DASHBOARD_MESSAGES[locale]['log_event.platform_log_unavailable']);
+      await screenshot(locale, 'unavailable', { document_id: lost.documentId, request_id: lost.binding.request_id, response_sha256: lost.hash, status: 503 });
+      canary.child.stdin.write('restore-read-source\n'); const restored = await canary.next();
+      expect(restored.restored_baseline).toEqual(canary.ready.before);
+      expect(restored.retained_recreated_files.filter(item =>
+        /(?:^|\/)(?:epdata\.sqlite(?:-journal|-wal|-shm)?|runtime-identity\.json|server\.json)$/.test(item.path))).toEqual([]);
+      const recoveryNavigation = page.waitForResponse(response => isLogs(response) && response.status() === 200);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await bind(await recoveryNavigation, 200);
+      await expect.poll(() => page.evaluate(() => componentLogServerPaged)).toBe(true);
+      const recoveryResponse = page.waitForResponse(response => isLogs(response) && response.status() === 200
+        && new URL(response.url()).searchParams.get('level') === 'INFO');
+      await page.locator('#logLevelFilter').selectOption('INFO');
+      const recovered = await bind(await recoveryResponse, 200);
+      expect(recovered.documentId).not.toBe(lost.documentId);
+      await expect(page.locator('html')).toHaveAttribute('lang', locale);
+      await expect.poll(() => page.evaluate(() => componentLogServerPaged)).toBe(true);
+      expect(recovered.body.scope).toBe('PLATFORM'); expect(recovered.body.entries.length).toBeGreaterThan(0);
+      if (await page.locator('#componentLogs').getAttribute('open') === null) await page.locator('#componentLogs > summary').click();
+      await expect(page.locator('#platformComponentLog')).not.toContainText(DASHBOARD_MESSAGES[locale]['log_event.platform_log_unavailable']);
+      await screenshot(locale, 'restored', { document_id: recovered.documentId, request_id: recovered.binding.request_id, response_sha256: recovered.hash, status: 200 });
+      rows.push({ locale, healthy_request: healthy.binding.request_id, unavailable_request: lost.binding.request_id,
+        restored_request: recovered.binding.request_id, original_document: healthy.documentId, restored_document: recovered.documentId,
+        retained_recreated_files: restored.retained_recreated_files });
+      expect(errors, 'No ordinary localization/render page errors in the genuine log chain').toEqual([]);
+    }
+    const output = testInfo.outputPath('fresh-evidence-manifest.json');
+    writeFileSync(output, JSON.stringify({ contract: 'ep-console-run-evidence-screenshots/v1', qualification: process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON ? 'INSTALLED' : 'SOURCE',
+      source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null, source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
+      wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null, assets: canary.ready.assets, screenshots: captures, actual_log_read_chain: rows }, null, 2));
+    await testInfo.attach('actual-five-locale-log-chain', { path: output, contentType: 'application/json' });
+  } catch (error) {
+    bodyError = error;
+    try { if (observer) await observer.failure(testInfo, error); }
+    catch (captureError) {
+      bodyError = new AggregateError([error, captureError], 'Original log-chain failure and first-failure retention failure');
+    }
+    throw bodyError;
+  } finally {
+    let cleanupError;
+    try {
+      await stopIsolatedCanary(canary.child, canary.next, testInfo);
+      expect(errors, 'No ordinary page errors through actual worker stop').toEqual([]);
+    } catch (error) { cleanupError = error; }
+    finally { page.off('pageerror', pageError); }
+    if (cleanupError) {
+      if (bodyError) throw new AggregateError([bodyError, cleanupError], 'Original log-chain failure and cleanup failure');
+      throw cleanupError;
+    }
+  }
+});

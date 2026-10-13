@@ -71,3 +71,20 @@ test("contains a five-locale explanation for every platform-data relocation erro
     for (const code of codes)
       assert.ok(DASHBOARD_MESSAGES[locale][`configuration.relocation_error.${code}`], `${locale}:${code}`);
 });
+
+test("all finite owning producer events and the read failure have strict labels in five locales", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const actual = JSON.parse(execFileSync("python3", [fileURLToPath(new URL("./dashboard_owned_log_events.py", import.meta.url))], { encoding: "utf8" }));
+  assert.equal(actual.events.length, 28);
+  assert.equal(actual.technical_forwarders.length, 1);
+  for (const locale of ["en", "nl", "de", "fr", "es"]) {
+    const translate = createTranslator(locale, { strict: true, surface: "Operations Console logs" });
+    for (const code of [...actual.events, "platform_log_unavailable"]) {
+      const label = translate(`log_event.${code}`);
+      assert.equal(label, DASHBOARD_MESSAGES[locale][`log_event.${code}`]);
+      assert.ok(label.trim() && !label.includes("_"), `Actual producer ${code} needs an operator label in ${locale}`);
+    }
+    assert.throws(() => translate("log_event.declared_unknown_event", {}, "Unapproved fallback"), LocalizationContractError);
+  }
+});

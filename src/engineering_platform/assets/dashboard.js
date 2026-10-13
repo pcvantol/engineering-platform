@@ -4068,23 +4068,24 @@ function refreshComponentLogs(versions = {}, force = false) {
   const requestId = ++componentLogRequestId;
   return fetch(componentLogRequestUrl("platform"))
     .then((response) => response.ok ? response.json() : Promise.reject(Error("platform logs unavailable")))
-    .then((platform) => {
+    .then((platform) => ({ available: true, platform }), () => ({ available: false }))
+    .then(({ available, platform }) => {
       if (requestId !== componentLogRequestId) return;
+      if (!available) {
+        componentLogServerPaged = false;
+        componentLogsLoaded = true;
+        componentLogEntries.platform = structuredLogEntries(JSON.stringify({
+          level: "ERROR", event: "platform_log_unavailable", diagnostic: t("logs.dashboard_unavailable"),
+        }));
+        $("componentLogControls").hidden = false;
+        renderComponentLogs();
+        return;
+      }
       componentLogEntries.platform = normalizedComponentLogEntries(platform.entries);
       componentLogTotals.platform = Number(platform.total) || 0;
       componentLogAvailableEvents.platform = Array.isArray(platform.events) ? platform.events : [];
       componentLogServerPaged = true;
       componentLogsLoaded = true;
-      $("componentLogControls").hidden = false;
-      renderComponentLogs();
-    })
-    .catch(() => {
-      if (requestId !== componentLogRequestId) return;
-      componentLogServerPaged = false;
-      componentLogsLoaded = true;
-      componentLogEntries.platform = structuredLogEntries(JSON.stringify({
-        level: "ERROR", event: "platform_log_unavailable", diagnostic: t("logs.dashboard_unavailable"),
-      }));
       $("componentLogControls").hidden = false;
       renderComponentLogs();
     });

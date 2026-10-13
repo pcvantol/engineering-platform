@@ -73,13 +73,13 @@ async function createObservation(page) {
     run_id: payload.history?.run_id ?? null, run_ids: Array.isArray(payload.runs) ? payload.runs.map(run => run.run_id) : undefined });
   session.on('Network.requestWillBeSent', (event) => {
     const url = new URL(event.request.url);
-    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history', '/api/configuration', '/health'].includes(url.pathname)
+    if (!['/api/dashboard-snapshot', '/api/events', '/api/github-rate-limit', '/api/prompt-history', '/api/configuration', '/api/logs/all', '/api/logs/platform', '/health'].includes(url.pathname)
         && !/^\/api\/prompt-history\/[^/]+\/details$/.test(url.pathname)) return;
     retain('request', event);
     for (const extra of extras.get(event.requestId) || []) retain('transport-extra-info', extra);
     extras.delete(event.requestId);
     requests.set(event.requestId, { request_id: event.requestId, document_id: event.loaderId,
-      path: url.pathname, project_header: header(event.request.headers, 'X-Engineering-Platform-Project'),
+      path: url.pathname, url: url.href, project_header: header(event.request.headers, 'X-Engineering-Platform-Project'),
       status: null, completed: false });
   });
   for (const name of ['Network.requestWillBeSentExtraInfo', 'Network.responseReceivedExtraInfo']) {
