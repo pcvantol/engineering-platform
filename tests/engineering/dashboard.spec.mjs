@@ -5569,7 +5569,37 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(row).toContainText("1");
   });
 
-  test("localizes the telemetry detail title for every supported language", async ({ page }) => {
+  test("localizes the telemetry detail title for every supported language", async ({ page }, testInfo) => {
+    const observer = await observeConsoleDocument(page), errors = [], auditProofs = [];
+    const pageError = error => errors.push(error);
+    page.on("pageerror", pageError);
+    const phaseKeys = ["domainLookupStart", "domainLookupEnd", "connectStart",
+      "secureConnectionStart", "connectEnd", "requestStart", "responseStart"];
+    const bindActualResponse = async (response, expectedStatus) => {
+      expect(response.status()).toBe(expectedStatus);
+      expect(response.request().frame()).toBe(page.mainFrame());
+      const documentId = await observer.documentId(), timing = response.request().timing();
+      expect(Number.isFinite(timing.startTime) && timing.startTime > 0).toBe(true);
+      expect(phaseKeys.every(key => Number.isFinite(timing[key]))).toBe(true);
+      let record;
+      await expect.poll(() => {
+        const matches = observer.records().filter(item => item.document_id === documentId
+          && item.url === response.url() && item.method === response.request().method()
+          && item.status === expectedStatus && item.cached_request === false
+          && phaseKeys.every(key => Number.isFinite(item.native_relative_timing?.[key])
+            && item.native_relative_timing[key] === timing[key]));
+        expect(matches.length).toBeLessThanOrEqual(1);
+        record = matches[0]; return Boolean(record);
+      }).toBe(true);
+      const frameIds = new Set(observer.records().filter(item => item.document_id === documentId).map(item => item.frame_id));
+      expect(frameIds.size).toBe(1); expect(frameIds.has(record.frame_id)).toBe(true);
+      const bytes = await response.body(), responseHash = createHash("sha256").update(bytes).digest("hex");
+      await expect.poll(() => observer.records().some(item => item.request_id === record.request_id
+        && item.document_id === documentId && item.completed && item.response_sha256 === responseHash)).toBe(true);
+      expect(await observer.documentId()).toBe(documentId);
+      return { body: JSON.parse(bytes.toString("utf8")), proof: { request_id: record.request_id,
+        document_id: documentId, status: expectedStatus, response_sha256: responseHash } };
+    };
     const expectations = [
       ["en", "Execution Telemetry — 24-08-2026"],
       ["nl", "Uitvoeringstelemetrie — 24-08-2026"],
@@ -5580,7 +5610,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/telemetry/**", (route) => route.fulfill({ json: {
       summary: {}, phases: [], bottlenecks: { top_time_consumers: [] }, runs: [],
     } }));
-    for (const [language, title] of expectations) {
+    try { for (const [language, title] of expectations) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await selectDashboardLocale(page, language);
       await expect(page.locator("html")).toHaveAttribute("lang", language);
@@ -5594,10 +5624,72 @@ test.describe("Engineering Status browser smoke", () => {
       await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
       const telemetryRow = page.locator("#executionTelemetryRows .telemetry-row");
       await expect(telemetryRow).toHaveCount(1);
-      await telemetryRow.evaluate((row) => row.click());
+      // Telemetry presentation remains the declared renderer fixture above;
+      // this native action uses the actual Server audit producer and store.
+      const audited = page.waitForResponse(response => response.request().method() === "POST"
+        && new URL(response.url()).pathname === "/api/audit/user-action"
+        && response.request().postDataJSON()?.action === "telemetry_detail_opened");
+      await expect(telemetryRow).toBeVisible();
+      await telemetryRow.press("Enter");
+      const completed = await bindActualResponse(await audited, 200);
+      expect(completed.body).toEqual({ logged: true });
       await expect(page.locator("#telemetryDetailTitle")).toHaveText(title);
       await page.locator("#telemetryDetailClose").click();
+      const configuration = await page.evaluate(async () => {
+        const response = await fetch("/api/configuration", { cache: "no-store" });
+        if (!response.ok) throw Error("Actual fixture configuration read failed");
+        return response.json();
+      });
+      // Explicit HTTP negative: empty input is rejected before settings writes.
+      // This is a real failed audit outcome, not a manufactured log payload.
+      const rejectedResponse = page.waitForResponse(response => response.request().method() === "POST"
+        && new URL(response.url()).pathname === "/api/configuration");
+      expect(await page.evaluate(async () => (await fetch("/api/configuration", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      })).status)).toBe(409);
+      const failed = await bindActualResponse(await rejectedResponse, 409);
+      expect(failed.body).toEqual({ error: "CONSOLE_CONFIGURATION_INVALID" });
+      expect(await page.evaluate(async () => {
+        const response = await fetch("/api/configuration", { cache: "no-store" });
+        if (!response.ok) throw Error("Actual fixture configuration reread failed");
+        return response.json();
+      })).toEqual(configuration);
+      if (await page.locator("#componentLogs").getAttribute("open") === null)
+        await page.locator("#componentLogs > summary").click();
+      const logResponse = page.waitForResponse(response => response.request().method() === "GET"
+        && new URL(response.url()).pathname === "/api/logs/all"
+        && new URL(response.url()).searchParams.get("level") === "INFO");
+      await page.locator("#logLevelFilter").selectOption("INFO");
+      const logs = await bindActualResponse(await logResponse, 200);
+      for (const [event, outcome, action] of [["dashboard_action_completed", "COMPLETED", "telemetry_detail_opened"],
+        ["dashboard_action_failed", "FAILED", "console_configuration_changed"]]) {
+        expect(logs.body.entries.some(row => row.event === event && row.audit_outcome === outcome
+          && row.audit_action === action && row.audit_actor === "DASHBOARD_USER")).toBe(true);
+        await expect(page.locator(`#logEventFilter option[value="${event}"]`))
+          .toHaveText(DASHBOARD_MESSAGES[language][`log_event.${event}`]);
+        await expect(page.locator("#platformComponentLog"))
+          .toContainText(DASHBOARD_MESSAGES[language][`log_event.${event}`]);
+      }
+      const file = `console-audit-${language}-native-fresh.png`, output = testInfo.outputPath(file);
+      await page.locator("#componentLogs").screenshot({ path: output, animations: "disabled" });
+      auditProofs.push({ locale: language, completed: completed.proof, rejected: failed.proof,
+        stored_read: logs.proof, settings_unchanged_after_rejection: true,
+        observed_locale: await page.locator("html").getAttribute("lang"),
+        theme: await page.locator("html").getAttribute("data-theme"), viewport: page.viewportSize(),
+        file, sha256: createHash("sha256").update(readFileSync(output)).digest("hex") });
+      await testInfo.attach(`console-audit-${language}`, { path: output, contentType: "image/png" });
+      expect(errors, "Known Console audit events must render without ordinary page errors").toEqual([]);
     }
+    const output = testInfo.outputPath("console-audit-log-qualification.json");
+    writeFileSync(output, JSON.stringify({ scope: "SYNTHETIC_TELEMETRY_VIEW_GENUINE_CONSOLE_AUDIT_HTTP_STORE_AND_RENDER",
+      qualification: process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1" ? "INSTALLED" : "SOURCE",
+      source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null,
+      source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
+      wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null,
+      action_completion_is_not_run_completion: true, audit_class: ["dashboard_action_completed", "dashboard_action_failed"],
+      actual_five_locale_proofs: auditProofs }, null, 2));
+    await testInfo.attach("actual-console-audit-log-qualification", { path: output, contentType: "application/json" });
+    } finally { page.off("pageerror", pageError); }
   });
 
   test("provides a localized label for every canonical telemetry phase", () => {

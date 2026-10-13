@@ -76,7 +76,11 @@ test("all finite owning producer events and the read failure have strict labels 
   const { execFileSync } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");
   const actual = JSON.parse(execFileSync("python3", [fileURLToPath(new URL("./dashboard_owned_log_events.py", import.meta.url))], { encoding: "utf8" }));
-  assert.equal(actual.events.length, 28);
+  assert.equal(actual.events.length, 30);
+  assert.deepEqual(actual.calls.filter(row => row.producer_scope === "console_audit_conditional").map(row => row.event).sort(),
+    ["dashboard_action_completed", "dashboard_action_failed"]);
+  assert.deepEqual(actual.calls.filter(row => row.producer_scope === "console_audit_cancellation").map(row => row.event),
+    ["dashboard_action_completed"]);
   assert.equal(actual.technical_forwarders.length, 1);
   for (const locale of ["en", "nl", "de", "fr", "es"]) {
     const translate = createTranslator(locale, { strict: true, surface: "Operations Console logs" });

@@ -1,5 +1,40 @@
 # Engineering Platform Roadmap
 
+## Current r34 Console audit localization correction40 — 2026-10-13
+
+[ACK and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6145876955):
+same writer/session/branch/history; consumed40, no administrative cap, all other
+operational budgets unchanged. Supported canonical PATCH119 for this product fix.
+
+Source39 complete browser execution naturally passed529 first attempts plus four
+baseline exceptions; three exact JS assets exceeded80.2. Independent Quality AND
+Security reject complete acceptance: five genuine healthy200 logresponses with
+seven stored Console-audit rows cause missing dashboard_action_completed labels.
+The actual conditional producer also emits dashboard_action_failed, absent from
+all five catalogs. Failed browser behavior was not historically observed; current
+strict-translator controls confirm both missing keys in all five languages.
+All original bodies/errors/raw/screens stay intact. Valid installed17 continues
+naturally on its unchanged frozen source39/runtime, without cancellation or
+future PASS transfer. No complete source39/runtime-zero-error PASS is claimed.
+
+The finite two-event class now has five-language Console-action labels, explicitly
+not execution-success labels. The owning source-only audit resolves the exact
+conditional Server producer and direct CENTRAL cancellation log alongside the
+original28 lifecycle events; strict unknown keys still fail. One existing browser
+case retains its synthetic telemetry renderer scope, while native activation
+uses the actual Console audit producer, real stored/log HTTP reads and screen
+labels. An explicit malformed configuration request produces a real failed
+audit409 before settings writes; complete configuration reread must stay equal.
+Both real outcomes, current document/request/seven-phase/body hashes, five-language
+screens and all ordinary errors remain checked. One known audit endpoint extends
+the existing private observer; no generic capture framework/new corpus/deadline.
+All native, authority/epoch/noncreating/history/lifetime/error guards remain.
+
+Implementation/artifact/joint targeted/full/strict coverage/current CI and final
+independent acceptance remain PENDING. Then normal protected PR351, ordinary
+Finalization, NEW exact-final-main installed/browser/screenshots and own cleanup.
+Closed predecessors remain closed; HOB waits until the complete original DoD.
+
 ## Current r34 exact relative-header fixture correction39 — 2026-10-13
 
 [ACK, admission and single booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6145247732):

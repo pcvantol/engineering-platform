@@ -3687,6 +3687,8 @@ Object.assign(DASHBOARD_MESSAGES.es, {"execution_context.planning_not_supplied":
 
 // Literal log events from the owning lifecycle producers and Console read failure.
 Object.assign(DASHBOARD_MESSAGES.en, {
+  "log_event.dashboard_action_completed": "Console action completed",
+  "log_event.dashboard_action_failed": "Console action failed",
   "log_event.execution_phase_telemetry_unavailable": "Execution timing unavailable",
   "log_event.lifecycle_admission_decided": "Execution admission decided",
   "log_event.lifecycle_input_materialized": "Execution input prepared",
@@ -3718,6 +3720,8 @@ Object.assign(DASHBOARD_MESSAGES.en, {
   "log_event.validation_diagnostic_capture_unavailable": "Validation diagnostic capture unavailable"
 });
 Object.assign(DASHBOARD_MESSAGES.nl, {
+  "log_event.dashboard_action_completed": "Consoleactie uitgevoerd",
+  "log_event.dashboard_action_failed": "Consoleactie mislukt",
   "log_event.execution_phase_telemetry_unavailable": "Tijdsgegevens van uitvoering niet beschikbaar",
   "log_event.lifecycle_admission_decided": "Toelating van uitvoering beoordeeld",
   "log_event.lifecycle_input_materialized": "Invoer voor uitvoering voorbereid",
@@ -3749,6 +3753,8 @@ Object.assign(DASHBOARD_MESSAGES.nl, {
   "log_event.validation_diagnostic_capture_unavailable": "Vastlegging van validatiediagnose niet beschikbaar"
 });
 Object.assign(DASHBOARD_MESSAGES.de, {
+  "log_event.dashboard_action_completed": "Konsolenaktion abgeschlossen",
+  "log_event.dashboard_action_failed": "Konsolenaktion fehlgeschlagen",
   "log_event.execution_phase_telemetry_unavailable": "Zeitdaten der Ausführung nicht verfügbar",
   "log_event.lifecycle_admission_decided": "Zulassung der Ausführung bewertet",
   "log_event.lifecycle_input_materialized": "Eingabe für die Ausführung vorbereitet",
@@ -3780,6 +3786,8 @@ Object.assign(DASHBOARD_MESSAGES.de, {
   "log_event.validation_diagnostic_capture_unavailable": "Aufzeichnung der Validierungsdiagnose nicht verfügbar"
 });
 Object.assign(DASHBOARD_MESSAGES.fr, {
+  "log_event.dashboard_action_completed": "Action de la console terminée",
+  "log_event.dashboard_action_failed": "Échec de l’action de la console",
   "log_event.execution_phase_telemetry_unavailable": "Données de durée d’exécution indisponibles",
   "log_event.lifecycle_admission_decided": "Admission de l’exécution évaluée",
   "log_event.lifecycle_input_materialized": "Entrée de l’exécution préparée",
@@ -3811,6 +3819,8 @@ Object.assign(DASHBOARD_MESSAGES.fr, {
   "log_event.validation_diagnostic_capture_unavailable": "Capture du diagnostic de validation indisponible"
 });
 Object.assign(DASHBOARD_MESSAGES.es, {
+  "log_event.dashboard_action_completed": "Acción de la consola completada",
+  "log_event.dashboard_action_failed": "Error en la acción de la consola",
   "log_event.execution_phase_telemetry_unavailable": "Datos de tiempo de ejecución no disponibles",
   "log_event.lifecycle_admission_decided": "Admisión de la ejecución evaluada",
   "log_event.lifecycle_input_materialized": "Entrada de ejecución preparada",
