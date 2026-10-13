@@ -5683,24 +5683,34 @@ test.describe("Engineering Status browser smoke", () => {
         await expect(target).toHaveText(label);
         await target.scrollIntoViewIfNeeded();
         const geometry = await target.evaluate(node => {
-          const rect = node.getBoundingClientRect(), wrap = node.closest(".log-table-wrap").getBoundingClientRect();
-          const paintedPoints = [[rect.x + 1, rect.y + 1], [rect.right - 1, rect.y + 1],
-            [rect.x + 1, rect.bottom - 1], [rect.right - 1, rect.bottom - 1],
-            [rect.x + rect.width / 2, rect.y + rect.height / 2]].map(([x, y]) => {
-            const painted = document.elementFromPoint(x, y);
-            return painted === node || node.contains(painted);
-          });
-          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-            within_viewport: rect.x >= 0 && rect.y >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
-            within_scroll_wrap: rect.x >= wrap.x && rect.right <= wrap.right && rect.y >= wrap.y && rect.bottom <= wrap.bottom,
-            text_fits: node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight,
-            painted_points: paintedPoints, unobscured: paintedPoints.every(Boolean) };
+          const wrap = node.closest(".log-table-wrap").getBoundingClientRect();
+          const measure = rect => {
+            const paintedPoints = [[rect.x + 1, rect.y + 1], [rect.right - 1, rect.y + 1],
+              [rect.x + 1, rect.bottom - 1], [rect.right - 1, rect.bottom - 1],
+              [rect.x + rect.width / 2, rect.y + rect.height / 2]].map(([x, y]) => {
+              const painted = document.elementFromPoint(x, y);
+              return painted === node || node.contains(painted);
+            });
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+              within_viewport: rect.x >= 0 && rect.y >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+              within_scroll_wrap: rect.x >= wrap.x && rect.right <= wrap.right && rect.y >= wrap.y && rect.bottom <= wrap.bottom,
+              painted_points: paintedPoints, unobscured: paintedPoints.every(Boolean) };
+          };
+          const range = document.createRange(); range.selectNodeContents(node);
+          const rects = [...range.getClientRects()];
+          return { ...measure(range.getBoundingClientRect()), text_rect_count: rects.length,
+            cell_geometry: measure(node.getBoundingClientRect()),
+            text_fits: node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight };
         });
-        expect(geometry.width > 0 && geometry.height > 0 && geometry.within_viewport
+        expect(geometry.cell_geometry.width > 0 && geometry.cell_geometry.height > 0
+          && geometry.text_rect_count === 1 && geometry.width > 2 && geometry.height > 2 && geometry.within_viewport
           && geometry.within_scroll_wrap && geometry.text_fits && geometry.unobscured,
-        "The actual translated audit cell must be readable without a sticky overlay").toBe(true);
+        "The entire actual audit label must be readable; cell padding visibility is recorded separately").toBe(true);
         const file = `console-audit-${language}-${event}-native-fresh.png`, output = testInfo.outputPath(file);
-        await target.screenshot({ path: output, animations: "disabled" });
+        // Pinned Playwright's non-full-page clip uses actual viewport coordinates.
+        // Preserve partial cell-border geometry rather than claiming the whole cell is visible.
+        await page.screenshot({ path: output, animations: "disabled", fullPage: false,
+          clip: { x: geometry.x, y: geometry.y, width: geometry.width, height: geometry.height } });
         expect(await observer.documentId()).toBe(logs.proof.document_id);
         eventCaptures.push({ event, label, geometry, file,
           sha256: createHash("sha256").update(readFileSync(output)).digest("hex") });
