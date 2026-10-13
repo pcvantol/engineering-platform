@@ -5670,14 +5670,47 @@ test.describe("Engineering Status browser smoke", () => {
         await expect(page.locator("#platformComponentLog"))
           .toContainText(DASHBOARD_MESSAGES[language][`log_event.${event}`]);
       }
-      const file = `console-audit-${language}-native-fresh.png`, output = testInfo.outputPath(file);
-      await page.locator("#componentLogs").screenshot({ path: output, animations: "disabled" });
+      const optionsToggle = page.locator("#dashboardTitlebarOptionsToggle");
+      if (await optionsToggle.getAttribute("aria-expanded") === "true") await optionsToggle.click();
+      await expect(optionsToggle).toHaveAttribute("aria-expanded", "false");
+      const eventCaptures = [];
+      for (const event of ["dashboard_action_completed", "dashboard_action_failed"]) {
+        const label = DASHBOARD_MESSAGES[language][`log_event.${event}`];
+        // The event cell itself owns the text; retain the existing table and
+        // use its native scroll containers rather than cropping an oversized panel.
+        const target = page.locator("#platformComponentLog tr > td:nth-child(4)")
+          .filter({ hasText: label }).first();
+        await expect(target).toHaveText(label);
+        await target.scrollIntoViewIfNeeded();
+        const geometry = await target.evaluate(node => {
+          const rect = node.getBoundingClientRect(), wrap = node.closest(".log-table-wrap").getBoundingClientRect();
+          const paintedPoints = [[rect.x + 1, rect.y + 1], [rect.right - 1, rect.y + 1],
+            [rect.x + 1, rect.bottom - 1], [rect.right - 1, rect.bottom - 1],
+            [rect.x + rect.width / 2, rect.y + rect.height / 2]].map(([x, y]) => {
+            const painted = document.elementFromPoint(x, y);
+            return painted === node || node.contains(painted);
+          });
+          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+            within_viewport: rect.x >= 0 && rect.y >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+            within_scroll_wrap: rect.x >= wrap.x && rect.right <= wrap.right && rect.y >= wrap.y && rect.bottom <= wrap.bottom,
+            text_fits: node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight,
+            painted_points: paintedPoints, unobscured: paintedPoints.every(Boolean) };
+        });
+        expect(geometry.width > 0 && geometry.height > 0 && geometry.within_viewport
+          && geometry.within_scroll_wrap && geometry.text_fits && geometry.unobscured,
+        "The actual translated audit cell must be readable without a sticky overlay").toBe(true);
+        const file = `console-audit-${language}-${event}-native-fresh.png`, output = testInfo.outputPath(file);
+        await target.screenshot({ path: output, animations: "disabled" });
+        expect(await observer.documentId()).toBe(logs.proof.document_id);
+        eventCaptures.push({ event, label, geometry, file,
+          sha256: createHash("sha256").update(readFileSync(output)).digest("hex") });
+        await testInfo.attach(`console-audit-${language}-${event}`, { path: output, contentType: "image/png" });
+      }
       auditProofs.push({ locale: language, completed: completed.proof, rejected: failed.proof,
         stored_read: logs.proof, settings_unchanged_after_rejection: true,
         observed_locale: await page.locator("html").getAttribute("lang"),
         theme: await page.locator("html").getAttribute("data-theme"), viewport: page.viewportSize(),
-        file, sha256: createHash("sha256").update(readFileSync(output)).digest("hex") });
-      await testInfo.attach(`console-audit-${language}`, { path: output, contentType: "image/png" });
+        event_captures: eventCaptures });
       expect(errors, "Known Console audit events must render without ordinary page errors").toEqual([]);
     }
     const output = testInfo.outputPath("console-audit-log-qualification.json");
