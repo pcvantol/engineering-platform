@@ -5610,6 +5610,17 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/telemetry/**", (route) => route.fulfill({ json: {
       summary: {}, phases: [], bottlenecks: { top_time_consumers: [] }, runs: [],
     } }));
+    // Deliberately retain a wider neighboring row from the installed producer.
+    // This is a modeled saved-log prelude, not a real configuration change.
+    const preludeRuntime = JSON.parse(execFileSync("python3", ["-c",
+      "import sys,json,os;from pathlib import Path;from importlib.metadata import version;import engineering_platform.server as server;root=Path(sys.argv[1]);installed=os.environ.get('EP_RUN_EVIDENCE_REQUIRE_INSTALLED')=='1';assert not installed or (sys.prefix==str(Path(os.environ['EP_RUN_EVIDENCE_INSTALLED_PYTHON']).parent.parent) and '/site-packages/engineering_platform/' in server.__file__);assert (root/server.SERVER_DATABASE_FILENAME).is_file();server._audit_configuration_change(root,scope='MODELED_LOG_COLUMN_PRELUDE',key='capture_geometry_fixture',previous='modeled_before',value='modeled_after');print(json.dumps({'prefix':sys.prefix,'package':server.__file__,'version':version('engineering-platform')}))", dashboardRoot],
+      { cwd: repository, env: process.env, encoding: "utf8" }));
+    if (process.env.EP_RUN_EVIDENCE_REQUIRE_INSTALLED === "1") {
+      expect(preludeRuntime.prefix).toBe(path.dirname(path.dirname(process.env.EP_RUN_EVIDENCE_INSTALLED_PYTHON)));
+      expect(preludeRuntime.package).toContain("/site-packages/engineering_platform/");
+    }
+    const modeledPrelude = { scope: "MODELED_PERSISTED_LOG_NOT_ACTUAL_CONFIGURATION_CHANGE",
+      event: "configuration_changed", producer_version: preludeRuntime.version, settings_setter_called: false };
     try { for (const [language, title] of expectations) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await selectDashboardLocale(page, language);
@@ -5661,6 +5672,9 @@ test.describe("Engineering Status browser smoke", () => {
         && new URL(response.url()).searchParams.get("level") === "INFO");
       await page.locator("#logLevelFilter").selectOption("INFO");
       const logs = await bindActualResponse(await logResponse, 200);
+      expect(logs.body.entries.some(row => row.event === modeledPrelude.event
+        && row.configuration_scope === "MODELED_LOG_COLUMN_PRELUDE"
+        && row.configuration_key === "capture_geometry_fixture")).toBe(true);
       for (const [event, outcome, action] of [["dashboard_action_completed", "COMPLETED", "telemetry_detail_opened"],
         ["dashboard_action_failed", "FAILED", "console_configuration_changed"]]) {
         expect(logs.body.entries.some(row => row.event === event && row.audit_outcome === outcome
@@ -5682,8 +5696,11 @@ test.describe("Engineering Status browser smoke", () => {
           .filter({ hasText: label }).first();
         await expect(target).toHaveText(label);
         await target.scrollIntoViewIfNeeded();
-        const geometry = await target.evaluate(node => {
-          const wrap = node.closest(".log-table-wrap").getBoundingClientRect();
+        const readGeometry = () => target.evaluate(node => {
+          const owner = node.closest(".log-table-wrap"), wrap = owner.getBoundingClientRect();
+          const inner = { left: wrap.x + owner.clientLeft, top: wrap.y + owner.clientTop,
+            width: owner.clientWidth, height: owner.clientHeight };
+          inner.right = inner.left + inner.width; inner.bottom = inner.top + inner.height;
           const measure = rect => {
             const paintedPoints = [[rect.x + 1, rect.y + 1], [rect.right - 1, rect.y + 1],
               [rect.x + 1, rect.bottom - 1], [rect.right - 1, rect.bottom - 1],
@@ -5693,18 +5710,93 @@ test.describe("Engineering Status browser smoke", () => {
             });
             return { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
               within_viewport: rect.x >= 0 && rect.y >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
-              within_scroll_wrap: rect.x >= wrap.x && rect.right <= wrap.right && rect.y >= wrap.y && rect.bottom <= wrap.bottom,
+              within_scroll_wrap: rect.x >= inner.left && rect.right <= inner.right && rect.y >= inner.top && rect.bottom <= inner.bottom,
               painted_points: paintedPoints, unobscured: paintedPoints.every(Boolean) };
           };
           const range = document.createRange(); range.selectNodeContents(node);
           const rects = [...range.getClientRects()];
           return { ...measure(range.getBoundingClientRect()), text_rect_count: rects.length,
             cell_geometry: measure(node.getBoundingClientRect()),
+            inner_scroll_window: inner, scroll_left: owner.scrollLeft,
+            maximum_scroll_left: owner.scrollWidth - owner.clientWidth,
             text_fits: node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight };
         });
-        expect(geometry.cell_geometry.width > 0 && geometry.cell_geometry.height > 0
-          && geometry.text_rect_count === 1 && geometry.width > 2 && geometry.height > 2 && geometry.within_viewport
-          && geometry.within_scroll_wrap && geometry.text_fits && geometry.unobscured,
+        const readable = value => value.cell_geometry.width > 0 && value.cell_geometry.height > 0
+          && value.text_rect_count === 1 && value.width > 2 && value.height > 2 && value.within_viewport
+          && value.within_scroll_wrap && value.text_fits && value.unobscured;
+        const beforeGeometry = await readGeometry(), nativeReading = { before: beforeGeometry, moves: [] };
+        const retainGeometry = (phase, value) => writeFileSync(
+          testInfo.outputPath(`console-audit-${language}-${event}-geometry-${phase}.json`),
+          JSON.stringify({ scope: "CURRENT_NATIVE_GEOMETRY_NOT_PASS", geometry: value,
+            native_reading: nativeReading, locale: language, event,
+            bound_log_document_id: logs.proof.document_id, current_log_response: logs.proof }, null, 2));
+        retainGeometry("before-native", beforeGeometry);
+        const wrap = page.locator("#componentLogs .log-table-wrap");
+        const moveNative = async destination => {
+          await wrap.hover();
+          const current = await readGeometry();
+          const wanted = Math.max(0, Math.min(current.maximum_scroll_left, destination(current)));
+          const delta = wanted - current.scroll_left;
+          retainGeometry(`before-move-${nativeReading.moves.length}`, current);
+          expect(Number.isFinite(delta) && delta !== 0, "A real bounded native horizontal move is required").toBe(true);
+          const observed = await wrap.evaluateHandle(node => {
+            let listener;
+            const completion = new Promise(resolve => {
+              listener = event => {
+                if (event.target !== node) return;
+                node.removeEventListener("scrollend", listener);
+                resolve({ left: node.scrollLeft, owned_target: true, trusted: event.isTrusted });
+              };
+              node.addEventListener("scrollend", listener, { passive: true });
+            });
+            return { completion, cancel: () => node.removeEventListener("scrollend", listener) };
+          });
+          const failures = []; let ended;
+          try {
+            await page.mouse.wheel(delta, 0);
+            ended = await observed.evaluate(record => record.completion);
+          } catch (error) { failures.push(error); }
+          finally {
+            try { await observed.evaluate(record => record.cancel()); } catch (error) { failures.push(error); }
+            try { await observed.dispose(); } catch (error) { failures.push(error); }
+          }
+          if (failures.length) throw new AggregateError(failures, "Owned native audit reading failed");
+          const after = await readGeometry();
+          nativeReading.moves.push({ before: current, requested_delta_x: delta,
+            actual_scrollend: ended, after });
+          retainGeometry(`after-move-${nativeReading.moves.length}`, after);
+          expect(Number.isFinite(ended.left) && ended.left !== current.scroll_left
+            && ended.owned_target && ended.trusted).toBe(true);
+          return after;
+        };
+        let geometry = beforeGeometry;
+        if (geometry.text_rect_count === 1 && geometry.width <= geometry.inner_scroll_window.width
+          && !geometry.within_scroll_wrap) {
+          geometry = await moveNative(current => current.scroll_left + current.x + current.width / 2
+            - (current.inner_scroll_window.left + current.inner_scroll_window.width / 2));
+        }
+        if (language === "en" && event === "dashboard_action_completed") {
+          retainGeometry("positive-before-refault", geometry);
+          expect(readable(geometry)).toBe(true);
+          const alignedLeft = geometry.scroll_left;
+          // Mandatory actual negative, also when the original text already fits:
+          // move its center to the inner left edge, then restore the real offset.
+          const refault = await moveNative(current => current.scroll_left + current.x + current.width / 2
+            - current.inner_scroll_window.left);
+          nativeReading.refault = { scope: "ACTUAL_NATIVE_CLIPPING_NEGATIVE", geometry: refault,
+            clipping_detected: !readable(refault) };
+          retainGeometry("refault", refault);
+          expect(nativeReading.refault.clipping_detected).toBe(true);
+          geometry = await moveNative(() => alignedLeft);
+          nativeReading.refault.restored_readable = readable(geometry);
+          retainGeometry("restored", geometry);
+          expect(nativeReading.refault.restored_readable).toBe(true);
+        }
+        // Retain the actual condition before a red assertion, including failures.
+        writeFileSync(testInfo.outputPath(`console-audit-${language}-${event}-geometry.json`),
+          JSON.stringify({ scope: "CURRENT_NATIVE_GEOMETRY_NOT_PASS", geometry, native_reading: nativeReading,
+            locale: language, event, document_id: await observer.documentId(), current_log_response: logs.proof }, null, 2));
+        expect(readable(geometry),
         "The entire actual audit label must be readable; cell padding visibility is recorded separately").toBe(true);
         const file = `console-audit-${language}-${event}-native-fresh.png`, output = testInfo.outputPath(file);
         // Pinned Playwright's non-full-page clip uses actual viewport coordinates.
@@ -5712,7 +5804,7 @@ test.describe("Engineering Status browser smoke", () => {
         await page.screenshot({ path: output, animations: "disabled", fullPage: false,
           clip: { x: geometry.x, y: geometry.y, width: geometry.width, height: geometry.height } });
         expect(await observer.documentId()).toBe(logs.proof.document_id);
-        eventCaptures.push({ event, label, geometry, file,
+        eventCaptures.push({ event, label, geometry, native_reading: nativeReading, file,
           sha256: createHash("sha256").update(readFileSync(output)).digest("hex") });
         await testInfo.attach(`console-audit-${language}-${event}`, { path: output, contentType: "image/png" });
       }
@@ -5729,6 +5821,7 @@ test.describe("Engineering Status browser smoke", () => {
       source_sha: process.env.EP_RUN_EVIDENCE_SOURCE_SHA || null,
       source_tree: process.env.EP_RUN_EVIDENCE_SOURCE_TREE || null,
       wheel_sha256: process.env.EP_RUN_EVIDENCE_WHEEL_SHA256 || null,
+      modeled_persistent_log_prelude: modeledPrelude,
       action_completion_is_not_run_completion: true, audit_class: ["dashboard_action_completed", "dashboard_action_failed"],
       actual_five_locale_proofs: auditProofs }, null, 2));
     await testInfo.attach("actual-console-audit-log-qualification", { path: output, contentType: "application/json" });
