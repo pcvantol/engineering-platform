@@ -20,6 +20,7 @@ class Case:
     body: str | None = None
     project: bool = False
     origin: bool = False
+    headers: tuple[tuple[str, str], ...] = ()
 
 
 # One concrete case for every route family in console_route_ownership, plus
@@ -82,6 +83,11 @@ CASES: tuple[Case, ...] = (
     Case("Evidence artifact requires credential", "GET", "/v1/projects/postman-project/artifacts/terminal-evidence:missing", 401),
     Case("Agent pairing rejects malformed request", "POST", "/v1/agent/pair", 400, "{}"),
     Case("Agent registration requires credential", "POST", "/v1/agent/register", 401, "{}"),
+    Case("Workspace discovery requires separate credential", "GET", "/v1/onboarding/projects", 401,
+         headers=(("EP-Discovery-Contract", "1.0"),)),
+    Case("Workspace topology requires separate credential", "GET",
+         "/v1/onboarding/projects/postman-project/topology?expected_topology_revision=" + "0" * 64, 401,
+         headers=(("EP-Discovery-Contract", "1.0"),)),
     Case("Unknown route", "GET", "/not-an-ep-route", 404),
 )
 
@@ -92,6 +98,7 @@ def postman_collection() -> dict[str, object]:
                    if case.body is not None else [])
         if case.origin:
             headers.append({"key": "Origin", "value": "{{baseUrl}}"})
+        headers.extend({"key": key, "value": value} for key, value in case.headers)
         suffix = "?project=postman-project" if case.project else ""
         request: dict[str, object] = {"method": case.method, "header": headers,
                                       "url": "{{baseUrl}}" + case.path + suffix}

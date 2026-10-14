@@ -16,7 +16,8 @@ from threading import Lock, Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import server, submission_service
+from engineering_platform import project_discovery, server, submission_service
+from jsonschema import Draft202012Validator, FormatChecker
 from ep_server_postman_surface import postman_collection
 
 
@@ -93,7 +94,7 @@ def _port() -> int:
         return int(probe.getsockname()[1])
 
 
-def _request(base_url: str, item: dict[str, object]) -> int:
+def _request(base_url: str, item: dict[str, object], discovery_binding: dict[str, str] | None = None) -> int:
     request = item["request"]
     assert isinstance(request, dict)
     method, path = _collection_operation(item)
@@ -105,10 +106,21 @@ def _request(base_url: str, item: dict[str, object]) -> int:
         url += "?" + raw_url.split("?", 1)[1]
     headers = {str(header["key"]): str(header["value"]).replace("{{baseUrl}}", base_url)
                for header in request.get("header", []) if isinstance(header, dict) and "key" in header and "value" in header}
+    for key, value in (discovery_binding or {}).items():
+        placeholder = "{{" + key + "}}"
+        url = url.replace(placeholder, value)
+        headers = {name: content.replace(placeholder, value) for name, content in headers.items()}
     body = request.get("body", {})
     data = str(body.get("raw", "")).encode("utf-8") if isinstance(body, dict) and method != "GET" else None
     try:
         with urlopen(Request(url, data=data, headers=headers, method=method), timeout=3) as response:
+            if path.startswith("/v1/onboarding/projects") and response.status == 200:
+                payload = json.loads(response.read())
+                schema = json.loads((Path(project_discovery.__file__).parent / "schemas" /
+                    "workspace-project-discovery-v1.schema.json").read_text())
+                Draft202012Validator(schema, format_checker=FormatChecker()).validate(payload)
+                if discovery_binding is not None and path == "/v1/onboarding/projects":
+                    discovery_binding["ep_discovery_revision"] = payload["topology_revision"]
             return response.status
     except HTTPError as error:
         return error.code
@@ -217,12 +229,19 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="ep-postman-contract-") as temporary:
         data_root = Path(temporary) / "data"
         port = _port()
-        server.initialize(data_root, bind_port=port)
+        identity = server.initialize(data_root, bind_port=port)
         with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
             server.project_topology.register_server_local_topology(connection, declaration={
                 "schema_version": "1.0", "project": {"id": "postman-project", "authority_repository_id": "postman-repository"},
                 "repository": {"id": "postman-repository", "role": "authority"}, "validation": {"kind": "none"},
             })
+            issued = project_discovery.issue(connection, grant_id="postman-discovery",
+                instance_id=identity.instance_id, consumer_id="postman-workspace",
+                workspace_instance_id="postman-workspace-instance", project_ids=["postman-project"],
+                fields=sorted(project_discovery.FIELDS), operation_id="postman-discovery-issue", ttl_seconds=900)
+        discovery_binding = {"ep_discovery_bearer": issued["credential"],
+            "ep_discovery_instance": identity.instance_id, "ep_discovery_consumer": "postman-workspace",
+            "ep_discovery_workspace": "postman-workspace-instance"}
         http_server = http.server.ThreadingHTTPServer(("127.0.0.1", port), server._HealthHandler)
         http_server.data_root = data_root  # type: ignore[attr-defined]
         http_server.central_data_transfer_lock = Lock()  # type: ignore[attr-defined]
@@ -239,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             if served_openapi != expected_openapi:
                 raise RuntimeError("API_OPENAPI_DRIFT")
             for item in items:
-                observed, expected = _request(base_url, item), _expected_status(item)
+                observed, expected = _request(base_url, item, discovery_binding), _expected_status(item)
                 if observed != expected:
                     raise RuntimeError(f"API_POSTMAN_DRIFT {item.get('name')}: expected {expected}, got {observed}")
             for item in _collection_items(surface_collection.get("item")):

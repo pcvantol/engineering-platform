@@ -9,6 +9,26 @@
     {
       "key": "baseUrl",
       "value": "http://127.0.0.1:8765"
+    },
+    {
+      "key": "ep_discovery_bearer",
+      "value": ""
+    },
+    {
+      "key": "ep_discovery_instance",
+      "value": ""
+    },
+    {
+      "key": "ep_discovery_consumer",
+      "value": ""
+    },
+    {
+      "key": "ep_discovery_workspace",
+      "value": ""
+    },
+    {
+      "key": "ep_discovery_revision",
+      "value": ""
     }
   ],
   "item": [
@@ -305,23 +325,33 @@
               },
               {
                 "key": "EP-Instance-ID",
-                "value": "{{ep_instance_id}}"
+                "value": "{{ep_discovery_instance}}"
               },
               {
                 "key": "EP-Consumer-ID",
-                "value": "{{workspace_consumer_id}}"
+                "value": "{{ep_discovery_consumer}}"
               },
               {
                 "key": "Workspace-Instance-ID",
-                "value": "{{workspace_instance_id}}"
+                "value": "{{ep_discovery_workspace}}"
               },
               {
                 "key": "EP-Audience",
                 "value": "workspace"
               }
             ],
-            "url": "{{base_url}}/v1/onboarding/projects?limit=25"
-          }
+            "url": "{{baseUrl}}/v1/onboarding/projects"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('expected status', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "TopologySnapshot selected exact revision",
@@ -338,23 +368,33 @@
               },
               {
                 "key": "EP-Instance-ID",
-                "value": "{{ep_instance_id}}"
+                "value": "{{ep_discovery_instance}}"
               },
               {
                 "key": "EP-Consumer-ID",
-                "value": "{{workspace_consumer_id}}"
+                "value": "{{ep_discovery_consumer}}"
               },
               {
                 "key": "Workspace-Instance-ID",
-                "value": "{{workspace_instance_id}}"
+                "value": "{{ep_discovery_workspace}}"
               },
               {
                 "key": "EP-Audience",
                 "value": "workspace"
               }
             ],
-            "url": "{{base_url}}/v1/onboarding/projects/{{project_id}}/topology?expected_topology_revision={{topology_revision}}"
-          }
+            "url": "{{baseUrl}}/v1/onboarding/projects/:project_id/topology?expected_topology_revision={{ep_discovery_revision}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('expected status', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

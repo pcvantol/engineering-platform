@@ -66,6 +66,9 @@ class ReceiptRunProvenancePersistenceTest(unittest.TestCase):
             db.execute("DROP TRIGGER ep_receipt_run_provenance_immutable_update")
             db.execute("DROP TRIGGER ep_receipt_run_provenance_immutable_delete")
             db.execute("DROP TABLE ep_receipt_run_provenance")
+            for table in ("ep_workspace_discovery_grants", "ep_installation_pairing_credentials", "ep_installation_pairings"):
+                self.assertEqual(db.execute("SELECT count(*) FROM " + table).fetchone()[0], 0)
+                db.execute("DROP TABLE " + table)
             db.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema52")
             db.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51)))")
             db.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,51 FROM ep_installations_schema52")

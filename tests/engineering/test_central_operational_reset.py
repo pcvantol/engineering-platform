@@ -827,6 +827,8 @@ class CentralOperationalResetTests(unittest.TestCase):
             connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=68")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(67)")
             connection.execute("UPDATE engineering_metadata SET value='67' WHERE key='installation.schema_version'")
+            self.assertEqual(connection.execute("SELECT count(*) FROM ep_workspace_discovery_grants").fetchone()[0], 0)
+            connection.execute("DROP TABLE ep_workspace_discovery_grants")
             connection.execute("DROP TABLE ep_installation_pairing_credentials")
             connection.execute("DROP TABLE ep_installation_pairings")
             connection.execute("ALTER TABLE ep_installations RENAME TO installation_schema68")
