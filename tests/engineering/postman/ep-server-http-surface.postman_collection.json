@@ -1234,6 +1234,77 @@
           }
         }
       ]
+    },
+    {
+      "name": "HOB-EP01 bounded project discovery",
+      "item": [
+        {
+          "name": "DiscoverySnapshot",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ep_discovery_bearer}}"
+              },
+              {
+                "key": "EP-Discovery-Contract",
+                "value": "1.0"
+              },
+              {
+                "key": "EP-Instance-ID",
+                "value": "{{ep_instance_id}}"
+              },
+              {
+                "key": "EP-Consumer-ID",
+                "value": "{{workspace_consumer_id}}"
+              },
+              {
+                "key": "Workspace-Instance-ID",
+                "value": "{{workspace_instance_id}}"
+              },
+              {
+                "key": "EP-Audience",
+                "value": "workspace"
+              }
+            ],
+            "url": "{{base_url}}/v1/onboarding/projects?limit=25"
+          }
+        },
+        {
+          "name": "TopologySnapshot selected exact revision",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ep_discovery_bearer}}"
+              },
+              {
+                "key": "EP-Discovery-Contract",
+                "value": "1.0"
+              },
+              {
+                "key": "EP-Instance-ID",
+                "value": "{{ep_instance_id}}"
+              },
+              {
+                "key": "EP-Consumer-ID",
+                "value": "{{workspace_consumer_id}}"
+              },
+              {
+                "key": "Workspace-Instance-ID",
+                "value": "{{workspace_instance_id}}"
+              },
+              {
+                "key": "EP-Audience",
+                "value": "workspace"
+              }
+            ],
+            "url": "{{base_url}}/v1/onboarding/projects/{{project_id}}/topology?expected_topology_revision={{topology_revision}}"
+          }
+        }
+      ]
     }
   ]
 }
