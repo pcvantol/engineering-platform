@@ -1,5 +1,33 @@
 # Engineering Platform Roadmap
 
+## HOB-EP01 project discovery — protected implementation, 2026-10-14
+
+The selected [Workspace project-discovery producer](../engineering/WORKSPACE_PROJECT_DISCOVERY_READ_V1.md)
+is qualified on protected EP2.3.120 main
+`c3d4e8161598adb92aa21a40aaa903df591c6c3a` after normal protected PR355.
+[Delivery/Finalization record](WORKSPACE_PROJECT_DISCOVERY_READ_V1_DELIVERY.md)
+binds current source/tree/wheels, actual installed2559 tests, strict changed-file
+line coverage, independent complete Quality/Security and all11 owning CI jobs.
+Only bounded authenticated B8R/CENTRAL discovery/topology reads and finite
+revocable Workspace READ grants are selected. No scanner/second registry,
+project create/adopt, generic IAM, user-data migration or live installation.
+
+The same sole ARCHITECT_2 / LANE_2_WORK continues ordinary nonempty NO_BUMP
+Finalization with its own reviews/checks/protected merge, then NEW exact-final-main
+installed HTTP/readback/cleanup and immutable qualified L4 handoff under
+`L2-L4-HOB-EP01-VERIFIED-LINK-V1-20261012`. These remaining gates are PENDING;
+source-qualified or initial installed proof is not full HOB closure. Scope and
+operational budgets stay unchanged; actual consumption is retained without an
+administrative cycle maximum under decision6161548467.
+
+R34, r33, r43/r44 and GP remain CLOSED. The dated r34 entries below retain their
+original observed stage and historical failures; they are not executable work
+or a reopening. HOB-EP01's activation6161548467 supersedes its historical wait
+markers. L4's complete GUI, L1 installer and L3 are not producer prerequisites.
+TDE observe is reported separately as actual FAILED, with unsuppressed open
+maintenance signals; a green nonblocking workflow is not TDE-qualified PASS.
+
+
 ## Current r34 protected source delivery and NO_BUMP Finalization — 2026-10-13
 
 [ACK and one-time documentary correction47 booking](https://github.com/pcvantol/forge/issues/142#issuecomment-6154663253):
