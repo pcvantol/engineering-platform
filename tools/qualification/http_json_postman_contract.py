@@ -5,12 +5,14 @@ from __future__ import annotations
 from engineering_platform.storage import sqlite_connection
 
 import argparse
+from contextlib import contextmanager
 import http.server
 import json
 from pathlib import Path
 import re
 import socket
 import sqlite3
+import sys
 import tempfile
 from threading import Lock, Thread
 from urllib.error import HTTPError
@@ -24,6 +26,34 @@ from ep_server_postman_surface import postman_collection
 COLLECTION = Path("tests/engineering/postman/http-json-api.postman_collection.json")
 SURFACE_COLLECTION = Path("tests/engineering/postman/ep-server-http-surface.postman_collection.json")
 _STATUS = re.compile(r"pm\.response\.to\.have\.status\((\d+)\)")
+
+
+@contextmanager
+def _qualification_directory():
+    """Keep failed evidence; clean only after the guarded server has stopped."""
+    temporary = tempfile.TemporaryDirectory(prefix="ep-postman-contract-", delete=False)
+    try:
+        yield temporary.name
+    except BaseException:
+        print(f"POSTMAN_FIXTURE_RETAINED={temporary.name}", file=sys.stderr)
+        raise
+    else:
+        temporary.cleanup()
+
+
+def _stop_server(http_server, worker):
+    """Join the listener and every non-daemon handler before fixture cleanup."""
+    primary = sys.exception()
+    try:
+        http_server.shutdown()
+        worker.join(timeout=3)
+        if worker.is_alive():
+            raise RuntimeError("POSTMAN_LISTENER_STOP_UNCONFIRMED")
+        http_server.server_close()
+    except BaseException as cleanup_error:
+        if primary is not None:
+            raise BaseExceptionGroup("Postman request and cleanup failed", [primary, cleanup_error]) from None
+        raise
 
 
 class _NoopService:
@@ -226,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     items = _collection_items(collection.get("item"))
     if _operations_from_openapi(expected_openapi) != {_collection_operation(item) for item in items}:
         raise RuntimeError("OPENAPI_POSTMAN_OPERATION_DRIFT")
-    with tempfile.TemporaryDirectory(prefix="ep-postman-contract-") as temporary:
+    with _qualification_directory() as temporary:
         data_root = Path(temporary) / "data"
         port = _port()
         identity = server.initialize(data_root, bind_port=port)
@@ -243,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
             "ep_discovery_instance": identity.instance_id, "ep_discovery_consumer": "postman-workspace",
             "ep_discovery_workspace": "postman-workspace-instance"}
         http_server = http.server.ThreadingHTTPServer(("127.0.0.1", port), server._HealthHandler)
+        http_server.daemon_threads = False
         http_server.data_root = data_root  # type: ignore[attr-defined]
         http_server.central_data_transfer_lock = Lock()  # type: ignore[attr-defined]
         http_server.central_data_transfer_active = False  # type: ignore[attr-defined]
@@ -267,8 +298,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise RuntimeError(f"SERVER_SURFACE_POSTMAN_DRIFT {item.get('name')}: expected {expected}, got {observed}")
             _queue_action_contract(data_root, base_url)
         finally:
-            http_server.shutdown()
-            worker.join(timeout=3)
+            _stop_server(http_server, worker)
     print("HTTP_JSON_API_OPENAPI_POSTMAN_CONTRACT=PASS")
     return 0
 
