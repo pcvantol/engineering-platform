@@ -5,24 +5,55 @@ from __future__ import annotations
 from engineering_platform.storage import sqlite_connection
 
 import argparse
+from contextlib import contextmanager
 import http.server
 import json
 from pathlib import Path
 import re
 import socket
 import sqlite3
+import sys
 import tempfile
 from threading import Lock, Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import server, submission_service
+from engineering_platform import project_discovery, server, submission_service
+from jsonschema import Draft202012Validator, FormatChecker
 from ep_server_postman_surface import postman_collection
 
 
 COLLECTION = Path("tests/engineering/postman/http-json-api.postman_collection.json")
 SURFACE_COLLECTION = Path("tests/engineering/postman/ep-server-http-surface.postman_collection.json")
 _STATUS = re.compile(r"pm\.response\.to\.have\.status\((\d+)\)")
+
+
+@contextmanager
+def _qualification_directory():
+    """Keep failed evidence; clean only after the guarded server has stopped."""
+    temporary = tempfile.TemporaryDirectory(prefix="ep-postman-contract-", delete=False)
+    try:
+        yield temporary.name
+    except BaseException:
+        print(f"POSTMAN_FIXTURE_RETAINED={temporary.name}", file=sys.stderr)
+        raise
+    else:
+        temporary.cleanup()
+
+
+def _stop_server(http_server, worker):
+    """Join the listener and every non-daemon handler before fixture cleanup."""
+    primary = sys.exception()
+    try:
+        http_server.shutdown()
+        worker.join(timeout=3)
+        if worker.is_alive():
+            raise RuntimeError("POSTMAN_LISTENER_STOP_UNCONFIRMED")
+        http_server.server_close()
+    except BaseException as cleanup_error:
+        if primary is not None:
+            raise BaseExceptionGroup("Postman request and cleanup failed", [primary, cleanup_error]) from None
+        raise
 
 
 class _NoopService:
@@ -93,7 +124,7 @@ def _port() -> int:
         return int(probe.getsockname()[1])
 
 
-def _request(base_url: str, item: dict[str, object]) -> int:
+def _request(base_url: str, item: dict[str, object], discovery_binding: dict[str, str] | None = None) -> int:
     request = item["request"]
     assert isinstance(request, dict)
     method, path = _collection_operation(item)
@@ -105,10 +136,21 @@ def _request(base_url: str, item: dict[str, object]) -> int:
         url += "?" + raw_url.split("?", 1)[1]
     headers = {str(header["key"]): str(header["value"]).replace("{{baseUrl}}", base_url)
                for header in request.get("header", []) if isinstance(header, dict) and "key" in header and "value" in header}
+    for key, value in (discovery_binding or {}).items():
+        placeholder = "{{" + key + "}}"
+        url = url.replace(placeholder, value)
+        headers = {name: content.replace(placeholder, value) for name, content in headers.items()}
     body = request.get("body", {})
     data = str(body.get("raw", "")).encode("utf-8") if isinstance(body, dict) and method != "GET" else None
     try:
         with urlopen(Request(url, data=data, headers=headers, method=method), timeout=3) as response:
+            if path.startswith("/v1/onboarding/projects") and response.status == 200:
+                payload = json.loads(response.read())
+                schema = json.loads((Path(project_discovery.__file__).parent / "schemas" /
+                    "workspace-project-discovery-v1.schema.json").read_text())
+                Draft202012Validator(schema, format_checker=FormatChecker()).validate(payload)
+                if discovery_binding is not None and path == "/v1/onboarding/projects":
+                    discovery_binding["ep_discovery_revision"] = payload["topology_revision"]
             return response.status
     except HTTPError as error:
         return error.code
@@ -214,16 +256,24 @@ def main(argv: list[str] | None = None) -> int:
     items = _collection_items(collection.get("item"))
     if _operations_from_openapi(expected_openapi) != {_collection_operation(item) for item in items}:
         raise RuntimeError("OPENAPI_POSTMAN_OPERATION_DRIFT")
-    with tempfile.TemporaryDirectory(prefix="ep-postman-contract-") as temporary:
+    with _qualification_directory() as temporary:
         data_root = Path(temporary) / "data"
         port = _port()
-        server.initialize(data_root, bind_port=port)
+        identity = server.initialize(data_root, bind_port=port)
         with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
             server.project_topology.register_server_local_topology(connection, declaration={
                 "schema_version": "1.0", "project": {"id": "postman-project", "authority_repository_id": "postman-repository"},
                 "repository": {"id": "postman-repository", "role": "authority"}, "validation": {"kind": "none"},
             })
+            issued = project_discovery.issue(connection, grant_id="postman-discovery",
+                instance_id=identity.instance_id, consumer_id="postman-workspace",
+                workspace_instance_id="postman-workspace-instance", project_ids=["postman-project"],
+                fields=sorted(project_discovery.FIELDS), operation_id="postman-discovery-issue", ttl_seconds=900)
+        discovery_binding = {"ep_discovery_bearer": issued["credential"],
+            "ep_discovery_instance": identity.instance_id, "ep_discovery_consumer": "postman-workspace",
+            "ep_discovery_workspace": "postman-workspace-instance"}
         http_server = http.server.ThreadingHTTPServer(("127.0.0.1", port), server._HealthHandler)
+        http_server.daemon_threads = False
         http_server.data_root = data_root  # type: ignore[attr-defined]
         http_server.central_data_transfer_lock = Lock()  # type: ignore[attr-defined]
         http_server.central_data_transfer_active = False  # type: ignore[attr-defined]
@@ -239,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             if served_openapi != expected_openapi:
                 raise RuntimeError("API_OPENAPI_DRIFT")
             for item in items:
-                observed, expected = _request(base_url, item), _expected_status(item)
+                observed, expected = _request(base_url, item, discovery_binding), _expected_status(item)
                 if observed != expected:
                     raise RuntimeError(f"API_POSTMAN_DRIFT {item.get('name')}: expected {expected}, got {observed}")
             for item in _collection_items(surface_collection.get("item")):
@@ -248,8 +298,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise RuntimeError(f"SERVER_SURFACE_POSTMAN_DRIFT {item.get('name')}: expected {expected}, got {observed}")
             _queue_action_contract(data_root, base_url)
         finally:
-            http_server.shutdown()
-            worker.join(timeout=3)
+            _stop_server(http_server, worker)
     print("HTTP_JSON_API_OPENAPI_POSTMAN_CONTRACT=PASS")
     return 0
 

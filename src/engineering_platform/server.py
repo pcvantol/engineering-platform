@@ -38,6 +38,7 @@ from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 from uuid import uuid4
 
 from . import installation_pairing
+from . import project_discovery
 from . import agent_trust
 from . import central_database
 from . import merge_delegation
@@ -149,7 +150,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 74
+SERVER_STORE_SCHEMA_VERSION = 75
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -210,6 +211,7 @@ def _http_json_openapi_document() -> dict[str, object]:
             "description": "Canonical authenticated submission ingress and platform health.",
         },
         "paths": {
+            **project_discovery.openapi_paths(),
             "/v1/projects/{project_id}/submissions/{submission_id}/effect-result": {
                 "get": {
                     "summary": "Read the producer-bound FME result and exact artifact bytes",
@@ -444,6 +446,8 @@ def _http_json_openapi_document() -> dict[str, object]:
         },
         "components": {
             "securitySchemes": {
+                "discoveryBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque",
+                    "description": "Separate finite, revocable Workspace discovery READ grant; never a submission/admin bearer."},
                 "consumerBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque"},
             },
         },
@@ -730,6 +734,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_control_provenance",
         "ep_installation_pairings",
         "ep_installation_pairing_credentials",
+        "ep_workspace_discovery_grants",
         "ep_consumer_credentials",
         "ep_consumer_registrations",
         "ep_consumer_credential_recovery_operations",
@@ -996,6 +1001,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     _install_current_submission_schema(connection)
     parallel_action_admission.install_schema(connection)
     installation_pairing.install_schema(connection)
+    project_discovery.install_schema(connection)
     _install_forge_action_context_schema(connection)
     _install_forge_planning_context_schema(connection)
     _install_execution_host_evidence_schema(connection)
@@ -2293,6 +2299,22 @@ def _migrate_schema_74(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=74")
 
 
+def _migrate_schema_75(connection: sqlite3.Connection) -> None:
+    """Owner migration only, using the existing guarded rebuild transaction.
+
+    Canonical foreign-key targets and all existing credentials are preserved;
+    discovery HTTP reads never invoke this migration.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema74")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 75))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,75 FROM ep_installations_schema74")
+    connection.execute("DROP TABLE ep_installations_schema74")
+    project_discovery.install_schema(connection)
+    central_operational_reset.install_writer_fences(connection)
+    connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(75)")
+    connection.execute("UPDATE engineering_metadata SET value='75' WHERE key='installation.schema_version'")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2327,6 +2349,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (72, _migrate_schema_72),
     (73, _migrate_schema_73),
     (74, _migrate_schema_74),
+    (75, _migrate_schema_75),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -2348,8 +2371,11 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
             tables = _table_names(connection)
             try:
                 installation_pairing.validate_schema(connection)
+                project_discovery.validate_schema(connection)
             except installation_pairing.InstallationPairingError as error:
                 raise ServerConfigurationError("EP installation pairing schema is invalid.") from error
+            except project_discovery.DiscoveryError as error:
+                raise ServerConfigurationError("EP discovery grant schema is invalid.") from error
             indexes = _index_names(connection)
             views = _view_names(connection)
             triggers = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
@@ -5984,8 +6010,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         return report
 
     def _send(self, status_code: int, payload: dict[str, object], instance_id: str | None = None,
-              *, cache_control: str | None = None) -> None:
+              *, cache_control: str | None = None, before_headers=None) -> None:
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+        if before_headers is not None:
+            before_headers()
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
@@ -7423,6 +7451,38 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
             return
+        discovery_match = re.fullmatch(r"/v1/onboarding/projects(?:/([^/]+)/topology)?", request.path)
+        if discovery_match:
+            if (self.headers.get("Content-Length") not in (None, "0")
+                    or len(self.headers.get_all("Content-Length", [])) > 1
+                    or self.headers.get("Transfer-Encoding") is not None):
+                self._send(400, {"error": "DISCOVERY_BODY_FORBIDDEN"}, cache_control="no-store")
+                return
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            try:
+                project_discovery.read(self.server.data_root, token=token,
+                    headers={key: self.headers.get(key, "") for key in (
+                        "EP-Discovery-Contract", "EP-Instance-ID", "EP-Consumer-ID",
+                        "Workspace-Instance-ID", "EP-Audience")},
+                    query=parse_qs(request.query, keep_blank_values=True),
+                    project_id=unquote(discovery_match.group(1)) if discovery_match.group(1) else None,
+                    publish=lambda body, instance, check: self._send(200, body, instance,
+                        cache_control="no-store", before_headers=check))
+            except project_discovery.DiscoveryError as error:
+                self._send(error.status, {"error": error.code}, cache_control="no-store")
+            except (json.JSONDecodeError, KeyError, TypeError):
+                logging.getLogger(__name__).exception("Invalid stored discovery topology")
+                self._send(500, {"error": "CENTRAL_CORRUPT"}, cache_control="no-store")
+            except sqlite3.Error as error:
+                unavailable = getattr(error, "sqlite_errorcode", 0) & 255 in {
+                    sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_IOERR, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                logging.getLogger(__name__).exception("Discovery CENTRAL read failed")
+                self._send(503 if unavailable else 500,
+                    {"error": "CENTRAL_UNAVAILABLE" if unavailable else "CENTRAL_CORRUPT"}, cache_control="no-store")
+            except OSError:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"}, cache_control="no-store")
+            return
         if request.path == "/v1/installation-compatibility":
             identity = initialize(self.server.data_root).instance_id
             if request.query or any(self.headers.get(key) is not None for key in ("EP-Project-ID", "EP-Repository-ID")):
@@ -8324,7 +8384,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "installation-pairing-register", "installation-pairing-status", "installation-pairing-issue", "installation-pairing-revoke", "installation-pairing-detach", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "grant-parallel-action-repository", "revoke-parallel-action-repository", "qualify-parallel-action-artifact", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "recover-managed-workspace", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "operational-diagnose", "operational-qualify", "operational-readback", "operational-update-assess", "operational-inventory", "system-service-inventory", "legacy-adoption-inspect", "legacy-adoption-authorize", "installation-update-plan", "installation-update-prepare", "installation-update-admit", "installation-update-apply", "installation-update-resume", "installation-update-status", "owner-consumer-readback", "owner-credential-recover", "owner-credential-recovery-adopt-peer-configuration", "owner-credential-recovery-status", "service-install", "service-uninstall", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "installation-pairing-register", "installation-pairing-status", "installation-pairing-issue", "installation-pairing-revoke", "installation-pairing-detach", "discovery-grant-issue", "discovery-grant-status", "discovery-grant-revoke", "provision-declaration", "issue-consumer-credential", "issue-development-consumer-credential", "grant-operator-capability", "revoke-operator-capability", "grant-parallel-action-repository", "revoke-parallel-action-repository", "qualify-parallel-action-artifact", "inspect-assurance-target", "select-assurance-target", "revoke-assurance-target", "reserve-merge-delegation", "activate-merge-delegation", "revoke-merge-delegation", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "recover-managed-workspace", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--runtime-profile", choices=("operational", "development"), default="operational")
     parser.add_argument("--development-venv", type=Path)
@@ -8337,6 +8397,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--path", type=Path)
     parser.add_argument("--declaration", type=Path)
     parser.add_argument("--consumer-id")
+    parser.add_argument("--workspace-instance-id")
+    parser.add_argument("--discovery-grant-id")
+    parser.add_argument("--discovery-project-id", action="append", default=[])
+    parser.add_argument("--discovery-field", action="append")
+    parser.add_argument("--discovery-ttl-seconds", type=int, default=900)
     parser.add_argument("--submission-id")
     parser.add_argument("--intake-id")
     parser.add_argument("--artifact-id")
@@ -9130,6 +9195,35 @@ def main(argv: list[str] | None = None) -> int:
             receipt_complete = transport != "FILE_INBOX" or (isinstance(receipt_id, str) and bool(receipt_id) and isinstance(received_at, str) and bool(received_at))
             scope_complete = run_id is not None and (dispatch_project, dispatch_repository) == (project_id, repository_id)
             result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "admission_audit_provenance": "PRESENT" if admission_audit else "UNAVAILABLE", "receipt_run_provenance": "PRESENT" if run_id else "UNAVAILABLE", "dispatch_scope_provenance": "COMPLETE" if scope_complete else "UNAVAILABLE", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and run_id is None and blocked is None}
+        elif args.command.startswith("discovery-grant-"):
+            from .platform_admin import require_installation_owner
+            require_installation_owner(args.data_root)
+            if not args.expected_instance_id or not args.discovery_grant_id:
+                raise ServerConfigurationError("DISCOVERY_OWNER_INSTANCE_REQUIRED")
+            database = args.data_root / SERVER_DATABASE_FILENAME
+            context = (storage.sqlite_read_connection(database) if args.command == "discovery-grant-status"
+                else storage.sqlite_connection(database.resolve().as_uri() + "?mode=rw", uri=True))
+            try:
+                with context as connection:
+                    connection.execute("PRAGMA foreign_keys=ON")
+                    connection.execute("BEGIN" if args.command == "discovery-grant-status" else "BEGIN IMMEDIATE")
+                    identity = project_discovery.require_current_instance(connection, args.expected_instance_id)
+                    if args.command == "discovery-grant-issue":
+                        result = project_discovery.issue(connection, grant_id=args.discovery_grant_id,
+                            instance_id=identity, consumer_id=args.consumer_id,
+                            workspace_instance_id=args.workspace_instance_id,
+                            project_ids=args.discovery_project_id,
+                            fields=args.discovery_field if args.discovery_field is not None else sorted(project_discovery.IDENTITY_FIELDS),
+                            operation_id=args.operation_id, ttl_seconds=args.discovery_ttl_seconds)
+                    elif args.command == "discovery-grant-revoke":
+                        result = project_discovery.revoke(connection,
+                            grant_id=args.discovery_grant_id, operation_id=args.operation_id)
+                    else:
+                        result = project_discovery.status(connection, grant_id=args.discovery_grant_id)
+            except sqlite3.Error as error:
+                unavailable = getattr(error, "sqlite_errorcode", 0) & 255 in {
+                    sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_IOERR, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                raise ServerConfigurationError("DISCOVERY_CENTRAL_UNAVAILABLE" if unavailable else "DISCOVERY_CENTRAL_CORRUPT") from error
         elif args.command.startswith("installation-pairing-"):
             from .platform_admin import require_installation_owner
             require_installation_owner(args.data_root)
@@ -9505,7 +9599,8 @@ def main(argv: list[str] | None = None) -> int:
             local_repository_binding.LocalRepositoryBindingError,
             managed_workspace_recovery.ManagedWorkspaceRecoveryError,
             parallel_action_admission.ParallelAdmissionError,
-            external_producer_binding.ProducerBindingError) as error:
+            external_producer_binding.ProducerBindingError,
+            project_discovery.DiscoveryError) as error:
         print(json.dumps({"error": str(error), "ready": False}, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
