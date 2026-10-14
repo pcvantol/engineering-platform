@@ -19,8 +19,8 @@ from engineering_platform import agent_trust, project_discovery as discovery, pr
 class _DiscoveryFixture:
 
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
+        self.temporary = tempfile.TemporaryDirectory(delete=False)
+        self.addCleanup(self.cleanup_store)
         self.root = Path(self.temporary.name)
         self.instance = server.initialize(self.root).instance_id
         self.database = self.root / server.SERVER_DATABASE_FILENAME
@@ -31,6 +31,10 @@ class _DiscoveryFixture:
         self.headers = {"EP-Discovery-Contract": "1.0", "EP-Instance-ID": self.instance,
             "EP-Consumer-ID": "workspace-consumer", "Workspace-Instance-ID": "workspace-instance",
             "EP-Audience": "workspace"}
+
+    def cleanup_store(self):
+        if getattr(self, "listener_stopped", True):
+            self.temporary.cleanup()
 
     def register(self, project, repository, role):
         with storage.sqlite_connection(self.database) as connection:
@@ -395,6 +399,7 @@ class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
 class ProjectDiscoveryHTTPTests(_DiscoveryFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
+        self.listener_stopped = False
         self.listener = server._ConsoleHTTPServer(("127.0.0.1", 0), server._HealthHandler)
         self.listener.daemon_threads = False
         self.listener.data_root = self.root
@@ -407,6 +412,61 @@ class ProjectDiscoveryHTTPTests(_DiscoveryFixture, unittest.TestCase):
         self.listener.server_close()
         self.thread.join(5)
         self.assertFalse(self.thread.is_alive())
+        self.listener_stopped = True
+
+    def test_active_handler_is_joined_before_store_cleanup(self):
+        entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+        original = server._HealthHandler._send
+        responses, errors = [], []
+        def hold(handler, *args, **kwargs):
+            if args[0] == 200 and isinstance(args[1], dict) and "contract_version" in args[1]:
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("bounded own handler hold expired")
+            return original(handler, *args, **kwargs)
+        def client():
+            try:
+                responses.append(self.request())
+            except BaseException as error:
+                errors.append(error)
+        def stopper():
+            try:
+                self.stop_listener()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                stopped.set()
+        with patch.object(server._HealthHandler, "_send", hold):
+            request = threading.Thread(target=client)
+            stop = threading.Thread(target=stopper)
+            request.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                stop.start()
+                self.assertFalse(stopped.wait(0.1))
+                self.cleanup_store()
+                self.assertTrue(self.database.exists())
+            finally:
+                release.set()
+                request.join(5)
+                if stop.ident is not None:
+                    stop.join(5)
+        self.assertFalse(request.is_alive())
+        self.assertFalse(stop.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(responses[0][0], 200)
+        self.assertTrue(self.listener_stopped)
+
+    def test_failed_listener_stop_preserves_store_until_real_stop(self):
+        before = self.database.read_bytes()
+        with patch.object(self.listener, "server_close", side_effect=RuntimeError("synthetic unknown stop")):
+            self.assertRaisesRegex(RuntimeError, "synthetic unknown stop", self.stop_listener)
+        self.assertFalse(self.listener_stopped)
+        self.cleanup_store()
+        self.assertTrue(self.database.exists())
+        self.assertEqual(self.database.read_bytes(), before)
+        self.stop_listener()
+        self.assertTrue(self.listener_stopped)
 
     def request(self, path="/v1/onboarding/projects", headers=None, body=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.listener.server_address[1], timeout=5)
@@ -473,6 +533,46 @@ class ProjectDiscoveryHTTPTests(_DiscoveryFixture, unittest.TestCase):
         with patch.object(server.json, "dumps", side_effect=disappear):
             self.assertEqual(self.request(), (503, {"error": "CENTRAL_UNAVAILABLE"}))
         self.assertFalse(self.database.exists())
+        self.assertTrue(saved.exists())
+
+    def test_actual_http_source_loss_during_final_authority_check_is503(self):
+        original = discovery._authenticate
+        calls = 0
+        saved = self.database.with_suffix(".saved")
+        def lose_source(connection, token, headers):
+            nonlocal calls
+            result = original(connection, token, headers)
+            calls += 1
+            if calls == 5:
+                self.database.rename(saved)
+            return result
+        with patch.object(discovery, "_authenticate", side_effect=lose_source):
+            self.assertEqual(self.request(), (503, {"error": "CENTRAL_UNAVAILABLE"}))
+        self.assertEqual(calls, 5)
+        self.assertFalse(self.database.exists())
+        self.assertTrue(saved.exists())
+
+    def test_actual_http_different_instance_source_replacement_cannot_publish_old_success(self):
+        replacement = self.root / "replacement"
+        replacement_instance = server.initialize(replacement).instance_id
+        self.assertNotEqual(replacement_instance, self.instance)
+        replacement_database = replacement / server.SERVER_DATABASE_FILENAME
+        expected = replacement_database.read_bytes()
+        original = discovery._authenticate
+        calls = 0
+        saved = self.database.with_suffix(".saved")
+        def replace_source(connection, token, headers):
+            nonlocal calls
+            result = original(connection, token, headers)
+            calls += 1
+            if calls == 5:
+                self.database.rename(saved)
+                replacement_database.rename(self.database)
+            return result
+        with patch.object(discovery, "_authenticate", side_effect=replace_source):
+            self.assertEqual(self.request(), (409, {"error": "DISCOVERY_SNAPSHOT_CONFLICT"}))
+        self.assertEqual(calls, 5)
+        self.assertEqual(self.database.read_bytes(), expected)
         self.assertTrue(saved.exists())
 
 

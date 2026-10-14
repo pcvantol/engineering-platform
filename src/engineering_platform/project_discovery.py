@@ -377,9 +377,9 @@ def read(data_root: Path, *, token: str | None, headers: dict[str, str], query: 
                 attachment_visibility="GRANTED" if selected["attachments"] is not None else "NOT_GRANTED",
                 completeness="COMPLETE")
         def publication_check() -> None:
-            if _identity(path) != identity:
-                raise DiscoveryError("DISCOVERY_SNAPSHOT_CONFLICT", 409)
             if _authenticate(connection, token, headers) != scope:
+                raise DiscoveryError("DISCOVERY_SNAPSHOT_CONFLICT", 409)
+            if _identity(path) != identity:
                 raise DiscoveryError("DISCOVERY_SNAPSHOT_CONFLICT", 409)
         publication_check()
         publish(payload, str(scope["instance_id"]), publication_check)
