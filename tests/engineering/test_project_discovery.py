@@ -9,11 +9,12 @@ import sqlite3
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from jsonschema import Draft202012Validator, FormatChecker
 
-from engineering_platform import agent_trust, project_discovery as discovery, project_topology, server, storage
+from engineering_platform import agent_trust, installation_pairing, project_discovery as discovery, project_topology, server, storage
 
 
 class _DiscoveryFixture:
@@ -347,6 +348,21 @@ class ProjectDiscoveryTests(_DiscoveryFixture, unittest.TestCase):
 
 class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
     def prepare_schema74(self):
+        # Populate retained pre75 ledgers through their owning primitives.
+        with storage.sqlite_connection(self.database) as connection:
+            agent = "migration-agent"
+            code = agent_trust.create_pairing_code(connection, agent)["pairing_code"]
+            self.agent_credential = agent_trust.pair(connection, {"protocol_version": "1.0",
+                "agent_id": agent, "pairing_code": code})["credential"]
+            agent_trust.heartbeat(connection, {"protocol_version": "1.0", "agent_id": agent}, self.agent_credential)
+            agent_trust.register_attachment(connection, {"protocol_version": "1.0", "agent_id": agent,
+                "availability": "AVAILABLE", "attachment": {"schema_version": "1.0",
+                "project": {"id": "project-a", "authority_repository_id": "core-a"},
+                "repository": {"id": "child-a", "role": "child"}, "validation": {"kind": "none"}}}, self.agent_credential)
+            installation_pairing.register(connection, binding_id="migration-pairing", ep_instance_id=self.instance,
+                forge_instance_id="migration-forge", consumer_id="forge", operation_id="migration-register")
+            self.pairing_credential = installation_pairing.issue(connection,
+                binding_id="migration-pairing", operation_id="migration-pairing-issue").credential
         with storage.sqlite_connection(self.database) as connection:
             connection.execute("PRAGMA foreign_keys=OFF")
             connection.execute("PRAGMA legacy_alter_table=ON")
@@ -369,6 +385,7 @@ class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
     def test_populated74_upgrade_preserves_registered_data_identity_and_foreign_targets(self):
         self.prepare_schema74()
         data = self.registered_data()
+        self.assertTrue(all(data.values()))
         self.assertEqual(server.initialize(self.root).instance_id, self.instance)
         self.assertEqual(self.registered_data(), data)
         with storage.sqlite_read_connection(self.database) as connection:
@@ -376,6 +393,10 @@ class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
             discovery.validate_schema(connection)
             self.assertEqual(connection.execute("SELECT schema_version FROM ep_installations").fetchall(), [(75,)])
             self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone(), (75,))
+            self.assertIsNotNone(installation_pairing.authenticate(connection, self.pairing_credential))
+            agent_trust.authenticate(connection, "migration-agent", self.agent_credential)
+            self.assertNotIn(self.pairing_credential.encode(), self.database.read_bytes())
+            self.assertNotIn(self.agent_credential.encode(), self.database.read_bytes())
         before = self.database.read_bytes()
         self.assertEqual(server.initialize(self.root).instance_id, self.instance)
         self.assertEqual(self.database.read_bytes(), before)
@@ -467,6 +488,54 @@ class ProjectDiscoveryHTTPTests(_DiscoveryFixture, unittest.TestCase):
         self.assertEqual(self.database.read_bytes(), before)
         self.stop_listener()
         self.assertTrue(self.listener_stopped)
+
+    def test_supported_journal_holds_owner_revocation_commit_until_publication_finishes(self):
+        entered, release, staged, committed = (threading.Event() for _ in range(4))
+        original = server._HealthHandler._send
+        responses, errors, publication_times, commit_times = [], [], [], []
+        def hold(handler, *args, **kwargs):
+            if args[0] == 200 and isinstance(args[1], dict) and "contract_version" in args[1]:
+                entered.set()
+                if not release.wait(4):
+                    raise TimeoutError("bounded own publication hold expired")
+                result = original(handler, *args, **kwargs)
+                publication_times.append(time.monotonic())
+                return result
+            return original(handler, *args, **kwargs)
+        def client():
+            try:
+                responses.append(self.request())
+            except BaseException as error:
+                errors.append(error)
+        def revoke():
+            try:
+                with storage.sqlite_connection(self.database, timeout=3) as writer:
+                    discovery.revoke(writer, grant_id="grant-a", operation_id="held-publication-revoke")
+                    staged.set()
+                commit_times.append(time.monotonic())
+                committed.set()
+            except BaseException as error:
+                errors.append(error)
+        request, writer = threading.Thread(target=client), threading.Thread(target=revoke)
+        with patch.object(server._HealthHandler, "_send", hold):
+            request.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                writer.start()
+                self.assertTrue(staged.wait(1))
+                self.assertFalse(committed.wait(0.1))
+            finally:
+                release.set()
+                request.join(5)
+                if writer.ident is not None:
+                    writer.join(5)
+        self.assertFalse(request.is_alive())
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(committed.is_set())
+        self.assertLess(publication_times[0], commit_times[0])
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(self.request()[0], 401)
 
     def request(self, path="/v1/onboarding/projects", headers=None, body=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.listener.server_address[1], timeout=5)
