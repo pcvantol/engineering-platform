@@ -39,6 +39,7 @@ from uuid import uuid4
 
 from . import installation_pairing
 from . import project_discovery
+from . import preproject_service
 from . import agent_trust
 from . import central_database
 from . import merge_delegation
@@ -212,6 +213,7 @@ def _http_json_openapi_document() -> dict[str, object]:
         },
         "paths": {
             **project_discovery.openapi_paths(),
+            **preproject_service.openapi_paths(),
             "/v1/projects/{project_id}/submissions/{submission_id}/effect-result": {
                 "get": {
                     "summary": "Read the producer-bound FME result and exact artifact bytes",
@@ -446,6 +448,8 @@ def _http_json_openapi_document() -> dict[str, object]:
         },
         "components": {
             "securitySchemes": {
+                "inspectionBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque",
+                    "description": "Separate finite owner-issued pre-project INSPECT_READ; never discovery, submission or admin authority."},
                 "discoveryBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque",
                     "description": "Separate finite, revocable Workspace discovery READ grant; never a submission/admin bearer."},
                 "consumerBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque"},
@@ -7446,7 +7450,68 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # projection table above. Never restore the historical root delegate.
         self._send(404 if method == "do_GET" else 405, {"error": "CENTRAL_CONSOLE_ROUTE_UNAVAILABLE"})
 
+    def _preproject_inspection(self, method: str) -> bool:
+        request = urlsplit(self.path)
+        match = re.fullmatch(r"/v1/onboarding/inspections(?:/([A-Za-z0-9][A-Za-z0-9._-]{0,127}))?", request.path)
+        if match is None:
+            return False
+        from .preproject_inspection import InspectionError
+        try:
+            keys = ("Authorization", "Content-Length", "EP-Inspection-Contract", "EP-Instance-ID",
+                "EP-Host-ID", "EP-Consumer-ID", "EP-Principal", "EP-Audience")
+            if (request.query or any(len(self.headers.get_all(k, [])) > 1 for k in keys)
+                    or self.headers.get("Transfer-Encoding") is not None):
+                raise InspectionError("INSPECTION_REQUEST_INVALID")
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            body = None
+            if method == "POST" and match.group(1) is None:
+                # Reject unauthenticated uploads before waiting for any body.
+                with preproject_service.store(self.server.data_root) as (db, _):
+                    preproject_service.authenticate(db, token, {k: self.headers.get(k, "") for k in keys[2:]})
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 2048 or self.headers.get("Content-Type") != "application/json":
+                    raise InspectionError("INSPECTION_REQUEST_INVALID")
+                old_timeout = self.connection.gettimeout()
+                deadline, raw = time.monotonic() + 2, bytearray()
+                try:
+                    while len(raw) < length:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("INSPECTION_BODY_TIMEOUT")
+                        self.connection.settimeout(remaining)
+                        chunk = self.rfile.read1(length - len(raw))
+                        if not chunk:
+                            raise InspectionError("INSPECTION_BODY_INCOMPLETE")
+                        raw.extend(chunk)
+                finally:
+                    self.connection.settimeout(old_timeout)
+                body = _strict_json_object(bytes(raw))
+                operation_id = body.get("operation_id")
+            elif method == "GET" and match.group(1) is not None:
+                if self.headers.get("Content-Length") not in (None, "0"):
+                    raise InspectionError("INSPECTION_BODY_FORBIDDEN")
+                operation_id = match.group(1)
+            else:
+                raise InspectionError("INSPECTION_METHOD_NOT_ALLOWED", 405)
+            preproject_service.operation(self.server.data_root, token=token,
+                headers={k: self.headers.get(k, "") for k in keys[2:]}, operation_id=operation_id,
+                request=body, publish=lambda result, instance, check: self._send(result["http_status"],
+                    result, instance, cache_control="no-store", before_headers=check))
+        except InspectionError as error:
+            self._send(error.status, {"error": error.code}, cache_control="no-store")
+        except TimeoutError:
+            self.close_connection = True
+            self._send(408, {"error": "INSPECTION_BODY_TIMEOUT"}, cache_control="no-store")
+        except (ValueError, UnicodeError, KeyError, TypeError):
+            self._send(400, {"error": "INSPECTION_REQUEST_OR_STORED_DATA_INVALID"}, cache_control="no-store")
+        except OSError:
+            self._send(503, {"error": "INSPECTION_OWNER_UNAVAILABLE"}, cache_control="no-store")
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
+        if self._preproject_inspection("GET"):
+            return
         request = urlsplit(self.path)
         if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
@@ -8008,6 +8073,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self._send(200, report, str(report["instance_id"]))
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._preproject_inspection("POST"):
+            return
         if urlsplit(self.path).path.startswith("/api/"):
             self._delegate_dashboard("do_POST")
             return
