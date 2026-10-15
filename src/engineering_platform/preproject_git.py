@@ -22,6 +22,15 @@ def unsupported() -> None:
     raise InspectionError("INSPECTION_GIT_FORMAT_UNSUPPORTED", 422)
 
 
+def _branch_ref(ref: str) -> None:
+    """Finite inert subset of ordinary refs/heads; never resolve invalid refs."""
+    relative_parts(ref)
+    if (not ref.startswith("refs/heads/") or ".." in ref or "@{" in ref
+            or any(ord(c) < 33 or ord(c) == 127 or c in "~^:?*[\\" for c in ref)
+            or any(p.startswith(".") or p.endswith((".", ".lock")) for p in ref.split("/"))):
+        unsupported()
+
+
 def observe(fd: int, entries: dict[str, tuple[int, ...]], *, deadline: float) -> dict[str, object] | None:
     """Read SHA1 loose-object repositories and index2/3 without interpreting config."""
     if ".git" not in entries:
@@ -94,9 +103,7 @@ def observe(fd: int, entries: dict[str, tuple[int, ...]], *, deadline: float) ->
     unborn = False
     if head.startswith("ref: "):
         ref = head[5:]
-        relative_parts(ref)
-        if not ref.startswith("refs/heads/") or any(c in ref for c in (" ", "~", "^", ":", "?", "*", "[", "\\")):
-            unsupported()
+        _branch_ref(ref)
         if ".git/" + ref in entries:
             head = read(".git/" + ref, 4096).decode("ascii").strip()
         else:
@@ -160,6 +167,7 @@ def observe(fd: int, entries: dict[str, tuple[int, ...]], *, deadline: float) ->
         if version not in {2, 3} or count > 512:
             unsupported()
         offset = 12
+        previous_key = None
         for _ in range(count):
             start = offset
             if offset + 62 > len(index) - 20:
@@ -173,7 +181,14 @@ def observe(fd: int, entries: dict[str, tuple[int, ...]], *, deadline: float) ->
             end = index.find(b"\x00", offset, len(index) - 20)
             if end < 0:
                 unsupported()
-            path = index[offset:end].decode("utf-8")
+            name = index[offset:end]
+            if (flags & 0xFFF) != min(len(name), 0xFFF):
+                unsupported()
+            key = (name, (flags >> 12) & 3)
+            if previous_key is not None and key <= previous_key:
+                unsupported()
+            previous_key = key
+            path = name.decode("utf-8")
             relative_parts(path)
             if any(p.casefold() == ".git" for p in path.split("/")) or mode not in {0o100644, 0o100755}:
                 unsupported()
@@ -184,6 +199,8 @@ def observe(fd: int, entries: dict[str, tuple[int, ...]], *, deadline: float) ->
             else:
                 indexed[path] = (mode, oid)
             offset = start + ((end + 1 - start + 7) // 8) * 8
+            if offset > len(index) - 20 or any(index[end + 1:offset]):
+                unsupported()
         while offset < len(index) - 20:
             if offset + 8 > len(index) - 20:
                 unsupported()

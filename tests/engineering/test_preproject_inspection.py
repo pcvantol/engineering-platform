@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import socket
+import struct
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zlib
 from unittest.mock import patch
 from contextlib import redirect_stdout
 from types import SimpleNamespace
@@ -81,6 +83,117 @@ class PhysicalInspectionTests(InspectionFixture):
     def committed_fixture(self):
         self.git("init", "-q"); (self.target / "README.md").write_text("# Own committed\n")
         self.git("add", "README.md"); self.git("commit", "-qm", "own snapshot")
+
+    def test_nested_tree_detached_head_and_missing_worktree_are_actual_observations(self):
+        self.committed_fixture()
+        (self.target / "docs").mkdir(); (self.target / "docs/guide.md").write_text("# Nested\n")
+        self.git("add", "docs"); self.git("commit", "-qm", "own nested snapshot")
+        head = self.git("rev-parse", "HEAD"); self.git("checkout", "--detach", "-q", head)
+        (self.target / "README.md").unlink()
+        observed = self.inspect()["git"]
+        self.assertEqual(observed["head"], head)
+        self.assertEqual(observed["tree"], self.git("rev-parse", "HEAD^{tree}"))
+        self.assertEqual(observed["staged_count"], 0)
+        self.assertEqual(observed["unstaged_count"], 1)
+
+    def test_real_unmerged_index_is_not_reported_clean(self):
+        self.committed_fixture(); oid = self.git("rev-parse", "HEAD:README.md")
+        self.git("update-index", "--force-remove", "README.md")
+        subprocess.run(("git", "-c", "core.fsmonitor=false", "update-index", "--index-info"),
+            cwd=self.target, input=f"100644 {oid} 1\tREADME.md\n100644 {oid} 2\tREADME.md\n",
+            text=True, check=True, env={**os.environ, "GIT_CONFIG_NOSYSTEM":"1", "GIT_CONFIG_GLOBAL":os.devnull})
+        self.assertEqual(self.inspect()["git"]["unresolved_index_entries"], 2)
+
+    def test_valid_checksum_cannot_hide_unsupported_or_truncated_index_formats(self):
+        self.committed_fixture(); path = self.target / ".git/index"; original = path.read_bytes()
+        # Preserve the real index entry, vary one structural condition at a time,
+        # and recompute the enclosing checksum: these are not checksum-only tests.
+        entry_end = 12 + ((original.index(b"\0", 74) + 1 - 12 + 7) // 8) * 8
+        body = original[:entry_end]
+        variants = {
+            "v4": body[:4] + struct.pack("!I", 4) + body[8:],
+            "truncated-entry": body[:12] + b"short",
+            "assume-unchanged": body[:72] + struct.pack("!H", 0x8009) + body[74:],
+            "extended": body[:72] + struct.pack("!H", 0x4009) + body[74:],
+            "missing-nul": body[:74] + b"x" * (len(body)-74),
+            "unsupported-mode": body[:36] + struct.pack("!I", 0o120000) + body[40:],
+            "duplicate-stage-zero": body[:8] + struct.pack("!I", 2) + body[12:] + body[12:],
+            "truncated-extension": body + b"TREE",
+            "unknown-required-extension": body + b"link" + struct.pack("!I", 0),
+            "oversized-extension": body + b"TREE" + struct.pack("!I", 100),
+        }
+        for name, value in variants.items():
+            with self.subTest(format=name):
+                path.write_bytes(value + hashlib.sha1(value, usedforsecurity=False).digest())
+                with self.assertRaises(reader.InspectionError): self.inspect()
+        path.write_bytes(original)
+        self.assertEqual(self.inspect()["git"]["unstaged_count"], 0)
+
+    def test_index_name_length_padding_and_order_corruption_are_not_inventory(self):
+        self.committed_fixture(); path=self.target / ".git/index"
+        oid=bytes.fromhex(self.git("rev-parse", "HEAD:README.md"))
+        def entry(name, *, length=None, padding=None):
+            raw=bytearray(62); struct.pack_into("!I",raw,24,0o100644);raw[40:60]=oid
+            struct.pack_into("!H",raw,60,len(name) if length is None else length)
+            raw+=name+b"\0";raw+=b"\0"*((-len(raw))%8)
+            if padding is not None:raw[-1]=padding
+            return bytes(raw)
+        variants={
+            "wrong-name-length":[entry(b"a.md",length=1)],
+            "nonzero-padding":[entry(b"a.md",padding=1)],
+            "unsorted-entries":[entry(b"b.md"),entry(b"a.md")],
+        }
+        for name,entries in variants.items():
+            with self.subTest(format=name):
+                raw=b"DIRC"+struct.pack("!II",2,len(entries))+b"".join(entries)
+                path.write_bytes(raw+hashlib.sha1(raw,usedforsecurity=False).digest())
+                with self.assertRaises(reader.InspectionError):self.inspect()
+
+    def test_invalid_symbolic_git_refs_cannot_become_unborn(self):
+        self.git("init","-q");path=self.target / ".git/HEAD"
+        for ref in ["bad\tname","bad..name","bad@{name}","bad.lock","bad.",".hidden"]:
+            with self.subTest(ref=ref):
+                path.write_text("ref: refs/heads/"+ref+"\n")
+                with self.assertRaises(reader.InspectionError):self.inspect()
+
+    def test_invalid_head_packed_refs_and_config_are_typed_refusals(self):
+        self.committed_fixture(); head = self.target / ".git/HEAD"; original = head.read_bytes()
+        for value in [b"not-an-object\n", b"ref: refs/tags/not-a-branch\n"]:
+            head.write_bytes(value)
+            with self.assertRaises(reader.InspectionError): self.inspect()
+        head.write_bytes(original); ref = original.decode().strip()[5:]
+        oid = self.git("rev-parse", "HEAD"); (self.target / ".git" / ref).unlink()
+        packed = self.target / ".git/packed-refs"
+        for value in ["invalid packed ref\n", f"{oid} {ref}\n{oid} {ref}\n"]:
+            packed.write_text(value)
+            with self.assertRaises(reader.InspectionError): self.inspect()
+        packed.write_text(f"# pack-refs with: peeled\n{oid} refs/heads/other\n{oid} {ref}\n")
+        self.assertEqual(self.inspect()["git"]["head"], oid)
+        config = self.target / ".git/config"; original_config = config.read_bytes()
+        for value in [b"[core\n", b"[core]\nrepositoryformatversion=1\n", b"[core]\nrepositoryformatversion=0\nbare=true\n"]:
+            config.write_bytes(value)
+            with self.assertRaises(reader.InspectionError): self.inspect()
+        config.write_bytes(original_config)
+
+    def test_replaced_object_identity_and_bounded_decompression_are_refused(self):
+        self.committed_fixture(); oid = self.git("rev-parse", "HEAD")
+        path = self.target / ".git/objects" / oid[:2] / oid[2:]; path.chmod(0o600)
+        for raw in [b"commit 4\0fake", b"commit 1048577\0" + b"x" * 1048577]:
+            path.write_bytes(zlib.compress(raw))
+            with self.assertRaises(reader.InspectionError): self.inspect()
+
+    def test_nonordinary_git_placement_and_attributes_are_explicitly_unsupported(self):
+        for mode in ["gitfile", "nested", "attributes", "metadata-symlink"]:
+            with self.subTest(mode=mode):
+                for child in self.target.iterdir():
+                    shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+                if mode == "gitfile": (self.target / ".git").write_text("gitdir: /ungranted\n")
+                elif mode == "nested": (self.target / "nested/.git").mkdir(parents=True)
+                else:
+                    self.git("init", "-q")
+                    if mode == "attributes": (self.target / ".gitattributes").write_text("* filter=untrusted\n")
+                    else: (self.target / ".git/HEAD").unlink(); (self.target / ".git/HEAD").symlink_to("/ungranted")
+                with self.assertRaises(reader.InspectionError): self.inspect()
 
     def test_real_packed_refs_preserve_actual_loose_commit_and_tree_identity(self):
         self.committed_fixture(); head = self.git("rev-parse", "HEAD")
