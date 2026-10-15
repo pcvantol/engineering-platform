@@ -1,7 +1,10 @@
 # Local pre-project INSPECT_READ V1
 
 Owner: Engineering Platform. Assignment `L2-PREPROJECT-LOCAL-INSPECTION-V1-20261015`.
-Implementation/qualification in progress; this document does not claim delivery.
+The bounded local implementation was delivered through protected PR357.
+See the [scoped delivery record](../development/PREPROJECT_LOCAL_INSPECTION_V1_DELIVERY.md)
+for qualification, original failures and limits. The subsequent exact-final-main
+installed binding is recorded in the L2 register and qualified consumer handoff.
 Product allocation **2.3.121**, contract **1.0**, separate private ledger **1**;
 CENTRAL remains **75**. R34 and HOB-EP01 remain closed at their own bindings.
 

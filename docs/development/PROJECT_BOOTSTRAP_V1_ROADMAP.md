@@ -1,9 +1,21 @@
 # Project bootstrap V1 — EP owning roadmap
 
-**Owner:** Engineering Platform. **All added implementation/qualification nodes: PLANNED. NO_BUMP.**
+**Owner:** Engineering Platform. **Full bootstrap implementation/qualification nodes: PLANNED. NO_BUMP.**
 This scoped delivery roadmap extends the [canonical EP roadmap](ENGINEERING_PLATFORM_ROADMAP.md) at the existing B8R attachment, Genesis/Managed execution, P-TRANSPORT and L0 contract/proof seams. It is not a replacement execution engine or a claim those foundations are absent. Forge L1/L1-R is the consumer lane; Workspace onboarding is a later client, not an EP prerequisite.
 
 Read the [EP execution design](../engineering/PROJECT_BOOTSTRAP_EXECUTION_V1.md) and [documentary DAG](PROJECT_BOOTSTRAP_V1_DAG.json). Cross-product semantic contract and PB-01..PB-40 catalogue: `pcvantol/forge:docs/architecture/PROJECT_BOOTSTRAP_AND_ARTIFACT_MANIFEST_V1.md` and `PROJECT_BOOTSTRAP_QUALIFICATION_V1.md`.
+
+## Delivered local inspection subset
+
+Assignment `L2-PREPROJECT-LOCAL-INSPECTION-V1-20261015` delivered the first bounded
+local HOB-EP02 INSPECT_READ contract/authority/inventory/HTTP subset under PB-E0
+and PB-E1 through protected PR357. See the [scoped delivery and qualification
+record](PREPROJECT_LOCAL_INSPECTION_V1_DELIVERY.md). This subset does not close
+the complete PB-E0/PB-E1 nodes or qualify bootstrap effects, remote inspection,
+registration, adoption or the complete PB-EQ matrix; the DAG statuses remain
+PLANNED. Source handles are not B8R identities. R34 and HOB-EP01 remain CLOSED.
+
+## Full bootstrap nodes
 
 | Node | Depends on | Deliverable and closure |
 | --- | --- | --- |
