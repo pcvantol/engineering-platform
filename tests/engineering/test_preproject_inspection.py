@@ -69,6 +69,14 @@ class InspectionFixture(unittest.TestCase):
 
 
 class PhysicalInspectionTests(InspectionFixture):
+    def test_isolated_worker_never_opens_ungranted_workspace_parent(self):
+        (self.target / "README.md").write_text("# Own selected bytes\n")
+        with patch.object(reader, "directory", side_effect=AssertionError("ungranted parent traversal")):
+            result = reader.scan(self.binding(), ["README.md"], ["README.md"], isolated=True)
+            absent = reader.scan(self.binding("absent"), ["README.md"], [], isolated=True)
+        self.assertEqual(result["documents"][0]["content"], "# Own selected bytes\n")
+        self.assertEqual(absent["state"], "ABSENT")
+
     def test_selected_descendant_below_non_directory_is_not_proven_absent(self):
         (self.target / "docs").write_text("not a directory")
         with self.assertRaises(reader.InspectionError):

@@ -17,7 +17,7 @@ def main() -> int:
             raise InspectionError("INSPECTION_JOB_LIMIT")
         job = json.loads(raw)
         paths, content = validate_selection(job["paths"], job["content_paths"])
-        result = scan(job["binding"], paths, content)
+        result = scan(job["binding"], paths, content, isolated=True)
         metadata = distribution("engineering-platform")
         direct_url = json.loads(metadata.read_text("direct_url.json") or "{}")
         if direct_url.get("dir_info", {}).get("editable") or not Path(__file__).resolve().is_relative_to(Path(sys.prefix).resolve()):

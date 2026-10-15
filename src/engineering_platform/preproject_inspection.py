@@ -185,11 +185,25 @@ def validate_selection(paths: object, content_paths: object) -> tuple[list[str],
     return sorted(paths), sorted(content_paths)
 
 
-def scan(binding: dict[str, object], selection: list[str], content_paths: list[str], *, seconds: int = 10) -> dict[str, object]:
+def scan(binding: dict[str, object], selection: list[str], content_paths: list[str], *, seconds: int = 10,
+         isolated: bool = False) -> dict[str, object]:
     """The isolated worker's only physical operation. No process or network call."""
     from . import preproject_git
     deadline = time.monotonic() + seconds
-    root, target = placement(binding)
+    if isolated:
+        # The owning parent rewalks root/direct-child placement before, during
+        # and after this worker. The native worker has NO parent/sibling read
+        # permission. Its only filesystem capability is the exact selected
+        # target, whose device/inode must match before any content is read.
+        root, target = None, None
+        if binding["target_identity"] is not None:
+            target = os.open(Path(str(binding["workspace_root"])) / str(binding["child"]),
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            if list(identity(os.fstat(target))) != binding["target_identity"]:
+                os.close(target)
+                raise InspectionError("INSPECTION_SOURCE_DRIFT", 409)
+    else:
+        root, target = placement(binding)
     try:
         observed = datetime.now(timezone.utc).isoformat()
         if target is None:
@@ -242,10 +256,16 @@ def scan(binding: dict[str, object], selection: list[str], content_paths: list[s
                 declaration = {"state": "ABSENT", "identity": None}
             result["canonical_declaration"] = declaration
         # Prove the descriptor is still the selected direct child, including absence.
-        check_root, check_target = placement(binding)
-        os.close(check_root)
-        if check_target is not None:
-            os.close(check_target)
+        if isolated:
+            if target is not None:
+                current = os.stat(Path(str(binding["workspace_root"])) / str(binding["child"]), follow_symlinks=False)
+                if not stat.S_ISDIR(current.st_mode) or list(identity(current)) != binding["target_identity"]:
+                    raise InspectionError("INSPECTION_SOURCE_DRIFT", 409)
+        else:
+            check_root, check_target = placement(binding)
+            os.close(check_root)
+            if check_target is not None:
+                os.close(check_target)
         result["source_fingerprint"] = hashlib.sha256(repr((binding["root_identity"], binding["target_identity"],
             result["git"], result["documents"])).encode()).hexdigest()
         if "canonical_declaration" not in result:
@@ -253,6 +273,7 @@ def scan(binding: dict[str, object], selection: list[str], content_paths: list[s
                 else "NOT_INSPECTED", "identity": None}
         return result
     finally:
-        os.close(root)
+        if root is not None:
+            os.close(root)
         if target is not None:
             os.close(target)

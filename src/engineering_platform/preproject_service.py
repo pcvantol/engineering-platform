@@ -434,12 +434,13 @@ def operation(root: Path, *, token: object, headers: dict[str, str], operation_i
     fresh = result is None
     if fresh:
         def recheck():
-            return _authorization(root, token, headers, source_ref)
-        try:
-            current_scope, binding = recheck()
-            for fd in placement(binding):
+            current_scope, current_binding = _authorization(root, token, headers, source_ref)
+            for fd in placement(current_binding):
                 if fd is not None:
                     os.close(fd)
+            return current_scope, current_binding
+        try:
+            current_scope, binding = recheck()
             observation = _worker(root, binding, current_scope, recheck)
             recheck()
             result = {"contract_version": CONTRACT, "operation_id": operation_id,
