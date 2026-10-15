@@ -281,9 +281,15 @@ def _record(connection, row):
     result = {"technical_outcome": technical, "qualification": {
         key: qualified.get(key, "UNAVAILABLE") for key in ("required_validation_state", "run_qualification")},
         "forge_mission_acceptance": "NOT_OWNED_BY_EP"}
+    qualification_states = {
+        "required_validation_state": {"PASS", "FAIL", "UNRESOLVED", "WAITING", "UNAVAILABLE"},
+        "run_qualification": {"QUALIFIED", "NOT_QUALIFIED", "UNAVAILABLE"},
+    }
     for key, val in result["qualification"].items():
-        if val not in {"PASS", "FAIL", "PASSED", "FAILED", "QUALIFIED", "NOT_QUALIFIED", "UNQUALIFIED", "UNRESOLVED", "WAITING", "UNAVAILABLE", "NOT_REQUIRED", "NOT_EXECUTED", "NOT_APPLICABLE", "PENDING"}:
-            result["qualification"][key] = "UNAVAILABLE"
+        if not isinstance(val, str) or val not in qualification_states[key]:
+            raise ProgressError("PROGRESS_QUALIFICATION_CONFLICT", 409)
+    if result["qualification"]["run_qualification"] == "QUALIFIED" and technical != "COMPLETE":
+        raise ProgressError("PROGRESS_QUALIFICATION_CONFLICT", 409)
     summary = envelope["summary"] if envelope else None
     description_status = "AVAILABLE" if summary else "NOT_RECORDED"
     # A bounded public summary must never expose a host path. Withhold the

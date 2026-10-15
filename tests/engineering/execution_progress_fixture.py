@@ -88,3 +88,14 @@ class Fixture:
     def terminal(self, submission, run, state):
         self.phase(run, state)
         ParityLifecycleDispatcher(self.data)._set_state(submission, run, state)
+
+    def qualify(self, run, *, validation="PASS", qualification="QUALIFIED"):
+        from datetime import datetime, timezone
+        snapshot={"run_id":run,"qualification_snapshot_id":"fixture-snapshot-"+run,
+                  "required_control_snapshot_ref":"fixture-controls-"+run,
+                  "terminal_checkpoint_ref":"fixture-checkpoint-"+run,
+                  "persisted_at":datetime.now(timezone.utc).isoformat(),
+                  "required_validation_state":validation,"cleanup_outcome":"NOT_REQUIRED",
+                  "run_qualification":qualification,"terminal_execution_state":"COMPLETE"}
+        with _historical_admission_environment(self.targets["alpha"],self.data):
+            return storage.record_run_qualification_snapshot(self.targets["alpha"],snapshot)

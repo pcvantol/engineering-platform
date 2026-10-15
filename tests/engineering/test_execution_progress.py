@@ -194,6 +194,38 @@ class ExecutionProgressTests(unittest.TestCase):
         with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_TIMESTAMP_CORRUPT"):
             progress._timestamp("/private/host-path-is-not-a-timestamp")
 
+    def test_qualification_fields_reject_cross_purpose_and_non_scalar_states(self):
+        cases=(("run_qualification","PASSED"),("run_qualification","PASS"),
+               ("run_qualification",["QUALIFIED"]),("required_validation_state","QUALIFIED"),
+               ("required_validation_state",{"value":"PASS"}))
+        for ordinal,(key,bad) in enumerate(cases):
+            with self.subTest(key=key,bad=bad):
+                sub=self.fixture.submit(action="bad-qual-"+str(ordinal),correlation="bad-qual-"+str(ordinal))
+                run=self.fixture.claim(sub);self.fixture.terminal(sub,run,"COMPLETE")
+                payload={"run_id":run,"terminal_execution_state":"COMPLETE","required_validation_state":"UNRESOLVED","run_qualification":"NOT_QUALIFIED",key:bad}
+                with storage.sqlite_connection(self.fixture.database) as c:
+                    # Explicit corrupt legacy boundary fixture, never emitted
+                    # by the owning validated qualification writer.
+                    c.execute("INSERT INTO execution_run_qualification_snapshots VALUES(?,?,?,?,?,?,?)",(run,1,"fixture-"+run,"controls","checkpoint",json.dumps(payload),"2026-10-15T00:00:00+00:00"))
+                before=self.fixture.database.read_bytes()
+                with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_QUALIFICATION_CONFLICT"):
+                    self.read(run=run)
+                self.assertEqual(before,self.fixture.database.read_bytes())
+
+    def test_qualified_missing_terminal_state_cannot_qualify_failed_run(self):
+        sub=self.fixture.submit();run=self.fixture.claim(sub);self.fixture.terminal(sub,run,"FAILED")
+        with storage.sqlite_connection(self.fixture.database) as c:
+            c.execute("INSERT INTO execution_run_qualification_snapshots VALUES(?,?,?,?,?,?,?)",(run,1,"fixture","controls","checkpoint",json.dumps({"run_id":run,"run_qualification":"QUALIFIED"}),"2026-10-15T00:00:00+00:00"))
+        with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_QUALIFICATION_CONFLICT"):
+            self.read(run=run)
+
+    def test_real_owning_qualification_writer_preserves_valid_positive_result(self):
+        sub=self.fixture.submit();run=self.fixture.claim(sub);self.fixture.terminal(sub,run,"COMPLETE")
+        self.fixture.qualify(run)
+        record=self.read(run=run)["records"][0]
+        self.assertEqual(record["result"]["qualification"],{"required_validation_state":"PASS","run_qualification":"QUALIFIED"})
+        self.assertEqual(record["result"]["forge_mission_acceptance"],"NOT_OWNED_BY_EP")
+
     def test_unknown_legacy_is_not_modern_mission_execution(self):
         from engineering_platform import submission_service
         with storage.sqlite_connection(self.fixture.database) as c:
@@ -455,6 +487,23 @@ class ExecutionProgressHTTPTests(ExecutionProgressTests):
         self.assertEqual(code,200);self.assertEqual(detail["records"][0]["progress"]["wait_reason"],"OPERATOR_MERGE_REQUIRED")
         self.assertEqual(self.request("/v1/execution-progress/projects/beta?mission_id=mission")[0],403)
         self.assertEqual(self.request()[1]["snapshot_id"],page["snapshot_id"])
+        self.assertEqual(self.fixture.database.read_bytes(),before)
+
+    def test_actual_http_qualification_corruption_conflicts_and_real_positive_is_closed(self):
+        sub=self.fixture.submit();run=self.fixture.claim(sub);self.fixture.terminal(sub,run,"COMPLETE")
+        self.fixture.qualify(run)
+        before=self.fixture.database.read_bytes()
+        code,body=self.request(f"/v1/execution-progress/projects/alpha/runs/{run}?mission_id=mission")
+        self.assertEqual(code,200)
+        self.assertEqual(body["records"][0]["result"]["qualification"]["run_qualification"],"QUALIFIED")
+        self.assertEqual(self.fixture.database.read_bytes(),before)
+        sub=self.fixture.submit(action="invalid-http-qual",correlation="invalid-http-qual")
+        bad_run=self.fixture.claim(sub);self.fixture.terminal(sub,bad_run,"COMPLETE")
+        with storage.sqlite_connection(self.fixture.database) as c:
+            c.execute("INSERT INTO execution_run_qualification_snapshots VALUES(?,?,?,?,?,?,?)",(bad_run,1,"fixture","controls","checkpoint",json.dumps({"run_id":bad_run,"run_qualification":"PASSED"}),"2026-10-15T00:00:00+00:00"))
+        before=self.fixture.database.read_bytes()
+        code,body=self.request(f"/v1/execution-progress/projects/alpha/runs/{bad_run}?mission_id=mission")
+        self.assertEqual((code,body),(409,{"error":"PROGRESS_QUALIFICATION_CONFLICT"}))
         self.assertEqual(self.fixture.database.read_bytes(),before)
 
     def test_actual_http_missing_and_corrupt_sources_are_not_empty_success(self):
