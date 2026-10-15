@@ -84,7 +84,11 @@ platformskip, exit0, exactownPID96295actuallygone. Original coverage JSON SHA256
 all171 shipped modules measured, combined minimum80.320366%, aggregate85.154902%.
 All seven changed production files strictly exceed80.2% pure executable-line:
 version82/90, CLI40/41, Git183/196, reader200/222, service334/378,
-worker32/37, Server4004/4749. No old partial-data union/exclusions/waiver.
+worker32/37, Server4004/4749. No old partial-data union, new exclusions or
+waivers. The original unchanged coverage policy retains128 existing excluded
+lines across171 modules, including4 in Server and0 in the other6 changed
+files. Conservatively counting all4 Server exclusions as additional executable
+lines still gives4004/4753 =84.2415%, strictly above80.2%.
 
 Actual hosted coverage job116420599173 also succeeds:2615tests/3605.978s/OK3
 platformskips, all171 combined thresholds retained, aggregate85.09%.
@@ -94,7 +98,7 @@ has distinct official wheel SHA256
 All4browser shards/exactJScoverage, CodeQL, securitybaseline, canonicalversion,
 projection, localization and Golden/Trusted technical checks succeed.
 Entire owning CI38734587006, including validate116448417654, completed SUCCESS.
-Its original broad behavior pass ran2633tests/3558.255s/OK. Native3tests, coupled
+Its original broad behavior pass ran2633tests/3558.255s/OK3platformskips. Native3tests, coupled
 102tests/666.463s and actual restored-fault detection passed. All installed
 P-TRANSPORT3×2, parallel-Action and per-repository authority matrices, deterministic
 Genesis/Managed/local-origin recovery E2E, and HTTP/OpenAPI/Postman passed.
@@ -103,7 +107,8 @@ correctly skips, and is not labeled PASS. Both independent approval conditions
 are satisfied by exact-head CI/Owner Authorization before normal protected
 squash merge, using the repository’s only permitted merge method.
 Original sourcebranch/tag ancestry remains preserved. This documentary
-Finalization has its own normal checks, independent reviews and protected merge.
+Finalization requires its own normal checks, independent reviews and protected
+merge before its exact-final-main qualification and handoff can be registered.
 
 Complete independent exact-b44 Quality report SHA256
 `c2fc373ba932c9708aa59f14e91ae2c8ccd04cbb6252adc37d2204081ce3b432`
