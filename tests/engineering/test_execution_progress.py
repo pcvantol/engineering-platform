@@ -138,6 +138,15 @@ class ExecutionProgressTests(unittest.TestCase):
         value=self.read()["records"][0]
         self.assertIsNone(value["description"])
 
+    def test_quoted_and_punctuated_host_paths_are_withheld(self):
+        for ordinal, summary in enumerate(("Read '/etc/ep-private.conf'", 'Inspect "/etc/private-config.json"', "Read `/srv/internal/file`", "path:/etc/ep-private.conf")):
+            with self.subTest(summary=summary):
+                self.fixture.submit(action="private-"+str(ordinal), correlation="private-"+str(ordinal), summary=summary)
+        records=self.read()["records"]
+        for record in records:
+            self.assertIsNone(record["description"])
+            self.assertEqual(record["description_status"],"WITHHELD_PRIVACY")
+
     def test_real_owner_retry_preserves_attempt_root_and_single_logical_ea(self):
         from engineering_platform.parity_lifecycle_dispatcher import retry_operator_gate
         sub=self.fixture.submit(modern=True)
@@ -201,6 +210,7 @@ class ExecutionProgressTests(unittest.TestCase):
         value=self.read(run=run)["records"][0]
         self.assertEqual(value["progress"]["wait_reason"],"AUTOMATED_CHECK_EVIDENCE")
         self.assertEqual(value["progress"]["responsible_role"],"EXECUTION_HOST")
+        self.assertEqual(value["progress"]["history"][-1]["responsible_role"],"EXECUTION_HOST")
         self.fixture.phase(run,"WAIT_FOR_OPERATOR_MERGE",pull_request=1,next_action="resume_verified_merge")
         self.assertNotEqual(self.read(run=run)["records"][0]["progress"]["responsible_role"],"OPERATOR")
 

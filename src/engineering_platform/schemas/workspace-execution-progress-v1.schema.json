@@ -312,7 +312,8 @@
               "description_status": {
                 "enum": [
                   "AVAILABLE",
-                  "NOT_RECORDED"
+                  "NOT_RECORDED",
+                  "WITHHELD_PRIVACY"
                 ]
               },
               "progress": {

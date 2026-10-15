@@ -120,3 +120,5 @@ Security, all required CI/OwnerAuthorization, protected implementation, separate
 nonempty Finalization and new exact-final-main installed HTTP/readback/handoff/
 actual-stop/cleanup evidence. No GUI/screenshot wave or consumer ACK is added.
 TDE remains separate and honest. Current source/docs are not delivery evidence.
+
+Privacy profile: accepted summaries containing either slash or backslash are withheld in full with `description_status=WITHHELD_PRIVACY`, including quoted and punctuation-adjacent host paths. No replacement summary is generated. Historical automated evidence waits retain `EXECUTION_HOST`; an actual operator merge wait remains `OPERATOR`.

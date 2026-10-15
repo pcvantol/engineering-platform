@@ -155,7 +155,7 @@ def _lifecycle(connection, run_id, mode):
         activity, reason = "WAITING", "AUTOMATED_CHECK_EVIDENCE"
     steps = [{"phase": s["id"], "state": s["state"]} for s in value["steps"]]
     history = [{"phase": execution_lifecycle._display_phase(phase, _json(payload)), "recorded_at": _timestamp(at),
-                "responsible_role": "OPERATOR" if phase == "WAIT_FOR_OPERATOR_MERGE" and _json(payload).get("next_action") != "resume_verified_merge" else ROLES.get(execution_lifecycle._display_phase(phase, _json(payload)), "UNKNOWN"),
+                "responsible_role": "EXECUTION_HOST" if phase == "WAIT_FOR_TERMINAL_EVIDENCE" else "OPERATOR" if phase == "WAIT_FOR_OPERATOR_MERGE" and _json(payload).get("next_action") != "resume_verified_merge" else ROLES.get(execution_lifecycle._display_phase(phase, _json(payload)), "UNKNOWN"),
                 "wait_reason": "OPERATOR_MERGE_REQUIRED" if phase == "WAIT_FOR_OPERATOR_MERGE" and _json(payload).get("next_action") != "resume_verified_merge" else "AUTOMATED_CHECK_EVIDENCE" if phase == "WAIT_FOR_TERMINAL_EVIDENCE" else "NOT_RECORDED"}
                for phase, payload, at in events]
     permitted = set(execution_lifecycle._MANAGED_PATH) | set(execution_lifecycle._FINALIZATION_REPAIR_PATH) | {"COMPLETE", "BLOCKED", "FAILED", "WAIT_FOR_TERMINAL_EVIDENCE"}
@@ -285,8 +285,12 @@ def _record(connection, row):
         if val not in {"PASS", "FAIL", "PASSED", "FAILED", "QUALIFIED", "NOT_QUALIFIED", "UNQUALIFIED", "UNRESOLVED", "WAITING", "UNAVAILABLE", "NOT_REQUIRED", "NOT_EXECUTED", "NOT_APPLICABLE", "PENDING"}:
             result["qualification"][key] = "UNAVAILABLE"
     summary = envelope["summary"] if envelope else None
-    if summary and re.search(r"(?:^|[\s(\[=])/(?!/)|[A-Za-z]:[\\/]|\\\\|file://", summary):
+    description_status = "AVAILABLE" if summary else "NOT_RECORDED"
+    # A bounded public summary must never expose a host path. Withhold the
+    # whole value when either path separator occurs, including quoted paths.
+    if summary and ("/" in summary or "\\" in summary):
         summary = None
+        description_status = "WITHHELD_PRIVACY"
     if run_id is None and row["state"] == "QUEUED":
         gate = connection.execute("SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND state IN ('BLOCKED','FAILED') AND operator_resolution='OPEN' LIMIT 1", (row["project_id"],)).fetchone()
         if gate is not None:
@@ -296,7 +300,7 @@ def _record(connection, row):
                 producer_id=row["producer_id"], mission_id=raw["mission_id"], mission_revision=raw["mission_revision"],
                 engineering_action_id=raw["action_id"], correlation_id=raw["correlation_id"], run_id=run_id,
                 lineage=lineage, provenance=accepted, description=summary,
-                description_status="AVAILABLE" if summary else "NOT_RECORDED", progress=progress, result=result,
+                description_status=description_status, progress=progress, result=result,
                 source_updated_at=max(_timestamp(v) for v in (row["created_at"], row["dispatch_updated"], row["run_updated"], updated, qualification[1] if qualification else None, operation[2] if operation else None) if v is not None))
 
 
