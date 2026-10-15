@@ -288,7 +288,8 @@ def _worker(root: Path, binding: dict[str, object], scope: dict[str, object], re
     """Existing native FME isolation, no model invocation; own whole-group reap."""
     from . import effect_workspace
     from .effect_contract import EffectContractError
-    executable = shutil.which("codex")
+    from .providers import codex_cli_executable
+    executable = codex_cli_executable()
     if executable is None:
         raise InspectionError("INSPECTION_SANDBOX_UNAVAILABLE", 422)
     version = subprocess.run((executable, "--version"), env=effect_workspace.child_environment(),
@@ -352,8 +353,16 @@ def _worker(root: Path, binding: dict[str, object], scope: dict[str, object], re
             if set(result) == {"error", "status"} and type(result["status"]) is int:
                 raise InspectionError(result["error"], result["status"])
             raise InspectionError("INSPECTION_WORKER_UNAVAILABLE", 503)
-        if set(result) != {"result"}:
+        if set(result) != {"result", "runtime"}:
             raise InspectionError("INSPECTION_WORKER_INVALID", 500)
+        runtime = result["runtime"]
+        worker_file = Path(__file__).with_name("preproject_worker.py").resolve()
+        if (runtime != {"executable": sys.executable, "prefix": sys.prefix, "module": str(worker_file),
+                "module_sha256": hashlib.sha256(worker_file.read_bytes()).hexdigest(), "version": CURRENT_PLATFORM_VERSION}):
+            raise InspectionError("INSPECTION_WORKER_RUNTIME_MISMATCH", 500)
+        result["result"]["worker_runtime_binding"] = {"module_sha256": runtime["module_sha256"],
+            "installed_prefix_sha256": hashlib.sha256(runtime["prefix"].encode()).hexdigest(),
+            "state": "CURRENT_INSTALLED_PACKAGE_VERIFIED"}
         return result["result"]
     except BaseException as error:
         primary = error
