@@ -52,8 +52,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.temporary.cleanup()
 
     def _prepare_pre74_schema(self, connection) -> None:
-        """Historical schemas had no installation-pairing tables or rows."""
-        for table in ('ep_installation_pairing_credentials','ep_installation_pairings'):
+        """Historical schemas had neither pairing nor discovery ledgers."""
+        for table in ('ep_workspace_discovery_grants', 'ep_installation_pairing_credentials','ep_installation_pairings'):
             if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone():
                 self.assertEqual(connection.execute('SELECT count(*) FROM '+table).fetchone()[0],0)
                 connection.execute('DROP TABLE '+table)

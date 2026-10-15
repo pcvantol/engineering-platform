@@ -9,6 +9,26 @@
     {
       "key": "baseUrl",
       "value": "http://127.0.0.1:8765"
+    },
+    {
+      "key": "ep_discovery_bearer",
+      "value": ""
+    },
+    {
+      "key": "ep_discovery_instance",
+      "value": ""
+    },
+    {
+      "key": "ep_discovery_consumer",
+      "value": ""
+    },
+    {
+      "key": "ep_discovery_workspace",
+      "value": ""
+    },
+    {
+      "key": "ep_discovery_revision",
+      "value": ""
     }
   ],
   "item": [
@@ -284,6 +304,97 @@
               "pm.test('installation compatibility requires an installation credential', () => pm.response.to.have.status(401));"
             ]
           }
+        }
+      ]
+    },
+    {
+      "name": "HOB-EP01 bounded project discovery",
+      "item": [
+        {
+          "name": "DiscoverySnapshot",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ep_discovery_bearer}}"
+              },
+              {
+                "key": "EP-Discovery-Contract",
+                "value": "1.0"
+              },
+              {
+                "key": "EP-Instance-ID",
+                "value": "{{ep_discovery_instance}}"
+              },
+              {
+                "key": "EP-Consumer-ID",
+                "value": "{{ep_discovery_consumer}}"
+              },
+              {
+                "key": "Workspace-Instance-ID",
+                "value": "{{ep_discovery_workspace}}"
+              },
+              {
+                "key": "EP-Audience",
+                "value": "workspace"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/onboarding/projects"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('expected status', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "TopologySnapshot selected exact revision",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ep_discovery_bearer}}"
+              },
+              {
+                "key": "EP-Discovery-Contract",
+                "value": "1.0"
+              },
+              {
+                "key": "EP-Instance-ID",
+                "value": "{{ep_discovery_instance}}"
+              },
+              {
+                "key": "EP-Consumer-ID",
+                "value": "{{ep_discovery_consumer}}"
+              },
+              {
+                "key": "Workspace-Instance-ID",
+                "value": "{{ep_discovery_workspace}}"
+              },
+              {
+                "key": "EP-Audience",
+                "value": "workspace"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/onboarding/projects/:project_id/topology?expected_topology_revision={{ep_discovery_revision}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('expected status', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

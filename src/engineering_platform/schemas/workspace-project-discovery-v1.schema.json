@@ -1,0 +1,320 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:engineering-platform:workspace-project-discovery:1.0",
+  "title": "EP-owned HOB-EP01 discovery/topology response",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/DiscoverySnapshot"
+    },
+    {
+      "$ref": "#/$defs/TopologySnapshot"
+    }
+  ],
+  "$defs": {
+    "ReadScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "grant_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "consumer_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "workspace_instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "audience": {
+          "const": "workspace"
+        },
+        "project_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "maxItems": 100,
+          "uniqueItems": true
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "project_identity",
+              "repository_identity",
+              "attachment_availability"
+            ]
+          },
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "const": "ACTIVE"
+        }
+      },
+      "required": [
+        "grant_id",
+        "instance_id",
+        "consumer_id",
+        "workspace_instance_id",
+        "audience",
+        "project_ids",
+        "fields",
+        "issued_at",
+        "expires_at",
+        "status"
+      ]
+    },
+    "ProjectIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "authority_repository_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        }
+      },
+      "required": [
+        "project_id",
+        "authority_repository_id"
+      ]
+    },
+    "RepositoryIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "role": {
+          "enum": [
+            "authority",
+            "child"
+          ]
+        }
+      },
+      "required": [
+        "repository_id",
+        "role"
+      ]
+    },
+    "Attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "availability": {
+          "enum": [
+            "AVAILABLE",
+            "UNAVAILABLE"
+          ]
+        }
+      },
+      "required": [
+        "repository_id",
+        "agent_id",
+        "availability"
+      ]
+    },
+    "DiscoverySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": "1.0"
+        },
+        "producer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "const": "engineering-platform"
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            }
+          },
+          "required": [
+            "id",
+            "version"
+          ]
+        },
+        "instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "topology_revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "scope": {
+          "$ref": "#/$defs/ReadScope"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProjectIdentity"
+          },
+          "maxItems": 100,
+          "uniqueItems": true
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024
+        },
+        "completeness": {
+          "enum": [
+            "COMPLETE_PAGE",
+            "PARTIAL_PAGE"
+          ]
+        }
+      },
+      "required": [
+        "contract_version",
+        "producer",
+        "instance_id",
+        "snapshot_id",
+        "topology_revision",
+        "scope",
+        "observed_at",
+        "projects",
+        "next_cursor",
+        "completeness"
+      ]
+    },
+    "TopologySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": "1.0"
+        },
+        "producer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "const": "engineering-platform"
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            }
+          },
+          "required": [
+            "id",
+            "version"
+          ]
+        },
+        "instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "topology_revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "scope": {
+          "$ref": "#/$defs/ReadScope"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "project": {
+          "$ref": "#/$defs/ProjectIdentity"
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RepositoryIdentity"
+          },
+          "maxItems": 100,
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "attachments": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Attachment"
+              },
+              "maxItems": 100,
+              "uniqueItems": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attachment_visibility": {
+          "enum": [
+            "GRANTED",
+            "NOT_GRANTED"
+          ]
+        },
+        "completeness": {
+          "const": "COMPLETE"
+        }
+      },
+      "required": [
+        "contract_version",
+        "producer",
+        "instance_id",
+        "snapshot_id",
+        "topology_revision",
+        "scope",
+        "observed_at",
+        "project",
+        "repositories",
+        "attachments",
+        "attachment_visibility",
+        "completeness"
+      ]
+    }
+  }
+}
