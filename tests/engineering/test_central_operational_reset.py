@@ -785,7 +785,10 @@ class CentralOperationalResetTests(unittest.TestCase):
                          plan_digest=str(archive_plan["plan_digest"]))
 
     def test_progress_grant_is_preserved_and_fenced_during_operational_reset(self) -> None:
-        from execution_progress_fixture import Fixture
+        if __package__:
+            from .execution_progress_fixture import Fixture
+        else:
+            from execution_progress_fixture import Fixture
         from engineering_platform import execution_progress_authority as authority
         fixture=Fixture(Path(self.temporary.name)/"progress")
         self.root=fixture.data

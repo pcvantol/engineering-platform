@@ -14,7 +14,10 @@ from engineering_platform import execution_progress as progress, storage, server
 from engineering_platform import execution_progress_cli as cli
 from importlib.resources import files
 from jsonschema import Draft202012Validator, FormatChecker
-from execution_progress_fixture import Fixture
+if __package__:
+    from .execution_progress_fixture import Fixture
+else:
+    from execution_progress_fixture import Fixture
 
 
 class ExecutionProgressTests(unittest.TestCase):
