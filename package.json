@@ -9,7 +9,7 @@
     "test:p-transport-ingress-matrix": "python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root ."
   },
   "devDependencies": {
-    "@openai/codex": "0.162.1",
+    "@openai/codex": "0.160.1",
     "@playwright/test": "1.64.0",
     "acorn": "8.19.0"
   }
