@@ -133,6 +133,119 @@ class ExecutionProgressTests(unittest.TestCase):
         self.assertIsNone(value["description"])
         self.assertNotIn("/Users/",json.dumps(value))
 
+    def test_other_absolute_host_paths_are_not_exposed_in_accepted_summary(self):
+        self.fixture.submit(summary="Inspect /etc/synthetic-private/config")
+        value=self.read()["records"][0]
+        self.assertIsNone(value["description"])
+
+    def test_real_owner_retry_preserves_attempt_root_and_single_logical_ea(self):
+        from engineering_platform.parity_lifecycle_dispatcher import retry_operator_gate
+        sub=self.fixture.submit(modern=True)
+        parent=self.fixture.claim(sub)
+        self.fixture.phase(parent,"INITIALIZE")
+        self.fixture.terminal(sub,parent,"FAILED")
+        retry=retry_operator_gate(self.fixture.data,project_id="alpha",run_id=parent)
+        queued=self.read()
+        self.assertEqual(queued["logical_action_count"],1)
+        retry_row=next(r for r in queued["records"] if r["submission_id"]==retry.submission_id)
+        self.assertIsNone(retry_row["run_id"])
+        self.assertEqual(retry_row["lineage"]["retry_parent_submission_id"],sub)
+        run=self.fixture.claim(retry.submission_id)
+        self.fixture.phase(run,"INITIALIZE")
+        detail=self.read(run=run)["records"][0]
+        self.assertEqual(detail["lineage"]["root_submission_id"],sub)
+        self.assertEqual(detail["lineage"]["retry_parent_submission_id"],sub)
+        self.assertEqual(detail["lineage"]["attempt_submission_id"],retry.submission_id)
+        self.assertEqual(detail["lineage"]["retry_parent_run_id"],parent)
+        self.assertEqual(detail["provenance"]["status"],"INTERNAL_RETRY_FROM_ACCEPTED_HTTP")
+        self.assertEqual(detail["provenance"]["acceptance_submission_id"],sub)
+
+    def test_internal_retry_cannot_use_a_parent_from_another_repository(self):
+        from engineering_platform.parity_lifecycle_dispatcher import retry_operator_gate
+        sub=self.fixture.submit(modern=True)
+        parent=self.fixture.claim(sub)
+        self.fixture.phase(parent,"INITIALIZE")
+        self.fixture.terminal(sub,parent,"FAILED")
+        retry_operator_gate(self.fixture.data,project_id="alpha",run_id=parent)
+        with storage.sqlite_connection(self.fixture.database) as c:
+            # Artificial corrupt legacy/boundary fixture, not a public writer.
+            c.execute("UPDATE ep_submissions SET repository_id='beta' WHERE submission_id=?",(sub,))
+        with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_RETRY_CONFLICT"):
+            self.read()
+
+    def test_contradictory_qualification_and_invalid_timestamp_never_publish(self):
+        sub=self.fixture.submit()
+        run=self.fixture.claim(sub)
+        self.fixture.phase(run,"INITIALIZE")
+        self.fixture.terminal(sub,run,"COMPLETE")
+        with storage.sqlite_connection(self.fixture.database) as c:
+            c.execute("INSERT INTO execution_run_qualification_snapshots VALUES(?,?,?,?,?,?,?)",(run,1,"snapshot","controls","checkpoint",json.dumps({"run_id":run,"terminal_execution_state":"FAILED","run_qualification":"NOT_QUALIFIED"}),"2026-10-15T00:00:00+00:00"))
+        with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_QUALIFICATION_CONFLICT"):
+            self.read(run=run)
+        with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_TIMESTAMP_CORRUPT"):
+            progress._timestamp("/private/host-path-is-not-a-timestamp")
+
+    def test_unknown_legacy_is_not_modern_mission_execution(self):
+        from engineering_platform import submission_service
+        with storage.sqlite_connection(self.fixture.database) as c:
+            submission_service.submit(c,submission_service.SubmissionRequest("alpha","alpha","forge","HUMAN","1","Unlinked explicit legacy fixture","HTTP",mission_id="mission",engineering_action_id="legacy"))
+        value=self.read()
+        self.assertEqual(value["records"],[])
+        self.assertEqual(value["unlinked_legacy_records"],1)
+        self.assertEqual(value["logical_action_count"],0)
+
+    def test_autonomous_check_wait_and_verified_operator_resume_are_distinct(self):
+        run=self.fixture.claim(self.fixture.submit())
+        self.fixture.phase(run,"INITIALIZE")
+        self.fixture.phase(run,"WAIT_FOR_TERMINAL_EVIDENCE",pull_request=1)
+        value=self.read(run=run)["records"][0]
+        self.assertEqual(value["progress"]["wait_reason"],"AUTOMATED_CHECK_EVIDENCE")
+        self.assertEqual(value["progress"]["responsible_role"],"EXECUTION_HOST")
+        self.fixture.phase(run,"WAIT_FOR_OPERATOR_MERGE",pull_request=1,next_action="resume_verified_merge")
+        self.assertNotEqual(self.read(run=run)["records"][0]["progress"]["responsible_role"],"OPERATOR")
+
+    def test_real_audited_queue_disposition_is_not_generic_unstarted_work(self):
+        from engineering_platform import submission_service
+        for state in ("DEFERRED","QUARANTINED","DECLINED"):
+            with self.subTest(state=state):
+                sub=self.fixture.submit(action="ea-"+state,correlation=state,modern=True)
+                with storage.sqlite_connection(self.fixture.database) as c:
+                    submission_service.operator_queue_disposition(c,project_id="alpha",submission_id=sub,
+                        disposition=state,reason="Private owner reason never exported",expected_state="QUEUED",
+                        expected_revision=0,operation_id="operator-"+state,actor_reference="owner:synthetic-fixture")
+                record=next(r for r in self.read()["records"] if r["submission_id"]==sub)
+                self.assertEqual(record["submission_disposition"],state)
+                self.assertEqual(record["progress"]["wait_reason"],"SUBMISSION_"+state)
+                self.assertEqual(record["progress"]["responsible_role"],"OPERATOR")
+                self.assertNotIn("Private owner reason",json.dumps(record))
+
+    def test_reader_deadline_and_record_payload_limits_remain_red(self):
+        self.fixture.submit()
+        with patch.object(progress,"MAX_RECORDS",0):
+            with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_RECORD_LIMIT"):self.read()
+        with patch.object(progress,"MAX_BYTES",32):
+            with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_PAYLOAD_LIMIT"):self.read()
+        with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_SOURCE_LIMIT"):
+            progress._json('x'*262145)
+        sent=[]
+        def delayed(body,instance,check):
+            with patch.object(progress.time,"monotonic",return_value=time.monotonic()+4):check()
+            sent.append(body)
+        with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_DEADLINE"):
+            progress.read(self.fixture.data,token=self.token,headers=self.fixture.headers,query={"mission_id":["mission"]},project_id="alpha",run_id=None,publish=delayed)
+        self.assertEqual(sent,[])
+
+    def test_project_disabled_authority_change_and_scope_narrowing_deny(self):
+        for key in ("EP-Consumer-ID","EP-Audience","Workspace-Instance-ID"):
+            with self.subTest(key=key),self.assertRaisesRegex(progress.ProgressError,"PROGRESS_SCOPE_MISMATCH"):
+                progress.read(self.fixture.data,token=self.token,headers={**self.fixture.headers,key:"different"},query={"mission_id":["mission"]},project_id="alpha",run_id=None,publish=lambda *a:self.fail("No payload"))
+        with storage.sqlite_connection(self.fixture.database) as c:
+            c.execute("UPDATE ep_project_registrations SET status='DISABLED' WHERE project_id='alpha'")
+        with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_PROJECT_DENIED"):self.read()
+        with storage.sqlite_connection(self.fixture.database) as c:
+            c.execute("UPDATE ep_project_registrations SET status='ACTIVE',attachment_contract=json_set(attachment_contract,'$.authority_repository_id','different') WHERE project_id='alpha'")
+        with self.assertRaisesRegex(progress.ProgressError,"PROGRESS_AUTHORITY_CHANGED"):self.read()
+
     def test_owning_run_instance_receipt_is_immutable(self):
         run=self.fixture.claim(self.fixture.submit())
         self.fixture.phase(run,"INITIALIZE")
@@ -299,6 +412,7 @@ class ExecutionProgressHTTPTests(ExecutionProgressTests):
     def setUp(self):
         super().setUp()
         self.listener=server._ConsoleHTTPServer(("127.0.0.1",0),server._HealthHandler)
+        self.listener.daemon_threads=False
         self.listener_stopped=False
         self.listener.data_root=self.fixture.data
         self.listener.execution_progress_source_identity=progress.source_identity(self.fixture.database)
@@ -339,6 +453,22 @@ class ExecutionProgressHTTPTests(ExecutionProgressTests):
         self.fixture.database.write_bytes(b"corrupt")
         self.assertEqual(self.request()[0],409)
 
+    def test_read_grant_cannot_submit_and_duplicate_headers_are_rejected(self):
+        before=self.fixture.database.read_bytes()
+        c=http.client.HTTPConnection("127.0.0.1",self.listener.server_port,timeout=5)
+        try:
+            c.request("POST","/v1/projects/alpha/submissions",body='{}',headers={"Content-Type":"application/json","Authorization":"Bearer "+self.token})
+            r=c.getresponse();r.read();self.assertEqual(r.status,401)
+        finally:c.close()
+        c=http.client.HTTPConnection("127.0.0.1",self.listener.server_port,timeout=5)
+        try:
+            c.putrequest("GET","/v1/execution-progress/projects/alpha?mission_id=mission")
+            for key,value in {**self.fixture.headers,"Authorization":"Bearer "+self.token}.items():c.putheader(key,value)
+            c.putheader("EP-Audience","workspace");c.endheaders()
+            r=c.getresponse();r.read();self.assertEqual(r.status,400)
+        finally:c.close()
+        self.assertEqual(self.fixture.database.read_bytes(),before)
+
     def test_revocation_during_actual_response_encoding_is_caught_before_headers(self):
         original=server.json.dumps
         def encode(value,*args,**kwargs):
@@ -355,3 +485,29 @@ class ExecutionProgressHTTPTests(ExecutionProgressTests):
         self.cleanup_store()
         self.assertTrue(self.fixture.database.is_file())
         self.assertTrue(self.thread.is_alive())
+
+    def test_real_active_handler_is_joined_before_store_cleanup(self):
+        entered,release=threading.Event(),threading.Event()
+        original=progress._capture
+        errors=[]
+        def held(*args,**kwargs):
+            entered.set()
+            if not release.wait(5):raise RuntimeError("fixture release not observed")
+            return original(*args,**kwargs)
+        def request():
+            try:self.request()
+            except BaseException as error:errors.append(error)
+        with patch.object(progress,"_capture",held):
+            client=threading.Thread(target=request);client.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                stopper=threading.Thread(target=self.stop_listener);stopper.start()
+                time.sleep(0.1)
+                self.assertFalse(self.listener_stopped)
+                self.cleanup_store()
+                self.assertTrue(self.fixture.database.is_file())
+            finally:
+                release.set();client.join(5)
+                if 'stopper' in locals():stopper.join(5)
+        self.assertFalse(client.is_alive());self.assertFalse(stopper.is_alive())
+        self.assertTrue(self.listener_stopped);self.assertEqual(errors,[])

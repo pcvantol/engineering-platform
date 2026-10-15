@@ -166,6 +166,15 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
               },
+              "submission_disposition": {
+                "enum": [
+                  "QUEUED",
+                  "DEFERRED",
+                  "QUARANTINED",
+                  "DECLINED",
+                  "UNAVAILABLE"
+                ]
+              },
               "run_id": {
                 "anyOf": [
                   {
@@ -189,7 +198,19 @@
                       "state": {
                         "enum": [
                           "AVAILABLE",
-                          "UNAVAILABLE"
+                          "UNAVAILABLE",
+                          "PENDING_RUN"
+                        ]
+                      },
+                      "retry_parent_run_id": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                          }
                         ]
                       },
                       "attempt_submission_id": {
@@ -228,11 +249,53 @@
                     },
                     "required": [
                       "state",
+                      "retry_parent_run_id",
                       "attempt_submission_id",
                       "root_submission_id",
                       "retry_parent_submission_id"
                     ]
                   }
+                ]
+              },
+              "provenance": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "PERSISTED_V1_0",
+                      "INTERNAL_RETRY_PERSISTED_V1_0",
+                      "ACCEPTED_HTTP",
+                      "INTERNAL_RETRY_FROM_ACCEPTED_HTTP"
+                    ]
+                  },
+                  "acceptance_submission_id": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                      }
+                    ]
+                  },
+                  "acceptance_receipt_id": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "acceptance_submission_id",
+                  "acceptance_receipt_id"
                 ]
               },
               "description": {
@@ -307,7 +370,10 @@
                       "TERMINAL_OUTCOME",
                       "AUTOMATED_CHECK_EVIDENCE",
                       "DISPATCH_NOT_RECORDED",
-                      "PROJECT_OPERATOR_GATE"
+                      "PROJECT_OPERATOR_GATE",
+                      "SUBMISSION_DEFERRED",
+                      "SUBMISSION_QUARANTINED",
+                      "SUBMISSION_DECLINED"
                     ]
                   },
                   "responsible_role": {
@@ -423,7 +489,10 @@
                             "TERMINAL_OUTCOME",
                             "AUTOMATED_CHECK_EVIDENCE",
                             "DISPATCH_NOT_RECORDED",
-                            "PROJECT_OPERATOR_GATE"
+                            "PROJECT_OPERATOR_GATE",
+                            "SUBMISSION_DEFERRED",
+                            "SUBMISSION_QUARANTINED",
+                            "SUBMISSION_DECLINED"
                           ]
                         }
                       },
@@ -535,8 +604,10 @@
               "mission_revision",
               "engineering_action_id",
               "correlation_id",
+              "submission_disposition",
               "run_id",
               "lineage",
+              "provenance",
               "description",
               "description_status",
               "progress",

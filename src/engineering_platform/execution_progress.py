@@ -176,7 +176,7 @@ def _lineage(connection, row):
         LEFT JOIN execution_submission_attempts p ON p.submission_id=a.retry_parent_submission_id
         LEFT JOIN execution_submission_attempt_links pl ON pl.submission_id=p.submission_id WHERE l.run_id=?""", (run_id,)).fetchone()
     if link is None:
-        return dict(state="UNAVAILABLE", attempt_submission_id=None, root_submission_id=None, retry_parent_submission_id=None)
+        return dict(state="UNAVAILABLE", attempt_submission_id=None, root_submission_id=None, retry_parent_submission_id=None, retry_parent_run_id=None)
     if link[0] != row["submission_id"] or link[2] == link[0] or (link[2] is None and link[0] != link[1]):
         raise ProgressError("PROGRESS_ATTEMPT_CONFLICT", 409)
     root = connection.execute("""SELECT e.producer_id,e.producer_type,e.mission_id,e.engineering_action_id,
@@ -193,7 +193,47 @@ def _lineage(connection, row):
     qualified = connection.execute("SELECT submission_id,fresh_submission,retry_parent_run_id,resume_parent_run_id FROM execution_run_qualification_context WHERE run_id=?", (run_id,)).fetchone()
     if qualified is not None and (qualified[0] != link[0] or (link[2] is not None and (qualified[1] or qualified[2] != link[4] or qualified[3] is not None)) or (link[2] is None and qualified[2] is not None)):
         raise ProgressError("PROGRESS_LINEAGE_CONFLICT", 409)
-    return dict(state="AVAILABLE", attempt_submission_id=link[0], root_submission_id=link[1], retry_parent_submission_id=link[2])
+    return dict(state="AVAILABLE", attempt_submission_id=link[0], root_submission_id=link[1], retry_parent_submission_id=link[2], retry_parent_run_id=link[4])
+
+
+def _accepted_source(connection, row, raw):
+    """Follow only real owner retry lineage to the original accepted exchange.
+
+    An internal retry is not another Forge HTTP exchange. It has its own exact
+    accepted submission/attempt, but no newly minted exchange receipt. Missing
+    or contradictory modern evidence remains a conflict, never a fallback.
+    """
+    current, first_parent, visited = row, None, set()
+    identity = ("project_id", "repository_id", "producer_id", "producer_type", "mission_id", "engineering_action_id")
+    for _ in range(16):
+        if current["submission_id"] in visited:
+            raise ProgressError("PROGRESS_RETRY_CONFLICT", 409)
+        visited.add(current["submission_id"])
+        receipt = submission_service._forge_submission_receipt(connection, project_id=current["project_id"], submission_id=current["submission_id"])
+        if receipt is not None:
+            digest = submission_service._accepted_request_digest(**{k: current[k] for k in (
+                "repository_id", "producer_id", "producer_type", "producer_version", "prompt_digest", "correlation_id", "mission_id", "engineering_action_id")}, constraints=_json(current["constraints"]))
+            if receipt["accepted_request_digest"] != digest:
+                raise ProgressError("PROGRESS_ACCEPTANCE_CONFLICT", 409)
+            return dict(status="INTERNAL_RETRY_FROM_ACCEPTED_HTTP" if first_parent is not None else "ACCEPTED_HTTP",
+                        acceptance_submission_id=current["submission_id"], acceptance_receipt_id=authority._id(receipt["id"])), first_parent
+        parents = connection.execute("""SELECT s.submission_id,s.project_id,s.repository_id,s.producer_id,s.producer_type,
+            s.producer_version,s.prompt_digest,substr(s.constraints,1,262145) AS constraints,s.correlation_id,s.mission_id,s.engineering_action_id,d.run_id
+            FROM ep_parity_lifecycle_dispatches d JOIN ep_submissions s ON s.submission_id=d.submission_id
+            WHERE d.resolution_submission_id=? AND d.operator_resolution='RETRIED' LIMIT 2""", (current["submission_id"],)).fetchall()
+        if not parents:
+            if raw["contract_version"] != "1.0":
+                raise ProgressError("PROGRESS_ACCEPTANCE_CONFLICT", 409)
+            return dict(status="INTERNAL_RETRY_PERSISTED_V1_0" if first_parent is not None else "PERSISTED_V1_0",
+                        acceptance_submission_id=None, acceptance_receipt_id=None), first_parent
+        if len(parents) != 1:
+            raise ProgressError("PROGRESS_RETRY_CONFLICT", 409)
+        parent = parents[0]
+        if tuple(parent[k] for k in identity) != tuple(row[k] for k in identity) or _json(parent["constraints"]).get("forge_execution") != raw:
+            raise ProgressError("PROGRESS_RETRY_CONFLICT", 409)
+        first_parent = parent if first_parent is None else first_parent
+        current = parent
+    raise ProgressError("PROGRESS_RETRY_LIMIT", 409)
 
 
 def _record(connection, row):
@@ -201,12 +241,7 @@ def _record(connection, row):
     if provenance is None:
         return None
     raw, envelope = provenance
-    if raw["contract_version"] != "1.0":
-        receipt = submission_service._forge_submission_receipt(connection, project_id=row["project_id"], submission_id=row["submission_id"])
-        digest = submission_service._accepted_request_digest(**{k: row[k] for k in (
-            "repository_id", "producer_id", "producer_type", "producer_version", "prompt_digest", "correlation_id", "mission_id", "engineering_action_id")}, constraints=_json(row["constraints"]))
-        if receipt is None or receipt["accepted_request_digest"] != digest:
-            raise ProgressError("PROGRESS_ACCEPTANCE_CONFLICT", 409)
+    accepted, retry_parent = _accepted_source(connection, row, raw)
     run_id = row["run_id"]
     lineage = None
     if run_id is not None:
@@ -218,6 +253,11 @@ def _record(connection, row):
         if receipt is None or instance is None or tuple(receipt) != tuple(row[k] for k in ("submission_id", "project_id", "repository_id")) + (instance[0],):
             raise ProgressError("PROGRESS_RUN_PROVENANCE_CONFLICT", 409)
         lineage = _lineage(connection, row)
+    elif retry_parent is not None:
+        parent_lineage = _lineage(connection, retry_parent)
+        lineage = dict(state="PENDING_RUN", attempt_submission_id=row["submission_id"],
+                       root_submission_id=parent_lineage["root_submission_id"], retry_parent_submission_id=retry_parent["submission_id"],
+                       retry_parent_run_id=retry_parent["run_id"])
     progress, updated = _lifecycle(connection, run_id, row["execution_mode"]) if run_id else (
         dict(available=False, current_phase=None, activity="QUEUED" if row["state"] == "QUEUED" else "NOT_STARTED",
              wait_reason="DISPATCH_NOT_RECORDED", responsible_role="EXECUTION_HOST", steps=[], history=[], history_completeness="UNAVAILABLE"), None)
@@ -230,6 +270,14 @@ def _record(connection, row):
         technical = "UNAVAILABLE"
     if qualified.get("terminal_execution_state") is not None and qualified["terminal_execution_state"] != technical:
         raise ProgressError("PROGRESS_QUALIFICATION_CONFLICT", 409)
+    disposition = row["state"] if row["state"] in {"QUEUED", "DEFERRED", "QUARANTINED", "DECLINED"} else "UNAVAILABLE"
+    operation = connection.execute("""SELECT to_state,actor_reference,recorded_at FROM ep_queue_disposition_operations
+        WHERE project_id=? AND submission_id=? ORDER BY recorded_at DESC,operation_id DESC LIMIT 1""", (row["project_id"], row["submission_id"])).fetchone()
+    if run_id is None and disposition in {"DEFERRED", "QUARANTINED", "DECLINED"}:
+        verified = operation is not None and operation[0] == disposition and operation[1] != "LEGACY_NOT_RECORDED"
+        progress.update(activity="NOT_STARTED" if disposition == "DECLINED" else "WAITING" if verified else "UNKNOWN",
+                        wait_reason="SUBMISSION_" + disposition if verified else "NOT_RECORDED",
+                        responsible_role="OPERATOR" if verified else "UNKNOWN")
     result = {"technical_outcome": technical, "qualification": {
         key: qualified.get(key, "UNAVAILABLE") for key in ("required_validation_state", "run_qualification")},
         "forge_mission_acceptance": "NOT_OWNED_BY_EP"}
@@ -237,18 +285,19 @@ def _record(connection, row):
         if val not in {"PASS", "FAIL", "PASSED", "FAILED", "QUALIFIED", "NOT_QUALIFIED", "UNQUALIFIED", "UNRESOLVED", "WAITING", "UNAVAILABLE", "NOT_REQUIRED", "NOT_EXECUTED", "NOT_APPLICABLE", "PENDING"}:
             result["qualification"][key] = "UNAVAILABLE"
     summary = envelope["summary"] if envelope else None
-    if summary and any(term in summary for term in ("/Users/", "/home/", "/private/", "file://", ":\\")):
+    if summary and re.search(r"(?:^|[\s(\[=])/(?!/)|[A-Za-z]:[\\/]|\\\\|file://", summary):
         summary = None
     if run_id is None and row["state"] == "QUEUED":
         gate = connection.execute("SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND state IN ('BLOCKED','FAILED') AND operator_resolution='OPEN' LIMIT 1", (row["project_id"],)).fetchone()
         if gate is not None:
             progress.update(activity="WAITING", wait_reason="PROJECT_OPERATOR_GATE", responsible_role="OPERATOR")
-    return dict(submission_id=row["submission_id"], project_id=row["project_id"], repository_id=row["repository_id"],
+    return dict(submission_id=row["submission_id"], submission_disposition=disposition,
+                project_id=row["project_id"], repository_id=row["repository_id"],
                 producer_id=row["producer_id"], mission_id=raw["mission_id"], mission_revision=raw["mission_revision"],
                 engineering_action_id=raw["action_id"], correlation_id=raw["correlation_id"], run_id=run_id,
-                lineage=lineage, description=summary,
+                lineage=lineage, provenance=accepted, description=summary,
                 description_status="AVAILABLE" if summary else "NOT_RECORDED", progress=progress, result=result,
-                source_updated_at=max(_timestamp(v) for v in (row["created_at"], row["dispatch_updated"], row["run_updated"], updated, qualification[1] if qualification else None) if v is not None))
+                source_updated_at=max(_timestamp(v) for v in (row["created_at"], row["dispatch_updated"], row["run_updated"], updated, qualification[1] if qualification else None, operation[2] if operation else None) if v is not None))
 
 
 def _capture(connection, selection, project_id, mission_id, run_id, deadline):

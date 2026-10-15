@@ -73,6 +73,10 @@ class Fixture:
                 mission_id=candidate.mission_id, engineering_action_id=candidate.engineering_action_id,
                 link_run_id=run, received_at=candidate.submitted_at,
                 retry_parent_submission_id=candidate.retry_parent_submission_id)
+            storage.record_run_qualification_context(self.targets[context.project_id],run_id=run,
+                submission_id=submission,fresh_submission=candidate.retry_parent_run_id is None,
+                retry_parent_run_id=candidate.retry_parent_run_id,resume_parent_run_id=None,
+                recorded_at=candidate.submitted_at)
         dispatcher._set_state(submission, run, "RUNNING")
         return run
 
