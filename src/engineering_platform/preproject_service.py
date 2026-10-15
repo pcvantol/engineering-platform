@@ -53,7 +53,8 @@ def openapi_paths() -> dict[str, object]:
         "security": [{"inspectionBearer": []}], "responses": {
             str(s): {"description": d} for s, d in ((200, "Original closed inspection receipt"),
                 (400, "Invalid request"), (401, "Revoked/expired/invalid separate INSPECT_READ"),
-                (403, "Scope denied"), (404, "Operation unknown"), (409, "Drift/limit/idempotency/uncertainty"),
+                (403, "Scope denied"), (404, "Operation unknown"), (408, "Bounded request body deadline"),
+                (409, "Drift/limit/idempotency/uncertainty"),
                 (422, "Unsupported profile or source format"), (500, "Corrupt initialized private store"),
                 (503, "Source/owner/store unavailable"))},
         "x-response-json-schema": "urn:engineering-platform:preproject-local-inspection:1.0"}

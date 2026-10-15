@@ -620,6 +620,7 @@ class InspectionHTTPAdmissionTests(InspectionFixture):
         finally:c.close()
         self.assertEqual(r.status,200)
         self.assertIn("/v1/onboarding/inspections",body["paths"])
+        self.assertIn("408",body["paths"]["/v1/onboarding/inspections"]["post"]["responses"])
         self.assertNotIn("/v1/onboarding/assessments",body["paths"])
         self.assertIn("inspectionBearer",body["components"]["securitySchemes"])
 
