@@ -3,7 +3,12 @@
 Assignment: `L2-WORKSPACE-PROJECT-DISCOVERY-READ-V1-20261012`.
 JOIN: `L2-L4-HOB-EP01-VERIFIED-LINK-V1-20261012`.
 
-**Implementation candidate, not yet a qualified handoff.** Schema75 adds one
+**Protected implementation qualified; exact-final-main handoff pending.**
+[Delivery and ordinary Finalization](../development/WORKSPACE_PROJECT_DISCOVERY_READ_V1_DELIVERY.md)
+records the exact source, actual installed tests, strict coverage, independent
+reviews and protected PR355. Final-main installed/readback/cleanup and the
+immutable JOIN handoff remain separate required evidence, not an inherited
+candidate PASS. Schema75 adds one
 separate security ledger. Existing B8R project/repository/attachment rows remain
 the sole logical/physical topology; no new project register or identity exists.
 Contract version1.0 is additive and does not widen existing credentials.
