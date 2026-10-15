@@ -46,6 +46,8 @@ def observe(fd: int, entries: dict[str, tuple[int, ...]], *, deadline: float) ->
         if path.startswith(".git/") and not (stat.S_ISDIR(info[2]) or stat.S_ISREG(info[2])):
             unsupported()
     def read(path: str, maximum: int = 524288) -> bytes:
+        if path not in entries:
+            unsupported()
         return read_relative(fd, path, maximum=maximum, deadline=deadline)
     try:
         config = configparser.RawConfigParser(strict=True)
@@ -54,7 +56,7 @@ def observe(fd: int, entries: dict[str, tuple[int, ...]], *, deadline: float) ->
             unsupported()
         if config.get("core", "bare", fallback="false").casefold() != "false":
             unsupported()
-        if config.has_option("core", "worktree") or any(
+        if config.has_option("core", "worktree") or config.has_option("core", "attributesfile") or any(
                 s.casefold().startswith(("include", "extensions", "submodule")) for s in config.sections()):
             unsupported()
         if (config.get("core", "autocrlf", fallback="false").casefold() not in {"false", "0", "no", "off"}
@@ -122,6 +124,8 @@ def observe(fd: int, entries: dict[str, tuple[int, ...]], *, deadline: float) ->
         visited.add((oid, prefix))
         raw = obj(oid, "tree")
         while raw:
+            if len(committed) >= 512:
+                unsupported()
             mode, space, remaining = raw.partition(b" ")
             name, zero, remaining = remaining.partition(b"\x00")
             if not space or not zero or len(remaining) < 20:

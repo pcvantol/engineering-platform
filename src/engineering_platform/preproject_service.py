@@ -24,11 +24,14 @@ import sys
 import time
 
 from .platform_admin import require_installation_owner
-from .platform_api import PlatformConfiguration
+from .platform_api import PlatformConfiguration, _canonical_root, _same_path
 from .preproject_inspection import InspectionError, component, directory, identity, placement, validate_selection
 from .platform_version import CURRENT_PLATFORM_VERSION
 
 CONTRACT = "1.0"
+_METADATA_FIELDS = ["placement_state", "git_identity", "git_worktree_state", "remote_presence", "selected_declaration"]
+_LIMITS = {"entries": 2048, "documents": 16, "document_bytes": 65536,
+    "all_document_bytes": 262144, "hashed_worktree_bytes": 4194304, "worker_seconds": 15}
 _DOMAIN = b"EP.LOCAL.PREPROJECT.INSPECT_READ.V1\0"
 _SCHEMA = """
 CREATE TABLE identity (store_id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, host_id TEXT NOT NULL);
@@ -172,6 +175,11 @@ def bind_source(root: Path, *, source_ref: str, host_root: Path, workspace_root:
     component(source_ref); component(child)
     config = PlatformConfiguration.load(host_root)
     policy = config.resolve_repository_authorization_policy()
+    try:
+        if _canonical_root(str(workspace_root)) != workspace_root:
+            raise OSError("noncanonical root")
+    except OSError as error:
+        raise InspectionError("INSPECTION_PLACEMENT_DENIED", 403) from error
     permitted = [r for r in policy.allowed_roots if r.repository_scope == "direct_children"]
     if policy.symlink_policy != "reject" or not any(Path(r.path) == workspace_root for r in permitted):
         raise InspectionError("INSPECTION_PLACEMENT_DENIED", 403)
@@ -179,7 +187,7 @@ def bind_source(root: Path, *, source_ref: str, host_root: Path, workspace_root:
     if (target == host_root.resolve() or root.resolve().is_relative_to(target)
             or target.is_relative_to(root.resolve()) or target == Path(__file__).resolve().parents[2]):
         raise InspectionError("INSPECTION_HOST_TARGET_FORBIDDEN", 403)
-    if any(target == Path(p) for p in policy.denied_repositories):
+    if any(_same_path(target, Path(p).resolve(), policy.case_sensitivity) for p in policy.denied_repositories):
         raise InspectionError("INSPECTION_PLACEMENT_DENIED", 403)
     with directory(workspace_root) as fd:
         try:
@@ -223,9 +231,8 @@ def issue(root: Path, *, grant_id: str, source_ref: str, consumer_id: str, princ
             "issued_at": now.isoformat(), "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
             "max_operations": max_operations, "instance_id": marker["instance_id"], "host_id": marker["host_id"]}
         scope["profile"] = "LOCAL_GENESIS_INSPECT_READ_V1"
-        scope["metadata_fields"] = ["placement_state", "git_identity", "git_worktree_state", "remote_presence", "selected_declaration"]
-        scope["limits"] = {"entries": 2048, "documents": 16, "document_bytes": 65536,
-            "all_document_bytes": 262144, "hashed_worktree_bytes": 4194304, "worker_seconds": 15}
+        scope["metadata_fields"] = list(_METADATA_FIELDS)
+        scope["limits"] = dict(_LIMITS)
         credential = secrets.token_urlsafe(32)
         digest = hashlib.sha256(_DOMAIN + credential.encode()).digest()
         db.execute("INSERT INTO grants(grant_id,verifier,scope) VALUES(?,?,?)", (grant_id, digest, canonical(scope)))
@@ -249,10 +256,28 @@ def authenticate(db: sqlite3.Connection, token: object, headers: dict[str, str])
     if not isinstance(token, str) or not 32 <= len(token) <= 128 or not token.isascii():
         raise InspectionError("INSPECTION_UNAUTHENTICATED", 401)
     digest = hashlib.sha256(_DOMAIN + token.encode()).digest()
-    row = db.execute("SELECT verifier,scope,revoked FROM grants WHERE verifier=?", (digest,)).fetchone()
+    row = db.execute("SELECT verifier,scope,revoked,grant_id FROM grants WHERE verifier=?", (digest,)).fetchone()
     if row is None or not hmac.compare_digest(row[0], digest) or row[2]:
         raise InspectionError("INSPECTION_UNAUTHENTICATED", 401)
     scope = json.loads(row[1])
+    try:
+        if set(scope) != {"grant_id", "source_ref", "consumer_id", "principal", "audience", "paths", "content_paths",
+                "issued_at", "expires_at", "max_operations", "instance_id", "host_id", "profile", "metadata_fields", "limits"}:
+            raise ValueError("scope shape")
+        for key in ("grant_id", "source_ref", "consumer_id", "principal", "audience", "instance_id", "host_id"):
+            component(scope[key])
+        paths, contents = validate_selection(scope["paths"], scope["content_paths"])
+        issued, expires = datetime.fromisoformat(scope["issued_at"]), datetime.fromisoformat(scope["expires_at"])
+        actual_instance, actual_host = db.execute("SELECT instance_id,host_id FROM identity").fetchone()
+        if (scope["grant_id"] != row[3] or scope["instance_id"] != actual_instance or scope["host_id"] != actual_host
+                or paths != scope["paths"] or contents != scope["content_paths"]
+                or type(scope["max_operations"]) is not int or not 1 <= scope["max_operations"] <= 10
+                or issued.tzinfo is None or expires.tzinfo is None or not timedelta(0) < expires-issued <= timedelta(hours=1)
+                or scope["profile"] != "LOCAL_GENESIS_INSPECT_READ_V1"
+                or scope["metadata_fields"] != _METADATA_FIELDS or scope["limits"] != _LIMITS):
+            raise ValueError("scope binding")
+    except (ValueError, KeyError, TypeError) as error:
+        raise InspectionError("INSPECTION_GRANT_CORRUPT", 500) from error
     if _now() >= datetime.fromisoformat(scope["expires_at"]):
         raise InspectionError("INSPECTION_GRANT_EXPIRED", 401)
     expected = {"EP-Inspection-Contract": CONTRACT, "EP-Instance-ID": scope["instance_id"],
@@ -279,7 +304,7 @@ def _authorization(root: Path, token: object, headers: dict[str, str], source_re
     target = Path(binding["workspace_root"]) / binding["child"]
     if (policy.symlink_policy != "reject" or not any(r.repository_scope == "direct_children"
             and r.path == binding["workspace_root"] for r in policy.allowed_roots)
-            or any(target == Path(p) for p in policy.denied_repositories)):
+            or any(_same_path(target, Path(p).resolve(), policy.case_sensitivity) for p in policy.denied_repositories)):
         raise InspectionError("INSPECTION_PLACEMENT_REVOKED", 403)
     return scope, binding
 
@@ -349,11 +374,13 @@ def _worker(root: Path, binding: dict[str, object], scope: dict[str, object], re
             result = json.loads(retained)
         except (ValueError, UnicodeError) as error:
             raise InspectionError("INSPECTION_WORKER_UNAVAILABLE", 503) from error
+        if not isinstance(result, dict):
+            raise InspectionError("INSPECTION_WORKER_INVALID", 500)
         if process.returncode != 0:
             if set(result) == {"error", "status"} and type(result["status"]) is int:
                 raise InspectionError(result["error"], result["status"])
             raise InspectionError("INSPECTION_WORKER_UNAVAILABLE", 503)
-        if set(result) != {"result", "runtime"}:
+        if set(result) != {"result", "runtime"} or not isinstance(result["result"], dict) or not isinstance(result["runtime"], dict):
             raise InspectionError("INSPECTION_WORKER_INVALID", 500)
         runtime = result["runtime"]
         worker_file = Path(__file__).with_name("preproject_worker.py").resolve()
@@ -393,10 +420,12 @@ def _worker(root: Path, binding: dict[str, object], scope: dict[str, object], re
 
 
 def _receipt(db: sqlite3.Connection, operation_id: str, grant_id: str, intent: str | None):
-    row = db.execute("SELECT grant_id,intent,result,result_sha256 FROM operations WHERE operation_id=?",
+    row = db.execute("SELECT grant_id,intent,result,result_sha256,intent_sha256 FROM operations WHERE operation_id=?",
         (operation_id,)).fetchone()
     if row is None:
         return None
+    if hashlib.sha256(row[1].encode()).hexdigest() != row[4]:
+        raise InspectionError("INSPECTION_INTENT_CORRUPT", 500)
     if row[0] != grant_id or (intent is not None and row[1] != intent):
         raise InspectionError("INSPECTION_OPERATION_CONFLICT", 409)
     if row[2] is None:

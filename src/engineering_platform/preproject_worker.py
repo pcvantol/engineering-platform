@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 import hashlib
+import errno
 from pathlib import Path
 from importlib.metadata import distribution
 
@@ -28,9 +29,17 @@ def main() -> int:
         return 0
     except InspectionError as error:
         print(json.dumps({"error": error.code, "status": error.status}))
-    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+    except FileNotFoundError:
+        print(json.dumps({"error": "INSPECTION_SOURCE_DRIFT", "status": 409}))
+    except OSError as error:
         # No exception strings, private paths, file contents or target messages.
-        print(json.dumps({"error": "INSPECTION_SOURCE_UNAVAILABLE_OR_UNSUPPORTED", "status": 503}))
+        unsupported = error.errno in {errno.ELOOP, errno.ENOTDIR}
+        print(json.dumps({"error": "INSPECTION_SOURCE_UNSUPPORTED" if unsupported else "INSPECTION_SOURCE_UNAVAILABLE",
+            "status": 422 if unsupported else 503}))
+    except UnicodeError:
+        print(json.dumps({"error": "INSPECTION_SOURCE_FORMAT_UNSUPPORTED", "status": 422}))
+    except (ValueError, KeyError, TypeError):
+        print(json.dumps({"error": "INSPECTION_WORKER_JOB_INVALID", "status": 500}))
     return 1
 
 

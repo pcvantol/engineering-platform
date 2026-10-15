@@ -118,7 +118,12 @@ def inventory(root: int, *, deadline: float, maximum: int = 2048) -> dict[str, t
     def visit(fd: int, prefix: str, depth: int) -> None:
         if time.monotonic() >= deadline:
             raise InspectionError("INSPECTION_TIME_LIMIT", 409)
-        names = os.listdir(fd)
+        names = []
+        with os.scandir(fd) as candidates:
+            for candidate in candidates:
+                names.append(candidate.name)
+                if len(result) + len(names) > maximum or time.monotonic() >= deadline:
+                    raise InspectionError("INSPECTION_ENTRY_OR_TIME_LIMIT", 409)
         folded = [unicodedata.normalize("NFC", n).casefold() for n in names]
         if len(set(folded)) != len(folded) or any(unicodedata.normalize("NFC", n) != n for n in names):
             raise InspectionError("INSPECTION_NAME_COLLISION", 422)
@@ -146,9 +151,15 @@ def placement(binding: dict[str, object]) -> tuple[int, int | None]:
     with directory(root) as fd:
         if list(identity(os.fstat(fd))) != binding["root_identity"]:
             raise InspectionError("INSPECTION_SOURCE_DRIFT", 409)
-        names = os.listdir(fd)
         name = component(binding["child"])
-        matches = [n for n in names if unicodedata.normalize("NFC", n).casefold() == name.casefold()]
+        matches, count = [], 0
+        with os.scandir(fd) as candidates:
+            for candidate in candidates:
+                count += 1
+                if count > 2048:
+                    raise InspectionError("INSPECTION_WORKSPACE_ENTRY_LIMIT", 409)
+                if unicodedata.normalize("NFC", candidate.name).casefold() == name.casefold():
+                    matches.append(candidate.name)
         if matches and matches != [name]:
             raise InspectionError("INSPECTION_NAME_COLLISION", 422)
         try:
@@ -241,7 +252,7 @@ def scan(binding: dict[str, object], selection: list[str], content_paths: list[s
                     from .repository_attachment import parse_repository_attachment, RepositoryAttachmentError
                     try:
                         parsed = parse_repository_attachment(json.loads(text))
-                        declaration = {"state": "OBSERVED_UNREGISTERED", "identity": {
+                        declaration = {"state": "OBSERVED_DECLARATION_ONLY", "identity": {
                             "project_id": parsed.project_id, "repository_id": parsed.repository_id,
                             "authority_repository_id": parsed.authority_repository_id, "role": parsed.repository_role}}
                     except (ValueError, RepositoryAttachmentError):

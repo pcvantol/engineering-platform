@@ -88,6 +88,8 @@ CASES: tuple[Case, ...] = (
     Case("Workspace topology requires separate credential", "GET",
          "/v1/onboarding/projects/postman-project/topology?expected_topology_revision=" + "0" * 64, 401,
          headers=(("EP-Discovery-Contract", "1.0"),)),
+    Case("Pre-project inspection requires separate INSPECT_READ", "POST", "/v1/onboarding/inspections", 401, "{}"),
+    Case("Pre-project retained inspection requires INSPECT_READ", "GET", "/v1/onboarding/inspections/postman-inspection", 401),
     Case("Unknown route", "GET", "/not-an-ep-route", 404),
 )
 

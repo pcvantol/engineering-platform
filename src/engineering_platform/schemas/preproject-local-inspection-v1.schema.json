@@ -265,7 +265,7 @@
                       "enum": [
                         "NOT_INSPECTED",
                         "ABSENT",
-                        "OBSERVED_UNREGISTERED",
+                        "OBSERVED_DECLARATION_ONLY",
                         "INVALID_OR_CONFLICTING"
                       ]
                     },
@@ -595,7 +595,7 @@
                         "enum": [
                           "NOT_INSPECTED",
                           "ABSENT",
-                          "OBSERVED_UNREGISTERED",
+                          "OBSERVED_DECLARATION_ONLY",
                           "INVALID_OR_CONFLICTING"
                         ]
                       },

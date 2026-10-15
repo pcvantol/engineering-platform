@@ -397,6 +397,50 @@
           ]
         }
       ]
+    },
+    {
+      "name": "Pre-project inspection requires separate INSPECT_READ",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/v1/onboarding/inspections",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('separate finite INSPECT_READ required', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Retained pre-project inspection requires INSPECT_READ",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/onboarding/inspections/:operation_id"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('separate finite INSPECT_READ required', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

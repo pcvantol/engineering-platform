@@ -18,7 +18,7 @@ from threading import Lock, Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import project_discovery, server, submission_service
+from engineering_platform import project_discovery, preproject_service, server, submission_service
 from jsonschema import Draft202012Validator, FormatChecker
 from ep_server_postman_surface import postman_collection
 
@@ -130,6 +130,7 @@ def _request(base_url: str, item: dict[str, object], discovery_binding: dict[str
     method, path = _collection_operation(item)
     url = (base_url + path.replace("{project_id}", "postman-project")
            .replace("{repository_id}", "postman-repository")
+           .replace("{operation_id}", "postman-inspection")
            .replace("{intake_id}", "0" * 64))
     raw_url = request.get("url")
     if isinstance(raw_url, str) and "?" in raw_url:
@@ -260,6 +261,10 @@ def main(argv: list[str] | None = None) -> int:
         data_root = Path(temporary) / "data"
         port = _port()
         identity = server.initialize(data_root, bind_port=port)
+        # Owning opt-in initialization only. No source or grant is created by
+        # this denied-route surface probe; native positive inspection has its
+        # separate exact-artifact installed acceptance chain.
+        preproject_service.initialize(data_root, expected_instance=identity.instance_id)
         with sqlite_connection(data_root / server.SERVER_DATABASE_FILENAME) as connection:
             server.project_topology.register_server_local_topology(connection, declaration={
                 "schema_version": "1.0", "project": {"id": "postman-project", "authority_repository_id": "postman-repository"},
