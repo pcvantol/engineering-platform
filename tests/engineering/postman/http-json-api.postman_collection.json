@@ -441,6 +441,54 @@
           }
         }
       ]
+    },
+    {
+      "name": "Read scoped Mission execution progress",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "EP-Progress-Contract",
+            "value": "1.0"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/execution-progress/projects/{project_id}?mission_id=mission"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status 401\", function () { pm.response.to.have.status(401); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read exact attempt execution progress",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "EP-Progress-Contract",
+            "value": "1.0"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/execution-progress/projects/{project_id}/runs/{run_id}?mission_id=mission"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status 401\", function () { pm.response.to.have.status(401); });"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

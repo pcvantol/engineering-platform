@@ -180,6 +180,19 @@ def projection(
         return {"run_id": run_id, "available": False, "steps": []}
     if row is None:
         return {"run_id": run_id, "available": False, "steps": []}
+    return project_records(run_id, row, events, mode_row, phase_spans, invocations,
+        persisted_recovery=load_recovery_state(root, run_id, central_database=central_database),
+        persisted_qualification=load_run_qualification_snapshot(root, run_id, central_database=central_database))
+
+
+def project_records(run_id, row, events, mode_row, phase_spans, invocations, *,
+                    persisted_recovery=None, persisted_qualification=None):
+    """Pure existing lifecycle projection over one owning consistent read snapshot.
+
+    Callers supply persisted records; no connection, checkout or effect is opened.
+    """
+    if row is None:
+        return {"run_id": run_id, "available": False, "steps": []}
     checkpoint = _checkpoint(row[0])
     phase = str(row[1])
     mode = checkpoint.get("execution_mode") or (mode_row[0] if mode_row else None) or "MANAGED"
@@ -470,11 +483,7 @@ def projection(
         # historical checkpoint ledger here: it can be stale after a host
         # interruption, whereas this row is atomically advanced with the
         # replacement provider receipt.
-        provider_recovery = load_recovery_state(
-            root,
-            run_id,
-            central_database=central_database,
-        )
+        provider_recovery = persisted_recovery
         if provider_recovery is not None:
             recovery = {
                 "kind": "provider_interruption",
@@ -498,11 +507,7 @@ def projection(
             if not (isinstance(observed, str) and re.fullmatch(
                     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})", observed)):
                 recovery["last_observed_at"] = None
-    qualification = load_run_qualification_snapshot(
-        root,
-        run_id,
-        central_database=central_database,
-    ) or {}
+    qualification = persisted_qualification or {}
     return {
         "run_id": run_id,
         "execution_mode": mode,

@@ -21,7 +21,7 @@ from .platform_version import CURRENT_PLATFORM_VERSION
 
 CONTRACT_VERSION = "1.0"
 AUDIENCE = "workspace"
-SCHEMA_VERSION = 75
+SCHEMA_VERSION = 76
 TABLE = "ep_workspace_discovery_grants"
 FIELDS = frozenset({"project_identity", "repository_identity", "attachment_availability"})
 IDENTITY_FIELDS = frozenset({"project_identity", "repository_identity"})

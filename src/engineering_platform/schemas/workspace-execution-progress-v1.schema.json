@@ -1,0 +1,587 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:engineering-platform:workspace-execution-progress:1.0",
+  "title": "Finite CENTRAL execution progress read1.0",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "enum": [
+            "1.0"
+          ]
+        },
+        "producer_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purpose": {
+          "enum": [
+            "EXECUTION_PROGRESS_READ"
+          ]
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "source_updated_at": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            }
+          ]
+        },
+        "freshness": {
+          "enum": [
+            "AS_OF_CENTRAL_SNAPSHOT_NOT_EXECUTOR_LIVENESS"
+          ]
+        },
+        "selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "authority_repository_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "repository_ids": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            },
+            "mission_ids": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            },
+            "producer_ids": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            }
+          },
+          "required": [
+            "project_id",
+            "authority_repository_id",
+            "repository_ids",
+            "mission_ids",
+            "producer_ids"
+          ]
+        },
+        "selected_mission_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "selected_run_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            }
+          ]
+        },
+        "completeness": {
+          "enum": [
+            "COMPLETE_WITHIN_KNOWN_SCOPED_SUBMISSIONS",
+            "EXACT_RUN"
+          ]
+        },
+        "unlinked_legacy_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "logical_action_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "records": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "submission_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "project_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "repository_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "producer_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "mission_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "mission_revision": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "engineering_action_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "correlation_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "run_id": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                  }
+                ]
+              },
+              "lineage": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "AVAILABLE",
+                          "UNAVAILABLE"
+                        ]
+                      },
+                      "attempt_submission_id": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                          }
+                        ]
+                      },
+                      "root_submission_id": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                          }
+                        ]
+                      },
+                      "retry_parent_submission_id": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "attempt_submission_id",
+                      "root_submission_id",
+                      "retry_parent_submission_id"
+                    ]
+                  }
+                ]
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                ]
+              },
+              "description_status": {
+                "enum": [
+                  "AVAILABLE",
+                  "NOT_RECORDED"
+                ]
+              },
+              "progress": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "current_phase": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "enum": [
+                          "START",
+                          "INITIALIZE",
+                          "CAPABILITY_REVIEW",
+                          "EXECUTE_AGENT",
+                          "LOCAL_REPOSITORY_VALIDATION",
+                          "QUALITY_CONTROL_AGENT",
+                          "REPAIR_AGENT",
+                          "FINALIZATION_REPAIR_AGENT",
+                          "WAIT_FOR_OPERATOR_MERGE",
+                          "FINALIZE_AGENT",
+                          "WAIT_FOR_FINALIZATION_MERGE",
+                          "RECONCILE_AGENT",
+                          "WAIT_FOR_RECONCILIATION_MERGE",
+                          "REPOSITORY_CLEANUP",
+                          "TERMINAL",
+                          "COMPLETE",
+                          "BLOCKED",
+                          "FAILED",
+                          "WAIT_FOR_TERMINAL_EVIDENCE",
+                          "UNAVAILABLE"
+                        ]
+                      }
+                    ]
+                  },
+                  "activity": {
+                    "enum": [
+                      "UNKNOWN",
+                      "QUEUED",
+                      "NOT_STARTED",
+                      "TERMINAL",
+                      "WAITING",
+                      "PROCESSING"
+                    ]
+                  },
+                  "wait_reason": {
+                    "enum": [
+                      "NOT_RECORDED",
+                      "OPERATOR_MERGE_REQUIRED",
+                      "TERMINAL_OUTCOME",
+                      "AUTOMATED_CHECK_EVIDENCE",
+                      "DISPATCH_NOT_RECORDED",
+                      "PROJECT_OPERATOR_GATE"
+                    ]
+                  },
+                  "responsible_role": {
+                    "enum": [
+                      "EXECUTION_HOST",
+                      "IMPLEMENTATION_AGENT",
+                      "AUTONOMOUS_QUALITY_SECURITY",
+                      "FINALIZATION_AGENT",
+                      "OPERATOR",
+                      "UNKNOWN"
+                    ]
+                  },
+                  "steps": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "phase": {
+                          "enum": [
+                            "START",
+                            "INITIALIZE",
+                            "CAPABILITY_REVIEW",
+                            "EXECUTE_AGENT",
+                            "LOCAL_REPOSITORY_VALIDATION",
+                            "QUALITY_CONTROL_AGENT",
+                            "REPAIR_AGENT",
+                            "FINALIZATION_REPAIR_AGENT",
+                            "WAIT_FOR_OPERATOR_MERGE",
+                            "FINALIZE_AGENT",
+                            "WAIT_FOR_FINALIZATION_MERGE",
+                            "RECONCILE_AGENT",
+                            "WAIT_FOR_RECONCILIATION_MERGE",
+                            "REPOSITORY_CLEANUP",
+                            "TERMINAL",
+                            "COMPLETE",
+                            "BLOCKED",
+                            "FAILED",
+                            "WAIT_FOR_TERMINAL_EVIDENCE",
+                            "UNAVAILABLE"
+                          ]
+                        },
+                        "state": {
+                          "enum": [
+                            "START",
+                            "COMPLETED",
+                            "ACTIVE",
+                            "PENDING",
+                            "SKIPPED",
+                            "BLOCKED",
+                            "FAILED",
+                            "COMPLETE"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "phase",
+                        "state"
+                      ]
+                    }
+                  },
+                  "history": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "phase": {
+                          "enum": [
+                            "START",
+                            "INITIALIZE",
+                            "CAPABILITY_REVIEW",
+                            "EXECUTE_AGENT",
+                            "LOCAL_REPOSITORY_VALIDATION",
+                            "QUALITY_CONTROL_AGENT",
+                            "REPAIR_AGENT",
+                            "FINALIZATION_REPAIR_AGENT",
+                            "WAIT_FOR_OPERATOR_MERGE",
+                            "FINALIZE_AGENT",
+                            "WAIT_FOR_FINALIZATION_MERGE",
+                            "RECONCILE_AGENT",
+                            "WAIT_FOR_RECONCILIATION_MERGE",
+                            "REPOSITORY_CLEANUP",
+                            "TERMINAL",
+                            "COMPLETE",
+                            "BLOCKED",
+                            "FAILED",
+                            "WAIT_FOR_TERMINAL_EVIDENCE",
+                            "UNAVAILABLE"
+                          ]
+                        },
+                        "recorded_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "maxLength": 40
+                        },
+                        "responsible_role": {
+                          "enum": [
+                            "EXECUTION_HOST",
+                            "IMPLEMENTATION_AGENT",
+                            "AUTONOMOUS_QUALITY_SECURITY",
+                            "FINALIZATION_AGENT",
+                            "OPERATOR",
+                            "UNKNOWN"
+                          ]
+                        },
+                        "wait_reason": {
+                          "enum": [
+                            "NOT_RECORDED",
+                            "OPERATOR_MERGE_REQUIRED",
+                            "TERMINAL_OUTCOME",
+                            "AUTOMATED_CHECK_EVIDENCE",
+                            "DISPATCH_NOT_RECORDED",
+                            "PROJECT_OPERATOR_GATE"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "phase",
+                        "recorded_at",
+                        "responsible_role",
+                        "wait_reason"
+                      ]
+                    }
+                  },
+                  "history_completeness": {
+                    "enum": [
+                      "UNAVAILABLE",
+                      "COMPLETE_WITHIN_RECORDED_EVENTS"
+                    ]
+                  },
+                  "terminal_outcome": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "enum": [
+                          "COMPLETE",
+                          "BLOCKED",
+                          "FAILED"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "available",
+                  "current_phase",
+                  "activity",
+                  "wait_reason",
+                  "responsible_role",
+                  "steps",
+                  "history",
+                  "history_completeness"
+                ]
+              },
+              "result": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "technical_outcome": {
+                    "enum": [
+                      "NOT_STARTED",
+                      "CLAIMED",
+                      "RUNNING",
+                      "COMPLETE",
+                      "BLOCKED",
+                      "FAILED",
+                      "UNAVAILABLE"
+                    ]
+                  },
+                  "qualification": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "required_validation_state": {
+                        "enum": [
+                          "PASS",
+                          "FAIL",
+                          "UNRESOLVED",
+                          "WAITING",
+                          "UNAVAILABLE"
+                        ]
+                      },
+                      "run_qualification": {
+                        "enum": [
+                          "QUALIFIED",
+                          "NOT_QUALIFIED",
+                          "UNAVAILABLE"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "required_validation_state",
+                      "run_qualification"
+                    ]
+                  },
+                  "forge_mission_acceptance": {
+                    "enum": [
+                      "NOT_OWNED_BY_EP"
+                    ]
+                  }
+                },
+                "required": [
+                  "technical_outcome",
+                  "qualification",
+                  "forge_mission_acceptance"
+                ]
+              },
+              "source_updated_at": {
+                "type": "string",
+                "format": "date-time",
+                "maxLength": 40
+              }
+            },
+            "required": [
+              "submission_id",
+              "project_id",
+              "repository_id",
+              "producer_id",
+              "mission_id",
+              "mission_revision",
+              "engineering_action_id",
+              "correlation_id",
+              "run_id",
+              "lineage",
+              "description",
+              "description_status",
+              "progress",
+              "result",
+              "source_updated_at"
+            ]
+          }
+        },
+        "business_mutations": {
+          "enum": [
+            0
+          ]
+        }
+      },
+      "required": [
+        "contract_version",
+        "producer_version",
+        "instance_id",
+        "purpose",
+        "snapshot_id",
+        "observed_at",
+        "source_updated_at",
+        "freshness",
+        "selection",
+        "selected_mission_id",
+        "selected_run_id",
+        "completeness",
+        "unlinked_legacy_records",
+        "logical_action_count",
+        "records",
+        "business_mutations"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+        }
+      },
+      "required": [
+        "error"
+      ]
+    }
+  ]
+}

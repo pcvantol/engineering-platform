@@ -38,7 +38,7 @@ from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 from uuid import uuid4
 
 from . import installation_pairing
-from . import project_discovery
+from . import project_discovery, execution_progress, execution_progress_authority
 from . import preproject_service
 from . import agent_trust
 from . import central_database
@@ -151,7 +151,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 75
+SERVER_STORE_SCHEMA_VERSION = 76
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -213,6 +213,7 @@ def _http_json_openapi_document() -> dict[str, object]:
         },
         "paths": {
             **project_discovery.openapi_paths(),
+            **execution_progress.openapi_paths(),
             **preproject_service.openapi_paths(),
             "/v1/projects/{project_id}/submissions/{submission_id}/effect-result": {
                 "get": {
@@ -450,6 +451,7 @@ def _http_json_openapi_document() -> dict[str, object]:
             "securitySchemes": {
                 "inspectionBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque",
                     "description": "Separate finite owner-issued pre-project INSPECT_READ; never discovery, submission or admin authority."},
+                "executionProgressBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque", "description": "Separate owner-issued finite EXECUTION_PROGRESS_READ only"},
                 "discoveryBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque",
                     "description": "Separate finite, revocable Workspace discovery READ grant; never a submission/admin bearer."},
                 "consumerBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque"},
@@ -751,6 +753,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_repository_registrations",
         "ep_agent_repository_attachments",
         "ep_local_repository_bindings",
+        "ep_execution_progress_grants",
         "ep_submissions",
         "ep_parallel_action_graphs",
         "ep_parallel_action_repository_grants",
@@ -1006,6 +1009,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     parallel_action_admission.install_schema(connection)
     installation_pairing.install_schema(connection)
     project_discovery.install_schema(connection)
+    execution_progress_authority.install_schema(connection)
     _install_forge_action_context_schema(connection)
     _install_forge_planning_context_schema(connection)
     _install_execution_host_evidence_schema(connection)
@@ -2319,6 +2323,18 @@ def _migrate_schema_75(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE engineering_metadata SET value='75' WHERE key='installation.schema_version'")
 
 
+def _migrate_schema_76(connection: sqlite3.Connection) -> None:
+    """Owner-only additive finite progress authority; preserve every old grant."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema75")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 76))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,76 FROM ep_installations_schema75")
+    connection.execute("DROP TABLE ep_installations_schema75")
+    execution_progress_authority.install_schema(connection)
+    central_operational_reset.install_writer_fences(connection)
+    connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(76)")
+    connection.execute("UPDATE engineering_metadata SET value='76' WHERE key='installation.schema_version'")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2354,6 +2370,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (73, _migrate_schema_73),
     (74, _migrate_schema_74),
     (75, _migrate_schema_75),
+    (76, _migrate_schema_76),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -2376,9 +2393,10 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
             try:
                 installation_pairing.validate_schema(connection)
                 project_discovery.validate_schema(connection)
+                execution_progress_authority.validate_schema(connection)
             except installation_pairing.InstallationPairingError as error:
                 raise ServerConfigurationError("EP installation pairing schema is invalid.") from error
-            except project_discovery.DiscoveryError as error:
+            except (project_discovery.DiscoveryError, execution_progress.ProgressError) as error:
                 raise ServerConfigurationError("EP discovery grant schema is invalid.") from error
             indexes = _index_names(connection)
             views = _view_names(connection)
@@ -7516,6 +7534,39 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path in {HTTP_JSON_OPENAPI_PATH, "/openapi.json", "/swagger.json"}:
             self._send(200, _http_json_openapi_document())
             return
+        progress_match = re.fullmatch(r"/v1/execution-progress/projects/([^/]+)(?:/runs/([^/]+))?", request.path)
+        if progress_match:
+            if not self.headers.get("Authorization", "").startswith("Bearer "):
+                self._send(401, {"error": "UNAUTHENTICATED"}, cache_control="no-store")
+                return
+            if len(request.query) > 1024:
+                self._send(400, {"error": "PROGRESS_QUERY_INVALID"}, cache_control="no-store")
+                return
+            if (self.headers.get("Content-Length") not in (None, "0") or self.headers.get("Transfer-Encoding") is not None
+                    or any(len(self.headers.get_all(key, [])) != 1 for key in ("Authorization", *execution_progress.HEADERS))
+                    or len(self.headers.get_all("Content-Length", [])) > 1):
+                self._send(400, {"error": "PROGRESS_TRANSPORT_INVALID"}, cache_control="no-store")
+                return
+            bearer = self.headers.get("Authorization", "")
+            try:
+                execution_progress.read(self.server.data_root,
+                    expected_source_identity=getattr(self.server, "execution_progress_source_identity", None),
+                    token=bearer[7:] if bearer.startswith("Bearer ") else None,
+                    headers={key: self.headers.get(key, "") for key in execution_progress.HEADERS},
+                    query=parse_qs(request.query, keep_blank_values=True),
+                    project_id=unquote(progress_match.group(1)), run_id=unquote(progress_match.group(2)) if progress_match.group(2) else None,
+                    publish=lambda body, instance, check: self._send(200, body, instance, cache_control="no-store", before_headers=check))
+            except execution_progress.ProgressError as error:
+                self._send(error.status, {"error": error.code}, cache_control="no-store")
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                logging.getLogger(__name__).exception("Invalid stored execution progress")
+                self._send(500, {"error": "CENTRAL_CORRUPT"}, cache_control="no-store")
+            except sqlite3.Error as error:
+                unavailable = getattr(error, "sqlite_errorcode", 0) & 255 in {sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_IOERR, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_INTERRUPT}
+                self._send(503 if unavailable else 500, {"error": "CENTRAL_UNAVAILABLE" if unavailable else "CENTRAL_CORRUPT"}, cache_control="no-store")
+            except OSError:
+                self._send(503, {"error": "CENTRAL_UNAVAILABLE"}, cache_control="no-store")
+            return
         discovery_match = re.fullmatch(r"/v1/onboarding/projects(?:/([^/]+)/topology)?", request.path)
         if discovery_match:
             if (self.headers.get("Content-Length") not in (None, "0")
@@ -8288,6 +8339,7 @@ def serve(
     os.environ[MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT] = config.managed_codex_cli_prefix
     server = _ConsoleHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
+    server.execution_progress_source_identity = execution_progress.source_identity(data_root / SERVER_DATABASE_FILENAME)
     server.central_data_transfer_lock = RLock()  # type: ignore[attr-defined]
     server.central_data_transfer_active = False  # type: ignore[attr-defined]
     server.restart_after_shutdown = False  # type: ignore[attr-defined]

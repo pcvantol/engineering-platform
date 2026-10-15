@@ -15,6 +15,17 @@ the complete PB-E0/PB-E1 nodes or qualify bootstrap effects, remote inspection,
 registration, adoption or the complete PB-EQ matrix; the DAG statuses remain
 PLANNED. Source handles are not B8R identities. R34 and HOB-EP01 remain CLOSED.
 
+## Selected CENTRAL execution-read companion
+
+`L2-WORKSPACE-EXECUTION-PROGRESS-READ-V1-20261015` implements the bounded
+CENTRAL Mission/EA lifecycle/submission/run read companion under the existing
+PB-E5 reporting seam, mapping Workspace PB-W3-PROGRESS/HOB-EP03. See
+[owning contract and phase/source table](../engineering/WORKSPACE_EXECUTION_PROGRESS_READ_V1.md).
+This in-progress subset does not close PB-E5, PB-EQ or any full HOB-EP03 parent;
+DAG node identities/dependencies/statuses remain unchanged. No dashboard,
+execution, cancellation, assessment or provisioning is introduced. The qualified
+local inspection pin for L3-R55 remains unchanged.
+
 ## Full bootstrap nodes
 
 | Node | Depends on | Deliverable and closure |
