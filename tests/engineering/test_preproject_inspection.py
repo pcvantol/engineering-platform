@@ -704,6 +704,7 @@ class InspectionWorkerLifecycleTests(InspectionFixture):
             child.wait = wait
             return child
         with patch.object(providers, "codex_cli_executable", return_value="/own-fixed-fixture/runtime"), \
+                patch.object(effect_workspace, "native_runtime_file", return_value=Path("/own-fixed-fixture/runtime")), \
                 patch.object(service.subprocess, "run", return_value=subprocess.CompletedProcess((), 0, b"codex-cli 0.160.1\n")), \
                 patch.object(effect_workspace, "sandbox_options", return_value=()), \
                 patch.object(service.subprocess, "Popen", side_effect=launch):
