@@ -784,6 +784,27 @@ class CentralOperationalResetTests(unittest.TestCase):
             reset.verify(archive_root, operation_id="reset-invalid-archive-0001",
                          plan_digest=str(archive_plan["plan_digest"]))
 
+    def test_progress_grant_is_preserved_and_fenced_during_operational_reset(self) -> None:
+        from execution_progress_fixture import Fixture
+        from engineering_platform import execution_progress_authority as authority
+        fixture=Fixture(Path(self.temporary.name)/"progress")
+        self.root=fixture.data
+        token=fixture.issue()["credential"]
+        with sqlite_connection(fixture.database) as connection:
+            before=connection.execute("SELECT * FROM ep_execution_progress_grants").fetchall()
+        plan=reset.preview(self.root)
+        self.assertEqual(plan["execution_state"],"ALLOWED",plan["blocking_codes"])
+        self.assertIn("ep_execution_progress_grants",reset.SECURITY_AND_AUTHORITY_LEDGER)
+        operation_id,digest=self._prepared(operation_id="reset-progress-grant")
+        with sqlite_connection(fixture.database) as connection:
+            with self.assertRaisesRegex(sqlite3.IntegrityError,"EP_OPERATIONAL_MAINTENANCE_ACTIVE"):
+                authority.revoke(connection,grant_id="grant",operation_id="revoke-during-reset")
+        reset.apply(self.root,operation_id=operation_id,plan_digest=digest)
+        reset.verify(self.root,operation_id=operation_id,plan_digest=digest)
+        with sqlite_connection(fixture.database) as connection:
+            self.assertEqual(connection.execute("SELECT * FROM ep_execution_progress_grants").fetchall(),before)
+            self.assertEqual(authority._authenticate(connection,token,fixture.headers)["instance_id"],fixture.instance)
+
     def test_installation_pairing_is_preserved_and_fenced_during_reset(self) -> None:
         identity=server.initialize(self.root).instance_id
         with sqlite_connection(self.root / "epdata.sqlite") as connection:
@@ -828,6 +849,8 @@ class CentralOperationalResetTests(unittest.TestCase):
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(67)")
             connection.execute("UPDATE engineering_metadata SET value='67' WHERE key='installation.schema_version'")
             self.assertEqual(connection.execute("SELECT count(*) FROM ep_workspace_discovery_grants").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT count(*) FROM ep_execution_progress_grants").fetchone()[0],0)
+            connection.execute("DROP TABLE ep_execution_progress_grants")
             connection.execute("DROP TABLE ep_workspace_discovery_grants")
             connection.execute("DROP TABLE ep_installation_pairing_credentials")
             connection.execute("DROP TABLE ep_installation_pairings")

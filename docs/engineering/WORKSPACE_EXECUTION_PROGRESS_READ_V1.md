@@ -122,3 +122,5 @@ actual-stop/cleanup evidence. No GUI/screenshot wave or consumer ACK is added.
 TDE remains separate and honest. Current source/docs are not delivery evidence.
 
 Privacy profile: accepted summaries containing either slash or backslash are withheld in full with `description_status=WITHHELD_PRIVACY`, including quoted and punctuation-adjacent host paths. No replacement summary is generated. Historical automated evidence waits retain `EXECUTION_HOST`; an actual operator merge wait remains `OPERATOR`.
+
+CENTRAL76 compatibility: execution-progress grants are an explicitly preserved security and authority ledger in operational maintenance, with the existing maintenance write fences. The owner-only75→76 migration preserves all prior discovery grants without creating progress authority for their credentials. Historical migration fixtures omit the later ledger rather than weakening migration validation.
