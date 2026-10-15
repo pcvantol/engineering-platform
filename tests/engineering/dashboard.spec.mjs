@@ -5417,13 +5417,16 @@ test.describe("Engineering Status browser smoke", () => {
     }
 
     await page.setViewportSize({ width: 390, height: 844 });
-    const [narrowUsage, narrowTimeline] = await Promise.all([
-      cards.nth(0).boundingBox(), cards.nth(1).boundingBox(),
-    ]);
-    expect(narrowUsage).not.toBeNull();
-    expect(narrowTimeline).not.toBeNull();
-    expect(Math.abs(narrowTimeline.x - narrowUsage.x)).toBeLessThanOrEqual(1);
-    expect(narrowTimeline.y).toBeGreaterThan(narrowUsage.y);
+    // Viewport resizing can resolve before the responsive layout is painted.
+    await expect(async () => {
+      const [narrowUsage, narrowTimeline] = await Promise.all([
+        cards.nth(0).boundingBox(), cards.nth(1).boundingBox(),
+      ]);
+      expect(narrowUsage).not.toBeNull();
+      expect(narrowTimeline).not.toBeNull();
+      expect(Math.abs(narrowTimeline.x - narrowUsage.x)).toBeLessThanOrEqual(1);
+      expect(narrowTimeline.y).toBeGreaterThan(narrowUsage.y);
+    }).toPass({ timeout: 5000 });
   });
 
   test("formats preflight timestamps through the selected dashboard locale", async ({ page }) => {

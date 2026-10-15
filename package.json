@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "@openai/codex": "0.160.1",
-    "@playwright/test": "1.63.0",
+    "@playwright/test": "1.64.0",
     "acorn": "8.19.0"
   }
 }
