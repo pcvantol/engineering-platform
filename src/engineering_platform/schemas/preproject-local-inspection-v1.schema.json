@@ -1,0 +1,698 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:engineering-platform:preproject-local-inspection:1.0",
+  "title": "Finite local pre-project INSPECT_READ V1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "operation_id",
+        "source_ref",
+        "instance_id",
+        "host_id",
+        "outcome",
+        "error",
+        "http_status",
+        "freshness",
+        "observation",
+        "administrative_records",
+        "target_write_operations",
+        "b8r_write_operations",
+        "producer_version",
+        "profile",
+        "limits"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "1.0"
+        },
+        "operation_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "source_ref": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "instance_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "host_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "outcome": {
+          "enum": [
+            "COMPLETE",
+            "REFUSED"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Z0-9_]+$"
+        },
+        "http_status": {
+          "enum": [
+            200,
+            400,
+            401,
+            403,
+            409,
+            422,
+            500,
+            503
+          ]
+        },
+        "freshness": {
+          "enum": [
+            "AS_OF_OBSERVATION_NOT_CONTINUOUS",
+            "NO_COMPLETE_OBSERVATION"
+          ]
+        },
+        "observation": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "git",
+                "documents",
+                "observed_entries",
+                "selection",
+                "exclusions",
+                "assessments",
+                "completeness",
+                "observed_at",
+                "canonical_declaration",
+                "source_fingerprint"
+              ],
+              "properties": {
+                "state": {
+                  "enum": [
+                    "ABSENT",
+                    "EMPTY_DIRECTORY",
+                    "DIRECTORY",
+                    "UNBORN_GIT",
+                    "EXISTING_GIT"
+                  ]
+                },
+                "git": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "state",
+                        "head",
+                        "tree",
+                        "staged_count",
+                        "unstaged_count",
+                        "untracked_candidate_count",
+                        "unresolved_index_entries",
+                        "remote_present",
+                        "ignore_rules",
+                        "git_execution",
+                        "hashed_worktree_bytes"
+                      ],
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNBORN_GIT",
+                            "EXISTING_GIT"
+                          ]
+                        },
+                        "head": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^[a-f0-9]{40}$"
+                        },
+                        "tree": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^[a-f0-9]{40}$"
+                        },
+                        "staged_count": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "unstaged_count": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "untracked_candidate_count": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "unresolved_index_entries": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "remote_present": {
+                          "type": "boolean"
+                        },
+                        "ignore_rules": {
+                          "const": "NOT_EVALUATED"
+                        },
+                        "git_execution": {
+                          "const": "NONE"
+                        },
+                        "hashed_worktree_bytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "documents": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "path",
+                      "state",
+                      "sha256",
+                      "content"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "maxLength": 256
+                      },
+                      "state": {
+                        "enum": [
+                          "PRESENT",
+                          "ABSENT"
+                        ]
+                      },
+                      "sha256": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "content": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "maxLength": 65536
+                      }
+                    }
+                  }
+                },
+                "observed_entries": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "selection": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 256
+                  }
+                },
+                "exclusions": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "ALL_UNSELECTED_CONTENT",
+                      "ASSESSMENT_AND_REPOSITORY_EXECUTION"
+                    ]
+                  }
+                },
+                "assessments": {
+                  "const": "NOT_ASSESSED"
+                },
+                "completeness": {
+                  "const": "COMPLETE_WITHIN_SELECTION"
+                },
+                "observed_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "canonical_declaration": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "state",
+                    "identity"
+                  ],
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "NOT_INSPECTED",
+                        "ABSENT",
+                        "OBSERVED_DECLARATION_ONLY",
+                        "INVALID_OR_CONFLICTING"
+                      ]
+                    },
+                    "identity": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "project_id",
+                            "repository_id",
+                            "authority_repository_id",
+                            "role"
+                          ],
+                          "properties": {
+                            "project_id": {
+                              "type": "string",
+                              "maxLength": 128
+                            },
+                            "repository_id": {
+                              "type": "string",
+                              "maxLength": 128
+                            },
+                            "authority_repository_id": {
+                              "type": "string",
+                              "maxLength": 128
+                            },
+                            "role": {
+                              "enum": [
+                                "authority",
+                                "child"
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "source_fingerprint": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "worker_runtime_binding": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "module_sha256",
+                    "installed_prefix_sha256",
+                    "state"
+                  ],
+                  "properties": {
+                    "module_sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "installed_prefix_sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "state": {
+                      "const": "CURRENT_INSTALLED_PACKAGE_VERIFIED"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "administrative_records": {
+          "const": 2
+        },
+        "target_write_operations": {
+          "const": 0
+        },
+        "b8r_write_operations": {
+          "const": 0
+        },
+        "producer_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "profile": {
+          "const": "LOCAL_GENESIS_INSPECT_READ_V1"
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entries",
+            "documents",
+            "document_bytes",
+            "all_document_bytes",
+            "hashed_worktree_bytes",
+            "worker_seconds"
+          ],
+          "properties": {
+            "entries": {
+              "const": 2048
+            },
+            "documents": {
+              "const": 16
+            },
+            "document_bytes": {
+              "const": 65536
+            },
+            "all_document_bytes": {
+              "const": 262144
+            },
+            "hashed_worktree_bytes": {
+              "const": 4194304
+            },
+            "worker_seconds": {
+              "const": 15
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "COMPLETE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "http_status": {
+                "const": 200
+              },
+              "error": {
+                "type": "null"
+              },
+              "observation": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "state",
+                  "git",
+                  "documents",
+                  "observed_entries",
+                  "selection",
+                  "exclusions",
+                  "assessments",
+                  "completeness",
+                  "observed_at",
+                  "canonical_declaration",
+                  "source_fingerprint"
+                ],
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "ABSENT",
+                      "EMPTY_DIRECTORY",
+                      "DIRECTORY",
+                      "UNBORN_GIT",
+                      "EXISTING_GIT"
+                    ]
+                  },
+                  "git": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "state",
+                          "head",
+                          "tree",
+                          "staged_count",
+                          "unstaged_count",
+                          "untracked_candidate_count",
+                          "unresolved_index_entries",
+                          "remote_present",
+                          "ignore_rules",
+                          "git_execution",
+                          "hashed_worktree_bytes"
+                        ],
+                        "properties": {
+                          "state": {
+                            "enum": [
+                              "UNBORN_GIT",
+                              "EXISTING_GIT"
+                            ]
+                          },
+                          "head": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "pattern": "^[a-f0-9]{40}$"
+                          },
+                          "tree": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "pattern": "^[a-f0-9]{40}$"
+                          },
+                          "staged_count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "unstaged_count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "untracked_candidate_count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "unresolved_index_entries": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "remote_present": {
+                            "type": "boolean"
+                          },
+                          "ignore_rules": {
+                            "const": "NOT_EVALUATED"
+                          },
+                          "git_execution": {
+                            "const": "NONE"
+                          },
+                          "hashed_worktree_bytes": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "documents": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "state",
+                        "sha256",
+                        "content"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "maxLength": 256
+                        },
+                        "state": {
+                          "enum": [
+                            "PRESENT",
+                            "ABSENT"
+                          ]
+                        },
+                        "sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "content": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 65536
+                        }
+                      }
+                    }
+                  },
+                  "observed_entries": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "selection": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 256
+                    }
+                  },
+                  "exclusions": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "ALL_UNSELECTED_CONTENT",
+                        "ASSESSMENT_AND_REPOSITORY_EXECUTION"
+                      ]
+                    }
+                  },
+                  "assessments": {
+                    "const": "NOT_ASSESSED"
+                  },
+                  "completeness": {
+                    "const": "COMPLETE_WITHIN_SELECTION"
+                  },
+                  "observed_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "canonical_declaration": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "state",
+                      "identity"
+                    ],
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "NOT_INSPECTED",
+                          "ABSENT",
+                          "OBSERVED_DECLARATION_ONLY",
+                          "INVALID_OR_CONFLICTING"
+                        ]
+                      },
+                      "identity": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "project_id",
+                              "repository_id",
+                              "authority_repository_id",
+                              "role"
+                            ],
+                            "properties": {
+                              "project_id": {
+                                "type": "string",
+                                "maxLength": 128
+                              },
+                              "repository_id": {
+                                "type": "string",
+                                "maxLength": 128
+                              },
+                              "authority_repository_id": {
+                                "type": "string",
+                                "maxLength": 128
+                              },
+                              "role": {
+                                "enum": [
+                                  "authority",
+                                  "child"
+                                ]
+                              }
+                            }
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "source_fingerprint": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "worker_runtime_binding": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "module_sha256",
+                      "installed_prefix_sha256",
+                      "state"
+                    ],
+                    "properties": {
+                      "module_sha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "installed_prefix_sha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "state": {
+                        "const": "CURRENT_INSTALLED_PACKAGE_VERIFIED"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "observation": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "type": "string",
+          "pattern": "^[A-Z0-9_]+$"
+        }
+      }
+    }
+  ]
+}

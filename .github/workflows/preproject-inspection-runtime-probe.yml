@@ -1,0 +1,34 @@
+name: Pre-project installed runtime probe (diagnostic only)
+
+# An explicit diagnostic tag pins the candidate commit for the small native chain
+# BEFORE updating its existing PR. No required workflow or check is skipped,
+# replaced or made green by this separate diagnostic job.
+on:
+  push:
+    tags: ['l2-inspection-probe-*']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Diagnostic installed inspection runtime (not full qualification)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.14'}
+      - name: Install exact committed ordinary wheel
+        run: |
+          python3 -m pip install build coverage jsonschema==4.25.1
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          python3 tools/qualification/build_platform_wheel.py --source-root . --version "$version" --wheel-directory "$RUNNER_TEMP/inspection-probe-wheel" --install-python "$(command -v python3)"
+      - name: Prepare existing integrity-pinned native runtime
+        run: |
+          npm ci --ignore-scripts
+          echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+          bash tools/qualification/prepare_ci_native_sandbox.sh
+      - name: Actual installed small inspection regressions
+        run: |
+          env -u PYTHONPATH -u PYTHONHOME python3 -m unittest discover -s tests/engineering -p test_preproject_inspection.py -v
