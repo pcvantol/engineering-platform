@@ -636,6 +636,27 @@ class InspectionHTTPAdmissionTests(InspectionFixture):
         self.assertEqual(status,200,body)
         self.assertEqual(body["observation"]["worker_runtime_binding"]["state"],"CURRENT_INSTALLED_PACKAGE_VERIFIED")
 
+    def test_actual_installed_managed_npm_launcher_needs_no_child_node_lookup(self):
+        if not Path(service.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()):
+            self.skipTest("Source diagnostic; installed suite owns actual native package boundary")
+        launcher = Path(__file__).resolve().parents[2] / "node_modules/.bin/codex"
+        self.assertTrue(launcher.is_file(), "Existing integrity-pinned npm runtime required")
+        native = effect_workspace.native_runtime_file(launcher)
+        prefix = self.base / "own-managed-npm-runtime"
+        (prefix / "bin").mkdir(parents=True)
+        (prefix / "bin/codex").symlink_to(launcher)
+        actual_popen = subprocess.Popen
+        with patch.dict(os.environ, {"EP_MANAGED_CODEX_CLI_PREFIX": str(prefix)}), \
+                patch.object(service.subprocess, "Popen", wraps=actual_popen) as processes:
+            status, _, body = self.request_http()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["observation"]["worker_runtime_binding"]["state"],
+                         "CURRENT_INSTALLED_PACKAGE_VERIFIED")
+        workers = [call.args[0] for call in processes.call_args_list
+                   if "sandbox" in call.args[0]]
+        self.assertEqual(len(workers), 1)
+        self.assertEqual(workers[0][0], str(native))
+
     def test_late_revocation_after_encoding_has_no_private_response(self):
         actual_send = server._HealthHandler._send
         def revoke_at_transport(handler, status, payload, *args, **kwargs):

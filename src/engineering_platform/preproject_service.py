@@ -318,7 +318,11 @@ def _worker(root: Path, binding: dict[str, object], scope: dict[str, object], re
     executable = codex_cli_executable()
     if executable is None:
         raise InspectionError("INSPECTION_SANDBOX_UNAVAILABLE", 422)
-    version = subprocess.run((executable, "--version"), env=effect_workspace.child_environment(),
+    try:
+        native = effect_workspace.native_runtime_file(Path(executable))
+    except (EffectContractError, OSError) as error:
+        raise InspectionError("INSPECTION_SANDBOX_UNAVAILABLE", 422) from error
+    version = subprocess.run((str(native), "--version"), env=effect_workspace.child_environment(),
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
     if version.returncode or version.stdout.strip() != b"codex-cli 0.160.1":
         raise InspectionError("INSPECTION_SANDBOX_UNQUALIFIED", 422)
@@ -327,17 +331,17 @@ def _worker(root: Path, binding: dict[str, object], scope: dict[str, object], re
         anchor = root / "preproject-inspection-v1/worker-anchor"
         name = "ep-inspection-" + secrets.token_hex(12)
         options = tuple(value.replace("ep-effects", name) for value in effect_workspace.sandbox_options(
-            anchor, readable=(target, Path(__file__).resolve().parent.parent), runtime=Path(executable)))
+            anchor, readable=(target, Path(__file__).resolve().parent.parent), runtime=native))
         # Preserve the actual installed venv launcher/import authority. The
         # generic control helper resolves it to base Python for stdlib probes.
-        command = (executable, "sandbox", "-P", name, *options, "-C", str(anchor), "--",
+        command = (str(native), "sandbox", "-P", name, *options, "-C", str(anchor), "--",
             sys.executable, "-m", "engineering_platform.preproject_worker")
     except (EffectContractError, OSError) as error:
         raise InspectionError("INSPECTION_SANDBOX_UNAVAILABLE", 422) from error
     environment = effect_workspace.child_environment()
     # The selected package is normal installed runtime authority; a source
     # checkout is never injected via PYTHONPATH or used as the child cwd.
-    environment["PATH"] = str(Path(executable).parent) + os.pathsep + os.defpath
+    environment["PATH"] = str(native.parent) + os.pathsep + os.defpath
     job = canonical({"binding": binding, "paths": scope["paths"], "content_paths": scope["content_paths"]}).encode()
     retained = bytearray()
     deadline = time.monotonic() + 15
