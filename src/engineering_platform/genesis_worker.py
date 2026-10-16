@@ -67,8 +67,12 @@ def prepared_capability(scope: dict, parent_fd: int | None = None):
 def create(scope: dict, *, prepared_parent_fd: int | None = None) -> dict:
     staging = Path(scope["staging_path"])
     with prepared_capability(scope, prepared_parent_fd) as (source, prepared), directory(Path(scope["workspace_root"])) as parent:
+        expected_directories = scope.get("prepared_directory_identities", {})
+        contents = inventory(prepared, deadline=time.monotonic()+3, maximum=2048)
+        observed_directories = {name+"/": list(info[:2]) for name, info in contents.items() if stat.S_ISDIR(info[2])}
         if (list(identity(os.fstat(prepared))) != scope["staging_identity"]
-                or list(identity(os.fstat(source))) != scope["staging_parent_identity"] or os.listdir(prepared)):
+                or list(identity(os.fstat(source))) != scope["staging_parent_identity"]
+                or len(contents) != len(observed_directories) or observed_directories != expected_directories):
             raise BootstrapError("BOOTSTRAP_PREPARED_CAPABILITY_CHANGED", 409)
         if list(identity(os.fstat(parent))) != scope["root_identity"]:
             raise BootstrapError("BOOTSTRAP_PARENT_CHANGED", 409)
@@ -96,7 +100,7 @@ def create(scope: dict, *, prepared_parent_fd: int | None = None) -> dict:
                     raise BootstrapError("BOOTSTRAP_PARENT_CHANGED", 409)
             os.fsync(parent)
             os.fsync(source)
-            return {"target_identity": list(identity(info))}
+            return {"target_identity": list(identity(info)), "directory_identities": observed_directories}
         finally:
             os.close(fd)
 
@@ -151,9 +155,11 @@ def write_files(scope: dict, known: dict, files: dict) -> dict:
     if known.get("file_identities"):
         return verify_files(scope, known, files, git=False)
     with target(scope, known) as root:
-        if os.listdir(root):
+        contents = inventory(root, deadline=time.monotonic()+3, maximum=2048)
+        directories = known["directory_identities"]
+        if ({name+"/": list(info[:2]) for name, info in contents.items() if stat.S_ISDIR(info[2])} != directories
+                or any(not stat.S_ISDIR(info[2]) for info in contents.values())):
             raise BootstrapError("BOOTSTRAP_PARTIAL_FILES_OWNERSHIP_UNCERTAIN", 409)
-        directories = {}
         observations = {}
         for name, raw in sorted(files.items()):
             fd = os.dup(root)
@@ -163,8 +169,7 @@ def write_files(scope: dict, known: dict, files: dict) -> dict:
                 for part in parts[:-1]:
                     prefix += part + "/"
                     if prefix not in directories:
-                        os.mkdir(part, 0o700, dir_fd=fd)
-                        directories[prefix] = list(identity(os.stat(part, dir_fd=fd, follow_symlinks=False)))
+                        raise BootstrapError("BOOTSTRAP_DIRECTORY_OWNERSHIP_UNCERTAIN", 409)
                     child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                     if list(identity(os.fstat(child))) != directories[prefix]:
                         os.close(child)
@@ -312,15 +317,20 @@ def git_initialize(scope: dict, known: dict, files: dict, *, prepared_parent_fd:
         return {k: known[k] for k in ("git_identity", "git_config_digest")}
     verify_files(scope, known, files, git=False)
     metadata_scope = {**scope, "workspace_root": str(_git_root(scope)), "root_identity": known["target_identity"],
-        "target_name": ".git", "staging_path": scope["git_staging_path"], "staging_identity": scope["git_staging_identity"]}
+        "target_name": ".git", "staging_path": scope["git_staging_path"], "staging_identity": scope["git_staging_identity"],
+        "prepared_directory_identities": {}}
     claim = create(metadata_scope, prepared_parent_fd=prepared_parent_fd)
     initializing = {**known, "git_identity": claim["target_identity"]}
     _git(_git_root(scope), "-c", "init.templateDir=", "init", "--initial-branch=main", known=initializing)
     with target(scope, known) as fd:
         gitfd = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         try:
+            if list(identity(os.fstat(gitfd))) != claim["target_identity"]:
+                raise BootstrapError("BOOTSTRAP_GIT_OWNERSHIP_UNCERTAIN", 409)
             _, config_digest = selected_bytes(gitfd, "config", maximum=65536, deadline=time.monotonic()+2)
-            return {"git_identity": list(identity(os.fstat(gitfd))), "git_config_digest": config_digest}
+            if identity(os.stat(".git", dir_fd=fd, follow_symlinks=False)) != identity(os.fstat(gitfd)):
+                raise BootstrapError("BOOTSTRAP_GIT_OWNERSHIP_UNCERTAIN", 409)
+            return {"git_identity": claim["target_identity"], "git_config_digest": config_digest}
         finally:
             os.close(gitfd)
 

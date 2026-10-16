@@ -289,10 +289,11 @@ class GenesisOwnerFixture(unittest.TestCase):
                      patch.object(service, "capture_process_identity", side_effect=lambda pid, group: service.ProcessIdentity(pid, group, "own-supervised-test", "own-supervised-test")), \
                      patch.object(service, "verify_process_identity", return_value="MATCH"), \
                      patch.object(service.subprocess, "Popen", side_effect=spawned):
-                    with self.assertRaises(service.CleanupFailure) as found:
+                    with self.assertRaises(contract.BootstrapError) as found:
                         service._execute_step(self.data, operation_id="synthetic-operation", step="PREFLIGHT",
                             token=self.grant["credential"], headers=self.headers, source_identity=None, lock_fd=fd)
-            self.assertEqual(found.exception.primary.code, "BOOTSTRAP_HOST_ERROR_OUTPUT_LIMIT")
+            primary = found.exception.primary if isinstance(found.exception, service.CleanupFailure) else found.exception
+            self.assertEqual(primary.code, "BOOTSTRAP_HOST_ERROR_OUTPUT_LIMIT")
             self.assertLess(time.monotonic() - before, 5)
             self.assertIsNotNone(children[0].poll())
             errors = list((self.data / "g/evidence").glob("*.stderr"))
@@ -343,6 +344,69 @@ class GenesisOwnerFixture(unittest.TestCase):
         (self.data / "g/locks/unknown!.lock").write_text("foreign")
         _, _, unknown, _ = reset._external_inventory(self.data, expected_installation_id=self.instance)
         self.assertIn("g/locks/unknown!.lock", unknown)
+
+    def test_nested_foreign_directory_is_never_written(self):
+        from engineering_platform import genesis_worker as worker
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
+        _, original = contract.request(self.original_request)
+        known = self._create(scope)
+        original_stat = os.stat
+        swapped = []
+        def replacement(path, *args, **kwargs):
+            if path == ".engineering-platform" and "dir_fd" in kwargs and not swapped:
+                parent = kwargs["dir_fd"]
+                os.rename(path, path + ".original", src_dir_fd=parent, dst_dir_fd=parent)
+                os.mkdir(path, 0o700, dir_fd=parent)
+                swapped.append(True)
+            return original_stat(path, *args, **kwargs)
+        with patch.object(worker.os, "stat", side_effect=replacement):
+            try:
+                worker.write_files(scope, known, original.files)
+            except contract.BootstrapError:
+                pass
+        self.assertTrue(swapped)
+        self.assertFalse((self.workspace / scope["target_name"] / ".engineering-platform/repository.json").exists())
+
+    def test_post_init_metadata_cannot_replace_the_original_claim(self):
+        from engineering_platform import genesis_worker as worker
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
+        _, original = contract.request(self.original_request)
+        known = self._create(scope)
+        known.update(worker.write_files(scope, known, original.files))
+        real_git = worker._git
+        root = self.workspace / scope["target_name"]
+        def replaced_after_init(*args, **kwargs):
+            result = real_git(*args, **kwargs)
+            if "init" in args:
+                original_config = (root / ".git/config").read_bytes()
+                (root / ".git").rename(root / ".git.original")
+                (root / ".git").mkdir(mode=0o700)
+                (root / ".git/config").write_bytes(original_config)
+            return result
+        with patch.object(worker, "_git", side_effect=replaced_after_init):
+            with self.assertRaises(contract.BootstrapError):
+                self._git_initialize(scope, known, original.files)
+
+    def test_stale_foreign_registered_path_is_refused_before_admission(self):
+        from engineering_platform import project_topology, local_repository_binding
+        declaration = json.loads(self.bundle["files"][".engineering-platform/repository.json"]["utf8"])
+        declaration["project"]["id"] = "foreign-product"
+        declaration["project"]["authority_repository_id"] = "foreign-core"
+        declaration["repository"]["id"] = "foreign-core"
+        target = self.workspace / "new-repository"
+        (target / ".engineering-platform").mkdir(mode=0o700, parents=True)
+        (target / ".engineering-platform/repository.json").write_bytes(contract.canonical(declaration))
+        with authority.store(self.data, write=True) as db:
+            project_topology.register_server_local_topology(db, declaration=declaration)
+            local_repository_binding.bind_local_repository(db, project_id="foreign-product", repository_id="foreign-core", local_root=target, data_root=self.data)
+        target.rename(self.workspace / "foreign-original")
+        with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_TARGET_ALREADY_BOUND"):
+            service.admit(self.data, token=self.grant["credential"], headers=self.headers, value=self.original_request)
+        self.assertFalse(target.exists())
+        with authority.store(self.data) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM ep_genesis_operations").fetchone()[0], 0)
 
     def test_corrupt_operation_cannot_claim_complete_without_commit_or_B8R(self):
         service.initialize(self.data, expected_instance=self.instance)

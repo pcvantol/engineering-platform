@@ -1003,10 +1003,7 @@ def _walk_preserved_files(
                     raise OperationalResetError(code)
                 if stat.S_ISDIR(metadata.st_mode):
                     relative = path.relative_to(directory).as_posix()
-                    if root_name in {"genesis-local-v1", "g"} and not (
-                        relative in {"anchor", "a", "evidence", "locks"}
-                        or re.fullmatch(r"(?:anchor|a)/(?:stage-[0-9a-f]{32}|s[0-9a-f]{4})", relative)
-                    ):
+                    if root_name in {"genesis-local-v1", "g"} and not _genesis_directory_shape(relative):
                         raise OperationalResetError("GENESIS_PRIVATE_SHAPE_UNKNOWN")
                     classification = _opaque_update_directory_classification(
                         root_name, path, relative,
@@ -1031,6 +1028,19 @@ def _walk_preserved_files(
             except OSError as error:
                 raise OperationalResetError(code) from error
     return sorted(files), sorted(opaque, key=lambda item: item[0])
+
+
+def _genesis_directory_shape(relative: str) -> bool:
+    if relative in {"anchor", "a", "evidence", "locks"}:
+        return True
+    parts = relative.split("/")
+    if len(parts) < 2 or parts[0] not in {"anchor", "a"} or re.fullmatch(r"(?:stage-[0-9a-f]{32}|s[0-9a-f]{4})", parts[1]) is None:
+        return False
+    if len(parts) == 2:
+        return True
+    from .genesis_contract import PATHS
+    directories = {"/".join(name.split("/")[:index]) for name in PATHS for index in range(1, len(name.split("/")))}
+    return "/".join(parts[2:]) in directories
 
 
 def _open_opaque_directory(path: Path, *, device: int, inode: int) -> int:

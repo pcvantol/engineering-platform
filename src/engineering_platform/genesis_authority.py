@@ -160,10 +160,34 @@ def issue(root: Path, *, expected_instance: str, config: dict) -> dict:
             prepared_identity = list(identity(os.fstat(prepared)))
             if os.listdir(prepared):
                 raise BootstrapError("BOOTSTRAP_PREPARATION_UNSAFE", 403)
+            # Trusted owner preparation binds the entire empty directory
+            # skeleton. Runtime mkdir/stat cannot prove which inode it made.
+            directories = {}
+            for name in sorted(original.files):
+                current = os.dup(prepared)
+                prefix = ""
+                try:
+                    for part in name.split("/")[:-1]:
+                        prefix += part + "/"
+                        if prefix not in directories:
+                            os.mkdir(part, 0o700, dir_fd=current)
+                        child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+                        observed = list(identity(os.fstat(child)))
+                        if prefix in directories and directories[prefix] != observed:
+                            os.close(child)
+                            raise BootstrapError("BOOTSTRAP_PREPARATION_UNSAFE", 403)
+                        directories[prefix] = observed
+                        os.fsync(current)
+                        os.close(current)
+                        current = child
+                finally:
+                    os.close(current)
+            os.fsync(prepared)
         os.fsync(parent)
     scope = {**placement, "validator_path": str(validator), "validator_sha256": observed_hash,
         "staging_path": str(staging), "staging_identity": prepared_identity,
         "staging_parent_identity": list(identity(parent_info)),
+        "prepared_directory_identities": directories,
         "instance_id": identifier(expected_instance), "host_id": host_id(),
         "consumer_id": config["consumer_id"], "principal": config["principal"], "audience": "genesis-bootstrap",
         "purpose": "CREATE_GENESIS_LOCAL", "operation_id": parsed["operation_id"], "target_ref": parsed["target_ref"],

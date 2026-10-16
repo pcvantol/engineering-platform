@@ -99,3 +99,11 @@ process-group closure and durable private logs precede STEP_COMPLETED. Primary
 and cleanup/evidence exceptions remain separate actual exception objects with
 private detailed readback; any unconfirmed closure/persistence remains failure.
 Final independent review and installed qualification are still required.
+
+Owner preparation also binds every empty manifest-directory inode before the
+target is exposed. Runtime file writes use only those exact directory FDs and
+exclusive file creation; they never mkdir/stat/adopt an unknown directory.
+The original Git metadata claim is checked again after initialization and
+through its config readback. A foreign canonical B8R path binding blocks both
+admission and registration even if the old checkout was moved elsewhere.
+The original project/repository identities are not rewritten to evade a conflict.

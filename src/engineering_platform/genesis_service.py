@@ -169,12 +169,15 @@ def _require_original(row: dict, grant_id: str, scope: dict) -> None:
         raise BootstrapError("BOOTSTRAP_OPERATION_SCOPE_DENIED", 403)
 
 
-def _conflicts(db, original) -> None:
+def _conflicts(db, original, scope: dict) -> None:
     if db.execute("SELECT 1 FROM ep_project_registrations WHERE project_id=?", (original.project_id,)).fetchone():
         raise BootstrapError("BOOTSTRAP_PROJECT_ALREADY_REGISTERED", 409)
     if db.execute("SELECT 1 FROM ep_repository_registrations WHERE repository_id=? OR authority_repository_id=?",
             (original.repository_id, original.authority_repository_id)).fetchone():
         raise BootstrapError("BOOTSTRAP_REPOSITORY_ALREADY_REGISTERED", 409)
+    target = str(Path(scope["workspace_root"]) / scope["target_name"])
+    if db.execute("SELECT 1 FROM ep_local_repository_bindings WHERE local_root=? COLLATE NOCASE AND state='BOUND'", (target,)).fetchone():
+        raise BootstrapError("BOOTSTRAP_TARGET_ALREADY_BOUND", 409)
 
 
 def _still_absent(scope: dict) -> None:
@@ -201,9 +204,9 @@ def admit(root: Path, *, token, headers: dict, value: dict, source_identity=None
             row = _row(db, operation_id, token)
             _require_original(row, grant_id, scope)
             return {**row, "newly_admitted": False}
-        _conflicts(db, original)
+        _conflicts(db, original, scope)
         _still_absent(scope)
-        target_digest = digest(canonical({k: scope[k] for k in ("root_identity", "target_name")}))
+        target_digest = digest(canonical({"root_identity": scope["root_identity"], "target_name": scope["target_name"].casefold()}))
         at = authority.now().isoformat()
         evidence = {"known": {}, "completed_steps": [], "attempts": [], "accepted_at": int(datetime.fromisoformat(at).timestamp())}
         first = {"operation_id": operation_id, "grant_id": grant_id, "request_digest": scope["request_digest"],
@@ -538,7 +541,7 @@ def execute(root: Path, *, operation_id: str, token, headers: dict, source_ident
                 grant_id, scope = _context(db, token, headers, operation_id)
                 row = _row(db, operation_id, token); _require_original(row, grant_id, scope)
                 parsed, original = request(row["request"])
-                _conflicts(db, original)
+                _conflicts(db, original, scope)
                 known = row["evidence"]["known"]
                 target_path = Path(scope["workspace_root"]) / scope["target_name"]
                 # These are bounded no-follow reads, not physical writes or
